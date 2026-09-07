@@ -1,0 +1,26 @@
+# Local credentials and private exports
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.key
+/backups/
+/exports/
+
+# Local working files
+/.scratch/
+/.codex/
+*.log
+Thumbs.db
+.DS_Store
+
+# Common generated application output
+node_modules/
+.next/
+dist/
+build/
+coverage/
+.venv/
+__pycache__/
+*.pyc
