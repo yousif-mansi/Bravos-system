@@ -1,0 +1,3 @@
+# Use one modular PostgreSQL backend
+
+Following review, the user approved one Fastify/TypeScript modular backend with PostgreSQL transactions, separate Next.js public and React/Vite internal applications, and Dexie local POS persistence on 2026-09-08. This keeps inventory allocation, completed transactions and operation deduplication atomic centrally while isolating business features and preserving the accepted offline sale policy. Module Federation remains deferred, and local verification precedes domain/hosting selection and booking; see the [approved specification](../planning/bravos-v1-spec.md).

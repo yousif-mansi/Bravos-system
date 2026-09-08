@@ -1,0 +1,330 @@
+[
+  {
+    "id": 1,
+    "number": 2,
+    "databaseId": 5390527893,
+    "url": "https://github.com/yousif-mansi/Bravos-system/issues/2",
+    "title": "01: Personal staff access and authorized branch selection",
+    "blockedBy": [],
+    "dependenciesVerified": true
+  },
+  {
+    "id": 2,
+    "number": 3,
+    "databaseId": 5390558025,
+    "url": "https://github.com/yousif-mansi/Bravos-system/issues/3",
+    "title": "02: Manage products and variants with cashier product-code lookup",
+    "blockedBy": [
+      1
+    ],
+    "dependenciesVerified": true
+  },
+  {
+    "id": 3,
+    "number": 4,
+    "databaseId": 5390559846,
+    "url": "https://github.com/yousif-mansi/Bravos-system/issues/4",
+    "title": "03: Receive merchandise and inspect central stock with separate FIFO batches",
+    "blockedBy": [
+      2
+    ],
+    "dependenciesVerified": true
+  },
+  {
+    "id": 4,
+    "number": 5,
+    "databaseId": 5390561550,
+    "url": "https://github.com/yousif-mansi/Bravos-system/issues/5",
+    "title": "04: Complete attributed cash sales with employee discounts and retained paid values",
+    "blockedBy": [
+      3
+    ],
+    "dependenciesVerified": true
+  },
+  {
+    "id": 5,
+    "number": 6,
+    "databaseId": 5390562967,
+    "url": "https://github.com/yousif-mansi/Bravos-system/issues/6",
+    "title": "05: Keep cached POS and completed cash sales durable during outages",
+    "blockedBy": [
+      4
+    ],
+    "dependenciesVerified": true
+  },
+  {
+    "id": 6,
+    "number": 7,
+    "databaseId": 5390563702,
+    "url": "https://github.com/yousif-mansi/Bravos-system/issues/7",
+    "title": "06: Synchronize completed sales with safe acknowledgements and account recovery",
+    "blockedBy": [
+      5
+    ],
+    "dependenciesVerified": true
+  },
+  {
+    "id": 7,
+    "number": 8,
+    "databaseId": 5390564684,
+    "url": "https://github.com/yousif-mansi/Bravos-system/issues/8",
+    "title": "07: Record employee expenses and manager corrections with immediate totals",
+    "blockedBy": [
+      1
+    ],
+    "dependenciesVerified": true
+  },
+  {
+    "id": 8,
+    "number": 9,
+    "databaseId": 5390565867,
+    "url": "https://github.com/yousif-mansi/Bravos-system/issues/9",
+    "title": "08: Manage automatic offers and select the greatest eligible saving",
+    "blockedBy": [
+      4
+    ],
+    "dependenciesVerified": true
+  },
+  {
+    "id": 9,
+    "number": 10,
+    "databaseId": 5390567287,
+    "url": "https://github.com/yousif-mansi/Bravos-system/issues/10",
+    "title": "09: Price fixed bundles and cheapest eligible Buy-X-Get-Y rewards",
+    "blockedBy": [
+      8
+    ],
+    "dependenciesVerified": true
+  },
+  {
+    "id": 10,
+    "number": 11,
+    "databaseId": 5390568331,
+    "url": "https://github.com/yousif-mansi/Bravos-system/issues/11",
+    "title": "10: Apply manager-configured coupons with atomic usage limits",
+    "blockedBy": [
+      8
+    ],
+    "dependenciesVerified": true
+  },
+  {
+    "id": 11,
+    "number": 12,
+    "databaseId": 5390569212,
+    "url": "https://github.com/yousif-mansi/Bravos-system/issues/12",
+    "title": "11: Use cached promotions and reconcile offline coupon overuse",
+    "blockedBy": [
+      6,
+      9,
+      10
+    ],
+    "dependenciesVerified": true
+  },
+  {
+    "id": 12,
+    "number": 13,
+    "databaseId": 5390570042,
+    "url": "https://github.com/yousif-mansi/Bravos-system/issues/13",
+    "title": "12: Process dedicated physical Returns with inspection and editable refunds",
+    "blockedBy": [
+      4
+    ],
+    "dependenciesVerified": true
+  },
+  {
+    "id": 13,
+    "number": 14,
+    "databaseId": 5390570900,
+    "url": "https://github.com/yousif-mansi/Bravos-system/issues/14",
+    "title": "13: Complete exchanges with replacement stock and actual cash differences",
+    "blockedBy": [
+      12,
+      9,
+      10
+    ],
+    "dependenciesVerified": true
+  },
+  {
+    "id": 14,
+    "number": 15,
+    "databaseId": 5390571794,
+    "url": "https://github.com/yousif-mansi/Bravos-system/issues/15",
+    "title": "14: Correct erroneous saved sales and Returns while preserving actual effects",
+    "blockedBy": [
+      12
+    ],
+    "dependenciesVerified": true
+  },
+  {
+    "id": 15,
+    "number": 16,
+    "databaseId": 5390572700,
+    "url": "https://github.com/yousif-mansi/Bravos-system/issues/16",
+    "title": "15: Correct receiving quantities and historical costs through linked records",
+    "blockedBy": [
+      3,
+      12
+    ],
+    "dependenciesVerified": true
+  },
+  {
+    "id": 16,
+    "number": 17,
+    "databaseId": 5390574042,
+    "url": "https://github.com/yousif-mansi/Bravos-system/issues/17",
+    "title": "16: Coordinate quantity corrections and reconcile late completed sales",
+    "blockedBy": [
+      6,
+      15
+    ],
+    "dependenciesVerified": true
+  },
+  {
+    "id": 17,
+    "number": 18,
+    "databaseId": 5390575219,
+    "url": "https://github.com/yousif-mansi/Bravos-system/issues/18",
+    "title": "17: Manage product media and publication with a safe public catalog",
+    "blockedBy": [
+      3
+    ],
+    "dependenciesVerified": true
+  },
+  {
+    "id": 18,
+    "number": 19,
+    "databaseId": 5390575869,
+    "url": "https://github.com/yousif-mansi/Bravos-system/issues/19",
+    "title": "18: Browse the Arabic storefront and maintain a valid guest cart",
+    "blockedBy": [
+      17
+    ],
+    "dependenciesVerified": true
+  },
+  {
+    "id": 19,
+    "number": 20,
+    "databaseId": 5390576712,
+    "url": "https://github.com/yousif-mansi/Bravos-system/issues/20",
+    "title": "19: Configure delivery areas and submit validated guest COD requests",
+    "blockedBy": [
+      18,
+      9,
+      10
+    ],
+    "dependenciesVerified": true
+  },
+  {
+    "id": 20,
+    "number": 21,
+    "databaseId": 5390577921,
+    "url": "https://github.com/yousif-mansi/Bravos-system/issues/21",
+    "title": "20: Confirm WhatsApp-agreed online orders with protected FIFO allocations",
+    "blockedBy": [
+      19,
+      6
+    ],
+    "dependenciesVerified": true
+  },
+  {
+    "id": 21,
+    "number": 22,
+    "databaseId": 5390579049,
+    "url": "https://github.com/yousif-mansi/Bravos-system/issues/22",
+    "title": "21: Fulfill online orders and close inspected failed deliveries",
+    "blockedBy": [
+      20
+    ],
+    "dependenciesVerified": true
+  },
+  {
+    "id": 22,
+    "number": 23,
+    "databaseId": 5390579769,
+    "url": "https://github.com/yousif-mansi/Bravos-system/issues/23",
+    "title": "22: Handle delivered online Returns and exchanges with exact refund breakdowns",
+    "blockedBy": [
+      12,
+      13,
+      21
+    ],
+    "dependenciesVerified": true
+  },
+  {
+    "id": 23,
+    "number": 24,
+    "databaseId": 5390580922,
+    "url": "https://github.com/yousif-mansi/Bravos-system/issues/24",
+    "title": "23: Show manager operational reports with historical-cost profit and stock value",
+    "blockedBy": [
+      7,
+      11,
+      14,
+      15,
+      16,
+      22
+    ],
+    "dependenciesVerified": true
+  },
+  {
+    "id": 24,
+    "number": 25,
+    "databaseId": 5390582788,
+    "url": "https://github.com/yousif-mansi/Bravos-system/issues/25",
+    "title": "24: Export authorized reports and show aggregate storefront analytics",
+    "blockedBy": [
+      23,
+      18
+    ],
+    "dependenciesVerified": true
+  },
+  {
+    "id": 25,
+    "number": 26,
+    "databaseId": 5390583473,
+    "url": "https://github.com/yousif-mansi/Bravos-system/issues/26",
+    "title": "25: Preview and import opening products, separate cost batches and configuration",
+    "blockedBy": [
+      3,
+      10,
+      19
+    ],
+    "dependenciesVerified": true
+  },
+  {
+    "id": 26,
+    "number": 27,
+    "databaseId": 5390584595,
+    "url": "https://github.com/yousif-mansi/Bravos-system/issues/27",
+    "title": "26: Download coherent password-protected business-data backups",
+    "blockedBy": [
+      23,
+      25
+    ],
+    "dependenciesVerified": true
+  },
+  {
+    "id": 27,
+    "number": 28,
+    "databaseId": 5390585435,
+    "url": "https://github.com/yousif-mansi/Bravos-system/issues/28",
+    "title": "27: Preview staged restoration and reconcile newer or queued activity",
+    "blockedBy": [
+      26,
+      16
+    ],
+    "dependenciesVerified": true
+  },
+  {
+    "id": 28,
+    "number": 29,
+    "databaseId": 5390586352,
+    "url": "https://github.com/yousif-mansi/Bravos-system/issues/29",
+    "title": "28: Rehearse the full local release and document portable deployment",
+    "blockedBy": [
+      24,
+      27
+    ],
+    "dependenciesVerified": true
+  }
+]

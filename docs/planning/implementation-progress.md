@@ -6,9 +6,10 @@ Updated: 2026-09-08. The user approved the reviewed specification and asked to s
 
 - Specification: [approved v1 specification](bravos-v1-spec.md), 114 stories and 36 acceptance scenarios.
 - Independent review: [review disposition](../reviews/bravos-v1-grok-review.md).
-- GitHub source of truth: publication pending; GitHub API access failed twice with TLS/connection errors, including outside the sandbox. Local prepared issue bodies must not be mistaken for published issues.
-- Implementation: preparing the first Grok brief; no application code or passing application tests yet.
+- GitHub source of truth: [approved specification #1](https://github.com/yousif-mansi/Bravos-system/issues/1) and implementation issues #2–#29, with native blocking dependencies. Initial network timeouts recovered. Local ticket bodies mirror the published work; GitHub status is authoritative.
+- Implementation: Grok is implementing [staff access #2](https://github.com/yousif-mansi/Bravos-system/issues/2), session 01a08245-a92f-7bc1-b68c-f8dd271b1e58. Application code is being written; independent review and gate verification are pending.
 - Testing: authenticated public HTTP business operations against real PostgreSQL; focused real-browser recovery/interface tests; automated architecture checks.
+- Publication verification: the specification and all 28 ticket bodies match GitHub; ready-for-agent labels and every native blocking edge were independently read back and checked. All 114 stories and all 36 acceptance scenarios are assigned before the release rehearsal.
 
 ## Delivery queue
 
@@ -16,34 +17,34 @@ Each item includes its necessary schema, business behavior, API, usable UI and b
 
 | ID | End-to-end deliverable | Blocked by | Stories / acceptance scenarios | Status |
 | --- | --- | --- | --- | --- |
-| 01 | Personal staff sign-in, manager provisioning and authorized branch selection | None | 2–6, 9–10, 62, 104–107 / A01, A02, A33 | Prepared |
-| 02 | Manager product/variant/price maintenance and cashier code lookup | 01 | 11–15, 20, 25, 31 / A01, A03 | Queued |
-| 03 | Receive merchandise into separate FIFO cost batches and view central stock | 02 | 21–24, 29–30 / A03–A05 | Queued |
-| 04 | Complete attributed cash sales with employee deductions and retained paid values | 03 | 7–8, 32–40, 42 / A06–A09, A12 | Queued |
-| 05 | Cached POS and durable offline completed sales | 04 | 43–47 / A17–A19 | Queued |
-| 06 | Reconnect, acknowledge/rebase, multi-tab safety and restricted-account recovery | 05 | 48–50 / A12, A17–A20 | Queued |
-| 07 | Employee expenses with manager corrections and immediate totals | 01 | 7–8, 89–92 / A27 | Queued |
-| 08 | Manager automatic offers and greatest-saving basket pricing | 04 | 36–39, 108, 112 / A08–A09, A34 | Queued |
-| 09 | Fixed bundles and Buy-X-Get-Y with retained reward paid values | 08 | 109 / A09, A34, A36 | Queued |
-| 10 | Manager coupons, cashier application and duplicate-safe usage limits | 08 | 110–113 / A08, A10, A34 | Queued |
-| 11 | Offline promotions and coupon discrepancy reconciliation | 06, 09, 10 | 44, 48, 113 / A10, A20 | Queued |
-| 12 | Dedicated physical Returns, original lookup, inspection and editable refunds | 04 | 75–87 / A21–A25 | Queued |
-| 13 | Exchanges with replacement availability and actual cash differences | 12, 09, 10 | 88 / A26, A36 | Queued |
-| 14 | Manager sale/return recording corrections with actual stock/cash effects | 12 | 41, 79, 87 / A16, A21, A24 | Queued |
-| 15 | Receiving quantity/cost corrections carried through sales and returns | 03, 12 | 26, 83, 95 / A16, A25 | Queued |
-| 16 | Coordinated quantity corrections and late-sale reconciliation | 06, 15 | 27–28, 48 / A20, A32 | Queued |
-| 17 | Product images, size guides, publication controls and safe public catalog | 03 | 11, 16–19, 50 / A02, A04 | Queued |
-| 18 | Arabic storefront browsing, search, variants and persistent guest cart | 17 | 51–54, 60, 62, 105–106 / A02, A04, A33 | Queued |
-| 19 | Delivery-area administration and valid guest COD requests | 18, 09, 10 | 55–59, 61, 64, 111, 114 / A06, A10, A13, A29, A35 | Queued |
-| 20 | Representative WhatsApp workflow, basket revisions and atomic confirmation | 19, 06 | 63, 65–67, 71–73 / A01, A11, A13–A14 | Queued |
-| 21 | Shipment, delivery, cancellation and inspected failed-parcel closure | 20 | 68–70, 74, 113 / A14–A16, A36 | Queued |
-| 22 | Delivered online Returns/exchanges with delivery-charge breakdown | 12, 13, 21 | 76–88, 97 / A21–A26, A29, A36 | Queued |
-| 23 | Manager branch/channel dashboards, profit, stock value and operational reports | 07, 11, 14, 15, 16, 22 | 1, 8–10, 39–40, 74, 93–97 / A05, A28–A29 | Queued |
-| 24 | Permitted PDF/Excel exports and aggregate storefront analytics | 23, 18 | 98–99 / A02, A30 | Queued |
-| 25 | Validated opening CSV import of products, cost batches and configuration | 03, 10, 19 | 103 / A31 | Queued |
-| 26 | Coherent password-protected data-only backup download | 23, 25 | 100–101 / A31 | Queued |
-| 27 | Staged restore, preview and recovery of newer/queued work | 26, 16 | 4, 49, 102 / A19–A20, A31–A32 | Queued |
-| 28 | Full local release rehearsal, Arabic/device checks and portable deployment guide | 24, 27 | 104–107 / A01–A36 | Queued |
+| [01](https://github.com/yousif-mansi/Bravos-system/issues/2) | Personal staff access and authorized branch selection | None | 2, 3, 4, 5, 6, 9, 10, 62, 104, 105, 106, 107 / A01, A02, A21, A33 | At Grok; unverified |
+| [02](https://github.com/yousif-mansi/Bravos-system/issues/3) | Manage products and variants with cashier product-code lookup | 01 | 11, 12, 13, 14, 15, 20, 25, 31 / A01, A02, A03 | Queued |
+| [03](https://github.com/yousif-mansi/Bravos-system/issues/4) | Receive merchandise and inspect central stock with separate FIFO batches | 02 | 21, 22, 23, 24, 29, 30 / A03, A05, A12 | Queued |
+| [04](https://github.com/yousif-mansi/Bravos-system/issues/5) | Complete attributed cash sales with employee discounts and retained paid values | 03 | 7, 8, 32, 33, 34, 35, 36, 37, 38, 39, 40, 42 / A05, A06, A07, A08, A09, A12 | Queued |
+| [05](https://github.com/yousif-mansi/Bravos-system/issues/6) | Keep cached POS and completed cash sales durable during outages | 04 | 43, 44, 45, 46, 47 / A17, A19 | Queued |
+| [06](https://github.com/yousif-mansi/Bravos-system/issues/7) | Synchronize completed sales with safe acknowledgements and account recovery | 05 | 48, 49, 50 / A12, A17, A18, A19, A20, A21 | Queued |
+| [07](https://github.com/yousif-mansi/Bravos-system/issues/8) | Record employee expenses and manager corrections with immediate totals | 01 | 7, 8, 89, 90, 91, 92 / A01, A02, A27 | Queued |
+| [08](https://github.com/yousif-mansi/Bravos-system/issues/9) | Manage automatic offers and select the greatest eligible saving | 04 | 36, 37, 38, 39, 108, 112 / A08, A09, A10, A34 | Queued |
+| [09](https://github.com/yousif-mansi/Bravos-system/issues/10) | Price fixed bundles and cheapest eligible Buy-X-Get-Y rewards | 08 | 109 / A09, A10, A34, A36 | Queued |
+| [10](https://github.com/yousif-mansi/Bravos-system/issues/11) | Apply manager-configured coupons with atomic usage limits | 08 | 110, 111, 112, 113 / A08, A09, A10, A12, A34 | Queued |
+| [11](https://github.com/yousif-mansi/Bravos-system/issues/12) | Use cached promotions and reconcile offline coupon overuse | 06, 09, 10 | 44, 48, 113 / A10, A17, A20 | Queued |
+| [12](https://github.com/yousif-mansi/Bravos-system/issues/13) | Process dedicated physical Returns with inspection and editable refunds | 04 | 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87 / A23, A24, A25 | Queued |
+| [13](https://github.com/yousif-mansi/Bravos-system/issues/14) | Complete exchanges with replacement stock and actual cash differences | 12, 09, 10 | 88 / A06, A25, A26, A36 | Queued |
+| [14](https://github.com/yousif-mansi/Bravos-system/issues/15) | Correct erroneous saved sales and Returns while preserving actual effects | 12 | 41, 79, 87 / A12, A24, A25 | Queued |
+| [15](https://github.com/yousif-mansi/Bravos-system/issues/16) | Correct receiving quantities and historical costs through linked records | 03, 12 | 26, 83, 95 / A22, A25 | Queued |
+| [16](https://github.com/yousif-mansi/Bravos-system/issues/17) | Coordinate quantity corrections and reconcile late completed sales | 06, 15 | 27, 28, 48 / A20, A22 | Queued |
+| [17](https://github.com/yousif-mansi/Bravos-system/issues/18) | Manage product media and publication with a safe public catalog | 03 | 11, 16, 17, 18, 19, 50 / A02, A03, A04 | Queued |
+| [18](https://github.com/yousif-mansi/Bravos-system/issues/19) | Browse the Arabic storefront and maintain a valid guest cart | 17 | 51, 52, 53, 54, 60, 62, 105, 106 / A02, A04, A06, A33 | Queued |
+| [19](https://github.com/yousif-mansi/Bravos-system/issues/20) | Configure delivery areas and submit validated guest COD requests | 18, 09, 10 | 55, 56, 57, 58, 59, 61, 64, 111, 114 / A06, A10, A13, A29, A35 | Queued |
+| [20](https://github.com/yousif-mansi/Bravos-system/issues/21) | Confirm WhatsApp-agreed online orders with protected FIFO allocations | 19, 06 | 63, 65, 66, 67, 71, 72, 73 / A01, A10, A11, A13, A14, A16 | Queued |
+| [21](https://github.com/yousif-mansi/Bravos-system/issues/22) | Fulfill online orders and close inspected failed deliveries | 20 | 68, 69, 70, 74, 113 / A10, A14, A15, A16, A36 | Queued |
+| [22](https://github.com/yousif-mansi/Bravos-system/issues/23) | Handle delivered online Returns and exchanges with exact refund breakdowns | 12, 13, 21 | 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 97 / A23, A24, A25, A26, A29, A36 | Queued |
+| [23](https://github.com/yousif-mansi/Bravos-system/issues/24) | Show manager operational reports with historical-cost profit and stock value | 07, 11, 14, 15, 16, 22 | 1, 8, 9, 10, 39, 40, 74, 93, 94, 95, 96, 97 / A02, A05, A28, A29 | Queued |
+| [24](https://github.com/yousif-mansi/Bravos-system/issues/25) | Export authorized reports and show aggregate storefront analytics | 23, 18 | 98, 99 / A02, A30, A33 | Queued |
+| [25](https://github.com/yousif-mansi/Bravos-system/issues/26) | Preview and import opening products, separate cost batches and configuration | 03, 10, 19 | 103 / A03, A05, A32 | Queued |
+| [26](https://github.com/yousif-mansi/Bravos-system/issues/27) | Download coherent password-protected business-data backups | 23, 25 | 100, 101 / A02, A31 | Queued |
+| [27](https://github.com/yousif-mansi/Bravos-system/issues/28) | Preview staged restoration and reconcile newer or queued activity | 26, 16 | 4, 49, 102 / A19, A20, A21, A31, A32 | Queued |
+| [28](https://github.com/yousif-mansi/Bravos-system/issues/29) | Rehearse the full local release and document portable deployment | 24, 27 | 104, 105, 106, 107 / A01, A02, A03, A04, A05, A06, A07, A08, A09, A10, A11, A12, A13, A14, A15, A16, A17, A18, A19, A20, A21, A22, A23, A24, A25, A26, A27, A28, A29, A30, A31, A32, A33, A34, A35, A36 | Queued |
 
 ## First implementation contract
 

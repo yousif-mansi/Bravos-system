@@ -1,6 +1,6 @@
 ## Parent
 
-BRAVOS v1: Central inventory, branch POS, management and online store. GitHub reference will be recorded after publication succeeds.
+Specification: https://github.com/yousif-mansi/Bravos-system/issues/1. This implementation ticket: https://github.com/yousif-mansi/Bravos-system/issues/2.
 
 ## What to build
 
