@@ -7,7 +7,7 @@ Updated: 2026-09-08. The user approved the reviewed specification and asked to s
 - Specification: [approved v1 specification](bravos-v1-spec.md), 114 stories and 36 acceptance scenarios.
 - Independent review: [review disposition](../reviews/bravos-v1-grok-review.md).
 - GitHub source of truth: [approved specification #1](https://github.com/yousif-mansi/Bravos-system/issues/1) and implementation issues #2–#29, with native blocking dependencies. Initial network timeouts recovered. Local ticket bodies mirror the published work; GitHub status is authoritative.
-- Implementation: Grok is implementing [staff access #2](https://github.com/yousif-mansi/Bravos-system/issues/2), session 01a08245-a92f-7bc1-b68c-f8dd271b1e58. Application code is being written; independent review and gate verification are pending.
+- Implementation: Grok generated uncommitted code for [staff access #2](https://github.com/yousif-mansi/Bravos-system/issues/2), session 01a08245-a92f-7bc1-b68c-f8dd271b1e58. Repeated dependency-download failures prevented installation. The resumed session then stalled before producing any tool calls or text. Both process trees were stopped; no delegation remains running. Source review found required fixes, and no application tests have passed.
 - Testing: authenticated public HTTP business operations against real PostgreSQL; focused real-browser recovery/interface tests; automated architecture checks.
 - Publication verification: the specification and all 28 ticket bodies match GitHub; ready-for-agent labels and every native blocking edge were independently read back and checked. All 114 stories and all 36 acceptance scenarios are assigned before the release rehearsal.
 
@@ -17,7 +17,7 @@ Each item includes its necessary schema, business behavior, API, usable UI and b
 
 | ID | End-to-end deliverable | Blocked by | Stories / acceptance scenarios | Status |
 | --- | --- | --- | --- | --- |
-| [01](https://github.com/yousif-mansi/Bravos-system/issues/2) | Personal staff access and authorized branch selection | None | 2, 3, 4, 5, 6, 9, 10, 62, 104, 105, 106, 107 / A01, A02, A21, A33 | At Grok; unverified |
+| [01](https://github.com/yousif-mansi/Bravos-system/issues/2) | Personal staff access and authorized branch selection | None | 2, 3, 4, 5, 6, 9, 10, 62, 104, 105, 106, 107 / A01, A02, A21, A33 | Blocked on installation/connectivity; code needs fixes |
 | [02](https://github.com/yousif-mansi/Bravos-system/issues/3) | Manage products and variants with cashier product-code lookup | 01 | 11, 12, 13, 14, 15, 20, 25, 31 / A01, A02, A03 | Queued |
 | [03](https://github.com/yousif-mansi/Bravos-system/issues/4) | Receive merchandise and inspect central stock with separate FIFO batches | 02 | 21, 22, 23, 24, 29, 30 / A03, A05, A12 | Queued |
 | [04](https://github.com/yousif-mansi/Bravos-system/issues/5) | Complete attributed cash sales with employee discounts and retained paid values | 03 | 7, 8, 32, 33, 34, 35, 36, 37, 38, 39, 40, 42 / A05, A06, A07, A08, A09, A12 | Queued |
@@ -53,6 +53,12 @@ Ticket 01 supplies a working local staff application, real authentication and br
 Grok writes application code; the orchestrator reviews the actual diff, reruns gates and commits only verified work. A ticket remains incomplete if the database, authentication, browser behavior or required checks cannot be verified. No production readiness claim follows from a scaffold alone.
 
 ## Review notes
+
+- Planning is committed and pushed at `2c8aaf2` and `3918ce5`. Application changes remain uncommitted because their required checks could not run and static review found defects.
+- [Independent staff-access review](../reviews/staff-access-implementation-review.md) records separate Standards and Spec findings. Do not close issue #2 or advance its dependent tickets as if it passed.
+- Resume using the preserved Grok brief and review corrections under `.scratch/grok-implementation/`; do not reuse stopped terminal-task IDs or assume a completed relay result exists after process-tree termination. No first-run red-before-green execution occurred; do not fabricate that evidence.
+- A later npm lookup returned pnpm `10.34.5`. Testing a locally installed compatible pnpm 10 transport is a possible next diagnostic, not a verified fix. Preserve the approved pnpm architecture and restore portable dependency pins/workspace references before generating a reproducible lockfile.
+- Checkpoint: no `node_modules`, `pnpm-lock.yaml` or `package-lock.json` exists. Some downloaded tarballs are retained under ignored `.local/`; current manifest references to them are temporary and not suitable for a clean checkout.
 
 - Approval accepts the reviewed coupon/reward defaults, exchange-credit/cash separation and historical-cost correction behavior. See the review disposition and full spec for exact rules.
 - All existing planning files predate application delegation and must be preserved.
