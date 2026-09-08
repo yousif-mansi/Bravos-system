@@ -1,0 +1,3 @@
+# Protect items before WhatsApp confirmation
+
+Physical sales take priority over pending online requests, but a representative must locate and physically set aside an order's actual merchandise before confirming it through WhatsApp; those items are then protected from other physical and online sales. The user accepted this boundary so BRAVOS can keep its customer promise after confirmation while allowing immediate branch sales, including offline, before that point. Physical separation is necessary because a disconnected cashier may not yet have current reservation information; the user's 2026-09-08 clarification makes confirmation the deduction point for available stock, with no second deduction at shipment or delivery.
