@@ -1,0 +1,13 @@
+DROP INDEX IF EXISTS staff_operation_staff;
+DROP TABLE IF EXISTS staff_operation;
+DROP INDEX IF EXISTS owner_recovery_unused_hash;
+DROP INDEX IF EXISTS owner_recovery_challenge_hash;
+DROP TABLE IF EXISTS owner_recovery_challenge;
+DROP TABLE IF EXISTS staff_session_branch;
+DROP TABLE IF EXISTS staff_branch_grant;
+DROP TABLE IF EXISTS staff_profile;
+DROP TABLE IF EXISTS branch;
+DROP TABLE IF EXISTS verification;
+DROP TABLE IF EXISTS account;
+DROP TABLE IF EXISTS session;
+DROP TABLE IF EXISTS "user";

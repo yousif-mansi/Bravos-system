@@ -11,9 +11,13 @@
 # Local working files
 /.scratch/
 /.codex/
+/.local/
 *.log
 Thumbs.db
 .DS_Store
+playwright-report/
+test-results/
+blob-report/
 
 # Common generated application output
 node_modules/
@@ -21,6 +25,7 @@ node_modules/
 dist/
 build/
 coverage/
+*.tsbuildinfo
 .venv/
 __pycache__/
 *.pyc

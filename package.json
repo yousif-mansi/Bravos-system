@@ -1,0 +1,47 @@
+{
+  "name": "bravos-system",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.34.5",
+  "engines": {
+    "node": ">=22.13.1 <23",
+    "pnpm": ">=10.34.5 <11"
+  },
+  "scripts": {
+    "typecheck": "pnpm -r --if-present typecheck",
+    "check:architecture": "depcruise apps packages --config dependency-cruiser.cjs && node scripts/check-private-imports.mjs",
+    "test:http": "vitest run --config vitest.config.ts",
+    "test:browser": "playwright test",
+    "build": "pnpm --filter @bravos/api build && pnpm --filter @bravos/internal build && pnpm --filter @bravos/storefront build && node scripts/check-bundles.mjs",
+    "migrate:scratch": "tsx scripts/scratch-migrate.ts",
+    "setup:local": "tsx scripts/setup-local.ts",
+    "postgres:dev": "tsx scripts/postgres-dev.ts",
+    "dev:api": "pnpm --filter @bravos/api dev",
+    "dev:internal": "pnpm --filter @bravos/internal dev",
+    "dev:storefront": "pnpm --filter @bravos/storefront dev",
+    "dev": "pnpm --parallel --filter @bravos/api --filter @bravos/internal --filter @bravos/storefront dev"
+  },
+  "devDependencies": {
+    "@bravos/identity": "workspace:*",
+    "@bravos/persistence": "workspace:*",
+    "@bravos/testkit": "workspace:*",
+    "@playwright/test": "1.55.1",
+    "@types/node": "22.18.6",
+    "@types/pg": "8.15.5",
+    "dependency-cruiser": "16.10.4",
+    "embedded-postgres": "18.1.0-beta.16",
+    "esbuild": "0.25.9",
+    "pg": "8.16.3",
+    "tsx": "4.20.5",
+    "typescript": "5.9.2",
+    "vitest": "4.1.11"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "embedded-postgres",
+      "@embedded-postgres/windows-x64",
+      "esbuild",
+      "sharp"
+    ]
+  }
+}
