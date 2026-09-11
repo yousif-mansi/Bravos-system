@@ -1,0 +1,9 @@
+DROP TABLE IF EXISTS inventory_variant_setting;
+DROP INDEX IF EXISTS inventory_movement_batch;
+DROP INDEX IF EXISTS inventory_movement_operation;
+DROP TABLE IF EXISTS inventory_movement;
+DROP INDEX IF EXISTS inventory_batch_fifo;
+DROP INDEX IF EXISTS inventory_batch_source_line;
+DROP TABLE IF EXISTS inventory_batch;
+DROP TABLE IF EXISTS inventory_operation;
+DROP TABLE IF EXISTS inventory_settings;

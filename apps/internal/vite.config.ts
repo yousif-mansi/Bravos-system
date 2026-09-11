@@ -35,6 +35,9 @@ export default defineConfig({
             if (/LookupPage\.[cm]?[jt]sx?$/.test(chunk.facadeModuleId)) {
               return "assets/cashier-lookup-[hash].js";
             }
+            if (/ReceivingPage\.[cm]?[jt]sx?$/.test(chunk.facadeModuleId)) {
+              return "assets/receiving-stock-[hash].js";
+            }
           }
           return "assets/[name]-[hash].js";
         },

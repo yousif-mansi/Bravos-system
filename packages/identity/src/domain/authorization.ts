@@ -50,12 +50,14 @@ export function canUseBranch(staff: AuthenticatedStaff, branchId: string): boole
 export function capabilitiesFor(staff: AuthenticatedStaff, branchId: string | null) {
   const manageStaff = isManager(staff);
   const manageCatalog = isManager(staff);
+  const manageInventory = isManager(staff);
   if (!branchId) {
     return {
       cashier: false,
       orderRepresentative: false,
       manageStaff,
       manageCatalog,
+      manageInventory,
     };
   }
   if (isManager(staff) && canUseBranch(staff, branchId)) {
@@ -64,6 +66,7 @@ export function capabilitiesFor(staff: AuthenticatedStaff, branchId: string | nu
       orderRepresentative: true,
       manageStaff,
       manageCatalog,
+      manageInventory,
     };
   }
   const grant = staff.grants.find((item) => item.branchId === branchId);
@@ -72,5 +75,6 @@ export function capabilitiesFor(staff: AuthenticatedStaff, branchId: string | nu
     orderRepresentative: Boolean(grant?.orderRepresentative),
     manageStaff,
     manageCatalog,
+    manageInventory,
   };
 }

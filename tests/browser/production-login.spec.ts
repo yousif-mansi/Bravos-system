@@ -55,6 +55,7 @@ test("production login does not request staff-management until that route is vis
   expect(staffManagementRequests(requested), "workspace must not download staff-management").toEqual([]);
   expect(chunkRequests(requested, "catalog-maintenance"), "workspace must not download catalog-maintenance").toEqual([]);
   expect(chunkRequests(requested, "cashier-lookup"), "workspace must not download cashier-lookup").toEqual([]);
+  expect(chunkRequests(requested, "receiving-stock"), "workspace must not download receiving-stock").toEqual([]);
 
   await page.getByRole("link", { name: "الموظفون" }).click();
   await expect(page.getByRole("heading", { name: "إدارة الموظفين" })).toBeVisible();
@@ -65,6 +66,12 @@ test("production login does not request staff-management until that route is vis
   await page.getByRole("link", { name: "المنتجات" }).click();
   await expect(page.getByRole("heading", { name: "إدارة المنتجات" })).toBeVisible();
   expect(chunkRequests(requested, "catalog-maintenance").length).toBeGreaterThan(0);
+  expect(chunkRequests(requested, "receiving-stock"), "catalog route must not download receiving-stock").toEqual([]);
+
+  await page.getByRole("link", { name: "العودة لمساحة العمل" }).click();
+  await page.getByRole("link", { name: "استلام المخزون" }).click();
+  await expect(page.getByRole("heading", { name: "استلام المخزون" })).toBeVisible();
+  expect(chunkRequests(requested, "receiving-stock").length).toBeGreaterThan(0);
 });
 
 function staffManagementRequests(requested: Set<string>): string[] {

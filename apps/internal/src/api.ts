@@ -2,9 +2,14 @@ import type {
   CashierProductLookupDto,
   CategoryDto,
   ColorDto,
+  InventoryBatchDto,
+  InventorySettingsDto,
+  LowStockVariantDto,
   ManagerProductDto,
+  ReceiptDto,
   SizeDto,
   StaffAccountDto,
+  VariantLowStockDto,
   WorkspaceDto,
 } from "@bravos/contracts";
 
@@ -221,4 +226,60 @@ export function lookupProductByCode(code: string) {
   return request<CashierProductLookupDto>(
     `/api/internal/catalog/lookup?code=${encodeURIComponent(code)}`,
   );
+}
+
+export function finalizeReceipt(input: {
+  operationId: string;
+  receiptDate: string;
+  lines: Array<{ variantId: string; quantity: number; unitCostPiasters: number }>;
+}) {
+  return request<ReceiptDto>("/api/internal/receiving/receipts", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function listReceipts() {
+  return request<ReceiptDto[]>("/api/internal/receiving/receipts");
+}
+
+export function getReceipt(receiptId: string) {
+  return request<ReceiptDto>(`/api/internal/receiving/receipts/${receiptId}`);
+}
+
+export async function lookupReceivingOperation(operationId: string): Promise<ReceiptDto | null> {
+  try {
+    return await request<ReceiptDto>(`/api/internal/receiving/operations/${operationId}`);
+  } catch (caught) {
+    if (caught instanceof ApiError && caught.status === 404) {
+      return null;
+    }
+    throw caught;
+  }
+}
+
+export function listBatches() {
+  return request<InventoryBatchDto[]>("/api/internal/inventory/batches");
+}
+
+export function listLowStock() {
+  return request<LowStockVariantDto[]>("/api/internal/inventory/low-stock");
+}
+
+export function getInventorySettings() {
+  return request<InventorySettingsDto>("/api/internal/inventory/settings");
+}
+
+export function updateInventorySettings(lowStockThreshold: number) {
+  return request<InventorySettingsDto>("/api/internal/inventory/settings", {
+    method: "PATCH",
+    body: JSON.stringify({ lowStockThreshold }),
+  });
+}
+
+export function setVariantLowStockThreshold(variantId: string, lowStockThreshold: number | null) {
+  return request<VariantLowStockDto>(`/api/internal/inventory/variants/${variantId}/low-stock-threshold`, {
+    method: "PUT",
+    body: JSON.stringify({ lowStockThreshold }),
+  });
 }

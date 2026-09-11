@@ -31,6 +31,7 @@ export type WorkspaceDto = {
     orderRepresentative: boolean;
     manageStaff: boolean;
     manageCatalog: boolean;
+    manageInventory: boolean;
   };
 };
 
@@ -90,6 +91,74 @@ export type CashierProductLookupDto = {
   variants: CashierVariantDto[];
 };
 
+export type VariantIdentityDto = {
+  id: string;
+  product: {
+    id: string;
+    code: string;
+    nameAr: string;
+  };
+  size: SizeDto;
+  color: ColorDto;
+};
+
+export type ReceiptLineDto = {
+  id: string;
+  variantId: string;
+  quantity: number;
+  unitCostPiasters: number;
+  batchId: string;
+  variant: VariantIdentityDto;
+};
+
+export type ReceiptDto = {
+  id: string;
+  operationId: string;
+  receiptDate: string;
+  receivedByStaffId: string;
+  recordedAt: string;
+  lines: ReceiptLineDto[];
+};
+
+export type InventoryBatchDto = {
+  id: string;
+  variantId: string;
+  receivedQuantity: number;
+  remainingQuantity: number;
+  unitCostPiasters: number;
+  recordedAt: string;
+  receiptId: string;
+  receiptDate: string;
+  variant: VariantIdentityDto;
+};
+
+export type LowStockVariantDto = {
+  variantId: string;
+  availableQuantity: number;
+  threshold: number;
+  thresholdSource: "global" | "variant";
+  variant: VariantIdentityDto;
+};
+
+export type InventorySettingsDto = {
+  lowStockThreshold: number;
+};
+
+export type VariantLowStockDto = {
+  variantId: string;
+  lowStockThreshold: number | null;
+  updatedByStaffId: string | null;
+  updatedAt: string;
+};
+
+export type FifoBatchRef = {
+  batchId: string;
+  variantId: string;
+  remainingQuantity: number;
+  unitCostPiasters: number;
+  recordedAt: string;
+};
+
 export type StaffChangeDto = {
   operation: "provision" | "reset_password" | "disable" | "replace_grants";
   actorStaffId: string | null;
@@ -113,7 +182,8 @@ export type ApiErrorCode =
   | "INVALID_RECOVERY"
   | "NOT_FOUND"
   | "ORIGIN_DENIED"
-  | "CONFLICT";
+  | "CONFLICT"
+  | "VARIANT_REFERENCED";
 
 export type ApiErrorBody = {
   error: {

@@ -59,9 +59,15 @@ importers:
       '@bravos/identity':
         specifier: workspace:*
         version: link:../../packages/identity
+      '@bravos/inventory':
+        specifier: workspace:*
+        version: link:../../packages/inventory
       '@bravos/persistence':
         specifier: workspace:*
         version: link:../../packages/persistence
+      '@bravos/receiving':
+        specifier: workspace:*
+        version: link:../../packages/receiving
       better-auth:
         specifier: 1.7.3
         version: 1.7.3(next@16.3.4(@playwright/test@1.55.1)(@types/node@22.18.6)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(pg@8.16.3)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(vitest@4.1.11(@types/node@22.18.6)(tsx@4.20.5))
@@ -187,8 +193,55 @@ importers:
         specifier: 5.9.2
         version: 5.9.2
 
+  packages/inventory:
+    dependencies:
+      '@bravos/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@bravos/identity':
+        specifier: workspace:*
+        version: link:../identity
+      pg:
+        specifier: 8.16.3
+        version: 8.16.3
+    devDependencies:
+      '@types/node':
+        specifier: 22.18.6
+        version: 22.18.6
+      '@types/pg':
+        specifier: 8.15.5
+        version: 8.15.5
+      typescript:
+        specifier: 5.9.2
+        version: 5.9.2
+
   packages/persistence:
     dependencies:
+      pg:
+        specifier: 8.16.3
+        version: 8.16.3
+    devDependencies:
+      '@types/node':
+        specifier: 22.18.6
+        version: 22.18.6
+      '@types/pg':
+        specifier: 8.15.5
+        version: 8.15.5
+      typescript:
+        specifier: 5.9.2
+        version: 5.9.2
+
+  packages/receiving:
+    dependencies:
+      '@bravos/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@bravos/identity':
+        specifier: workspace:*
+        version: link:../identity
+      '@bravos/inventory':
+        specifier: workspace:*
+        version: link:../inventory
       pg:
         specifier: 8.16.3
         version: 8.16.3

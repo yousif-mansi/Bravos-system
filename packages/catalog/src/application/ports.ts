@@ -3,6 +3,7 @@ import type {
   ColorDto,
   ManagerProductDto,
   SizeDto,
+  VariantIdentityDto,
 } from "@bravos/contracts";
 import type { AuthenticatedStaff, VerifiedAuth } from "@bravos/identity";
 import type { PublicationStatus } from "../domain/product.ts";
@@ -16,6 +17,10 @@ export type CatalogActorPort = {
 
 export type AvailabilityReader = {
   quantitiesFor(variantIds: string[]): Promise<Map<string, number>>;
+};
+
+export type VariantReferenceReader = {
+  idsWithInventory(variantIds: string[]): Promise<string[]>;
 };
 
 export type VariantWrite = {
@@ -55,6 +60,8 @@ export type CatalogStore = {
   listProducts(): Promise<ManagerProductDto[]>;
   getProduct(id: string): Promise<ManagerProductDto | null>;
   findProductByCodeKey(codeKey: string): Promise<ManagerProductDto | null>;
+  getVariants(ids: string[]): Promise<VariantIdentityDto[]>;
+  listVariantIds(): Promise<string[]>;
   createProduct(input: ProductWrite): Promise<ManagerProductDto>;
   updateProduct(id: string, input: ProductWrite): Promise<ManagerProductDto | null>;
 };

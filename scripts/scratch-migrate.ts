@@ -16,6 +16,8 @@ try {
     if (first.length < 2 || afterApply.join(",") !== first.join(",")) {
       throw new Error(`Scratch apply did not record multiple migrations: ${first.join(",")}`);
     }
+    const latest = first.at(-1);
+    const previous = first.slice(0, -1);
     const tablesAfterApply = await tableNames(pool);
     if (!tablesAfterApply.includes("user") || !tablesAfterApply.includes("staff_profile")) {
       throw new Error("Scratch apply did not create identity tables.");
@@ -23,31 +25,37 @@ try {
     if (!tablesAfterApply.includes("catalog_product") || !tablesAfterApply.includes("catalog_product_variant")) {
       throw new Error("Scratch apply did not create catalog tables.");
     }
+    if (!tablesAfterApply.includes("inventory_batch") || !tablesAfterApply.includes("receiving_receipt")) {
+      throw new Error("Scratch apply did not create inventory and receiving tables.");
+    }
 
     const reverted = await revertLastMigration(pool);
-    if (reverted !== first.at(-1)) {
+    if (reverted !== latest) {
       throw new Error(`Scratch down did not revert the latest migration: ${reverted}`);
     }
     const afterDown = await listAppliedMigrations(pool);
-    if (afterDown.join(",") !== first.slice(0, -1).join(",")) {
+    if (afterDown.join(",") !== previous.join(",")) {
       throw new Error("Scratch down did not leave earlier migrations applied.");
     }
     const tablesAfterDown = await tableNames(pool);
     if (!tablesAfterDown.includes("user") || !tablesAfterDown.includes("staff_profile")) {
       throw new Error("Scratch down removed identity tables while reverting a later migration.");
     }
-    if (tablesAfterDown.includes("catalog_product") || tablesAfterDown.includes("catalog_product_variant")) {
-      throw new Error("Scratch down did not remove catalog tables.");
+    if (!tablesAfterDown.includes("catalog_product") || !tablesAfterDown.includes("inventory_batch")) {
+      throw new Error("Scratch down removed earlier feature tables while reverting the latest migration.");
+    }
+    if (tablesAfterDown.includes("receiving_receipt") || tablesAfterDown.includes("receiving_receipt_line")) {
+      throw new Error("Scratch down did not remove the latest receiving tables.");
     }
 
     const reapplied = await applyMigrations(pool);
     const afterReapply = await listAppliedMigrations(pool);
-    if (reapplied.join(",") !== first.at(-1) || afterReapply.join(",") !== afterApply.join(",")) {
+    if (reapplied.join(",") !== latest || afterReapply.join(",") !== afterApply.join(",")) {
       throw new Error("Scratch reapply did not restore the latest migration.");
     }
     const tablesAfterReapply = await tableNames(pool);
-    if (!tablesAfterReapply.includes("catalog_product") || !tablesAfterReapply.includes("catalog_product_variant")) {
-      throw new Error("Scratch reapply did not restore catalog tables.");
+    if (!tablesAfterReapply.includes("receiving_receipt") || !tablesAfterReapply.includes("inventory_batch")) {
+      throw new Error("Scratch reapply did not restore receiving and inventory tables.");
     }
 
     const fullyReverted: string[] = [];
@@ -62,7 +70,7 @@ try {
       throw new Error(`Scratch full down order was ${fullyReverted.join(",")}`);
     }
     const empty = await tableNames(pool);
-    if (empty.includes("user") || empty.includes("catalog_product")) {
+    if (empty.includes("user") || empty.includes("catalog_product") || empty.includes("inventory_batch") || empty.includes("receiving_receipt")) {
       throw new Error("Scratch full down left feature tables.");
     }
 

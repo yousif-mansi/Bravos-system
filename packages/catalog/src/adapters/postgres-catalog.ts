@@ -1,6 +1,13 @@
-import type { CategoryDto, ColorDto, ManagerProductDto, ManagerVariantDto, SizeDto } from "@bravos/contracts";
+import type {
+  CategoryDto,
+  ColorDto,
+  ManagerProductDto,
+  ManagerVariantDto,
+  SizeDto,
+  VariantIdentityDto,
+} from "@bravos/contracts";
 import type { Pool, PoolClient } from "pg";
-import { CatalogValidationError, DuplicateProductCodeError } from "../domain/errors.ts";
+import { CatalogValidationError, DuplicateProductCodeError, ReferencedVariantError } from "../domain/errors.ts";
 import { resolvedSellingPricePiasters } from "../domain/money.ts";
 import type { PublicationStatus } from "../domain/product.ts";
 import type { CatalogStore, ProductWrite } from "../application/ports.ts";
@@ -41,6 +48,17 @@ type VariantRow = {
   color_id: string;
   color_name_ar: string;
   selling_price_piasters_override: number | null;
+};
+
+type VariantIdentityRow = {
+  id: string;
+  product_id: string;
+  product_code: string;
+  product_name_ar: string;
+  size_id: string;
+  size_name_ar: string;
+  color_id: string;
+  color_name_ar: string;
 };
 
 type ProductJoinRow = ProductRow & {
@@ -184,6 +202,31 @@ export function createPostgresCatalogStore(pool: Pool): CatalogStore {
     async findProductByCodeKey(codeKey) {
       const products = await loadProducts(pool, "lower(btrim(p.code)) = $1", [codeKey]);
       return products[0] ?? null;
+    },
+
+    async getVariants(ids) {
+      if (ids.length === 0) {
+        return [];
+      }
+      const result = await pool.query<VariantIdentityRow>(
+        `SELECT v.id, p.id AS product_id, p.code AS product_code, p.name_ar AS product_name_ar,
+                s.id AS size_id, s.name_ar AS size_name_ar,
+                col.id AS color_id, col.name_ar AS color_name_ar
+         FROM catalog_product_variant v
+         JOIN catalog_product p ON p.id = v.product_id
+         JOIN catalog_size s ON s.id = v.size_id
+         JOIN catalog_color col ON col.id = v.color_id
+         WHERE v.id = ANY($1::uuid[])`,
+        [ids],
+      );
+      return result.rows.map(toVariantIdentity);
+    },
+
+    async listVariantIds() {
+      const result = await pool.query<{ id: string }>(
+        `SELECT id FROM catalog_product_variant ORDER BY id`,
+      );
+      return result.rows.map((row) => row.id);
     },
 
     async createProduct(input) {
@@ -448,7 +491,11 @@ function mapUniqueName(error: unknown, messageAr: string): never {
 }
 
 function mapProductWriteError(error: unknown): never {
-  if (error instanceof CatalogValidationError || error instanceof DuplicateProductCodeError) {
+  if (
+    error instanceof CatalogValidationError ||
+    error instanceof DuplicateProductCodeError ||
+    error instanceof ReferencedVariantError
+  ) {
     throw error;
   }
   if (isUniqueViolation(error, "catalog_product_code")) {
@@ -457,14 +504,42 @@ function mapProductWriteError(error: unknown): never {
   if (isUniqueViolation(error, "catalog_product_variant_unique")) {
     throw new CatalogValidationError("لا يمكن تكرار نفس المقاس واللون.");
   }
+  if (
+    isForeignKeyViolation(error, "inventory_batch_variant_fk") ||
+    isForeignKeyViolation(error, "receiving_receipt_line_variant_fk") ||
+    isForeignKeyViolation(error, "inventory_movement_variant_fk")
+  ) {
+    throw new ReferencedVariantError();
+  }
   if (isUniqueViolation(error)) {
     throw new CatalogValidationError("تركيبة المقاس واللون غير صالحة.");
   }
   throw error;
 }
 
+function toVariantIdentity(row: VariantIdentityRow): VariantIdentityDto {
+  return {
+    id: row.id,
+    product: {
+      id: row.product_id,
+      code: row.product_code,
+      nameAr: row.product_name_ar,
+    },
+    size: { id: row.size_id, nameAr: row.size_name_ar },
+    color: { id: row.color_id, nameAr: row.color_name_ar },
+  };
+}
+
 function isUniqueViolation(error: unknown, constraint?: string): boolean {
-  if (!error || typeof error !== "object" || !("code" in error) || (error as { code?: string }).code !== "23505") {
+  return isPgCode(error, "23505", constraint);
+}
+
+function isForeignKeyViolation(error: unknown, constraint?: string): boolean {
+  return isPgCode(error, "23503", constraint);
+}
+
+function isPgCode(error: unknown, code: string, constraint?: string): boolean {
+  if (!error || typeof error !== "object" || !("code" in error) || (error as { code?: string }).code !== code) {
     return false;
   }
   if (!constraint) {

@@ -12,7 +12,7 @@ import {
   NotFoundError,
   UnauthenticatedError,
 } from "@bravos/identity";
-import { CatalogValidationError, DuplicateProductCodeError } from "../domain/errors.ts";
+import { CatalogValidationError, DuplicateProductCodeError, ReferencedVariantError } from "../domain/errors.ts";
 import { assertPiasters, resolvedSellingPricePiasters } from "../domain/money.ts";
 import {
   assertDescription,
@@ -30,6 +30,7 @@ import type {
   CatalogActorPort,
   CatalogStore,
   ProductWrite,
+  VariantReferenceReader,
   VariantWrite,
   VerifiedAuth,
 } from "./ports.ts";
@@ -59,12 +60,22 @@ export function unstockedAvailability(): AvailabilityReader {
   };
 }
 
+export function unreferencedVariants(): VariantReferenceReader {
+  return {
+    async idsWithInventory() {
+      return [];
+    },
+  };
+}
+
 export function createCatalogServices(ports: {
   store: CatalogStore;
   actors: CatalogActorPort;
   availability?: AvailabilityReader;
+  references?: VariantReferenceReader;
 }) {
   const availability = ports.availability ?? unstockedAvailability();
+  const references = ports.references ?? unreferencedVariants();
 
   async function requireStaff(auth: VerifiedAuth | null) {
     if (!auth) {
@@ -212,11 +223,25 @@ export function createCatalogServices(ports: {
       if (duplicate && duplicate.id !== productId) {
         throw new DuplicateProductCodeError();
       }
+      const nextKeys = new Set(write.variants.map((variant) => `${variant.sizeId}:${variant.colorId}`));
+      const removed = existing.variants.filter(
+        (variant) => !nextKeys.has(`${variant.size.id}:${variant.color.id}`),
+      );
+      if (removed.length > 0) {
+        const referenced = await references.idsWithInventory(removed.map((variant) => variant.id));
+        if (referenced.length > 0) {
+          throw new ReferencedVariantError();
+        }
+      }
       const updated = await ports.store.updateProduct(productId, write);
       if (!updated) {
         throw new NotFoundError("المنتج غير موجود.");
       }
       return updated;
+    },
+
+    async getVariants(ids: string[]) {
+      return ports.store.getVariants(ids);
     },
 
     async lookupByCode(auth: VerifiedAuth | null, code: unknown): Promise<CashierProductLookupDto> {

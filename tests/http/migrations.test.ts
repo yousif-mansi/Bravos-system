@@ -23,25 +23,43 @@ test("apply, down the latest migration, and reapply works with multiple migratio
   try {
     const first = await applyMigrations(pool);
     expect(first.length).toBeGreaterThan(1);
-    expect(first).toEqual(["001_identity.sql", "002_catalog.sql"]);
+    expect(first).toEqual([
+      "001_identity.sql",
+      "002_catalog.sql",
+      "003_inventory.sql",
+      "004_receiving.sql",
+    ]);
     expect(await listAppliedMigrations(pool)).toEqual(first);
     expect(await tableNames(pool)).toEqual(
-      expect.arrayContaining(["user", "staff_profile", "catalog_product", "catalog_product_variant"]),
+      expect.arrayContaining([
+        "user",
+        "staff_profile",
+        "catalog_product",
+        "catalog_product_variant",
+        "inventory_batch",
+        "receiving_receipt",
+      ]),
     );
 
     const reverted = await revertLastMigration(pool);
-    expect(reverted).toBe("002_catalog.sql");
-    expect(await listAppliedMigrations(pool)).toEqual(["001_identity.sql"]);
+    expect(reverted).toBe("004_receiving.sql");
+    expect(await listAppliedMigrations(pool)).toEqual([
+      "001_identity.sql",
+      "002_catalog.sql",
+      "003_inventory.sql",
+    ]);
     const afterDown = await tableNames(pool);
-    expect(afterDown).toEqual(expect.arrayContaining(["user", "staff_profile"]));
-    expect(afterDown).not.toContain("catalog_product");
-    expect(afterDown).not.toContain("catalog_product_variant");
+    expect(afterDown).toEqual(
+      expect.arrayContaining(["user", "staff_profile", "catalog_product", "inventory_batch"]),
+    );
+    expect(afterDown).not.toContain("receiving_receipt");
+    expect(afterDown).not.toContain("receiving_receipt_line");
 
     const reapplied = await applyMigrations(pool);
-    expect(reapplied).toEqual(["002_catalog.sql"]);
+    expect(reapplied).toEqual(["004_receiving.sql"]);
     expect(await listAppliedMigrations(pool)).toEqual(first);
     expect(await tableNames(pool)).toEqual(
-      expect.arrayContaining(["user", "staff_profile", "catalog_product", "catalog_product_variant"]),
+      expect.arrayContaining(["user", "staff_profile", "catalog_product", "inventory_batch", "receiving_receipt"]),
     );
 
     const fullyReverted: string[] = [];
@@ -52,11 +70,13 @@ test("apply, down the latest migration, and reapply works with multiple migratio
       }
       fullyReverted.push(id);
     }
-    expect(fullyReverted).toEqual(["002_catalog.sql", "001_identity.sql"]);
+    expect(fullyReverted).toEqual(["004_receiving.sql", "003_inventory.sql", "002_catalog.sql", "001_identity.sql"]);
     expect(await listAppliedMigrations(pool)).toEqual([]);
     const empty = await tableNames(pool);
     expect(empty).not.toContain("user");
     expect(empty).not.toContain("catalog_product");
+    expect(empty).not.toContain("inventory_batch");
+    expect(empty).not.toContain("receiving_receipt");
 
     const restored = await applyMigrations(pool);
     expect(restored).toEqual(first);

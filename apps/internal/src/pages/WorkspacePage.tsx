@@ -32,6 +32,9 @@ export function WorkspacePage({
           {workspace.capabilities.manageCatalog ? (
             <Link className="button secondary" to="/catalog">المنتجات</Link>
           ) : null}
+          {workspace.capabilities.manageInventory ? (
+            <Link className="button secondary" to="/receiving">استلام المخزون</Link>
+          ) : null}
           {workspace.capabilities.cashier ? (
             <Link className="button secondary" to="/lookup">البحث عن منتج</Link>
           ) : null}
@@ -46,8 +49,8 @@ export function WorkspacePage({
       <section className="card">
         <h2>ما المتاح الآن</h2>
         <p>
-          يمكنك تسجيل الدخول، اختيار فرع مصرّح به، وصيانة المنتجات والبحث عنها برمز المنتج.
-          استلام المخزون والمبيعات والطلبات لم تُنفَّذ بعد في هذا الإصدار.
+          يمكنك تسجيل الدخول، اختيار فرع مصرّح به، وصيانة المنتجات واستلام المخزون المركزي والبحث عن منتج برمزه.
+          المبيعات والطلبات لم تُنفَّذ بعد في هذا الإصدار.
         </p>
       </section>
     </main>

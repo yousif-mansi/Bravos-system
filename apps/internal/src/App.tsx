@@ -10,6 +10,7 @@ import { WorkspacePage } from "./pages/WorkspacePage.tsx";
 const StaffPage = lazy(() => import("./pages/StaffPage.tsx"));
 const CatalogPage = lazy(() => import("./pages/CatalogPage.tsx"));
 const LookupPage = lazy(() => import("./pages/LookupPage.tsx"));
+const ReceivingPage = lazy(() => import("./pages/ReceivingPage.tsx"));
 
 export function App() {
   const location = useLocation();
@@ -123,6 +124,18 @@ export function App() {
             workspace?.capabilities.cashier ? (
               <Suspense fallback={<main className="shell">جارٍ التحميل…</main>}>
                 <LookupPage workspace={workspace} onChanged={replaceWorkspace} />
+              </Suspense>
+            ) : (
+              <Navigate to={workspace ? "/workspace" : "/login"} replace />
+            )
+          }
+        />
+        <Route
+          path="/receiving"
+          element={
+            workspace?.capabilities.manageInventory ? (
+              <Suspense fallback={<main className="shell">جارٍ التحميل…</main>}>
+                <ReceivingPage workspace={workspace} onChanged={replaceWorkspace} />
               </Suspense>
             ) : (
               <Navigate to={workspace ? "/workspace" : "/login"} replace />

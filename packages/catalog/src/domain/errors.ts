@@ -13,3 +13,11 @@ export class DuplicateProductCodeError extends Error {
     this.name = "DuplicateProductCodeError";
   }
 }
+
+export class ReferencedVariantError extends Error {
+  readonly code = "VARIANT_REFERENCED" as const;
+  constructor() {
+    super("لا يمكن حذف متغير مرتبط بسجلات مخزون.");
+    this.name = "ReferencedVariantError";
+  }
+}

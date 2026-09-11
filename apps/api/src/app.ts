@@ -3,11 +3,26 @@ import { Pool } from "pg";
 import {
   CatalogValidationError,
   DuplicateProductCodeError,
+  ReferencedVariantError,
   createCatalogServices,
-  unstockedAvailability,
   type CatalogServices,
 } from "@bravos/catalog";
 import { createPostgresCatalogStore } from "@bravos/catalog/node";
+import {
+  InventoryValidationError,
+  OperationConflictError,
+  createInventoryAvailabilityReader,
+  createInventoryReferenceReader,
+  createInventoryServices,
+  type InventoryServices,
+} from "@bravos/inventory";
+import { createInventoryTransaction, createPostgresInventoryStore } from "@bravos/inventory/node";
+import {
+  ReceivingValidationError,
+  createReceivingServices,
+  type ReceivingServices,
+} from "@bravos/receiving";
+import { createPostgresReceiptStore, createPostgresReceivingUnitOfWork } from "@bravos/receiving/node";
 import {
   BranchNotAuthorizedError,
   DuplicateLoginNameError,
@@ -42,6 +57,8 @@ export type BuiltApp = {
   pool: Pool;
   services: ReturnType<typeof createIdentityServices>;
   catalog: CatalogServices;
+  inventory: InventoryServices;
+  receiving: ReceivingServices;
   auth: ReturnType<typeof createBetterAuth>;
   identity: IdentityGateway;
   close: () => Promise<void>;
@@ -80,24 +97,44 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
       directory,
       recoveryOutbox,
     });
+    const catalogStore = createPostgresCatalogStore(pool);
+    const inventoryStore = createPostgresInventoryStore(pool);
+    const actors = {
+      getStaff: (staffId: string) => directory.getStaff(staffId),
+      getSessionBranch: (sessionId: string) => directory.getSessionBranch(sessionId),
+    };
     const catalog = createCatalogServices({
-      store: createPostgresCatalogStore(pool),
-      actors: {
-        getStaff: (staffId) => directory.getStaff(staffId),
-        getSessionBranch: (sessionId) => directory.getSessionBranch(sessionId),
+      store: catalogStore,
+      actors,
+      availability: createInventoryAvailabilityReader(inventoryStore),
+      references: createInventoryReferenceReader(inventoryStore),
+    });
+    const inventory = createInventoryServices({
+      store: inventoryStore,
+      actors,
+      variants: {
+        getVariants: (ids) => catalogStore.getVariants(ids),
+        listIds: () => catalogStore.listVariantIds(),
       },
-      availability: unstockedAvailability(),
+    });
+    const receiving = createReceivingServices({
+      actors,
+      variants: { getVariants: (ids) => catalogStore.getVariants(ids) },
+      receipts: createPostgresReceiptStore(pool),
+      uow: createPostgresReceivingUnitOfWork(pool, createInventoryTransaction),
     });
 
     const instance = Fastify({ logger: false });
     app = instance;
-    await registerRoutes(instance, config, auth, identity, services, catalog);
+    await registerRoutes(instance, config, auth, identity, services, catalog, inventory, receiving);
 
     return {
       app: instance,
       pool,
       services,
       catalog,
+      inventory,
+      receiving,
       auth,
       identity,
       async close() {
@@ -128,6 +165,8 @@ async function registerRoutes(
   identity: IdentityGateway,
   services: ReturnType<typeof createIdentityServices>,
   catalog: CatalogServices,
+  inventory: InventoryServices,
+  receiving: ReceivingServices,
 ) {
   app.addHook("onRequest", async (request, reply) => {
     if (isPrivilegedPath(request.url) && !isTrustedInternalOrigin(request, config)) {
@@ -332,6 +371,55 @@ async function registerRoutes(
     const code = Array.isArray(query.code) ? query.code[0] : query.code;
     return handle(reply, async () => catalog.lookupByCode(await verifiedAuth(identity, request), code));
   });
+
+  app.post("/api/internal/receiving/receipts", async (request, reply) => {
+    return handle(reply, async () => {
+      const result = await receiving.finalize(await verifiedAuth(identity, request), request.body);
+      reply.status(result.created ? 201 : 200);
+      return result.receipt;
+    });
+  });
+
+  app.get("/api/internal/receiving/receipts", async (request, reply) => {
+    return handle(reply, async () => receiving.list(await verifiedAuth(identity, request)));
+  });
+
+  app.get("/api/internal/receiving/receipts/:receiptId", async (request, reply) => {
+    const params = request.params as { receiptId: string };
+    return handle(reply, async () => receiving.get(await verifiedAuth(identity, request), params.receiptId));
+  });
+
+  app.get("/api/internal/receiving/operations/:operationId", async (request, reply) => {
+    const params = request.params as { operationId: string };
+    return handle(reply, async () =>
+      receiving.getByOperation(await verifiedAuth(identity, request), params.operationId),
+    );
+  });
+
+  app.get("/api/internal/inventory/batches", async (request, reply) => {
+    return handle(reply, async () => inventory.listBatches(await verifiedAuth(identity, request)));
+  });
+
+  app.get("/api/internal/inventory/low-stock", async (request, reply) => {
+    return handle(reply, async () => inventory.listLowStock(await verifiedAuth(identity, request)));
+  });
+
+  app.get("/api/internal/inventory/settings", async (request, reply) => {
+    return handle(reply, async () => inventory.getSettings(await verifiedAuth(identity, request)));
+  });
+
+  app.patch("/api/internal/inventory/settings", async (request, reply) => {
+    return handle(reply, async () =>
+      inventory.updateSettings(await verifiedAuth(identity, request), request.body),
+    );
+  });
+
+  app.put("/api/internal/inventory/variants/:variantId/low-stock-threshold", async (request, reply) => {
+    const params = request.params as { variantId: string };
+    return handle(reply, async () =>
+      inventory.setVariantThreshold(await verifiedAuth(identity, request), params.variantId, request.body),
+    );
+  });
 }
 
 function isPrivilegedPath(url: string): boolean {
@@ -459,7 +547,18 @@ function sendError(reply: FastifyReply, error: unknown) {
   if (error instanceof DuplicateProductCodeError) {
     return reply.status(409).send(errorBody(error.code, error.message));
   }
-  if (error instanceof IdentityValidationError || error instanceof CatalogValidationError) {
+  if (error instanceof ReferencedVariantError) {
+    return reply.status(409).send(errorBody(error.code, error.message));
+  }
+  if (error instanceof OperationConflictError) {
+    return reply.status(409).send(errorBody(error.code, error.message));
+  }
+  if (
+    error instanceof IdentityValidationError ||
+    error instanceof CatalogValidationError ||
+    error instanceof InventoryValidationError ||
+    error instanceof ReceivingValidationError
+  ) {
     return reply.status(400).send(errorBody(error.code, error.message));
   }
   if (error instanceof InvalidRecoveryError) {
