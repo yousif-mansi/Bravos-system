@@ -42,3 +42,9 @@ The supplemental diagnostic initially failed to start because its scratch config
 ## Scope and next step
 
 Cash sales, offline operations, receiving corrections, Returns, orders and reporting remain in their owning tickets. This is a verified local development milestone, not production readiness. No hosting/domain purchase or deployment occurred. The unrelated user edit in `docs/reviews/bravos-v1-grok-review.md` was preserved and excluded from the commit; SHA256 `3361DE3CDE70382A9AEDB602407CDA2384482ADDA395E48EAF26A561BA13345A`.
+
+## Permanent regression follow-up
+
+After the user restored Grok availability on 2026-09-11, Grok added the genuine same-account two-operation case to tests/browser/receiving.spec.ts. It retains the earlier missing-marker case and verifies A's retry preserves B's complete pending marker, followed by exactly two receipts and batches6/2. An existing low-stock assertion now allows the whole container to be absent when empty while still rejecting the product's inclusion. No application code changed.
+
+Standards and Spec reviews found no actionable blocker. Root independently passed typecheck and all10 receiving browser tests (34.8s). Logs: .scratch/grok-implementation/root-receiving-regression-typecheck.log and root-receiving-regression-browser.log. The first sandboxed typecheck was blocked by child-process EPERM; the approved run passed. Grok separately passed the same checks after cleaning up an exact owned test worker. No new red product-defect claim is made for this coverage addition. The previously prepared test-only brief is now fulfilled.

@@ -53,7 +53,7 @@ test("manager receives separate cost batches and cashier sees central quantity w
   await expect(page.getByTestId("receipt-details")).toContainText("10 × 140 ج.م.");
   await expect(page.getByTestId("batch-list")).toContainText("تكلفة الشراء: 100 ج.م.");
   await expect(page.getByTestId("batch-list")).toContainText("تكلفة الشراء: 140 ج.م.");
-  await expect(page.getByTestId("low-stock-list")).not.toContainText("PT-E2E");
+  await expect(page.getByTestId("low-stock-list").getByText("PT-E2E")).toHaveCount(0);
 
   const batches = await staffApi(page, "GET", "/api/internal/inventory/batches");
   expect(batches.status).toBe(200);
@@ -783,7 +783,131 @@ test("tab A keeps its frozen operation after tab B recovers and clears the share
   expect(received[0].remainingQuantity).toBe(6);
 });
 
-async function readPendingMarker(page: Page): Promise<{ operationId: string } | null> {
+test("a later same-account receive keeps its marker when the recovered tab retries", async ({
+  page,
+  context,
+}) => {
+  await page.goto("http://127.0.0.1:5174/login");
+  await page.getByLabel("اسم الدخول").fill("owner");
+  await page.getByLabel("كلمة المرور").fill("e2e-owner-pass");
+  await page.getByRole("button", { name: "دخول" }).click();
+  await expect(page.getByRole("heading", { name: "اختيار الفرع النشط" })).toBeVisible();
+  await page.getByRole("button", { name: "أبشواي" }).click();
+
+  const category = await staffApi(page, "POST", "/api/internal/catalog/categories", { nameAr: "فئة نفس الحساب" });
+  expect(category.status).toBe(201);
+  const size = await staffApi(page, "POST", "/api/internal/catalog/sizes", { nameAr: "مقاس نفس الحساب" });
+  expect(size.status).toBe(201);
+  const color = await staffApi(page, "POST", "/api/internal/catalog/colors", { nameAr: "لون نفس الحساب" });
+  expect(color.status).toBe(201);
+  const product = await staffApi(page, "POST", "/api/internal/catalog/products", {
+    code: "SS-E2E",
+    nameAr: "تحقق الحساب المشترك",
+    descriptionAr: "قطن",
+    categoryId: category.body.id,
+    defaultSellingPricePiasters: 26000,
+    publication: "hidden",
+    imageRefs: [],
+    variants: [{ sizeId: size.body.id, colorId: color.body.id, sellingPricePiastersOverride: null }],
+  });
+  expect(product.status).toBe(201);
+  const variantId = product.body.variants[0].id;
+
+  await page.getByRole("link", { name: "استلام المخزون" }).click();
+  await expect(page.getByRole("heading", { name: "استلام المخزون" })).toBeVisible();
+  const pageB = await context.newPage();
+  await pageB.goto("http://127.0.0.1:5174/receiving");
+  await expect(pageB.getByRole("heading", { name: "استلام المخزون" })).toBeVisible();
+
+  const operationIdsA: string[] = [];
+  const operationIdsB: string[] = [];
+  await dropFirstCommittedReceiptResponse(page, operationIdsA);
+  await dropFirstCommittedReceiptResponse(pageB, operationIdsB);
+
+  const formA = await fillSameAccountReceive(page, "6");
+  await formA.getByRole("button", { name: "حفظ الاستلام" }).click();
+  await expect(page.getByRole("alert")).toBeVisible();
+  const markerA = await readPendingMarker(page);
+  expect(markerA?.operationId).toBe(operationIdsA[0]);
+  expect(markerA?.staffId).toEqual(expect.any(String));
+  expect(markerA?.phase).toBe("uncertain");
+
+  const checkB = pageB.getByRole("button", { name: "التحقق من النتيجة" });
+  await expect(checkB).toBeVisible();
+  await checkB.click();
+  await expect(pageB.getByRole("status")).toContainText("تم العثور على إذن الاستلام المحفوظ.");
+  expect(await readPendingMarker(pageB)).toBeNull();
+  await expect(formA.getByLabel("الكمية")).toBeDisabled();
+
+  const formB = await fillSameAccountReceive(pageB, "2");
+  await formB.getByRole("button", { name: "حفظ الاستلام" }).click();
+  await expect(pageB.getByRole("alert")).toBeVisible();
+  const markerB = await readPendingMarker(pageB);
+  expect(markerB?.staffId).toBe(markerA?.staffId);
+  expect(markerB?.operationId).not.toBe(markerA?.operationId);
+  expect(markerB?.operationId).toBe(operationIdsB[0]);
+  expect(markerB?.phase).toBe("uncertain");
+  expect(markerB?.digest).toMatch(/^[a-f0-9]{64}$/);
+
+  await formA.getByRole("button", { name: "إعادة المحاولة" }).click();
+  await expect(page.getByRole("status")).toContainText(/تم حفظ إذن الاستلام|تم العثور على إذن الاستلام المحفوظ/);
+  expect(operationIdsA).toEqual([markerA?.operationId, markerA?.operationId]);
+  expect(await readPendingMarker(page)).toEqual(markerB);
+
+  await pageB.getByRole("button", { name: "التحقق من النتيجة" }).click();
+  await expect(pageB.getByRole("status")).toContainText("تم العثور على إذن الاستلام المحفوظ.");
+  expect(await readPendingMarker(pageB)).toBeNull();
+
+  const receipts = await staffApi(page, "GET", "/api/internal/receiving/receipts");
+  expect(receipts.status).toBe(200);
+  const matching = receipts.body.filter((receipt: { lines: Array<{ variantId: string }> }) =>
+    receipt.lines.some((line) => line.variantId === variantId),
+  );
+  expect(matching).toHaveLength(2);
+  expect(matching.map((receipt: { operationId: string }) => receipt.operationId).sort()).toEqual(
+    [markerA?.operationId, markerB?.operationId].sort(),
+  );
+  const batches = await staffApi(page, "GET", "/api/internal/inventory/batches");
+  const received = batches.body.filter((batch: { variantId: string }) => batch.variantId === variantId);
+  expect(received).toHaveLength(2);
+  expect(received.map((batch: { remainingQuantity: number }) => batch.remainingQuantity).sort((left: number, right: number) => left - right)).toEqual([
+    2, 6,
+  ]);
+});
+
+async function fillSameAccountReceive(target: Page, quantity: string) {
+  const form = target.getByRole("form", { name: "تسجيل إذن استلام" });
+  await form.getByLabel("تاريخ الاستلام").fill("2026-09-11");
+  await form.getByLabel("المنتج").selectOption({ label: "SS-E2E — تحقق الحساب المشترك" });
+  await form.getByLabel("المقاس واللون").selectOption({ label: "مقاس نفس الحساب / لون نفس الحساب" });
+  await form.getByLabel("الكمية").fill(quantity);
+  await form.getByLabel("تكلفة الشراء للجنيه").fill("45");
+  return form;
+}
+
+async function dropFirstCommittedReceiptResponse(page: Page, operationIds: string[]) {
+  let dropFirst = true;
+  await page.route("**/api/internal/receiving/receipts", async (route) => {
+    if (route.request().method() !== "POST") {
+      await route.continue();
+      return;
+    }
+    const payload = route.request().postDataJSON() as { operationId: string };
+    operationIds.push(payload.operationId);
+    if (dropFirst) {
+      dropFirst = false;
+      const response = await route.fetch();
+      expect(response.status()).toBe(201);
+      await route.abort("connectionreset");
+      return;
+    }
+    await route.continue();
+  });
+}
+
+async function readPendingMarker(
+  page: Page,
+): Promise<{ operationId: string; staffId: string; phase: string; digest: string | null } | null> {
   return page.evaluate(() => {
     for (let index = 0; index < localStorage.length; index += 1) {
       const key = localStorage.key(index);
@@ -791,7 +915,9 @@ async function readPendingMarker(page: Page): Promise<{ operationId: string } | 
         continue;
       }
       const raw = localStorage.getItem(key);
-      return raw ? (JSON.parse(raw) as { operationId: string }) : null;
+      return raw
+        ? (JSON.parse(raw) as { operationId: string; staffId: string; phase: string; digest: string | null })
+        : null;
     }
     return null;
   });
