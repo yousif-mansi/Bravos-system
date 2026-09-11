@@ -29,6 +29,12 @@ export function WorkspacePage({
           {workspace.capabilities.manageStaff ? (
             <Link className="button secondary" to="/staff">الموظفون</Link>
           ) : null}
+          {workspace.capabilities.manageCatalog ? (
+            <Link className="button secondary" to="/catalog">المنتجات</Link>
+          ) : null}
+          {workspace.capabilities.cashier ? (
+            <Link className="button secondary" to="/lookup">البحث عن منتج</Link>
+          ) : null}
           <button className="secondary" type="button" onClick={() => void logout()}>
             تسجيل الخروج
           </button>
@@ -40,8 +46,8 @@ export function WorkspacePage({
       <section className="card">
         <h2>ما المتاح الآن</h2>
         <p>
-          يمكنك تسجيل الدخول، اختيار فرع مصرّح به، وإدارة حسابات الموظفين إذا كنت مديراً.
-          المبيعات والمخزون والطلبات لم تُنفَّذ بعد في هذا الإصدار.
+          يمكنك تسجيل الدخول، اختيار فرع مصرّح به، وصيانة المنتجات والبحث عنها برمز المنتج.
+          استلام المخزون والمبيعات والطلبات لم تُنفَّذ بعد في هذا الإصدار.
         </p>
       </section>
     </main>

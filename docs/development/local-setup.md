@@ -1,4 +1,4 @@
-# Local development — ticket 01
+# Local development — ticket 02
 
 Verified local runtimes at implementation: Node 22.13.1, pnpm 10.34.5 (installed locally via npm into `.local/tools`, not globally), Git 2.54.0. PostgreSQL is not installed as a machine service. Tests and local setup start an isolated PostgreSQL cluster via the `embedded-postgres` package, which distributes real Postgres binaries.
 
@@ -93,4 +93,4 @@ pnpm migrate:scratch
 
 ## Limits of this slice
 
-Catalog, inventory, POS, online orders and reports are not implemented. The public entry is an honest placeholder, not the storefront.
+Managers can maintain products, taxonomy and explicit size/color variants. Cashiers can look up a product by code and select a variant. Available quantity is honestly zero until receiving/inventory (ticket 03). POS checkout, FIFO batches, media upload and the public storefront catalog are not implemented.

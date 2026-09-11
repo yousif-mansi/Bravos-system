@@ -183,6 +183,27 @@ button.danger { background: var(--danger); }
   border-top: 1px dashed var(--line);
 }
 
+.stacked-form {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px dashed var(--line);
+}
+
+.variant-row {
+  display: grid;
+  gap: 0.6rem;
+  margin-bottom: 0.75rem;
+}
+
+.taxonomy-rename {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.taxonomy-rename .field {
+  margin-bottom: 0;
+}
+
 button, .button, input, select {
   min-height: 44px;
 }

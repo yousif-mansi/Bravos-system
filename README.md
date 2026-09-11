@@ -6,7 +6,7 @@ Arabic retail management and online ordering for BRAVOS, a men's clothing busine
 
 ## Current slice
 
-Ticket 01 (personal staff access and authorized branch selection) is the first application slice. Stock, POS and storefront selling are later tickets. See [local setup](docs/development/local-setup.md) for verified commands. Do not treat this README as proof that every gate has passed; the implementation report for the current run records actual check results.
+Ticket 02 (catalog products/variants and cashier product-code lookup) builds on staff access. Receiving, POS checkout and storefront selling remain later tickets. See [local setup](docs/development/local-setup.md) for verified commands. Do not treat this README as proof that every gate has passed; the implementation report for the current run records actual check results.
 
 ## Local setup
 
@@ -54,5 +54,6 @@ pnpm migrate:scratch
 - `apps/internal` — React/Vite authenticated staff app
 - `apps/storefront` — Next.js public entry
 - `packages/identity` — staff identity domain, application and server adapters
+- `packages/catalog` — product, variant and taxonomy maintenance with cashier lookup
 - `packages/contracts` — role-safe shared DTOs
 - `packages/persistence` — versioned PostgreSQL migrations

@@ -9,19 +9,39 @@ const forbidden = [
     message: "Frontend/contracts cannot import the identity package.",
   },
   {
+    from: ["apps/internal", "apps/storefront", "packages/contracts"],
+    pattern: /@bravos\/catalog(?:\/node)?/,
+    message: "Frontend/contracts cannot import the catalog package.",
+  },
+  {
     from: ["apps", "packages"],
     pattern: /@bravos\/identity\/src\//,
     message: "Deep identity imports are not part of the public interface.",
   },
   {
-    from: ["packages/identity/src/domain", "packages/identity/src/application"],
-    pattern: /from ["'](better-auth|fastify|pg|react|next|vite)/,
-    message: "Inner identity layers cannot import infrastructure SDKs.",
+    from: ["apps", "packages"],
+    pattern: /@bravos\/catalog\/src\//,
+    message: "Deep catalog imports are not part of the public interface.",
   },
   {
-    from: ["packages/identity/src/domain", "packages/identity/src/application"],
+    from: ["packages/identity/src/domain", "packages/identity/src/application", "packages/catalog/src/domain", "packages/catalog/src/application"],
+    pattern: /from ["'](better-auth|fastify|pg|react|next|vite)/,
+    message: "Inner feature layers cannot import infrastructure SDKs.",
+  },
+  {
+    from: ["packages/identity/src/domain", "packages/identity/src/application", "packages/catalog/src/domain", "packages/catalog/src/application"],
     pattern: /\bHeaders\b/,
     message: "Application/domain cannot depend on HTTP Headers.",
+  },
+  {
+    from: ["packages/catalog/src/domain"],
+    pattern: /@bravos\/identity/,
+    message: "Catalog domain cannot import identity.",
+  },
+  {
+    from: ["packages/identity"],
+    pattern: /@bravos\/catalog/,
+    message: "Identity cannot import catalog.",
   },
 ];
 

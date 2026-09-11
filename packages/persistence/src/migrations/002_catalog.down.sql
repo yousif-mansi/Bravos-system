@@ -1,0 +1,11 @@
+DROP INDEX IF EXISTS catalog_product_variant_product;
+DROP TABLE IF EXISTS catalog_product_variant;
+DROP INDEX IF EXISTS catalog_product_code;
+DROP TABLE IF EXISTS catalog_product;
+DROP INDEX IF EXISTS catalog_color_name;
+DROP TABLE IF EXISTS catalog_color;
+DROP INDEX IF EXISTS catalog_size_name;
+DROP TABLE IF EXISTS catalog_size;
+DROP INDEX IF EXISTS catalog_category_sibling_name;
+DROP INDEX IF EXISTS catalog_category_root_name;
+DROP TABLE IF EXISTS catalog_category;

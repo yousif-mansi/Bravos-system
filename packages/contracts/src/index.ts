@@ -30,7 +30,64 @@ export type WorkspaceDto = {
     cashier: boolean;
     orderRepresentative: boolean;
     manageStaff: boolean;
+    manageCatalog: boolean;
   };
+};
+
+export type PublicationStatus = "available" | "coming_soon" | "hidden";
+
+export type CategoryDto = {
+  id: string;
+  nameAr: string;
+  parentId: string | null;
+};
+
+export type SizeDto = {
+  id: string;
+  nameAr: string;
+};
+
+export type ColorDto = {
+  id: string;
+  nameAr: string;
+};
+
+export type ManagerVariantDto = {
+  id: string;
+  size: SizeDto;
+  color: ColorDto;
+  sellingPricePiastersOverride: number | null;
+  sellingPricePiasters: number;
+};
+
+export type ManagerProductDto = {
+  id: string;
+  code: string;
+  nameAr: string;
+  descriptionAr: string;
+  category: CategoryDto;
+  defaultSellingPricePiasters: number;
+  publication: PublicationStatus;
+  imageRefs: string[];
+  variants: ManagerVariantDto[];
+  changedByStaffId: string | null;
+  changedAt: string;
+};
+
+export type CashierVariantDto = {
+  id: string;
+  size: SizeDto;
+  color: ColorDto;
+  sellingPricePiasters: number;
+  availableQuantity: number;
+};
+
+export type CashierProductLookupDto = {
+  id: string;
+  code: string;
+  nameAr: string;
+  descriptionAr: string;
+  variants: CashierVariantDto[];
 };
 
 export type StaffChangeDto = {
@@ -51,6 +108,7 @@ export type ApiErrorCode =
   | "FORBIDDEN"
   | "VALIDATION"
   | "DUPLICATE_LOGIN_NAME"
+  | "DUPLICATE_PRODUCT_CODE"
   | "BRANCH_NOT_AUTHORIZED"
   | "INVALID_RECOVERY"
   | "NOT_FOUND"

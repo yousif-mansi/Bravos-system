@@ -25,8 +25,16 @@ export default defineConfig({
     rollupOptions: {
       output: {
         chunkFileNames(chunk) {
-          if (typeof chunk.facadeModuleId === "string" && /StaffPage\.[cm]?[jt]sx?$/.test(chunk.facadeModuleId)) {
-            return "assets/staff-management-[hash].js";
+          if (typeof chunk.facadeModuleId === "string") {
+            if (/StaffPage\.[cm]?[jt]sx?$/.test(chunk.facadeModuleId)) {
+              return "assets/staff-management-[hash].js";
+            }
+            if (/CatalogPage\.[cm]?[jt]sx?$/.test(chunk.facadeModuleId)) {
+              return "assets/catalog-maintenance-[hash].js";
+            }
+            if (/LookupPage\.[cm]?[jt]sx?$/.test(chunk.facadeModuleId)) {
+              return "assets/cashier-lookup-[hash].js";
+            }
           }
           return "assets/[name]-[hash].js";
         },

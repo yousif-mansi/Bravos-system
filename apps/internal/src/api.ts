@@ -1,4 +1,12 @@
-import type { StaffAccountDto, WorkspaceDto } from "@bravos/contracts";
+import type {
+  CashierProductLookupDto,
+  CategoryDto,
+  ColorDto,
+  ManagerProductDto,
+  SizeDto,
+  StaffAccountDto,
+  WorkspaceDto,
+} from "@bravos/contracts";
 
 export class ApiError extends Error {
   constructor(
@@ -106,4 +114,111 @@ export function completeOwnerRecovery(token: string, password: string) {
     method: "POST",
     body: JSON.stringify({ token, password }),
   });
+}
+
+export function listCategories() {
+  return request<CategoryDto[]>("/api/internal/catalog/categories");
+}
+
+export function createCategory(input: { nameAr: string; parentId?: string | null }) {
+  return request<CategoryDto>("/api/internal/catalog/categories", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateCategory(categoryId: string, nameAr: string) {
+  return request<CategoryDto>(`/api/internal/catalog/categories/${categoryId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ nameAr }),
+  });
+}
+
+export function listSizes() {
+  return request<SizeDto[]>("/api/internal/catalog/sizes");
+}
+
+export function createSize(nameAr: string) {
+  return request<SizeDto>("/api/internal/catalog/sizes", {
+    method: "POST",
+    body: JSON.stringify({ nameAr }),
+  });
+}
+
+export function updateSize(sizeId: string, nameAr: string) {
+  return request<SizeDto>(`/api/internal/catalog/sizes/${sizeId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ nameAr }),
+  });
+}
+
+export function listColors() {
+  return request<ColorDto[]>("/api/internal/catalog/colors");
+}
+
+export function createColor(nameAr: string) {
+  return request<ColorDto>("/api/internal/catalog/colors", {
+    method: "POST",
+    body: JSON.stringify({ nameAr }),
+  });
+}
+
+export function updateColor(colorId: string, nameAr: string) {
+  return request<ColorDto>(`/api/internal/catalog/colors/${colorId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ nameAr }),
+  });
+}
+
+export function listProducts() {
+  return request<ManagerProductDto[]>("/api/internal/catalog/products");
+}
+
+export function createProduct(input: {
+  code: string;
+  nameAr: string;
+  descriptionAr: string;
+  categoryId: string;
+  defaultSellingPricePiasters: number;
+  publication: "available" | "coming_soon" | "hidden";
+  imageRefs: string[];
+  variants: Array<{
+    sizeId: string;
+    colorId: string;
+    sellingPricePiastersOverride: number | null;
+  }>;
+}) {
+  return request<ManagerProductDto>("/api/internal/catalog/products", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateProduct(
+  productId: string,
+  input: {
+    code: string;
+    nameAr: string;
+    descriptionAr: string;
+    categoryId: string;
+    defaultSellingPricePiasters: number;
+    publication: "available" | "coming_soon" | "hidden";
+    imageRefs: string[];
+    variants: Array<{
+      sizeId: string;
+      colorId: string;
+      sellingPricePiastersOverride: number | null;
+    }>;
+  },
+) {
+  return request<ManagerProductDto>(`/api/internal/catalog/products/${productId}`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
+export function lookupProductByCode(code: string) {
+  return request<CashierProductLookupDto>(
+    `/api/internal/catalog/lookup?code=${encodeURIComponent(code)}`,
+  );
 }

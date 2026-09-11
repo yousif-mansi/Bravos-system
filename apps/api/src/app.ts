@@ -1,6 +1,14 @@
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { Pool } from "pg";
 import {
+  CatalogValidationError,
+  DuplicateProductCodeError,
+  createCatalogServices,
+  unstockedAvailability,
+  type CatalogServices,
+} from "@bravos/catalog";
+import { createPostgresCatalogStore } from "@bravos/catalog/node";
+import {
   BranchNotAuthorizedError,
   DuplicateLoginNameError,
   ForbiddenError,
@@ -33,6 +41,7 @@ export type BuiltApp = {
   app: FastifyInstance;
   pool: Pool;
   services: ReturnType<typeof createIdentityServices>;
+  catalog: CatalogServices;
   auth: ReturnType<typeof createBetterAuth>;
   identity: IdentityGateway;
   close: () => Promise<void>;
@@ -48,6 +57,7 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
   const pool = new Pool({
     connectionString: config.databaseUrl,
     options: "-c client_encoding=UTF8",
+    ...(config.databasePoolMax ? { max: config.databasePoolMax } : {}),
   });
   pool.on("error", (error) => {
     console.error(sanitizePoolError(error));
@@ -64,20 +74,30 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
     });
     await awaitAuthReady(auth);
     const identity = createBetterAuthIdentityProvider(auth, pool);
+    const directory = createPostgresStaffDirectory(pool);
     const services = createIdentityServices({
       identity,
-      directory: createPostgresStaffDirectory(pool),
+      directory,
       recoveryOutbox,
+    });
+    const catalog = createCatalogServices({
+      store: createPostgresCatalogStore(pool),
+      actors: {
+        getStaff: (staffId) => directory.getStaff(staffId),
+        getSessionBranch: (sessionId) => directory.getSessionBranch(sessionId),
+      },
+      availability: unstockedAvailability(),
     });
 
     const instance = Fastify({ logger: false });
     app = instance;
-    await registerRoutes(instance, config, auth, identity, services);
+    await registerRoutes(instance, config, auth, identity, services, catalog);
 
     return {
       app: instance,
       pool,
       services,
+      catalog,
       auth,
       identity,
       async close() {
@@ -107,6 +127,7 @@ async function registerRoutes(
   auth: ReturnType<typeof createBetterAuth>,
   identity: IdentityGateway,
   services: ReturnType<typeof createIdentityServices>,
+  catalog: CatalogServices,
 ) {
   app.addHook("onRequest", async (request, reply) => {
     if (isPrivilegedPath(request.url) && !isTrustedInternalOrigin(request, config)) {
@@ -221,6 +242,95 @@ async function registerRoutes(
       await services.completeOwnerRecovery(String(body.token ?? ""), String(body.password ?? ""));
       return { recovered: true };
     });
+  });
+
+  app.get("/api/internal/catalog/categories", async (request, reply) => {
+    return handle(reply, async () => catalog.listCategories(await verifiedAuth(identity, request)));
+  });
+
+  app.post("/api/internal/catalog/categories", async (request, reply) => {
+    return handle(reply, async () => {
+      const created = await catalog.createCategory(await verifiedAuth(identity, request), request.body);
+      reply.status(201);
+      return created;
+    });
+  });
+
+  app.patch("/api/internal/catalog/categories/:categoryId", async (request, reply) => {
+    const params = request.params as { categoryId: string };
+    return handle(reply, async () =>
+      catalog.updateCategory(await verifiedAuth(identity, request), params.categoryId, request.body),
+    );
+  });
+
+  app.get("/api/internal/catalog/sizes", async (request, reply) => {
+    return handle(reply, async () => catalog.listSizes(await verifiedAuth(identity, request)));
+  });
+
+  app.post("/api/internal/catalog/sizes", async (request, reply) => {
+    return handle(reply, async () => {
+      const created = await catalog.createSize(await verifiedAuth(identity, request), request.body);
+      reply.status(201);
+      return created;
+    });
+  });
+
+  app.patch("/api/internal/catalog/sizes/:sizeId", async (request, reply) => {
+    const params = request.params as { sizeId: string };
+    return handle(reply, async () =>
+      catalog.updateSize(await verifiedAuth(identity, request), params.sizeId, request.body),
+    );
+  });
+
+  app.get("/api/internal/catalog/colors", async (request, reply) => {
+    return handle(reply, async () => catalog.listColors(await verifiedAuth(identity, request)));
+  });
+
+  app.post("/api/internal/catalog/colors", async (request, reply) => {
+    return handle(reply, async () => {
+      const created = await catalog.createColor(await verifiedAuth(identity, request), request.body);
+      reply.status(201);
+      return created;
+    });
+  });
+
+  app.patch("/api/internal/catalog/colors/:colorId", async (request, reply) => {
+    const params = request.params as { colorId: string };
+    return handle(reply, async () =>
+      catalog.updateColor(await verifiedAuth(identity, request), params.colorId, request.body),
+    );
+  });
+
+  app.get("/api/internal/catalog/products", async (request, reply) => {
+    return handle(reply, async () => catalog.listProducts(await verifiedAuth(identity, request)));
+  });
+
+  app.post("/api/internal/catalog/products", async (request, reply) => {
+    return handle(reply, async () => {
+      const created = await catalog.createProduct(await verifiedAuth(identity, request), request.body);
+      reply.status(201);
+      return created;
+    });
+  });
+
+  app.get("/api/internal/catalog/products/:productId", async (request, reply) => {
+    const params = request.params as { productId: string };
+    return handle(reply, async () =>
+      catalog.getProduct(await verifiedAuth(identity, request), params.productId),
+    );
+  });
+
+  app.patch("/api/internal/catalog/products/:productId", async (request, reply) => {
+    const params = request.params as { productId: string };
+    return handle(reply, async () =>
+      catalog.updateProduct(await verifiedAuth(identity, request), params.productId, request.body),
+    );
+  });
+
+  app.get("/api/internal/catalog/lookup", async (request, reply) => {
+    const query = request.query as { code?: string | string[] };
+    const code = Array.isArray(query.code) ? query.code[0] : query.code;
+    return handle(reply, async () => catalog.lookupByCode(await verifiedAuth(identity, request), code));
   });
 }
 
@@ -346,7 +456,10 @@ function sendError(reply: FastifyReply, error: unknown) {
   if (error instanceof DuplicateLoginNameError) {
     return reply.status(409).send(errorBody(error.code, error.message));
   }
-  if (error instanceof IdentityValidationError) {
+  if (error instanceof DuplicateProductCodeError) {
+    return reply.status(409).send(errorBody(error.code, error.message));
+  }
+  if (error instanceof IdentityValidationError || error instanceof CatalogValidationError) {
     return reply.status(400).send(errorBody(error.code, error.message));
   }
   if (error instanceof InvalidRecoveryError) {

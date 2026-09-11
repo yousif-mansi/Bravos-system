@@ -9,6 +9,7 @@ export type AppConfig = {
   secureCookies: boolean;
   ownerRecoveryAdapter: string | undefined;
   ownerRecoveryOutboxDir: string | undefined;
+  databasePoolMax?: number;
 };
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {

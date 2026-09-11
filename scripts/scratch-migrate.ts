@@ -13,35 +13,62 @@ try {
   try {
     const first = await applyMigrations(pool);
     const afterApply = await listAppliedMigrations(pool);
-    if (afterApply.length === 0) {
-      throw new Error("Scratch apply produced no migrations.");
+    if (first.length < 2 || afterApply.join(",") !== first.join(",")) {
+      throw new Error(`Scratch apply did not record multiple migrations: ${first.join(",")}`);
     }
     const tablesAfterApply = await tableNames(pool);
     if (!tablesAfterApply.includes("user") || !tablesAfterApply.includes("staff_profile")) {
       throw new Error("Scratch apply did not create identity tables.");
     }
+    if (!tablesAfterApply.includes("catalog_product") || !tablesAfterApply.includes("catalog_product_variant")) {
+      throw new Error("Scratch apply did not create catalog tables.");
+    }
 
     const reverted = await revertLastMigration(pool);
-    if (!reverted) {
-      throw new Error("Scratch down did not revert a migration.");
+    if (reverted !== first.at(-1)) {
+      throw new Error(`Scratch down did not revert the latest migration: ${reverted}`);
     }
     const afterDown = await listAppliedMigrations(pool);
-    if (afterDown.length !== 0) {
-      throw new Error("Scratch down left applied migrations.");
+    if (afterDown.join(",") !== first.slice(0, -1).join(",")) {
+      throw new Error("Scratch down did not leave earlier migrations applied.");
     }
     const tablesAfterDown = await tableNames(pool);
-    if (tablesAfterDown.includes("user") || tablesAfterDown.includes("staff_profile")) {
-      throw new Error("Scratch down did not remove identity tables.");
+    if (!tablesAfterDown.includes("user") || !tablesAfterDown.includes("staff_profile")) {
+      throw new Error("Scratch down removed identity tables while reverting a later migration.");
+    }
+    if (tablesAfterDown.includes("catalog_product") || tablesAfterDown.includes("catalog_product_variant")) {
+      throw new Error("Scratch down did not remove catalog tables.");
     }
 
     const reapplied = await applyMigrations(pool);
     const afterReapply = await listAppliedMigrations(pool);
-    if (reapplied.join(",") !== first.join(",") || afterReapply.join(",") !== afterApply.join(",")) {
-      throw new Error("Scratch reapply did not restore the same migrations.");
+    if (reapplied.join(",") !== first.at(-1) || afterReapply.join(",") !== afterApply.join(",")) {
+      throw new Error("Scratch reapply did not restore the latest migration.");
     }
     const tablesAfterReapply = await tableNames(pool);
-    if (!tablesAfterReapply.includes("user") || !tablesAfterReapply.includes("staff_profile")) {
-      throw new Error("Scratch reapply did not restore identity tables.");
+    if (!tablesAfterReapply.includes("catalog_product") || !tablesAfterReapply.includes("catalog_product_variant")) {
+      throw new Error("Scratch reapply did not restore catalog tables.");
+    }
+
+    const fullyReverted: string[] = [];
+    for (;;) {
+      const id = await revertLastMigration(pool);
+      if (!id) {
+        break;
+      }
+      fullyReverted.push(id);
+    }
+    if (fullyReverted.join(",") !== [...first].reverse().join(",")) {
+      throw new Error(`Scratch full down order was ${fullyReverted.join(",")}`);
+    }
+    const empty = await tableNames(pool);
+    if (empty.includes("user") || empty.includes("catalog_product")) {
+      throw new Error("Scratch full down left feature tables.");
+    }
+
+    const restored = await applyMigrations(pool);
+    if (restored.join(",") !== first.join(",")) {
+      throw new Error("Scratch full reapply did not restore every migration.");
     }
 
     await expectFailedMigrationRollsBack(pool);

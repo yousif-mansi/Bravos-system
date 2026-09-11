@@ -8,6 +8,8 @@ import { BranchPage } from "./pages/BranchPage.tsx";
 import { WorkspacePage } from "./pages/WorkspacePage.tsx";
 
 const StaffPage = lazy(() => import("./pages/StaffPage.tsx"));
+const CatalogPage = lazy(() => import("./pages/CatalogPage.tsx"));
+const LookupPage = lazy(() => import("./pages/LookupPage.tsx"));
 
 export function App() {
   const location = useLocation();
@@ -97,6 +99,30 @@ export function App() {
             workspace?.capabilities.manageStaff ? (
               <Suspense fallback={<main className="shell">جارٍ التحميل…</main>}>
                 <StaffPage workspace={workspace} onChanged={replaceWorkspace} />
+              </Suspense>
+            ) : (
+              <Navigate to={workspace ? "/workspace" : "/login"} replace />
+            )
+          }
+        />
+        <Route
+          path="/catalog"
+          element={
+            workspace?.capabilities.manageCatalog ? (
+              <Suspense fallback={<main className="shell">جارٍ التحميل…</main>}>
+                <CatalogPage workspace={workspace} onChanged={replaceWorkspace} />
+              </Suspense>
+            ) : (
+              <Navigate to={workspace ? "/workspace" : "/login"} replace />
+            )
+          }
+        />
+        <Route
+          path="/lookup"
+          element={
+            workspace?.capabilities.cashier ? (
+              <Suspense fallback={<main className="shell">جارٍ التحميل…</main>}>
+                <LookupPage workspace={workspace} onChanged={replaceWorkspace} />
               </Suspense>
             ) : (
               <Navigate to={workspace ? "/workspace" : "/login"} replace />

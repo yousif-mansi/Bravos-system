@@ -1,13 +1,13 @@
 # BRAVOS implementation progress
 
-Updated: 2026-09-10 (Cairo). The user authorized Grok to implement the full 28-ticket queue, with the orchestrator guiding, reviewing and verifying each slice before committing. The agreed delivery order is receiving-to-cash-sale first, then offline and internal workflows, then storefront/orders and release verification. No hosting or domain purchase is authorized now.
+Updated: 2026-09-11 (Cairo). The user authorized Grok to implement the full 28-ticket queue, with the orchestrator guiding, reviewing and verifying each slice before committing. The agreed delivery order is receiving-to-cash-sale first, then offline and internal workflows, then storefront/orders and release verification. No hosting or domain purchase is authorized now.
 
 ## Source and delivery status
 
 - Specification: [approved v1 specification](bravos-v1-spec.md), 114 stories and 36 acceptance scenarios.
 - Independent review: [review disposition](../reviews/bravos-v1-grok-review.md).
 - GitHub source of truth: [approved specification #1](https://github.com/yousif-mansi/Bravos-system/issues/1) and implementation issues #2–#29, with native blocking dependencies. Initial network timeouts recovered. Local ticket bodies mirror the published work; GitHub status is authoritative.
-- Implementation: [Staff access #2](https://github.com/yousif-mansi/Bravos-system/issues/2) passed independent verification on 2026-09-10 (Cairo). Grok wrote the application code; the orchestrator reviewed and reran every required gate. The next delivery slice is catalog/products/variants (#3). This is a local development milestone, not a production release.
+- Implementation: [Staff access #2](https://github.com/yousif-mansi/Bravos-system/issues/2) passed independent verification on 2026-09-10 (Cairo). Grok wrote the application code; the orchestrator reviewed and reran every required gate. Catalog/products/variants (#3) also passed independent verification on 2026-09-11 (Cairo), following Grok repairs of six review findings. Receiving and FIFO batches (#4) are next. This is a local development milestone, not a production release.
 - Testing: authenticated public HTTP business operations against real PostgreSQL; focused real-browser recovery/interface tests; automated architecture checks.
 - Publication verification: the specification and all 28 ticket bodies match GitHub; ready-for-agent labels and every native blocking edge were independently read back and checked. All 114 stories and all 36 acceptance scenarios are assigned before the release rehearsal.
 
@@ -18,7 +18,7 @@ Each item includes its necessary schema, business behavior, API, usable UI and b
 | ID | End-to-end deliverable | Blocked by | Stories / acceptance scenarios | Status |
 | --- | --- | --- | --- | --- |
 | [01](https://github.com/yousif-mansi/Bravos-system/issues/2) | Personal staff access and authorized branch selection | None | 2, 3, 4, 5, 6, 9, 10, 62, 104, 105, 106, 107 / A01, A02, A21, A33 | Independently verified |
-| [02](https://github.com/yousif-mansi/Bravos-system/issues/3) | Manage products and variants with cashier product-code lookup | 01 | 11, 12, 13, 14, 15, 20, 25, 31 / A01, A02, A03 | Queued |
+| [02](https://github.com/yousif-mansi/Bravos-system/issues/3) | Manage products and variants with cashier product-code lookup | 01 | 11, 12, 13, 14, 15, 20, 25, 31 / A01, A02, A03 | Independently verified |
 | [03](https://github.com/yousif-mansi/Bravos-system/issues/4) | Receive merchandise and inspect central stock with separate FIFO batches | 02 | 21, 22, 23, 24, 29, 30 / A03, A05, A12 | Queued |
 | [04](https://github.com/yousif-mansi/Bravos-system/issues/5) | Complete attributed cash sales with employee discounts and retained paid values | 03 | 7, 8, 32, 33, 34, 35, 36, 37, 38, 39, 40, 42 / A05, A06, A07, A08, A09, A12 | Queued |
 | [05](https://github.com/yousif-mansi/Bravos-system/issues/6) | Keep cached POS and completed cash sales durable during outages | 04 | 43, 44, 45, 46, 47 / A17, A19 | Queued |
@@ -54,6 +54,8 @@ Grok writes application code; the orchestrator reviews the actual diff, reruns g
 
 ## Verification and review
 
+- Active ticket02 recovery: .scratch/grok-implementation/2026-09-11-catalog-run-3, scope brief .scratch/grok-implementation/02-catalog.md and six findings in .scratch/grok-implementation/02-review-corrections.md, baseline 78c5ad463baced46a37cf8d8ab321fcc150a75f1. The original run ended without a result; a resume stalled while loading damaged session history and was stopped before a fresh recovery dispatch. Existing working files are preserved. Staff issue #2 is closed after its verified commit was pushed; catalog issue #3 is ready to close after its verified commit is pushed. Grok wrote the catalog implementation; independent review and gates passed before acceptance.
+
 - Independent final checks passed on 2026-09-10 (Cairo): typecheck;26 HTTP tests against real PostgreSQL; all builds; architecture after build; migration apply/down/reapply and failing-runner rollback;4 browser flows; dependency audit with zero advisories.
 - Browser coverage verifies employee login/branch selection, manager-created two-branch employee login, public/staff separation, and production staff-route code loading only when visited.
 - Standards and Spec reviews are recorded in [staff-access repair review](../reviews/staff-access-repair-review.md). All actionable ticket01 findings were corrected and rechecked, including fresh-clone setup and generated-output exclusions that retain SDK import checks.
@@ -61,4 +63,6 @@ Grok writes application code; the orchestrator reviews the actual diff, reruns g
 - No initial red-before-green run occurred before the original scaffold; later regression repairs have executed red/green evidence. No retrospective TDD claim is made.
 - Early network failures and timed-out delegation runs are retained under ignored `.scratch/grok-implementation`. The successful final application/verification sessions were run6, run7 and run8; no delegated process remains active at this checkpoint.
 - The existing unrelated user edit in `docs/reviews/bravos-v1-grok-review.md` is preserved and excluded from the implementation commit. Credentials, databases, logs, downloads and generated outputs remain ignored.
-- Catalog, central stock, POS/offline operations, returns, orders and reporting remain queued as shown above. Domain/hosting, real staff credentials, product photos and opening business data remain launch configuration. Production owner recovery remains a later configured delivery-adapter gate.
+- Central stock, POS/offline operations, returns, orders and reporting remain queued as shown above. Domain/hosting, real staff credentials, product photos and opening business data remain launch configuration. Production owner recovery remains a later configured delivery-adapter gate.
+
+- Ticket02 independently passed on 2026-09-11: typecheck;38 HTTP tests in4 files; production builds; architecture after build; multi-migration apply/down/reapply and actual failed-runner rollback;6 browser flows; audit with zero advisories. Evidence: .scratch/grok-implementation/root-catalog-final-results.json. Review: [catalog review](../reviews/catalog-review.md).

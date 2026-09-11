@@ -53,14 +53,26 @@ test("production login does not request staff-management until that route is vis
   await page.getByRole("button", { name: "أبشواي" }).click();
   await expect(page.getByTestId("active-branch")).toContainText("أبشواي");
   expect(staffManagementRequests(requested), "workspace must not download staff-management").toEqual([]);
+  expect(chunkRequests(requested, "catalog-maintenance"), "workspace must not download catalog-maintenance").toEqual([]);
+  expect(chunkRequests(requested, "cashier-lookup"), "workspace must not download cashier-lookup").toEqual([]);
 
   await page.getByRole("link", { name: "الموظفون" }).click();
   await expect(page.getByRole("heading", { name: "إدارة الموظفين" })).toBeVisible();
   expect(staffManagementRequests(requested).length).toBeGreaterThan(0);
+  expect(chunkRequests(requested, "catalog-maintenance"), "staff route must not download catalog-maintenance").toEqual([]);
+
+  await page.getByRole("link", { name: "العودة لمساحة العمل" }).click();
+  await page.getByRole("link", { name: "المنتجات" }).click();
+  await expect(page.getByRole("heading", { name: "إدارة المنتجات" })).toBeVisible();
+  expect(chunkRequests(requested, "catalog-maintenance").length).toBeGreaterThan(0);
 });
 
 function staffManagementRequests(requested: Set<string>): string[] {
-  return [...requested].filter((url) => url.includes("staff-management"));
+  return chunkRequests(requested, "staff-management");
+}
+
+function chunkRequests(requested: Set<string>, name: string): string[] {
+  return [...requested].filter((url) => url.includes(name));
 }
 
 function runPinned(command: string, args: string[]): Promise<void> {
