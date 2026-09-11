@@ -222,6 +222,35 @@ export function createPostgresCatalogStore(pool: Pool): CatalogStore {
       return result.rows.map(toVariantIdentity);
     },
 
+    async getListedPrices(ids) {
+      if (ids.length === 0) {
+        return [];
+      }
+      const result = await pool.query<VariantIdentityRow & {
+        default_selling_price_piasters: number;
+        selling_price_piasters_override: number | null;
+      }>(
+        `SELECT v.id, p.id AS product_id, p.code AS product_code, p.name_ar AS product_name_ar,
+                s.id AS size_id, s.name_ar AS size_name_ar,
+                col.id AS color_id, col.name_ar AS color_name_ar,
+                p.default_selling_price_piasters, v.selling_price_piasters_override
+         FROM catalog_product_variant v
+         JOIN catalog_product p ON p.id = v.product_id
+         JOIN catalog_size s ON s.id = v.size_id
+         JOIN catalog_color col ON col.id = v.color_id
+         WHERE v.id = ANY($1::uuid[])`,
+        [ids],
+      );
+      return result.rows.map((row) => ({
+        variantId: row.id,
+        listedUnitPricePiasters: resolvedSellingPricePiasters(
+          row.default_selling_price_piasters,
+          row.selling_price_piasters_override,
+        ),
+        identity: toVariantIdentity(row),
+      }));
+    },
+
     async listVariantIds() {
       const result = await pool.query<{ id: string }>(
         `SELECT id FROM catalog_product_variant ORDER BY id`,
@@ -507,7 +536,10 @@ function mapProductWriteError(error: unknown): never {
   if (
     isForeignKeyViolation(error, "inventory_batch_variant_fk") ||
     isForeignKeyViolation(error, "receiving_receipt_line_variant_fk") ||
-    isForeignKeyViolation(error, "inventory_movement_variant_fk")
+    isForeignKeyViolation(error, "inventory_movement_variant_fk") ||
+    isForeignKeyViolation(error, "inventory_allocation_variant_fk") ||
+    isForeignKeyViolation(error, "inventory_discrepancy_variant_fk") ||
+    isForeignKeyViolation(error, "sales_sale_line_variant_fk")
   ) {
     throw new ReferencedVariantError();
   }

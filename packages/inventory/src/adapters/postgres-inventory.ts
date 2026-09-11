@@ -4,8 +4,11 @@ import { InventoryValidationError, OperationConflictError } from "../domain/erro
 import { fingerprintReceivePayload } from "../domain/fingerprint.ts";
 
 import type {
+  AllocateResult,
+  AllocationRecord,
   BatchRecord,
   ClaimedOperation,
+  DiscrepancyRecord,
   InventoryReadStore,
   InventoryTransaction,
   ReceivedBatchRecord,
@@ -51,6 +54,8 @@ export function createPostgresInventoryStore(queryable: Queryable): InventoryRea
       );
       return result.rows.map(toBatchRecord);
     },
+    listAllocations: (operationId) => listAllocations(queryable, operationId),
+    listDiscrepancies: (operationId) => listDiscrepancies(queryable, operationId),
     async getSettings() {
       return loadSettings(queryable);
     },
@@ -110,6 +115,34 @@ export function createInventoryTransaction(client: PoolClient): InventoryTransac
       return { kind: "replay", operationId: row.id, recordedAt: row.recorded_at };
     },
 
+    async claimSaleOperation(input) {
+      const inserted = await client.query<OperationRow>(
+        `INSERT INTO inventory_operation (id, kind, payload_fingerprint, actor_staff_id, recorded_at)
+         VALUES ($1, 'sale', $2, $3, now())
+         ON CONFLICT (id) DO NOTHING
+         RETURNING id, payload_fingerprint, recorded_at`,
+        [input.operationId, input.payloadFingerprint, input.actorStaffId],
+      );
+      const created = inserted.rows[0];
+      if (created) {
+        return { kind: "created", operationId: created.id, recordedAt: created.recorded_at };
+      }
+      const existing = await client.query<OperationRow>(
+        `SELECT id, payload_fingerprint, recorded_at
+         FROM inventory_operation
+         WHERE id = $1`,
+        [input.operationId],
+      );
+      const row = existing.rows[0];
+      if (!row) {
+        throw new OperationConflictError();
+      }
+      if (row.payload_fingerprint !== input.payloadFingerprint) {
+        throw new OperationConflictError();
+      }
+      return { kind: "replay", operationId: row.id, recordedAt: row.recorded_at };
+    },
+
     async receiveBatches(input) {
       const created: ReceivedBatchRecord[] = [];
       try {
@@ -151,6 +184,44 @@ export function createInventoryTransaction(client: PoolClient): InventoryTransac
       return created;
     },
 
+    async allocateFromOldestAvailable(input) {
+      return allocateFromOldestAvailable(client, input);
+    },
+    async recordDiscrepancy(input) {
+      const unallocatedQuantity = input.requestedQuantity - input.allocatedQuantity;
+      if (unallocatedQuantity <= 0) {
+        throw new InventoryValidationError("لا توجد كمية غير مخصصة لتسجيلها.");
+      }
+      const inserted = await client.query<{
+        variant_id: string;
+        requested_quantity: number;
+        allocated_quantity: number;
+        unallocated_quantity: number;
+      }>(
+        `INSERT INTO inventory_discrepancy (
+           id, operation_id, variant_id, requested_quantity, allocated_quantity,
+           unallocated_quantity, recorded_at
+         ) VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6)
+         RETURNING variant_id, requested_quantity, allocated_quantity, unallocated_quantity`,
+        [
+          input.operationId,
+          input.variantId,
+          input.requestedQuantity,
+          input.allocatedQuantity,
+          unallocatedQuantity,
+          input.recordedAt,
+        ],
+      );
+      const row = mustRow(inserted.rows[0]);
+      return {
+        variantId: row.variant_id,
+        requestedQuantity: row.requested_quantity,
+        allocatedQuantity: row.allocated_quantity,
+        unallocatedQuantity: row.unallocated_quantity,
+      };
+    },
+    listAllocations: (operationId) => listAllocations(client, operationId),
+    listDiscrepancies: (operationId) => listDiscrepancies(client, operationId),
     quantitiesFor: (variantIds) => quantitiesFor(client, variantIds),
     referencedVariantIds: (variantIds) => referencedVariantIds(client, variantIds),
     async listAvailableBatchesFifo(variantId) {
@@ -167,16 +238,178 @@ export function createInventoryTransaction(client: PoolClient): InventoryTransac
   };
 }
 
+async function allocateFromOldestAvailable(
+  client: PoolClient,
+  input: {
+    operationId: string;
+    variantId: string;
+    quantity: number;
+    recordedAt: Date;
+    allowPartial: boolean;
+  },
+): Promise<AllocateResult> {
+  const locked = await client.query<BatchRow>(
+    `SELECT id, variant_id, received_quantity, remaining_quantity, unit_cost_piasters,
+            recorded_at, source_receipt_id, receipt_date::text AS receipt_date, source_line_id
+     FROM inventory_batch
+     WHERE variant_id = $1 AND remaining_quantity > 0
+     ORDER BY ${FIFO_BATCH_ORDER_SQL}
+     FOR UPDATE`,
+    [input.variantId],
+  );
+  await client.query(
+    `SELECT id FROM inventory_discrepancy WHERE variant_id = $1 FOR UPDATE`,
+    [input.variantId],
+  );
+  const held = await client.query<{ held: number }>(
+    `SELECT COALESCE(SUM(unallocated_quantity), 0)::int AS held
+     FROM inventory_discrepancy
+     WHERE variant_id = $1`,
+    [input.variantId],
+  );
+  const batchRemaining = locked.rows.reduce((sum, row) => sum + row.remaining_quantity, 0);
+  const unresolved = held.rows[0]?.held ?? 0;
+  if (unresolved > 0) {
+    if (!input.allowPartial) {
+      throw new InventoryValidationError("الكمية المتاحة غير كافية.");
+    }
+    return {
+      allocations: [],
+      allocatedQuantity: 0,
+      unallocatedQuantity: input.quantity,
+    };
+  }
+  const allocatable = batchRemaining;
+  if (!input.allowPartial && allocatable < input.quantity) {
+    throw new InventoryValidationError("الكمية المتاحة غير كافية.");
+  }
+  const allocations: AllocationRecord[] = [];
+  let remainingNeed = Math.min(input.quantity, allocatable);
+  try {
+    for (const row of locked.rows) {
+      if (remainingNeed <= 0) {
+        break;
+      }
+      const take = Math.min(remainingNeed, row.remaining_quantity);
+      if (take <= 0) {
+        continue;
+      }
+      const updated = await client.query<{ remaining_quantity: number }>(
+        `UPDATE inventory_batch
+         SET remaining_quantity = remaining_quantity - $2
+         WHERE id = $1 AND remaining_quantity >= $2
+         RETURNING remaining_quantity`,
+        [row.id, take],
+      );
+      if (!updated.rows[0]) {
+        throw new InventoryValidationError("الكمية المتاحة غير كافية.");
+      }
+      await client.query(
+        `INSERT INTO inventory_movement (
+           id, batch_id, variant_id, operation_id, kind, quantity, recorded_at
+         ) VALUES (gen_random_uuid(), $1, $2, $3, 'sale', $4, $5)`,
+        [row.id, input.variantId, input.operationId, take, input.recordedAt],
+      );
+      await client.query(
+        `INSERT INTO inventory_allocation (
+           id, batch_id, variant_id, operation_id, quantity, unit_cost_piasters, recorded_at
+         ) VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6)`,
+        [row.id, input.variantId, input.operationId, take, row.unit_cost_piasters, input.recordedAt],
+      );
+      allocations.push({
+        batchId: row.id,
+        variantId: input.variantId,
+        quantity: take,
+        unitCostPiasters: row.unit_cost_piasters,
+        recordedAt: input.recordedAt,
+      });
+      remainingNeed -= take;
+    }
+  } catch (error) {
+    if (isForeignKeyViolation(error, "inventory_allocation_variant_fk") || isForeignKeyViolation(error, "inventory_movement_variant_fk")) {
+      throw new InventoryValidationError("المتغير المحدد غير موجود.");
+    }
+    throw error;
+  }
+  if (!input.allowPartial && remainingNeed > 0) {
+    throw new InventoryValidationError("الكمية المتاحة غير كافية.");
+  }
+  const allocatedQuantity = Math.min(input.quantity, allocatable) - remainingNeed;
+  return {
+    allocations,
+    allocatedQuantity,
+    unallocatedQuantity: input.quantity - allocatedQuantity,
+  };
+}
+
+async function listAllocations(queryable: Queryable, operationId: string): Promise<AllocationRecord[]> {
+  const result = await queryable.query<{
+    batch_id: string;
+    variant_id: string;
+    quantity: number;
+    unit_cost_piasters: number;
+    recorded_at: Date;
+  }>(
+    `SELECT batch_id, variant_id, quantity, unit_cost_piasters, recorded_at
+     FROM inventory_allocation
+     WHERE operation_id = $1
+     ORDER BY recorded_at ASC, batch_id ASC`,
+    [operationId],
+  );
+  return result.rows.map((row) => ({
+    batchId: row.batch_id,
+    variantId: row.variant_id,
+    quantity: row.quantity,
+    unitCostPiasters: row.unit_cost_piasters,
+    recordedAt: row.recorded_at,
+  }));
+}
+
+async function listDiscrepancies(queryable: Queryable, operationId: string): Promise<DiscrepancyRecord[]> {
+  const result = await queryable.query<{
+    variant_id: string;
+    requested_quantity: number;
+    allocated_quantity: number;
+    unallocated_quantity: number;
+  }>(
+    `SELECT variant_id, requested_quantity, allocated_quantity, unallocated_quantity
+     FROM inventory_discrepancy
+     WHERE operation_id = $1
+     ORDER BY variant_id`,
+    [operationId],
+  );
+  return result.rows.map((row) => ({
+    variantId: row.variant_id,
+    requestedQuantity: row.requested_quantity,
+    allocatedQuantity: row.allocated_quantity,
+    unallocatedQuantity: row.unallocated_quantity,
+  }));
+}
+
 async function quantitiesFor(queryable: Queryable, variantIds: string[]): Promise<Map<string, number>> {
   const quantities = new Map(variantIds.map((id) => [id, 0]));
   if (variantIds.length === 0) {
     return quantities;
   }
   const result = await queryable.query<{ variant_id: string; available_quantity: number }>(
-    `SELECT variant_id, SUM(remaining_quantity)::int AS available_quantity
-     FROM inventory_batch
-     WHERE variant_id = ANY($1::uuid[])
-     GROUP BY variant_id`,
+    `SELECT v.variant_id,
+            CASE
+              WHEN COALESCE(d.held, 0) > 0 THEN 0
+              ELSE COALESCE(b.remaining, 0)
+            END::int AS available_quantity
+     FROM UNNEST($1::uuid[]) AS v(variant_id)
+     LEFT JOIN (
+       SELECT variant_id, SUM(remaining_quantity)::int AS remaining
+       FROM inventory_batch
+       WHERE variant_id = ANY($1::uuid[])
+       GROUP BY variant_id
+     ) b ON b.variant_id = v.variant_id
+     LEFT JOIN (
+       SELECT variant_id, SUM(unallocated_quantity)::int AS held
+       FROM inventory_discrepancy
+       WHERE variant_id = ANY($1::uuid[])
+       GROUP BY variant_id
+     ) d ON d.variant_id = v.variant_id`,
     [variantIds],
   );
   for (const row of result.rows) {
@@ -192,6 +425,14 @@ async function referencedVariantIds(queryable: Queryable, variantIds: string[]):
   const result = await queryable.query<{ variant_id: string }>(
     `SELECT DISTINCT variant_id
      FROM inventory_batch
+     WHERE variant_id = ANY($1::uuid[])
+     UNION
+     SELECT DISTINCT variant_id
+     FROM inventory_discrepancy
+     WHERE variant_id = ANY($1::uuid[])
+     UNION
+     SELECT DISTINCT variant_id
+     FROM inventory_allocation
      WHERE variant_id = ANY($1::uuid[])`,
     [variantIds],
   );

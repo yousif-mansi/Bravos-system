@@ -19,7 +19,10 @@ export {
   createInventoryServices,
 } from "./application/inventory.ts";
 export type {
+  AllocateResult,
+  AllocationRecord,
   ClaimedOperation,
+  DiscrepancyRecord,
   InventoryActorPort,
   InventoryReadStore,
   InventoryServices,

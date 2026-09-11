@@ -159,6 +159,63 @@ export type FifoBatchRef = {
   recordedAt: string;
 };
 
+export type SaleUnitDto = {
+  listedPiasters: number;
+  discountPiasters: number;
+  paidPiasters: number;
+};
+
+export type SaleLineDto = {
+  id: string;
+  variantId: string;
+  quantity: number;
+  listedUnitPricePiasters: number;
+  originalPiasters: number;
+  discountPiasters: number;
+  paidPiasters: number;
+  allocatedQuantity: number;
+  unallocatedQuantity: number;
+  units: SaleUnitDto[];
+  variant: VariantIdentityDto;
+};
+
+export type SaleDiscrepancyDto = {
+  unallocatedQuantity: number;
+  messageAr: string;
+};
+
+export type SaleDto = {
+  id: string;
+  operationId: string;
+  branch: BranchDto;
+  soldByStaffId: string;
+  soldByDisplayName: string;
+  occurredAt: string;
+  recordedAt: string | null;
+  customerName: string | null;
+  customerPhone: string | null;
+  originalTotalPiasters: number;
+  employeeDiscountPiasters: number;
+  discountReason: string | null;
+  discountedByStaffId: string | null;
+  finalTotalPiasters: number;
+  physicallyCompleted: boolean;
+  discrepancy: SaleDiscrepancyDto | null;
+  lines: SaleLineDto[];
+};
+
+export type ManagerSaleAllocationDto = {
+  batchId: string;
+  variantId: string;
+  quantity: number;
+  unitCostPiasters: number;
+};
+
+export type ManagerSaleDto = SaleDto & {
+  allocations: ManagerSaleAllocationDto[];
+  costsIncomplete: boolean;
+};
+
 export type StaffChangeDto = {
   operation: "provision" | "reset_password" | "disable" | "replace_grants";
   actorStaffId: string | null;

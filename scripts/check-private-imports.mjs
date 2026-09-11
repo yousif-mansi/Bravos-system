@@ -24,6 +24,11 @@ const forbidden = [
     message: "Frontend/contracts cannot import the receiving package.",
   },
   {
+    from: ["apps/internal", "apps/storefront", "packages/contracts"],
+    pattern: /@bravos\/sales(?:\/node)?/,
+    message: "Frontend/contracts cannot import the sales package.",
+  },
+  {
     from: ["apps", "packages"],
     pattern: /@bravos\/identity\/src\//,
     message: "Deep identity imports are not part of the public interface.",
@@ -44,12 +49,17 @@ const forbidden = [
     message: "Deep receiving imports are not part of the public interface.",
   },
   {
-    from: ["packages/identity/src/domain", "packages/identity/src/application", "packages/catalog/src/domain", "packages/catalog/src/application", "packages/inventory/src/domain", "packages/inventory/src/application", "packages/receiving/src/domain", "packages/receiving/src/application"],
+    from: ["apps", "packages"],
+    pattern: /@bravos\/sales\/src\//,
+    message: "Deep sales imports are not part of the public interface.",
+  },
+  {
+    from: ["packages/identity/src/domain", "packages/identity/src/application", "packages/catalog/src/domain", "packages/catalog/src/application", "packages/inventory/src/domain", "packages/inventory/src/application", "packages/receiving/src/domain", "packages/receiving/src/application", "packages/sales/src/domain", "packages/sales/src/application"],
     pattern: /from ["'](better-auth|fastify|pg|react|next|vite)/,
     message: "Inner feature layers cannot import infrastructure SDKs.",
   },
   {
-    from: ["packages/identity/src/domain", "packages/identity/src/application", "packages/catalog/src/domain", "packages/catalog/src/application", "packages/inventory/src/domain", "packages/inventory/src/application", "packages/receiving/src/domain", "packages/receiving/src/application"],
+    from: ["packages/identity/src/domain", "packages/identity/src/application", "packages/catalog/src/domain", "packages/catalog/src/application", "packages/inventory/src/domain", "packages/inventory/src/application", "packages/receiving/src/domain", "packages/receiving/src/application", "packages/sales/src/domain", "packages/sales/src/application"],
     pattern: /\bHeaders\b/,
     message: "Application/domain cannot depend on HTTP Headers.",
   },
@@ -65,28 +75,38 @@ const forbidden = [
   },
   {
     from: ["packages/receiving/src/domain"],
-    pattern: /@bravos\/(identity|inventory|catalog)/,
+    pattern: /@bravos\/(identity|inventory|catalog|sales)/,
     message: "Receiving domain cannot import other feature packages.",
   },
   {
+    from: ["packages/sales/src/domain"],
+    pattern: /@bravos\/(identity|inventory|catalog|receiving)/,
+    message: "Sales domain cannot import other feature packages.",
+  },
+  {
     from: ["packages/identity"],
-    pattern: /@bravos\/(catalog|inventory|receiving)/,
-    message: "Identity cannot import catalog, inventory or receiving.",
+    pattern: /@bravos\/(catalog|inventory|receiving|sales)/,
+    message: "Identity cannot import catalog, inventory, receiving or sales.",
   },
   {
     from: ["packages/catalog"],
-    pattern: /@bravos\/(inventory|receiving)/,
-    message: "Catalog cannot import inventory or receiving.",
+    pattern: /@bravos\/(inventory|receiving|sales)/,
+    message: "Catalog cannot import inventory, receiving or sales.",
   },
   {
     from: ["packages/inventory"],
-    pattern: /@bravos\/(catalog|receiving)/,
-    message: "Inventory cannot import catalog or receiving.",
+    pattern: /@bravos\/(catalog|receiving|sales)/,
+    message: "Inventory cannot import catalog, receiving or sales.",
   },
   {
     from: ["packages/receiving"],
     pattern: /@bravos\/catalog/,
     message: "Receiving cannot import the catalog package.",
+  },
+  {
+    from: ["packages/sales"],
+    pattern: /@bravos\/(catalog|receiving)/,
+    message: "Sales cannot import the catalog or receiving packages.",
   },
 ];
 

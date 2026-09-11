@@ -38,6 +38,9 @@ export function WorkspacePage({
           {workspace.capabilities.cashier ? (
             <Link className="button secondary" to="/lookup">البحث عن منتج</Link>
           ) : null}
+          {workspace.activeBranch ? (
+            <Link className="button secondary" to="/sales">المبيعات</Link>
+          ) : null}
           <button className="secondary" type="button" onClick={() => void logout()}>
             تسجيل الخروج
           </button>
@@ -49,8 +52,7 @@ export function WorkspacePage({
       <section className="card">
         <h2>ما المتاح الآن</h2>
         <p>
-          يمكنك تسجيل الدخول، اختيار فرع مصرّح به، وصيانة المنتجات واستلام المخزون المركزي والبحث عن منتج برمزه.
-          المبيعات والطلبات لم تُنفَّذ بعد في هذا الإصدار.
+          يمكنك تسجيل الدخول، اختيار فرع مصرّح به، وصيانة المنتجات واستلام المخزون المركزي، والبحث عن منتج وإتمام بيع نقدي متصل.
         </p>
       </section>
     </main>

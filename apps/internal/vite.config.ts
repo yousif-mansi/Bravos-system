@@ -38,6 +38,9 @@ export default defineConfig({
             if (/ReceivingPage\.[cm]?[jt]sx?$/.test(chunk.facadeModuleId)) {
               return "assets/receiving-stock-[hash].js";
             }
+            if (/SalesPage\.[cm]?[jt]sx?$/.test(chunk.facadeModuleId)) {
+              return "assets/cashier-sales-[hash].js";
+            }
           }
           return "assets/[name]-[hash].js";
         },

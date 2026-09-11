@@ -16,6 +16,7 @@
     "@bravos/inventory": "workspace:*",
     "@bravos/persistence": "workspace:*",
     "@bravos/receiving": "workspace:*",
+    "@bravos/sales": "workspace:*",
     "better-auth": "1.7.3",
     "fastify": "5.12.3",
     "pg": "8.16.3"

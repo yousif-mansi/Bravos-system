@@ -6,7 +6,7 @@ Arabic retail management and online ordering for BRAVOS, a men's clothing busine
 
 ## Current slice
 
-Ticket 02 (catalog products/variants and cashier product-code lookup) builds on staff access. Receiving, POS checkout and storefront selling remain later tickets. See [local setup](docs/development/local-setup.md) for verified commands. Do not treat this README as proof that every gate has passed; the implementation report for the current run records actual check results.
+Ticket 04 adds connected cash sales on top of staff access, catalog and receiving. Offline POS, promotions, returns and the public storefront remain later tickets. See [local setup](docs/development/local-setup.md) for verified commands. Do not treat this README as proof that every gate has passed; the implementation report for the current run records actual check results.
 
 ## Local setup
 
@@ -56,4 +56,5 @@ pnpm migrate:scratch
 - `packages/identity` — staff identity domain, application and server adapters
 - `packages/catalog` — product, variant and taxonomy maintenance with cashier lookup
 - `packages/contracts` — role-safe shared DTOs
+- `packages/sales` — attributed cash sales, employee deductions and retained paid values
 - `packages/persistence` — versioned PostgreSQL migrations

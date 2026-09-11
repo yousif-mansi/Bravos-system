@@ -28,6 +28,9 @@ try {
     if (!tablesAfterApply.includes("inventory_batch") || !tablesAfterApply.includes("receiving_receipt")) {
       throw new Error("Scratch apply did not create inventory and receiving tables.");
     }
+    if (!tablesAfterApply.includes("inventory_allocation") || !tablesAfterApply.includes("sales_sale")) {
+      throw new Error("Scratch apply did not create allocation and sales tables.");
+    }
 
     const reverted = await revertLastMigration(pool);
     if (reverted !== latest) {
@@ -44,8 +47,11 @@ try {
     if (!tablesAfterDown.includes("catalog_product") || !tablesAfterDown.includes("inventory_batch")) {
       throw new Error("Scratch down removed earlier feature tables while reverting the latest migration.");
     }
-    if (tablesAfterDown.includes("receiving_receipt") || tablesAfterDown.includes("receiving_receipt_line")) {
-      throw new Error("Scratch down did not remove the latest receiving tables.");
+    if (tablesAfterDown.includes("sales_sale") || tablesAfterDown.includes("sales_sale_line")) {
+      throw new Error("Scratch down did not remove the latest sales tables.");
+    }
+    if (!tablesAfterDown.includes("receiving_receipt") || !tablesAfterDown.includes("inventory_allocation")) {
+      throw new Error("Scratch down removed earlier receiving or allocation tables.");
     }
 
     const reapplied = await applyMigrations(pool);
@@ -54,8 +60,8 @@ try {
       throw new Error("Scratch reapply did not restore the latest migration.");
     }
     const tablesAfterReapply = await tableNames(pool);
-    if (!tablesAfterReapply.includes("receiving_receipt") || !tablesAfterReapply.includes("inventory_batch")) {
-      throw new Error("Scratch reapply did not restore receiving and inventory tables.");
+    if (!tablesAfterReapply.includes("sales_sale") || !tablesAfterReapply.includes("inventory_batch")) {
+      throw new Error("Scratch reapply did not restore sales and inventory tables.");
     }
 
     const fullyReverted: string[] = [];
@@ -70,7 +76,7 @@ try {
       throw new Error(`Scratch full down order was ${fullyReverted.join(",")}`);
     }
     const empty = await tableNames(pool);
-    if (empty.includes("user") || empty.includes("catalog_product") || empty.includes("inventory_batch") || empty.includes("receiving_receipt")) {
+    if (empty.includes("user") || empty.includes("catalog_product") || empty.includes("inventory_batch") || empty.includes("receiving_receipt") || empty.includes("sales_sale")) {
       throw new Error("Scratch full down left feature tables.");
     }
 

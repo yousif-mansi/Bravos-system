@@ -22,6 +22,7 @@ export type {
   AvailabilityReader,
   CatalogActorPort,
   CatalogStore,
+  ListedPriceBasis,
   ProductWrite,
   VariantReferenceReader,
   VariantWrite,

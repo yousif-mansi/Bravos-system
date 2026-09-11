@@ -24,6 +24,10 @@ const receivingChunk = internalFiles.find((file) => path.basename(file).includes
 if (!receivingChunk) {
   throw new Error("Receiving was not split into its own chunk.");
 }
+const salesChunk = internalFiles.find((file) => path.basename(file).includes("cashier-sales"));
+if (!salesChunk) {
+  throw new Error("Cashier sales was not split into its own chunk.");
+}
 
 const loginHtml = await readFile(path.join(internalDist, "index.html"), "utf8");
 const referenced = [...loginHtml.matchAll(/assets\/[^\s"]+\.js/g)].map((match) => match[0]);
@@ -41,14 +45,14 @@ for (const file of staticGraph) {
   if (source.includes("إنشاء حساب موظف") || source.includes("StaffPage")) {
     throw new Error(`${path.relative(internalDist, file)} should not include staff management for the initial login route.`);
   }
-  if (source.includes("إنشاء منتج") || source.includes("CatalogPage") || source.includes("LookupPage") || source.includes("البحث برمز المنتج") || source.includes("إذن استلام جديد") || source.includes("دفعات التكلفة")) {
-    throw new Error(`${path.relative(internalDist, file)} should not include catalog, lookup or receiving screens for the initial login route.`);
+  if (source.includes("إنشاء منتج") || source.includes("CatalogPage") || source.includes("LookupPage") || source.includes("البحث برمز المنتج") || source.includes("إذن استلام جديد") || source.includes("دفعات التكلفة") || source.includes("سلة البيع") || source.includes("SalesPage")) {
+    throw new Error(`${path.relative(internalDist, file)} should not include catalog, lookup, receiving or sales screens for the initial login route.`);
   }
   if (path.basename(file).includes("staff-management")) {
     throw new Error("Login entry statically imports the staff-management chunk.");
   }
-  if (path.basename(file).includes("catalog-maintenance") || path.basename(file).includes("cashier-lookup") || path.basename(file).includes("receiving-stock")) {
-    throw new Error("Login entry statically imports a catalog, lookup or receiving chunk.");
+  if (path.basename(file).includes("catalog-maintenance") || path.basename(file).includes("cashier-lookup") || path.basename(file).includes("receiving-stock") || path.basename(file).includes("cashier-sales")) {
+    throw new Error("Login entry statically imports a catalog, lookup, receiving or sales chunk.");
   }
 }
 
@@ -56,6 +60,7 @@ const dynamicStaff = [];
 const dynamicCatalog = [];
 const dynamicLookup = [];
 const dynamicReceiving = [];
+const dynamicSales = [];
 for (const file of staticGraph) {
   const source = await readFile(file, "utf8");
   const specifiers = dynamicImportSpecifiers(source);
@@ -63,6 +68,7 @@ for (const file of staticGraph) {
   dynamicCatalog.push(...specifiers.filter((specifier) => specifier.includes("catalog-maintenance")));
   dynamicLookup.push(...specifiers.filter((specifier) => specifier.includes("cashier-lookup")));
   dynamicReceiving.push(...specifiers.filter((specifier) => specifier.includes("receiving-stock")));
+  dynamicSales.push(...specifiers.filter((specifier) => specifier.includes("cashier-sales")));
 }
 if (dynamicStaff.length === 0) {
   throw new Error("Staff management chunk is not loaded through a dynamic import from the login graph.");
@@ -76,6 +82,9 @@ if (dynamicLookup.length === 0) {
 if (dynamicReceiving.length === 0) {
   throw new Error("Receiving chunk is not loaded through a dynamic import from the login graph.");
 }
+if (dynamicSales.length === 0) {
+  throw new Error("Cashier sales chunk is not loaded through a dynamic import from the login graph.");
+}
 
 const storefrontFiles = await collect(storefrontNext, /\.(js|html)$/);
 if (storefrontFiles.length === 0) {
@@ -83,7 +92,7 @@ if (storefrontFiles.length === 0) {
 }
 for (const file of storefrontFiles) {
   const source = await readFile(file, "utf8");
-  if (source.includes("@bravos/identity") || source.includes("إدارة الموظفين") || source.includes("إدارة المنتجات") || source.includes("استلام المخزون") || source.includes("@bravos/catalog") || source.includes("@bravos/inventory") || source.includes("@bravos/receiving")) {
+  if (source.includes("@bravos/identity") || source.includes("إدارة الموظفين") || source.includes("إدارة المنتجات") || source.includes("استلام المخزون") || source.includes("@bravos/catalog") || source.includes("@bravos/inventory") || source.includes("@bravos/receiving") || source.includes("@bravos/sales")) {
     throw new Error(`Public build leaked internal staff modules: ${file}`);
   }
 }

@@ -23,7 +23,7 @@ module.exports = {
       severity: "error",
       from: { path: "^packages/catalog/src/domain" },
       to: {
-        path: "(packages/catalog/src/(application|adapters)|packages/identity|packages/inventory|packages/receiving|apps/|better-auth|fastify|react|next|vite|pg)",
+        path: "(packages/catalog/src/(application|adapters)|packages/identity|packages/inventory|packages/receiving|packages/sales|apps/|better-auth|fastify|react|next|vite|pg)",
       },
     },
     {
@@ -32,7 +32,7 @@ module.exports = {
       severity: "error",
       from: { path: "^packages/inventory/src/domain" },
       to: {
-        path: "(packages/inventory/src/(application|adapters)|packages/identity|packages/catalog|packages/receiving|apps/|better-auth|fastify|react|next|vite|pg)",
+        path: "(packages/inventory/src/(application|adapters)|packages/identity|packages/catalog|packages/receiving|packages/sales|apps/|better-auth|fastify|react|next|vite|pg)",
       },
     },
     {
@@ -41,16 +41,25 @@ module.exports = {
       severity: "error",
       from: { path: "^packages/receiving/src/domain" },
       to: {
-        path: "(packages/receiving/src/(application|adapters)|packages/identity|packages/catalog|packages/inventory|apps/|better-auth|fastify|react|next|vite|pg)",
+        path: "(packages/receiving/src/(application|adapters)|packages/identity|packages/catalog|packages/inventory|packages/sales|apps/|better-auth|fastify|react|next|vite|pg)",
+      },
+    },
+    {
+      name: "sales-domain-inward-only",
+      comment: "Sales domain must not import application, adapters, UI or infrastructure.",
+      severity: "error",
+      from: { path: "^packages/sales/src/domain" },
+      to: {
+        path: "(packages/sales/src/(application|adapters)|packages/identity|packages/catalog|packages/inventory|packages/receiving|apps/|better-auth|fastify|react|next|vite|pg)",
       },
     },
     {
       name: "application-inward-only",
       comment: "Application use cases depend inward, not on Fastify, pg, React or Better Auth.",
       severity: "error",
-      from: { path: "^packages/(identity|catalog|inventory|receiving)/src/application" },
+      from: { path: "^packages/(identity|catalog|inventory|receiving|sales)/src/application" },
       to: {
-        path: "(packages/(identity|catalog|inventory|receiving)/src/adapters|apps/|better-auth|fastify|react|next|vite|\\bpg\\b)",
+        path: "(packages/(identity|catalog|inventory|receiving|sales)/src/adapters|apps/|better-auth|fastify|react|next|vite|\\bpg\\b)",
       },
     },
     {
@@ -59,7 +68,7 @@ module.exports = {
       severity: "error",
       from: { path: "^packages/contracts" },
       to: {
-        path: "(packages/identity|packages/catalog|packages/inventory|packages/receiving|apps/|better-auth|fastify|pg|react|next)",
+        path: "(packages/identity|packages/catalog|packages/inventory|packages/receiving|packages/sales|apps/|better-auth|fastify|pg|react|next)",
       },
     },
     {
@@ -68,7 +77,7 @@ module.exports = {
       severity: "error",
       from: { path: "^apps/internal" },
       to: {
-        path: "(packages/identity|packages/catalog|packages/inventory|packages/receiving|packages/persistence|apps/api|better-auth|fastify|\\bpg\\b)",
+        path: "(packages/identity|packages/catalog|packages/inventory|packages/receiving|packages/sales|packages/persistence|apps/api|better-auth|fastify|\\bpg\\b)",
       },
     },
     {
@@ -77,7 +86,7 @@ module.exports = {
       severity: "error",
       from: { path: "^apps/storefront" },
       to: {
-        path: "(apps/internal|packages/identity|packages/catalog|packages/inventory|packages/receiving|packages/persistence|apps/api|better-auth)",
+        path: "(apps/internal|packages/identity|packages/catalog|packages/inventory|packages/receiving|packages/sales|packages/persistence|apps/api|better-auth)",
       },
     },
     {
@@ -109,6 +118,13 @@ module.exports = {
       to: { path: "^packages/receiving/src/(domain|application|adapters)/" },
     },
     {
+      name: "no-private-sales-imports",
+      comment: "Cross-package imports must use the sales public interface.",
+      severity: "error",
+      from: { pathNot: "^packages/sales/src" },
+      to: { path: "^packages/sales/src/(domain|application|adapters)/" },
+    },
+    {
       name: "identity-does-not-import-catalog",
       comment: "Identity must not depend on catalog.",
       severity: "error",
@@ -117,31 +133,38 @@ module.exports = {
     },
     {
       name: "identity-does-not-import-inventory-or-receiving",
-      comment: "Identity must not depend on inventory or receiving.",
+      comment: "Identity must not depend on inventory, receiving or sales.",
       severity: "error",
       from: { path: "^packages/identity" },
-      to: { path: "^packages/(inventory|receiving)" },
+      to: { path: "^packages/(inventory|receiving|sales)" },
     },
     {
       name: "catalog-does-not-import-inventory-or-receiving",
       comment: "Catalog depends on availability/reference ports, not inventory or receiving packages.",
       severity: "error",
       from: { path: "^packages/catalog" },
-      to: { path: "^packages/(inventory|receiving)" },
+      to: { path: "^packages/(inventory|receiving|sales)" },
     },
     {
       name: "inventory-does-not-import-receiving-or-catalog",
       comment: "Inventory must not depend on receiving or catalog packages.",
       severity: "error",
       from: { path: "^packages/inventory" },
-      to: { path: "^packages/(receiving|catalog)" },
+      to: { path: "^packages/(receiving|catalog|sales)" },
     },
     {
       name: "receiving-does-not-import-catalog",
       comment: "Receiving uses a catalog identity port at composition, not the catalog package.",
       severity: "error",
       from: { path: "^packages/receiving" },
-      to: { path: "^packages/catalog" },
+      to: { path: "^packages/(catalog|sales)" },
+    },
+    {
+      name: "sales-does-not-import-catalog",
+      comment: "Sales uses a listed-price port at composition, not the catalog package.",
+      severity: "error",
+      from: { path: "^packages/sales" },
+      to: { path: "^packages/(catalog|receiving)" },
     },
   ],
   options: {

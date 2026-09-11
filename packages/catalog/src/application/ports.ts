@@ -23,6 +23,12 @@ export type VariantReferenceReader = {
   idsWithInventory(variantIds: string[]): Promise<string[]>;
 };
 
+export type ListedPriceBasis = {
+  variantId: string;
+  listedUnitPricePiasters: number;
+  identity: VariantIdentityDto;
+};
+
 export type VariantWrite = {
   sizeId: string;
   colorId: string;
@@ -61,6 +67,7 @@ export type CatalogStore = {
   getProduct(id: string): Promise<ManagerProductDto | null>;
   findProductByCodeKey(codeKey: string): Promise<ManagerProductDto | null>;
   getVariants(ids: string[]): Promise<VariantIdentityDto[]>;
+  getListedPrices(ids: string[]): Promise<ListedPriceBasis[]>;
   listVariantIds(): Promise<string[]>;
   createProduct(input: ProductWrite): Promise<ManagerProductDto>;
   updateProduct(id: string, input: ProductWrite): Promise<ManagerProductDto | null>;

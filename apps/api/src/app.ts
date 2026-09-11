@@ -12,7 +12,6 @@ import {
   InventoryValidationError,
   OperationConflictError,
   createInventoryAvailabilityReader,
-  createInventoryReferenceReader,
   createInventoryServices,
   type InventoryServices,
 } from "@bravos/inventory";
@@ -23,6 +22,12 @@ import {
   type ReceivingServices,
 } from "@bravos/receiving";
 import { createPostgresReceiptStore, createPostgresReceivingUnitOfWork } from "@bravos/receiving/node";
+import {
+  SalesValidationError,
+  createSalesServices,
+  type SalesServices,
+} from "@bravos/sales";
+import { createPostgresSaleStore, createPostgresSalesUnitOfWork } from "@bravos/sales/node";
 import {
   BranchNotAuthorizedError,
   DuplicateLoginNameError,
@@ -59,6 +64,7 @@ export type BuiltApp = {
   catalog: CatalogServices;
   inventory: InventoryServices;
   receiving: ReceivingServices;
+  sales: SalesServices;
   auth: ReturnType<typeof createBetterAuth>;
   identity: IdentityGateway;
   close: () => Promise<void>;
@@ -107,7 +113,15 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
       store: catalogStore,
       actors,
       availability: createInventoryAvailabilityReader(inventoryStore),
-      references: createInventoryReferenceReader(inventoryStore),
+      references: {
+        async idsWithInventory(ids) {
+          const [stocked, sold] = await Promise.all([
+            inventoryStore.referencedVariantIds(ids),
+            createPostgresSaleStore(pool).referencedVariantIds(ids),
+          ]);
+          return [...new Set([...stocked, ...sold])];
+        },
+      },
     });
     const inventory = createInventoryServices({
       store: inventoryStore,
@@ -123,10 +137,25 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
       receipts: createPostgresReceiptStore(pool),
       uow: createPostgresReceivingUnitOfWork(pool, createInventoryTransaction),
     });
+    const saleStore = createPostgresSaleStore(pool);
+    const sales = createSalesServices({
+      actors: {
+        getStaff: (staffId) => directory.getStaff(staffId),
+        getSessionBranch: (sessionId) => directory.getSessionBranch(sessionId),
+        listBranches: async () => {
+          const rows = await directory.listBranches();
+          return rows.map((row) => ({ id: row.id, code: row.code, nameAr: row.nameAr }));
+        },
+      },
+      prices: { getListedPrices: (ids) => catalogStore.getListedPrices(ids) },
+      sales: saleStore,
+      uow: createPostgresSalesUnitOfWork(pool, createInventoryTransaction),
+      allocations: { listAllocations: (operationId) => inventoryStore.listAllocations(operationId) },
+    });
 
     const instance = Fastify({ logger: false });
     app = instance;
-    await registerRoutes(instance, config, auth, identity, services, catalog, inventory, receiving);
+    await registerRoutes(instance, config, auth, identity, services, catalog, inventory, receiving, sales);
 
     return {
       app: instance,
@@ -135,6 +164,7 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
       catalog,
       inventory,
       receiving,
+      sales,
       auth,
       identity,
       async close() {
@@ -167,6 +197,7 @@ async function registerRoutes(
   catalog: CatalogServices,
   inventory: InventoryServices,
   receiving: ReceivingServices,
+  sales: SalesServices,
 ) {
   app.addHook("onRequest", async (request, reply) => {
     if (isPrivilegedPath(request.url) && !isTrustedInternalOrigin(request, config)) {
@@ -420,6 +451,38 @@ async function registerRoutes(
       inventory.setVariantThreshold(await verifiedAuth(identity, request), params.variantId, request.body),
     );
   });
+
+  app.post("/api/internal/sales/prepare", async (request, reply) => {
+    return handle(reply, async () => {
+      const result = await sales.prepare(await verifiedAuth(identity, request), request.body);
+      reply.status(result.created ? 201 : 200);
+      return result.sale;
+    });
+  });
+
+  app.post("/api/internal/sales", async (request, reply) => {
+    return handle(reply, async () => {
+      const result = await sales.complete(await verifiedAuth(identity, request), request.body);
+      reply.status(result.created ? 201 : 200);
+      return result.sale;
+    });
+  });
+
+  app.get("/api/internal/sales", async (request, reply) => {
+    return handle(reply, async () => sales.list(await verifiedAuth(identity, request)));
+  });
+
+  app.get("/api/internal/sales/operations/:operationId", async (request, reply) => {
+    const params = request.params as { operationId: string };
+    return handle(reply, async () =>
+      sales.getByOperation(await verifiedAuth(identity, request), params.operationId),
+    );
+  });
+
+  app.get("/api/internal/sales/:saleId", async (request, reply) => {
+    const params = request.params as { saleId: string };
+    return handle(reply, async () => sales.get(await verifiedAuth(identity, request), params.saleId));
+  });
 }
 
 function isPrivilegedPath(url: string): boolean {
@@ -557,7 +620,8 @@ function sendError(reply: FastifyReply, error: unknown) {
     error instanceof IdentityValidationError ||
     error instanceof CatalogValidationError ||
     error instanceof InventoryValidationError ||
-    error instanceof ReceivingValidationError
+    error instanceof ReceivingValidationError ||
+    error instanceof SalesValidationError
   ) {
     return reply.status(400).send(errorBody(error.code, error.message));
   }

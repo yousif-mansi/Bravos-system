@@ -64,6 +64,10 @@ input, select, button, textarea {
   font: inherit;
 }
 
+input[type="checkbox"] {
+  width: auto;
+}
+
 input, select, textarea {
   width: 100%;
   padding: 0.7rem 0.8rem;

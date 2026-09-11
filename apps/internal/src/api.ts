@@ -7,6 +7,7 @@ import type {
   LowStockVariantDto,
   ManagerProductDto,
   ReceiptDto,
+  SaleDto,
   SizeDto,
   StaffAccountDto,
   VariantLowStockDto,
@@ -282,4 +283,48 @@ export function setVariantLowStockThreshold(variantId: string, lowStockThreshold
     method: "PUT",
     body: JSON.stringify({ lowStockThreshold }),
   });
+}
+
+export type SaleWrite = {
+  saleId: string;
+  operationId: string;
+  customerName?: string | null;
+  customerPhone?: string | null;
+  employeeDiscountPiasters: number;
+  discountReason?: string | null;
+  occurredAt?: string | null;
+  lines: Array<{ variantId: string; quantity: number }>;
+};
+
+export function prepareSale(input: SaleWrite) {
+  return request<SaleDto>("/api/internal/sales/prepare", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function completeSale(input: SaleWrite) {
+  return request<SaleDto>("/api/internal/sales", {
+    method: "POST",
+    body: JSON.stringify({ ...input, physicallyCompleted: true }),
+  });
+}
+
+export function listSales() {
+  return request<SaleDto[]>("/api/internal/sales");
+}
+
+export function getSale(saleId: string) {
+  return request<SaleDto>(`/api/internal/sales/${saleId}`);
+}
+
+export async function lookupSaleOperation(operationId: string): Promise<SaleDto | null> {
+  try {
+    return await request<SaleDto>(`/api/internal/sales/operations/${operationId}`);
+  } catch (caught) {
+    if (caught instanceof ApiError && caught.status === 404) {
+      return null;
+    }
+    throw caught;
+  }
 }
