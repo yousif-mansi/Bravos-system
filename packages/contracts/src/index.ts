@@ -160,6 +160,8 @@ export type FifoBatchRef = {
 };
 
 export type SaleUnitDto = {
+  unitIndex: number;
+  quantity: number;
   listedPiasters: number;
   discountPiasters: number;
   paidPiasters: number;
@@ -182,6 +184,15 @@ export type SaleLineDto = {
 export type SaleDiscrepancyDto = {
   unallocatedQuantity: number;
   messageAr: string;
+};
+
+export type PosPriceSnapshotDto = {
+  snapshotId: string;
+  staffId: string;
+  branch: BranchDto;
+  deviceId: string;
+  issuedAt: string;
+  products: CashierProductLookupDto[];
 };
 
 export type SaleDto = {

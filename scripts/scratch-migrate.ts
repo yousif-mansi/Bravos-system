@@ -31,6 +31,12 @@ try {
     if (!tablesAfterApply.includes("inventory_allocation") || !tablesAfterApply.includes("sales_sale")) {
       throw new Error("Scratch apply did not create allocation and sales tables.");
     }
+    if (!tablesAfterApply.includes("sales_pos_snapshot") || !tablesAfterApply.includes("sales_pos_snapshot_price")) {
+      throw new Error("Scratch apply did not create POS price snapshot tables.");
+    }
+    if (!(await columnExists(pool, "sales_sale_unit", "quantity"))) {
+      throw new Error("Scratch apply did not add the latest sale-unit quantity column.");
+    }
 
     const reverted = await revertLastMigration(pool);
     if (reverted !== latest) {
@@ -47,11 +53,17 @@ try {
     if (!tablesAfterDown.includes("catalog_product") || !tablesAfterDown.includes("inventory_batch")) {
       throw new Error("Scratch down removed earlier feature tables while reverting the latest migration.");
     }
-    if (tablesAfterDown.includes("sales_sale") || tablesAfterDown.includes("sales_sale_line")) {
-      throw new Error("Scratch down did not remove the latest sales tables.");
+    if (!tablesAfterDown.includes("sales_pos_snapshot") || !tablesAfterDown.includes("sales_pos_snapshot_price")) {
+      throw new Error("Scratch down removed POS snapshot tables while reverting a later money-range migration.");
+    }
+    if (!tablesAfterDown.includes("sales_sale")) {
+      throw new Error("Scratch down removed earlier sales tables while reverting the money-range migration.");
     }
     if (!tablesAfterDown.includes("receiving_receipt") || !tablesAfterDown.includes("inventory_allocation")) {
       throw new Error("Scratch down removed earlier receiving or allocation tables.");
+    }
+    if (await columnExists(pool, "sales_sale_unit", "quantity")) {
+      throw new Error("Scratch down did not remove the latest sale-unit quantity column.");
     }
 
     const reapplied = await applyMigrations(pool);
@@ -60,8 +72,11 @@ try {
       throw new Error("Scratch reapply did not restore the latest migration.");
     }
     const tablesAfterReapply = await tableNames(pool);
-    if (!tablesAfterReapply.includes("sales_sale") || !tablesAfterReapply.includes("inventory_batch")) {
-      throw new Error("Scratch reapply did not restore sales and inventory tables.");
+    if (!tablesAfterReapply.includes("sales_pos_snapshot") || !tablesAfterReapply.includes("sales_sale")) {
+      throw new Error("Scratch reapply did not restore snapshot and sales tables.");
+    }
+    if (!(await columnExists(pool, "sales_sale_unit", "quantity"))) {
+      throw new Error("Scratch reapply did not restore the latest sale-unit quantity column.");
     }
 
     const fullyReverted: string[] = [];
@@ -76,7 +91,7 @@ try {
       throw new Error(`Scratch full down order was ${fullyReverted.join(",")}`);
     }
     const empty = await tableNames(pool);
-    if (empty.includes("user") || empty.includes("catalog_product") || empty.includes("inventory_batch") || empty.includes("receiving_receipt") || empty.includes("sales_sale")) {
+    if (empty.includes("user") || empty.includes("catalog_product") || empty.includes("inventory_batch") || empty.includes("receiving_receipt") || empty.includes("sales_sale") || empty.includes("sales_pos_snapshot")) {
       throw new Error("Scratch full down left feature tables.");
     }
 
@@ -133,6 +148,17 @@ async function expectFailedMigrationRollsBack(pool: Pool): Promise<void> {
   if (after.join(",") !== before.join(",")) {
     throw new Error("Failed migration changed applied migration bookkeeping.");
   }
+}
+
+async function columnExists(pool: Pool, tableName: string, columnName: string): Promise<boolean> {
+  const result = await pool.query<{ exists: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1 FROM information_schema.columns
+       WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2
+     ) AS exists`,
+    [tableName, columnName],
+  );
+  return result.rows[0]?.exists === true;
 }
 
 async function tableNames(pool: Pool): Promise<string[]> {

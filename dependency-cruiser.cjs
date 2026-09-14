@@ -50,7 +50,7 @@ module.exports = {
       severity: "error",
       from: { path: "^packages/sales/src/domain" },
       to: {
-        path: "(packages/sales/src/(application|adapters)|packages/identity|packages/catalog|packages/inventory|packages/receiving|apps/|better-auth|fastify|react|next|vite|pg)",
+        path: "(packages/sales/src/(application|adapters)|packages/identity|packages/catalog|packages/inventory|packages/receiving|apps/|better-auth|fastify|react|next|vite|pg|dexie)",
       },
     },
     {
@@ -59,7 +59,7 @@ module.exports = {
       severity: "error",
       from: { path: "^packages/(identity|catalog|inventory|receiving|sales)/src/application" },
       to: {
-        path: "(packages/(identity|catalog|inventory|receiving|sales)/src/adapters|apps/|better-auth|fastify|react|next|vite|\\bpg\\b)",
+        path: "(packages/(identity|catalog|inventory|receiving|sales)/src/adapters|apps/|better-auth|fastify|react|next|vite|\\bpg\\b|dexie)",
       },
     },
     {
@@ -73,11 +73,11 @@ module.exports = {
     },
     {
       name: "internal-app-no-server-identity",
-      comment: "The staff UI talks HTTP and may use safe contracts only.",
+      comment: "The staff UI talks HTTP and may use safe contracts plus the sales browser entry.",
       severity: "error",
       from: { path: "^apps/internal" },
       to: {
-        path: "(packages/identity|packages/catalog|packages/inventory|packages/receiving|packages/sales|packages/persistence|apps/api|better-auth|fastify|\\bpg\\b)",
+        path: "(packages/identity|packages/catalog|packages/inventory|packages/receiving|packages/sales/src/(index|node)\\.ts|packages/sales/src/application/sales\\.ts|packages/sales/src/adapters/postgres-sales\\.ts|packages/sales/src/domain/fingerprint\\.ts|packages/persistence|apps/api|better-auth|fastify|\\bpg\\b)",
       },
     },
     {

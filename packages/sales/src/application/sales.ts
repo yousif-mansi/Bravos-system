@@ -1,4 +1,4 @@
-import type { BranchDto, ManagerSaleDto, SaleDto, SaleLineDto } from "@bravos/contracts";
+import type { BranchDto, ManagerSaleDto, PosPriceSnapshotDto, SaleDto, SaleLineDto } from "@bravos/contracts";
 import {
   ForbiddenError,
   isManager,
@@ -13,13 +13,20 @@ import {
   type AllocateResult,
   type AllocationRecord,
 } from "@bravos/inventory";
-import { mergeVariantQuantities, priceSaleLines } from "../domain/discount.ts";
+import { assertMergedSaleQuantities, mergeVariantQuantities, priceSaleLines } from "../domain/discount.ts";
 import { SalesValidationError } from "../domain/errors.ts";
-import { fingerprintSalePayload, type SalePayload } from "../domain/fingerprint.ts";
+import { addMoney, assertSafeMoney, subtractMoney } from "../domain/money.ts";
+import {
+  fingerprintAcceptedSalePayload,
+  fingerprintSalePayload,
+  type SalePayload,
+} from "../domain/fingerprint.ts";
 import type {
+  CashierCatalogReader,
   CompleteSaleResult,
   ListedPriceReader,
   PrepareSaleResult,
+  PriceSnapshotStore,
   SaleInsert,
   SaleLineWrite,
   SaleRecord,
@@ -40,7 +47,14 @@ const PREPARE_KEYS = new Set([
   "lines",
 ]);
 const COMPLETE_KEYS = new Set([...PREPARE_KEYS, "physicallyCompleted"]);
+const ACCEPTED_KEYS = new Set([
+  ...COMPLETE_KEYS,
+  "deviceId",
+  "snapshotId",
+]);
+const SNAPSHOT_KEYS = new Set(["deviceId"]);
 const LINE_KEYS = new Set(["variantId", "quantity"]);
+const ACCEPTED_LINE_KEYS = new Set(["variantId", "quantity", "listedUnitPricePiasters"]);
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DISCREPANCY_MESSAGE = "لم تُخصص كل الكمية من المخزون المسجّل.";
 
@@ -50,6 +64,8 @@ export function createSalesServices(ports: {
   actors: SalesActorPort;
   prices: ListedPriceReader;
   sales: SaleStore;
+  snapshots: PriceSnapshotStore;
+  cashierCatalog: CashierCatalogReader;
   uow: SalesUnitOfWork;
   allocations: { listAllocations(operationId: string): Promise<AllocationRecord[]> };
 }) {
@@ -298,6 +314,8 @@ export function createSalesServices(ports: {
                 discountPiasters: line.discountPiasters,
                 paidPiasters: line.paidPiasters,
                 units: line.units.map((unit) => ({
+                  unitIndex: unit.unitIndex,
+                  quantity: unit.quantity,
                   listedPiasters: unit.listedPiasters,
                   discountPiasters: unit.discountPiasters,
                   paidPiasters: unit.paidPiasters,
@@ -318,12 +336,7 @@ export function createSalesServices(ports: {
             allocatedQuantity: allocated?.allocatedQuantity ?? 0,
             unallocatedQuantity: allocated?.unallocatedQuantity ?? line.quantity,
             lineIndex: index,
-            units: line.units.map((unit, unitIndex) => ({
-              unitIndex,
-              listedPiasters: unit.listedPiasters,
-              discountPiasters: unit.discountPiasters,
-              paidPiasters: unit.paidPiasters,
-            })),
+            units: toUnitWrites(line.units),
           };
         });
 
@@ -349,6 +362,200 @@ export function createSalesServices(ports: {
               costsIncomplete,
               completedLines,
               occurredAt,
+            },
+          ),
+        );
+        if (inserted.kind === "existing") {
+          replayOrConflict(inserted.record, fingerprint, command.operationId);
+          assertCanRead(actor, inserted.record);
+          return { record: inserted.record, created: false };
+        }
+        return { record: inserted.record, created: true };
+      });
+      return { sale: await hydrate(outcome.record, isManager(actor)), created: outcome.created };
+    },
+
+    async issuePriceSnapshot(auth: VerifiedAuth | null, input: unknown): Promise<PosPriceSnapshotDto> {
+      const current = await requireCashier(auth);
+      if (!auth) {
+        throw new UnauthenticatedError();
+      }
+      const deviceId = parseDeviceId(input);
+      const products = await ports.cashierCatalog.listCashierProducts(auth);
+      const ids = products.flatMap((product) => product.variants.map((variant) => variant.id));
+      const listed = await ports.prices.getListedPrices(ids);
+      const byId = new Map(listed.map((row) => [row.variantId, row.listedUnitPricePiasters]));
+      const prices = ids.map((variantId) => {
+        const listedUnitPricePiasters = byId.get(variantId);
+        if (listedUnitPricePiasters === undefined) {
+          throw new SalesValidationError("المتغير المحدد غير موجود.");
+        }
+        return { variantId, listedUnitPricePiasters };
+      });
+      const issuedAt = new Date();
+      const record = await ports.snapshots.insert({
+        id: crypto.randomUUID(),
+        staffId: current.staff.id,
+        branchId: current.branch.id,
+        deviceId,
+        issuedAt,
+        prices,
+      });
+      return {
+        snapshotId: record.id,
+        staffId: record.staffId,
+        branch: current.branch,
+        deviceId: record.deviceId,
+        issuedAt: record.issuedAt.toISOString(),
+        products: products.map((product) => ({
+          ...product,
+          variants: product.variants.map((variant) => ({
+            ...variant,
+            sellingPricePiasters: byId.get(variant.id) ?? variant.sellingPricePiasters,
+          })),
+        })),
+      };
+    },
+
+    async acceptOffline(auth: VerifiedAuth | null, input: unknown): Promise<CompleteSaleResult> {
+      const actor = await requireStaff(auth);
+      const command = parseAcceptedSale(input);
+      const snapshot = await ports.snapshots.getById(command.snapshotId);
+      if (!snapshot) {
+        throw new NotFoundError("لقطة الأسعار غير موجودة.");
+      }
+      if (snapshot.staffId !== actor.id) {
+        throw new ForbiddenError();
+      }
+      if (snapshot.deviceId !== command.deviceId) {
+        throw new SalesValidationError("معرّف الجهاز غير صالح.");
+      }
+      if (!canCashierOn(actor, snapshot.branchId)) {
+        throw new ForbiddenError();
+      }
+      const branches = await ports.actors.listBranches();
+      const branch = branches.find((item) => item.id === snapshot.branchId);
+      if (!branch) {
+        throw new ForbiddenError();
+      }
+      const snapshotPrices = new Map(snapshot.prices.map((item) => [item.variantId, item.listedUnitPricePiasters]));
+      for (const line of command.lines) {
+        const listed = snapshotPrices.get(line.variantId);
+        if (listed === undefined) {
+          throw new SalesValidationError("المتغير المحدد غير موجود.");
+        }
+        if (line.listedUnitPricePiasters !== null && line.listedUnitPricePiasters !== listed) {
+          throw new SalesValidationError("قيم البيع المقبولة غير متطابقة.");
+        }
+      }
+      const fingerprint = fingerprintAcceptedSalePayload({
+        saleId: command.saleId,
+        snapshotId: command.snapshotId,
+        customerName: command.customerName,
+        customerPhone: command.customerPhone,
+        employeeDiscountPiasters: command.employeeDiscountPiasters,
+        discountReason: command.discountReason,
+        lines: command.lines.map((line) => ({ variantId: line.variantId, quantity: line.quantity })),
+      });
+      const outcome = await ports.uow.run(async (tx) => {
+        const existing = await loadLockedIdentity(tx.sales, command.saleId, command.operationId);
+        if (existing?.physicallyCompleted) {
+          replayOrConflict(existing, fingerprint, command.operationId);
+          assertCanRead(actor, existing);
+          return { record: existing, created: false };
+        }
+        if (existing) {
+          replayOrConflict(existing, fingerprint, command.operationId);
+          throw new OperationConflictError();
+        }
+        const claimed = await tx.inventory.claimSaleOperation({
+          operationId: command.operationId,
+          payloadFingerprint: fingerprint,
+          actorStaffId: actor.id,
+        });
+        if (claimed.kind === "replay") {
+          const replayed = await tx.sales.getByOperationId(command.operationId);
+          if (!replayed) {
+            throw new SalesValidationError("تعذر العثور على البيع الأصلي.");
+          }
+          replayOrConflict(replayed, fingerprint, command.operationId);
+          assertCanRead(actor, replayed);
+          return { record: replayed, created: false };
+        }
+        const quantities = assertMergedSaleQuantities(command.lines);
+        const priced = priceSaleLines(
+          quantities.map((line) => ({
+            variantId: line.variantId,
+            quantity: line.quantity,
+            listedUnitPricePiasters: snapshotPrices.get(line.variantId) ?? 0,
+          })),
+          command.employeeDiscountPiasters,
+        );
+        const sourceLines = priced.lines.map((line) => ({
+          id: crypto.randomUUID(),
+          variantId: line.variantId,
+          quantity: line.quantity,
+        }));
+        let costsIncomplete = false;
+        const allocations: AllocateResult[] = [];
+        for (const line of sourceLines) {
+          const allocated = await tx.inventory.allocateFromOldestAvailable({
+            operationId: command.operationId,
+            variantId: line.variantId,
+            quantity: line.quantity,
+            recordedAt: claimed.recordedAt,
+            allowPartial: true,
+          });
+          if (allocated.unallocatedQuantity > 0) {
+            costsIncomplete = true;
+            await tx.inventory.recordDiscrepancy({
+              operationId: command.operationId,
+              variantId: line.variantId,
+              requestedQuantity: line.quantity,
+              allocatedQuantity: allocated.allocatedQuantity,
+              recordedAt: claimed.recordedAt,
+            });
+          }
+          allocations.push(allocated);
+        }
+        const completedLines: SaleLineWrite[] = priced.lines.map((line, index) => {
+          const allocated = allocations[index];
+          return {
+            id: sourceLines[index]?.id ?? crypto.randomUUID(),
+            variantId: line.variantId,
+            quantity: line.quantity,
+            listedUnitPricePiasters: line.listedUnitPricePiasters,
+            originalPiasters: line.originalPiasters,
+            discountPiasters: line.discountPiasters,
+            paidPiasters: line.paidPiasters,
+            allocatedQuantity: allocated?.allocatedQuantity ?? 0,
+            unallocatedQuantity: allocated?.unallocatedQuantity ?? line.quantity,
+            lineIndex: index,
+            units: toUnitWrites(line.units),
+          };
+        });
+        const inserted = await tx.sales.insert(
+          toInsert(
+            {
+              saleId: command.saleId,
+              operationId: command.operationId,
+              physicallyCompleted: true,
+              customerName: command.customerName,
+              customerPhone: command.customerPhone,
+              employeeDiscountPiasters: command.employeeDiscountPiasters,
+              discountReason: command.discountReason,
+              occurredAt: command.occurredAt,
+              lines: command.lines,
+            },
+            { staff: actor, branch },
+            priced.lines,
+            fingerprint,
+            {
+              physicallyCompleted: true,
+              recordedAt: claimed.recordedAt,
+              costsIncomplete,
+              completedLines,
+              occurredAt: command.occurredAt,
             },
           ),
         );
@@ -451,7 +658,7 @@ function toInsert(
     occurredAt?: Date;
   },
 ): SaleInsert {
-  const originalTotalPiasters = pricedLines.reduce((sum, line) => sum + line.originalPiasters, 0);
+  const originalTotalPiasters = pricedLines.reduce((sum, line) => addMoney(sum, line.originalPiasters), 0);
   const lines =
     options.completedLines ??
     pricedLines.map((line, index) => ({
@@ -465,12 +672,7 @@ function toInsert(
       allocatedQuantity: 0,
       unallocatedQuantity: 0,
       lineIndex: index,
-      units: line.units.map((unit, unitIndex) => ({
-        unitIndex,
-        listedPiasters: unit.listedPiasters,
-        discountPiasters: unit.discountPiasters,
-        paidPiasters: unit.paidPiasters,
-      })),
+      units: toUnitWrites(line.units),
     }));
   return {
     id: command.saleId,
@@ -486,7 +688,7 @@ function toInsert(
     originalTotalPiasters,
     employeeDiscountPiasters: command.employeeDiscountPiasters,
     discountReason: command.discountReason,
-    finalTotalPiasters: originalTotalPiasters - command.employeeDiscountPiasters,
+    finalTotalPiasters: subtractMoney(originalTotalPiasters, command.employeeDiscountPiasters),
     payloadFingerprint: fingerprint,
     physicallyCompleted: options.physicallyCompleted,
     costsIncomplete: options.costsIncomplete,
@@ -520,6 +722,8 @@ function toLineDto(line: SaleLineWrite, variant: SaleLineDto["variant"] | undefi
     allocatedQuantity: line.allocatedQuantity,
     unallocatedQuantity: line.unallocatedQuantity,
     units: line.units.map((unit) => ({
+      unitIndex: unit.unitIndex,
+      quantity: unit.quantity,
       listedPiasters: unit.listedPiasters,
       discountPiasters: unit.discountPiasters,
       paidPiasters: unit.paidPiasters,
@@ -540,6 +744,63 @@ type ParsedSale = {
   lines: Array<{ variantId: string; quantity: number }>;
 };
 
+type ParsedAcceptedSale = {
+  saleId: string;
+  operationId: string;
+  deviceId: string;
+  snapshotId: string;
+  customerName: string | null;
+  customerPhone: string | null;
+  employeeDiscountPiasters: number;
+  discountReason: string | null;
+  occurredAt: Date;
+  lines: Array<{ variantId: string; quantity: number; listedUnitPricePiasters: number | null }>;
+};
+
+function parseDeviceId(input: unknown): string {
+  const body = expectObject(input, "بيانات اللقطة غير صالحة.");
+  assertAllowedKeys(body, SNAPSHOT_KEYS, "بيانات اللقطة غير صالحة.");
+  return assertUuid(body.deviceId, "معرّف الجهاز غير صالح.");
+}
+
+function parseAcceptedSale(input: unknown): ParsedAcceptedSale {
+  const body = expectObject(input, "بيانات البيع غير صالحة.");
+  assertAllowedKeys(body, ACCEPTED_KEYS, "بيانات البيع غير صالحة.");
+  if (body.physicallyCompleted !== true) {
+    throw new SalesValidationError("يجب تأكيد تسليم البضاعة والدفع.");
+  }
+  if (!Array.isArray(body.lines) || body.lines.length === 0) {
+    throw new SalesValidationError("يجب تحديد صنف واحد على الأقل.");
+  }
+  const occurredAt = parseOptionalTime(body.occurredAt);
+  if (!occurredAt) {
+    throw new SalesValidationError("وقت حدوث البيع غير صالح.");
+  }
+  return {
+    saleId: assertUuid(body.saleId, "معرّف البيع غير صالح."),
+    operationId: assertUuid(body.operationId, "معرّف العملية غير صالح."),
+    deviceId: assertUuid(body.deviceId, "معرّف الجهاز غير صالح."),
+    snapshotId: assertUuid(body.snapshotId, "لقطة الأسعار غير موجودة."),
+    customerName: parseOptionalText(body.customerName, 120, "اسم الزبون غير صالح."),
+    customerPhone: parseOptionalText(body.customerPhone, 40, "هاتف الزبون غير صالح."),
+    employeeDiscountPiasters: assertDiscountPiasters(body.employeeDiscountPiasters),
+    discountReason: parseOptionalText(body.discountReason, 200, "سبب الخصم غير صالح."),
+    occurredAt,
+    lines: body.lines.map((item) => {
+      const line = expectObject(item, "بيانات صنف البيع غير صالحة.");
+      assertAllowedKeys(line, ACCEPTED_LINE_KEYS, "بيانات صنف البيع غير صالحة.");
+      return {
+        variantId: assertUuid(line.variantId, "المتغير المحدد غير موجود."),
+        quantity: assertQuantity(line.quantity, "الكمية غير صالحة."),
+        listedUnitPricePiasters:
+          line.listedUnitPricePiasters === undefined
+            ? null
+            : assertPiasters(line.listedUnitPricePiasters, "سعر البيع غير صالح."),
+      };
+    }),
+  };
+}
+
 function parseSaleWrite(input: unknown, complete: boolean): ParsedSale {
   const body = expectObject(input, "بيانات البيع غير صالحة.");
   assertAllowedKeys(body, complete ? COMPLETE_KEYS : PREPARE_KEYS, "بيانات البيع غير صالحة.");
@@ -555,7 +816,7 @@ function parseSaleWrite(input: unknown, complete: boolean): ParsedSale {
     physicallyCompleted: complete,
     customerName: parseOptionalText(body.customerName, 120, "اسم الزبون غير صالح."),
     customerPhone: parseOptionalText(body.customerPhone, 40, "هاتف الزبون غير صالح."),
-    employeeDiscountPiasters: assertPiasters(body.employeeDiscountPiasters, "قيمة الخصم غير صالحة."),
+    employeeDiscountPiasters: assertDiscountPiasters(body.employeeDiscountPiasters),
     discountReason: parseOptionalText(body.discountReason, 200, "سبب الخصم غير صالح."),
     occurredAt: parseOptionalTime(body.occurredAt),
     lines: body.lines.map((item) => {
@@ -567,6 +828,35 @@ function parseSaleWrite(input: unknown, complete: boolean): ParsedSale {
       };
     }),
   };
+}
+
+function assertDiscountPiasters(value: unknown): number {
+  if (typeof value !== "number") {
+    throw new SalesValidationError("قيمة الخصم غير صالحة.");
+  }
+  try {
+    return assertSafeMoney(value);
+  } catch {
+    throw new SalesValidationError("قيمة الخصم غير صالحة.");
+  }
+}
+
+function toUnitWrites(
+  units: Array<{
+    unitIndex?: number;
+    quantity?: number;
+    listedPiasters: number;
+    discountPiasters: number;
+    paidPiasters: number;
+  }>,
+): SaleLineWrite["units"] {
+  return units.map((unit, index) => ({
+    unitIndex: unit.unitIndex ?? index,
+    quantity: unit.quantity ?? 1,
+    listedPiasters: unit.listedPiasters,
+    discountPiasters: unit.discountPiasters,
+    paidPiasters: unit.paidPiasters,
+  }));
 }
 
 function parseOptionalText(value: unknown, max: number, messageAr: string): string | null {

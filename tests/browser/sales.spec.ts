@@ -145,7 +145,6 @@ test("lost complete response retries the same sale without charging the customer
 
   const saleIds: string[] = [];
   const operationIds: string[] = [];
-  let dropFirst = true;
   await page.route("**/api/internal/sales", async (route) => {
     const url = new URL(route.request().url());
     if (route.request().method() !== "POST" || url.pathname !== "/api/internal/sales") {
@@ -155,14 +154,9 @@ test("lost complete response retries the same sale without charging the customer
     const payload = route.request().postDataJSON() as { saleId: string; operationId: string };
     saleIds.push(payload.saleId);
     operationIds.push(payload.operationId);
-    if (dropFirst) {
-      dropFirst = false;
-      const response = await route.fetch();
-      expect(response.status()).toBe(201);
-      await route.abort("connectionreset");
-      return;
-    }
-    await route.continue();
+    const response = await route.fetch();
+    expect(response.status()).toBe(201);
+    await route.abort("connectionreset");
   });
 
   const checkout = page.getByRole("form", { name: "إتمام البيع النقدي" });
@@ -170,18 +164,55 @@ test("lost complete response retries the same sale without charging the customer
   await expect(page.getByTestId("accepted-prices")).toBeVisible();
   await checkout.getByLabel("استلم الزبون البضاعة ودفع نقداً").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
-  await expect(page.getByRole("alert")).toContainText("لا تطلب الدفع مرة أخرى");
-  await checkout.getByRole("button", { name: "إعادة المحاولة" }).click();
-  await expect(page.getByRole("status")).toContainText(/تم حفظ البيع النقدي|تم العثور على البيع المحفوظ/);
-  expect(new Set(saleIds).size).toBe(1);
-  expect(new Set(operationIds).size).toBe(1);
-
+  await expect(page.getByRole("status")).toContainText("تم حفظ البيع النقدي.");
+  const local = (await page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open("bravos-pos");
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const tx = db.transaction("sales", "readonly");
+    const rows = await new Promise<Array<{ id: string; operationId: string }>>((resolve, reject) => {
+      const req = tx.objectStore("sales").getAll();
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    db.close();
+    return rows[0];
+  })) as { id: string; operationId: string };
+  expect(local.id).toBeTruthy();
+  await page.unroute("**/api/internal/sales");
+  const retryIds: string[] = [];
+  const retryOps: string[] = [];
+  const retryStatuses: number[] = [];
+  await page.route("**/api/internal/sales", async (route) => {
+    const url = new URL(route.request().url());
+    if (route.request().method() === "POST" && url.pathname === "/api/internal/sales") {
+      const payload = route.request().postDataJSON() as { saleId: string; operationId: string };
+      retryIds.push(payload.saleId);
+      retryOps.push(payload.operationId);
+      const response = await route.fetch();
+      retryStatuses.push(response.status());
+      await route.fulfill({ response });
+      return;
+    }
+    await route.continue();
+  });
+  await page.getByRole("link", { name: "العودة لمساحة العمل" }).click();
+  await expect(page.getByTestId("unsynced-count")).toBeVisible();
+  await expect.poll(() => retryStatuses.at(-1) ?? 0).toBe(200);
+  await expect(page.getByTestId("unsynced-count")).toContainText("مبيعات غير مزامنة: 0");
+  expect(retryIds).toContain(local.id);
+  expect(retryOps).toContain(local.operationId);
+  expect(new Set([...saleIds, ...retryIds])).toEqual(new Set([local.id]));
+  expect(retryStatuses.every((status) => status === 200)).toBe(true);
   const listed = await staffApi(page, "GET", "/api/internal/sales");
   expect(listed.status).toBe(200);
-  const lostSales = listed.body.filter((sale: { lines: Array<{ variant: { product: { code: string } } }> }) =>
+  const lostSales = listed.body.filter((sale: { id: string; lines: Array<{ variant: { product: { code: string } } }> }) =>
     sale.lines.some((line) => line.variant.product.code === "LOST-E2E"),
   );
   expect(lostSales).toHaveLength(1);
+  expect(lostSales[0].id).toBe(local.id);
   const lookupAfter = await staffApi(page, "GET", `/api/internal/catalog/lookup?code=${encodeURIComponent("LOST-E2E")}`);
   expect(lookupAfter.status).toBe(200);
   expect(lookupAfter.body.variants[0].availableQuantity).toBe(3);
@@ -299,7 +330,7 @@ test("lost complete before send recovers the prepared sale after stock is taken"
   await expect(page.getByTestId("accepted-prices")).toBeVisible();
   await checkout.getByLabel("استلم الزبون البضاعة ودفع نقداً").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
-  await expect(page.getByRole("alert")).toContainText("لا تطلب الدفع مرة أخرى");
+  await expect(page.getByRole("status")).toContainText("تم حفظ البيع النقدي.");
   await page.unroute("**/api/internal/sales");
   await page.getByRole("button", { name: "تسجيل الخروج" }).click();
   await page.getByLabel("اسم الدخول").fill("owner");
@@ -320,14 +351,19 @@ test("lost complete before send recovers the prepared sale after stock is taken"
   await page.getByLabel("كلمة المرور").fill("e2e-cashier-pass");
   await page.getByRole("button", { name: "دخول" }).click();
   await page.getByRole("button", { name: "أبشواي" }).click();
-  await page.getByRole("link", { name: "البحث عن منتج" }).click();
-  await expect(page.getByRole("status")).toContainText("تم حفظ البيع النقدي.");
-  await expect(page.getByTestId("sale-details")).toContainText("لم تُخصص كل الكمية من المخزون المسجّل.");
+  await expect(page.getByTestId("active-branch")).toBeVisible();
+  await expect
+    .poll(async () => {
+      const listed = await staffApi(page, "GET", "/api/internal/sales");
+      return listed.body.filter((sale: { lines: Array<{ variant: { product: { code: string } } }> }) =>
+        sale.lines.some((line) => line.variant.product.code === "BEFORE-E2E"),
+      ).length;
+    })
+    .toBe(1);
   const listed = await staffApi(page, "GET", "/api/internal/sales");
   const recovered = listed.body.filter((sale: { lines: Array<{ variant: { product: { code: string } } }> }) =>
     sale.lines.some((line) => line.variant.product.code === "BEFORE-E2E"),
   );
-  expect(recovered).toHaveLength(1);
   expect(recovered[0].discrepancy.unallocatedQuantity).toBe(1);
   expect(recovered[0].lines[0].paidPiasters).toBe(22000);
 });
@@ -382,16 +418,22 @@ test("check result completes a physically paid preparation instead of accepting 
   await expect(page.getByTestId("accepted-prices")).toBeVisible();
   await checkout.getByLabel("استلم الزبون البضاعة ودفع نقداً").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
-  await expect(page.getByRole("alert")).toContainText("لا تطلب الدفع مرة أخرى");
-  await page.unroute("**/api/internal/sales");
-  await checkout.getByRole("button", { name: "التحقق من النتيجة" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع النقدي.");
-  await expect(page.getByTestId("sale-details")).toBeVisible();
+  await page.unroute("**/api/internal/sales");
+  await page.getByRole("link", { name: "العودة لمساحة العمل" }).click();
+  await expect(page.getByTestId("active-branch")).toBeVisible();
+  await expect
+    .poll(async () => {
+      const listed = await staffApi(page, "GET", "/api/internal/sales");
+      return listed.body.filter((sale: { lines: Array<{ variant: { product: { code: string } } }> }) =>
+        sale.lines.some((line) => line.variant.product.code === "CHECK-E2E"),
+      ).length;
+    })
+    .toBe(1);
   const listed = await staffApi(page, "GET", "/api/internal/sales");
   const saved = listed.body.filter((sale: { lines: Array<{ variant: { product: { code: string } } }> }) =>
     sale.lines.some((line) => line.variant.product.code === "CHECK-E2E"),
   );
-  expect(saved).toHaveLength(1);
   expect(saved[0].physicallyCompleted).toBe(true);
   const lookupAfter = await staffApi(page, "GET", `/api/internal/catalog/lookup?code=${encodeURIComponent("CHECK-E2E")}`);
   expect(lookupAfter.body.variants[0].availableQuantity).toBe(2);
@@ -525,31 +567,107 @@ test("two open tabs keep a physically completed marker and save that sale once",
   await expect(page.getByTestId("accepted-prices")).toBeVisible();
   await checkout.getByLabel("استلم الزبون البضاعة ودفع نقداً").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
-  await expect(page.getByRole("alert")).toContainText("لا تطلب الدفع مرة أخرى");
+  await expect(page.getByRole("status")).toContainText("تم حفظ البيع النقدي.");
   expect(completedIds).toHaveLength(1);
-  const checkout2 = page2.getByRole("form", { name: "إتمام البيع النقدي" });
-  const page2Accept = checkout2.getByRole("button", { name: "قبول الأسعار" });
-  if (await page2Accept.isEnabled()) {
-    await page2Accept.click();
-    await expect(page2.getByRole("alert")).toContainText(/توجد عملية بيع غير مؤكدة|لا تطلب الدفع مرة أخرى/);
-  } else {
-    await expect(page2Accept).toBeDisabled();
-  }
-  const stored = await page.evaluate(() => {
-    const key = Object.keys(localStorage).find((item) => item.startsWith("bravos.sales.pending."));
-    return key ? (JSON.parse(localStorage.getItem(key) ?? "null") as { saleId: string; physicallyCompleted: boolean }) : null;
+  const originalId = completedIds[0];
+  const originalLocal = await page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open("bravos-pos");
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const sales = await new Promise<
+      Array<{
+        id: string;
+        operationId: string;
+        staffId: string;
+        syncStatus: string;
+        soldByDisplayName: string;
+        originalTotalPiasters: number;
+        finalTotalPiasters: number;
+        branch: { code: string };
+        lines: Array<{ quantity: number; paidPiasters: number }>;
+      }>
+    >((resolve, reject) => {
+      const req = db.transaction("sales", "readonly").objectStore("sales").getAll();
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    db.close();
+    return sales[0];
   });
-  expect(stored?.saleId).toBe(completedIds[0]);
-  expect(stored?.physicallyCompleted).toBe(true);
+  expect(originalLocal?.id).toBe(originalId);
+  expect(originalLocal?.lines[0]?.quantity).toBe(1);
+  expect(originalLocal?.finalTotalPiasters).toBe(16000);
+  await page2.getByRole("form", { name: "إتمام البيع النقدي" }).getByRole("button", { name: "قبول الأسعار" }).click();
+  await expect(page2.getByTestId("accepted-prices")).toBeVisible();
+  await expect(page2.getByTestId("sale-details")).toHaveCount(0);
+  const afterB = await page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open("bravos-pos");
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    async function all<T>(name: string): Promise<T[]> {
+      const req = db.transaction(name, "readonly").objectStore(name).getAll();
+      return new Promise((resolve, reject) => {
+        req.onsuccess = () => resolve(req.result as T[]);
+        req.onerror = () => reject(req.error);
+      });
+    }
+    const sales = await all<{
+      id: string;
+      operationId: string;
+      staffId: string;
+      syncStatus: string;
+      soldByDisplayName: string;
+      originalTotalPiasters: number;
+      finalTotalPiasters: number;
+      branch: { code: string };
+      lines: Array<{ quantity: number; paidPiasters: number }>;
+    }>("sales");
+    const pending = await all<{ saleId: string; operationId: string; staffId: string }>("pending");
+    db.close();
+    return { sales, pending };
+  });
+  expect(afterB.sales).toHaveLength(1);
+  expect(afterB.sales[0]?.id).toBe(originalLocal?.id);
+  expect(afterB.sales[0]?.operationId).toBe(originalLocal?.operationId);
+  expect(afterB.sales[0]?.staffId).toBe(originalLocal?.staffId);
+  expect(afterB.sales[0]?.syncStatus).toBe("pending");
+  expect(afterB.sales[0]?.soldByDisplayName).toBe(originalLocal?.soldByDisplayName);
+  expect(afterB.sales[0]?.branch.code).toBe(originalLocal?.branch.code);
+  expect(afterB.sales[0]?.originalTotalPiasters).toBe(16000);
+  expect(afterB.sales[0]?.finalTotalPiasters).toBe(16000);
+  expect(afterB.sales[0]?.lines[0]?.quantity).toBe(1);
+  expect(afterB.sales[0]?.lines[0]?.paidPiasters).toBe(16000);
   await page.unroute("**/api/internal/sales");
-  await checkout.getByRole("button", { name: "إعادة المحاولة" }).click();
-  await expect(page.getByRole("status")).toContainText(/تم حفظ البيع النقدي|تم العثور على البيع المحفوظ/);
+  const retryIds: string[] = [];
+  const retryStatuses: number[] = [];
+  await page.route("**/api/internal/sales", async (route) => {
+    const url = new URL(route.request().url());
+    if (route.request().method() === "POST" && url.pathname === "/api/internal/sales") {
+      const payload = route.request().postDataJSON() as { saleId: string; operationId: string };
+      retryIds.push(payload.saleId);
+      expect(payload.saleId).toBe(originalLocal?.id);
+      expect(payload.operationId).toBe(originalLocal?.operationId);
+      const response = await route.fetch();
+      retryStatuses.push(response.status());
+      await route.fulfill({ response });
+      return;
+    }
+    await route.continue();
+  });
+  await page.getByRole("link", { name: "العودة لمساحة العمل" }).click();
+  await expect.poll(() => retryStatuses.at(-1) ?? 0).toBe(200);
+  await expect(page.getByTestId("unsynced-count")).toContainText("مبيعات غير مزامنة: 0");
+  expect(retryIds).toEqual([originalId]);
   const listed = await staffApi(page, "GET", "/api/internal/sales");
-  const saved = listed.body.filter((sale: { lines: Array<{ variant: { product: { code: string } } }> }) =>
+  const saved = listed.body.filter((sale: { id: string; lines: Array<{ variant: { product: { code: string } } }> }) =>
     sale.lines.some((line) => line.variant.product.code === "TWOTAB-E2E"),
   );
   expect(saved).toHaveLength(1);
-  expect(saved[0].id).toBe(completedIds[0]);
+  expect(saved[0].id).toBe(originalId);
   expect(saved[0].physicallyCompleted).toBe(true);
   const lookupAfter = await staffApi(page, "GET", `/api/internal/catalog/lookup?code=${encodeURIComponent("TWOTAB-E2E")}`);
   expect(lookupAfter.body.variants[0].availableQuantity).toBe(4);
@@ -596,10 +714,8 @@ test("rapid cart edit disables completion of the old quote until prices are acce
   const checkout = page.getByRole("form", { name: "إتمام البيع النقدي" });
   await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
   await expect(page.getByTestId("accepted-prices")).toBeVisible();
-  const staffId = await page.evaluate(() => {
-    const key = Object.keys(localStorage).find((item) => item.startsWith("bravos.sales.pending."));
-    return key ? key.slice("bravos.sales.pending.".length) : "";
-  });
+  const workspace = await staffApi(page, "GET", "/api/internal/workspace");
+  const staffId = workspace.body.staff.id as string;
   expect(staffId.length).toBeGreaterThan(0);
   const locker = await context.newPage();
   await locker.goto("http://127.0.0.1:5174/lookup");
@@ -826,36 +942,72 @@ test("blocked tab recovers the other tab's sale then continues its own cart", as
   await expect(page.getByTestId("accepted-prices")).toBeVisible();
   await checkoutA.getByLabel("استلم الزبون البضاعة ودفع نقداً").check();
   await checkoutA.getByRole("button", { name: "إتمام البيع" }).click();
-  await expect(page.getByRole("alert")).toContainText("لا تطلب الدفع مرة أخرى");
+  await expect(page.getByRole("status")).toContainText("تم حفظ البيع النقدي.");
   expect(completedIds).toHaveLength(1);
   const checkoutB = page2.getByRole("form", { name: "إتمام البيع النقدي" });
-  await checkoutB.getByRole("button", { name: "قبول الأسعار" }).click();
-  await expect(page2.getByRole("alert")).toContainText(/توجد عملية بيع غير مؤكدة|لا تطلب الدفع مرة أخرى/);
-  await expect(checkoutB.getByRole("button", { name: "التحقق من النتيجة" })).toBeVisible();
   await expect(checkoutB.getByLabel("الكمية")).toHaveValue("2");
   await expect(page2.getByTestId("sale-details")).toHaveCount(0);
   await page.unroute("**/api/internal/sales");
+  await expect
+    .poll(async () => {
+      const rows = await page2.evaluate(async () => {
+        const db = await new Promise<IDBDatabase>((resolve, reject) => {
+          const request = indexedDB.open("bravos-pos");
+          request.onsuccess = () => resolve(request.result);
+          request.onerror = () => reject(request.error);
+        });
+        const tx = db.transaction("sales", "readonly");
+        const all = await new Promise<Array<{ id: string; lines: Array<{ quantity: number }> }>>((resolve, reject) => {
+          const req = tx.objectStore("sales").getAll();
+          req.onsuccess = () => resolve(req.result);
+          req.onerror = () => reject(req.error);
+        });
+        db.close();
+        return all;
+      });
+      return rows.filter((sale) => sale.id === completedIds[0]).length;
+    })
+    .toBe(1);
+  await page.close();
+  await expect(checkoutB.getByLabel("الكمية")).toHaveValue("2");
+  const savedA = await page2.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open("bravos-pos");
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const tx = db.transaction("sales", "readonly");
+    const all = await new Promise<Array<{ id: string; operationId: string; lines: Array<{ quantity: number }> }>>((resolve, reject) => {
+      const req = tx.objectStore("sales").getAll();
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    db.close();
+    return all;
+  });
+  const recoveredA = savedA.find((sale) => sale.id === completedIds[0]);
+  expect(recoveredA?.lines[0]?.quantity).toBe(1);
   const recoveredIds: string[] = [];
   await page2.route("**/api/internal/sales", async (route) => {
     const url = new URL(route.request().url());
     if (route.request().method() === "POST" && url.pathname === "/api/internal/sales") {
-      recoveredIds.push((route.request().postDataJSON() as { saleId: string }).saleId);
+      const payload = route.request().postDataJSON() as { saleId: string; operationId: string };
+      recoveredIds.push(payload.saleId);
+      expect(payload.saleId).toBe(recoveredA?.id);
+      expect(payload.operationId).toBe(recoveredA?.operationId);
     }
     await route.continue();
   });
-  await checkoutB.getByRole("button", { name: "التحقق من النتيجة" }).click();
-  await expect(page2.getByRole("status")).toContainText(/تم حفظ البيع النقدي|تم العثور على البيع المحفوظ/);
-  await expect(page2.getByTestId("sale-details")).toBeVisible();
-  await expect(checkoutB.getByLabel("الكمية")).toHaveValue("2");
+  await page2.evaluate(() => window.dispatchEvent(new Event("online")));
+  await expect
+    .poll(async () => {
+      const listedNow = await staffApi(page2, "GET", "/api/internal/sales");
+      return listedNow.body.filter((sale: { id: string }) => sale.id === completedIds[0]).length;
+    })
+    .toBe(1);
   expect(recoveredIds).toEqual([completedIds[0]]);
-  const afterA = await staffApi(page2, "GET", "/api/internal/sales");
-  const savedA = afterA.body.filter((sale: { id: string; lines: Array<{ quantity: number; variant: { product: { code: string } } }> }) =>
-    sale.lines.some((line) => line.variant.product.code === "FOREIGN-E2E"),
-  );
-  expect(savedA).toHaveLength(1);
-  expect(savedA[0].id).toBe(completedIds[0]);
-  expect(savedA[0].lines[0].quantity).toBe(1);
-  expect(savedA[0].physicallyCompleted).toBe(true);
+  await expect(checkoutB.getByLabel("الكمية")).toHaveValue("2");
+  await page2.unroute("**/api/internal/sales");
   const bPrepareIds: string[] = [];
   await page2.route("**/api/internal/sales/prepare", async (route) => {
     if (route.request().method() === "POST") {

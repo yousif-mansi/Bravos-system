@@ -1,5 +1,6 @@
 import type { WorkspaceDto } from "@bravos/contracts";
-import { ApiError, selectBranch, signOut } from "../api.ts";
+import { ApiError, selectBranch } from "../api.ts";
+import { signOutPreservingSales } from "../session.ts";
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 
@@ -8,7 +9,7 @@ export function BranchPage({
   onChanged,
 }: {
   workspace: WorkspaceDto;
-  onChanged: (workspace: WorkspaceDto | null) => void;
+  onChanged: (workspace: WorkspaceDto | null) => void | Promise<void>;
 }) {
   const navigate = useNavigate();
   const [error, setError] = useState("");
@@ -17,7 +18,7 @@ export function BranchPage({
     setError("");
     try {
       const next = await selectBranch(branchId);
-      onChanged(next);
+      await onChanged(next);
       navigate("/workspace");
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.messageAr : "تعذر اختيار الفرع.");
@@ -25,9 +26,11 @@ export function BranchPage({
   }
 
   async function logout() {
-    await signOut();
-    onChanged(null);
-    navigate("/login");
+    const accepted = await signOutPreservingSales(workspace.staff.id);
+    if (!accepted) {
+      return;
+    }
+    await onChanged(null);
   }
 
   return (

@@ -252,23 +252,38 @@ export function createCatalogServices(ports: {
         throw new NotFoundError("المنتج غير موجود.");
       }
       const quantities = await availability.quantitiesFor(product.variants.map((variant) => variant.id));
-      return {
-        id: product.id,
-        code: product.code,
-        nameAr: product.nameAr,
-        descriptionAr: product.descriptionAr,
-        variants: product.variants.map((variant) => ({
-          id: variant.id,
-          size: variant.size,
-          color: variant.color,
-          sellingPricePiasters: resolvedSellingPricePiasters(
-            product.defaultSellingPricePiasters,
-            variant.sellingPricePiastersOverride,
-          ),
-          availableQuantity: quantities.get(variant.id) ?? 0,
-        })),
-      };
+      return toCashierLookup(product, quantities);
     },
+
+    async listCashierCatalog(auth: VerifiedAuth | null): Promise<CashierProductLookupDto[]> {
+      await requireCashier(auth);
+      const products = await ports.store.listProducts();
+      const ids = products.flatMap((product) => product.variants.map((variant) => variant.id));
+      const quantities = await availability.quantitiesFor(ids);
+      return products.map((product) => toCashierLookup(product, quantities));
+    },
+  };
+}
+
+function toCashierLookup(
+  product: ManagerProductDto,
+  quantities: Map<string, number>,
+): CashierProductLookupDto {
+  return {
+    id: product.id,
+    code: product.code,
+    nameAr: product.nameAr,
+    descriptionAr: product.descriptionAr,
+    variants: product.variants.map((variant) => ({
+      id: variant.id,
+      size: variant.size,
+      color: variant.color,
+      sellingPricePiasters: resolvedSellingPricePiasters(
+        product.defaultSellingPricePiasters,
+        variant.sellingPricePiastersOverride,
+      ),
+      availableQuantity: quantities.get(variant.id) ?? 0,
+    })),
   };
 }
 

@@ -77,6 +77,10 @@ test("manager creates a two-branch employee through the staff UI", async ({ page
   await page.getByRole("button", { name: "الفيوم" }).click();
   await expect(page.getByTestId("active-branch")).toContainText("الفيوم");
   await expect(page.getByRole("link", { name: "الموظفون" })).toHaveCount(0);
+  await page.getByRole("link", { name: "تغيير الفرع" }).click();
+  await expect(page.getByRole("heading", { name: "اختيار الفرع النشط" })).toBeVisible();
+  await page.getByRole("button", { name: "أبشواي" }).click();
+  await expect(page.getByTestId("active-branch")).toContainText("أبشواي");
 });
 
 test("public entry has no staff screens or navigation", async ({ page }) => {

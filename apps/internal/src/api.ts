@@ -6,6 +6,7 @@ import type {
   InventorySettingsDto,
   LowStockVariantDto,
   ManagerProductDto,
+  PosPriceSnapshotDto,
   ReceiptDto,
   SaleDto,
   SizeDto,
@@ -293,8 +294,26 @@ export type SaleWrite = {
   employeeDiscountPiasters: number;
   discountReason?: string | null;
   occurredAt?: string | null;
-  lines: Array<{ variantId: string; quantity: number }>;
+  lines: Array<{ variantId: string; quantity: number; listedUnitPricePiasters?: number }>;
 };
+
+export function listCashierCatalog() {
+  return request<CashierProductLookupDto[]>("/api/internal/catalog/pos-snapshot");
+}
+
+export function issuePosSnapshot(deviceId: string) {
+  return request<PosPriceSnapshotDto>("/api/internal/sales/pos-snapshots", {
+    method: "POST",
+    body: JSON.stringify({ deviceId }),
+  });
+}
+
+export function acceptOfflineSale(input: SaleWrite & { deviceId: string; snapshotId: string }) {
+  return request<SaleDto>("/api/internal/sales/accepted", {
+    method: "POST",
+    body: JSON.stringify({ ...input, physicallyCompleted: true }),
+  });
+}
 
 export function prepareSale(input: SaleWrite) {
   return request<SaleDto>("/api/internal/sales/prepare", {

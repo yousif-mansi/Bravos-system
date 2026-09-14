@@ -57,11 +57,11 @@ test("manager receives separate cost batches and cashier sees central quantity w
 
   const batches = await staffApi(page, "GET", "/api/internal/inventory/batches");
   expect(batches.status).toBe(200);
-  expect(batches.body).toHaveLength(2);
-  expect(batches.body.map((batch: { unitCostPiasters: number }) => batch.unitCostPiasters).sort((a: number, b: number) => a - b)).toEqual([
+  const ownBatches = batches.body.filter((batch: { variantId: string }) => batch.variantId === variantId);
+  expect(ownBatches).toHaveLength(2);
+  expect(ownBatches.map((batch: { unitCostPiasters: number }) => batch.unitCostPiasters).sort((a: number, b: number) => a - b)).toEqual([
     10000, 14000,
   ]);
-  expect(batches.body.every((batch: { variantId: string }) => batch.variantId === variantId)).toBe(true);
 
   await page.getByRole("button", { name: "تسجيل الخروج" }).click();
   await expect(page.getByRole("heading", { name: "تسجيل الدخول" })).toBeVisible();

@@ -25,8 +25,8 @@ const forbidden = [
   },
   {
     from: ["apps/internal", "apps/storefront", "packages/contracts"],
-    pattern: /@bravos\/sales(?:\/node)?/,
-    message: "Frontend/contracts cannot import the sales package.",
+    pattern: /@bravos\/sales(?!\/browser)/,
+    message: "Frontend/contracts cannot import server sales adapters; use @bravos/sales/browser.",
   },
   {
     from: ["apps", "packages"],
@@ -55,7 +55,7 @@ const forbidden = [
   },
   {
     from: ["packages/identity/src/domain", "packages/identity/src/application", "packages/catalog/src/domain", "packages/catalog/src/application", "packages/inventory/src/domain", "packages/inventory/src/application", "packages/receiving/src/domain", "packages/receiving/src/application", "packages/sales/src/domain", "packages/sales/src/application"],
-    pattern: /from ["'](better-auth|fastify|pg|react|next|vite)/,
+    pattern: /from ["'](better-auth|fastify|pg|react|next|vite|dexie)/,
     message: "Inner feature layers cannot import infrastructure SDKs.",
   },
   {

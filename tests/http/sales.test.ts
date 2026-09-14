@@ -2,6 +2,8 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, beforeEach, expect, test } from "vitest";
+import { priceSaleLines } from "../../packages/sales/src/domain/discount.ts";
+import { evaluatePosUpdate, isDeclaredSafeMigration } from "../../packages/sales/src/domain/pos-update.ts";
 import { buildApp, type BuiltApp } from "../../apps/api/src/app.ts";
 import { ensureOwner } from "../../apps/api/src/bootstrap.ts";
 import { applyMigrations } from "@bravos/persistence";
@@ -300,8 +302,13 @@ test("employee deduction is nonnegative, permits zero, rejects negative, and all
   expect(equal.body.discountedByStaffId).toEqual(expect.any(String));
   const paidEqual = equal.body.lines.map((line: { paidPiasters: number }) => line.paidPiasters).sort((a: number, b: number) => a - b);
   expect(paidEqual).toEqual([17500, 27500]);
-  expect(equal.body.lines.flatMap((line: { units: Array<{ paidPiasters: number }> }) => line.units.map((unit) => unit.paidPiasters)).sort((a: number, b: number) => a - b)).toEqual([
-    17500, 27500,
+  expect(
+    equal.body.lines
+      .flatMap((line: { units: Array<{ quantity: number; paidPiasters: number }> }) => line.units)
+      .sort((left: { paidPiasters: number }, right: { paidPiasters: number }) => left.paidPiasters - right.paidPiasters),
+  ).toEqual([
+    { unitIndex: 0, quantity: 1, listedPiasters: 20000, discountPiasters: 2500, paidPiasters: 17500 },
+    { unitIndex: 0, quantity: 1, listedPiasters: 30000, discountPiasters: 2500, paidPiasters: 27500 },
   ]);
 
   const multi = await api(manager, "POST", "/api/internal/sales", {
@@ -315,9 +322,28 @@ test("employee deduction is nonnegative, permits zero, rejects negative, and all
     ],
   });
   expect(multi.status).toBe(201);
-  expect(multi.body.lines.flatMap((line: { units: Array<{ paidPiasters: number }> }) => line.units.map((unit) => unit.paidPiasters)).sort((a: number, b: number) => a - b)).toEqual([
-    18000, 28000, 28000,
-  ]);
+  expect(
+    multi.body.lines
+      .map((line: { variantId: string; quantity: number; units: Array<{ unitIndex: number; quantity: number; listedPiasters: number; discountPiasters: number; paidPiasters: number }> }) => ({
+        variantId: line.variantId,
+        quantity: line.quantity,
+        units: line.units,
+      }))
+      .sort((left: { variantId: string }, right: { variantId: string }) => (left.variantId < right.variantId ? -1 : 1)),
+  ).toEqual(
+    [
+      {
+        variantId: seed.secondVariantId,
+        quantity: 1,
+        units: [{ unitIndex: 0, quantity: 1, listedPiasters: 20000, discountPiasters: 2000, paidPiasters: 18000 }],
+      },
+      {
+        variantId: seed.variantId,
+        quantity: 2,
+        units: [{ unitIndex: 0, quantity: 2, listedPiasters: 30000, discountPiasters: 2000, paidPiasters: 28000 }],
+      },
+    ].sort((left, right) => (left.variantId < right.variantId ? -1 : 1)),
+  );
 
   const cheapColor = await api(manager, "POST", "/api/internal/catalog/colors", { nameAr: "أحمر" });
   const cheapSize = await api(manager, "POST", "/api/internal/catalog/sizes", { nameAr: "S" });
@@ -358,8 +384,14 @@ test("employee deduction is nonnegative, permits zero, rejects negative, and all
     ],
   });
   expect(capped.status).toBe(201);
-  expect(capped.body.lines.flatMap((line: { units: Array<{ paidPiasters: number }> }) => line.units.map((unit) => unit.paidPiasters)).sort((a: number, b: number) => a - b)).toEqual([
-    0, 6000,
+  expect(
+    capped.body.lines
+      .flatMap((line: { units: Array<{ quantity: number; paidPiasters: number }> }) => line.units)
+      .sort((left: { paidPiasters: number }, right: { paidPiasters: number }) => left.paidPiasters - right.paidPiasters)
+      .map((unit: { quantity: number; paidPiasters: number }) => ({ quantity: unit.quantity, paidPiasters: unit.paidPiasters })),
+  ).toEqual([
+    { quantity: 1, paidPiasters: 0 },
+    { quantity: 1, paidPiasters: 6000 },
   ]);
   expect(capped.body.finalTotalPiasters).toBe(6000);
 
@@ -371,8 +403,9 @@ test("employee deduction is nonnegative, permits zero, rejects negative, and all
     lines: [{ variantId: seed.variantId, quantity: 3 }],
   });
   expect(leftover.status).toBe(201);
-  expect(leftover.body.lines[0].units.map((unit: { discountPiasters: number }) => unit.discountPiasters)).toEqual([
-    34, 33, 33,
+  expect(leftover.body.lines[0].units).toEqual([
+    { unitIndex: 0, quantity: 1, listedPiasters: 30000, discountPiasters: 34, paidPiasters: 29966 },
+    { unitIndex: 1, quantity: 2, listedPiasters: 30000, discountPiasters: 33, paidPiasters: 29967 },
   ]);
   expect(leftover.body.finalTotalPiasters).toBe(89900);
 
@@ -407,6 +440,75 @@ test("employee deduction is nonnegative, permits zero, rejects negative, and all
   });
   expect(belowZero.status).toBe(400);
   expect(belowZero.body.error.code).toBe("VALIDATION");
+});
+
+test("compact paid-unit ranges persist every ordinal through sale re-read", async () => {
+  const manager = await signIn("owner", "owner-pass-1");
+  await api(manager, "POST", "/api/internal/active-branch", { branchId: abshwayId });
+  const seed = await seedShirt(manager, { price: 100 });
+  await receive(manager, seed.variantId, 5000, 40);
+  const created = await api(manager, "POST", "/api/internal/sales", {
+    saleId: crypto.randomUUID(),
+    operationId: crypto.randomUUID(),
+    physicallyCompleted: true,
+    employeeDiscountPiasters: 2500,
+    lines: [{ variantId: seed.variantId, quantity: 5000 }],
+  });
+  expect(created.status).toBe(201);
+  expect(created.body.lines[0].quantity).toBe(5000);
+  expect(created.body.originalTotalPiasters).toBe(500000);
+  expect(created.body.employeeDiscountPiasters).toBe(2500);
+  expect(created.body.finalTotalPiasters).toBe(497500);
+  expect(created.body.lines[0].units).toEqual([
+    { unitIndex: 0, quantity: 2500, listedPiasters: 100, discountPiasters: 1, paidPiasters: 99 },
+    { unitIndex: 2500, quantity: 2500, listedPiasters: 100, discountPiasters: 0, paidPiasters: 100 },
+  ]);
+  expect(created.body.lines[0].units[0].quantity * created.body.lines[0].units[0].paidPiasters).toBe(247500);
+  expect(created.body.lines[0].units[1].quantity * created.body.lines[0].units[1].paidPiasters).toBe(250000);
+  const loaded = await api(manager, "GET", `/api/internal/sales/${created.body.id}`);
+  expect(loaded.status).toBe(200);
+  expect(loaded.body.lines[0].quantity).toBe(5000);
+  expect(loaded.body.finalTotalPiasters).toBe(497500);
+  expect(loaded.body.lines[0].units).toEqual([
+    { unitIndex: 0, quantity: 2500, listedPiasters: 100, discountPiasters: 1, paidPiasters: 99 },
+    { unitIndex: 2500, quantity: 2500, listedPiasters: 100, discountPiasters: 0, paidPiasters: 100 },
+  ]);
+});
+
+test("sale totals above 32-bit integers round-trip and unrepresentable arithmetic is rejected", async () => {
+  const manager = await signIn("owner", "owner-pass-1");
+  await api(manager, "POST", "/api/internal/active-branch", { branchId: abshwayId });
+  const seed = await seedShirt(manager, { price: 1_000_000_000 });
+  await receive(manager, seed.variantId, 3, 100);
+  const created = await api(manager, "POST", "/api/internal/sales", {
+    saleId: crypto.randomUUID(),
+    operationId: crypto.randomUUID(),
+    physicallyCompleted: true,
+    employeeDiscountPiasters: 0,
+    lines: [{ variantId: seed.variantId, quantity: 3 }],
+  });
+  expect(created.status).toBe(201);
+  expect(created.body.originalTotalPiasters).toBe(3_000_000_000);
+  expect(created.body.finalTotalPiasters).toBe(3_000_000_000);
+  expect(created.body.lines[0].originalPiasters).toBe(3_000_000_000);
+  expect(created.body.lines[0].paidPiasters).toBe(3_000_000_000);
+  expect(created.body.lines[0].units).toEqual([
+    { unitIndex: 0, quantity: 3, listedPiasters: 1_000_000_000, discountPiasters: 0, paidPiasters: 1_000_000_000 },
+  ]);
+  const loaded = await api(manager, "GET", `/api/internal/sales/${created.body.id}`);
+  expect(loaded.status).toBe(200);
+  expect(loaded.body.originalTotalPiasters).toBe(3_000_000_000);
+  expect(loaded.body.finalTotalPiasters).toBe(3_000_000_000);
+  expect(loaded.body.lines[0].paidPiasters).toBe(3_000_000_000);
+  expect(loaded.body.lines[0].units).toEqual([
+    { unitIndex: 0, quantity: 3, listedPiasters: 1_000_000_000, discountPiasters: 0, paidPiasters: 1_000_000_000 },
+  ]);
+  expect(() =>
+    priceSaleLines(
+      [{ variantId: seed.variantId, quantity: 2, listedUnitPricePiasters: Number.MAX_SAFE_INTEGER }],
+      0,
+    ),
+  ).toThrow("تعذر تمثيل مبلغ البيع.");
 });
 
 test("identical sale identity returns the original result and a changed payload conflicts", async () => {
@@ -1152,6 +1254,400 @@ test("authorized lookup of a prepared operation returns the accepted payload bef
   expect(byOperation.body.lines[0].listedUnitPricePiasters).toBe(18000);
   const listed = await api(manager, "GET", "/api/internal/sales");
   expect(listed.body).toEqual([]);
+});
+
+test("issued POS snapshot keeps original 300/200 prices after later catalog reprice", async () => {
+  const manager = await signIn("owner", "owner-pass-1");
+  await api(manager, "POST", "/api/internal/active-branch", { branchId: abshwayId });
+  const seed = await seedShirt(manager, { extraColor: true, price: 30000 });
+  const product = await api(manager, "GET", `/api/internal/catalog/products/${seed.productId}`);
+  expect(product.status).toBe(200);
+  const whiteColorId = product.body.variants.find((variant: { id: string }) => variant.id === seed.secondVariantId)
+    .color.id;
+  const priced = await api(manager, "PATCH", `/api/internal/catalog/products/${seed.productId}`, {
+    code: "TS-001",
+    nameAr: "تيشيرت أساسي",
+    descriptionAr: "قطن",
+    categoryId: seed.categoryId,
+    defaultSellingPricePiasters: 30000,
+    publication: "hidden",
+    imageRefs: [],
+    variants: [
+      { sizeId: seed.sizeId, colorId: seed.colorId, sellingPricePiastersOverride: null },
+      { sizeId: seed.sizeId, colorId: whiteColorId, sellingPricePiastersOverride: 20000 },
+    ],
+  });
+  expect(priced.status).toBe(200);
+  await receive(manager, seed.variantId, 2, 9000);
+  await receive(manager, seed.secondVariantId, 2, 9000);
+  await api(manager, "POST", "/api/internal/staff", {
+    loginName: "cashier.offline",
+    displayName: "كاشير دون اتصال",
+    password: "staff-pass-50",
+    grants: [
+      { branchId: abshwayId, cashier: true, orderRepresentative: false },
+      { branchId: fayoumId, cashier: true, orderRepresentative: false },
+    ],
+  });
+  const cashier = await signIn("cashier.offline", "staff-pass-50");
+  await api(cashier, "POST", "/api/internal/active-branch", { branchId: abshwayId });
+  const deviceId = crypto.randomUUID();
+  const snapshot = await api(cashier, "POST", "/api/internal/sales/pos-snapshots", { deviceId });
+  expect(snapshot.status).toBe(201);
+  expect(snapshot.body.deviceId).toBe(deviceId);
+  expect(snapshot.body.branch.code).toBe("abshway");
+  const snapshotPrices = snapshot.body.products
+    .flatMap((item: { variants: Array<{ id: string; sellingPricePiasters: number }> }) => item.variants)
+    .map((variant: { id: string; sellingPricePiasters: number }) => ({
+      id: variant.id,
+      sellingPricePiasters: variant.sellingPricePiasters,
+    }))
+    .sort((left: { id: string }, right: { id: string }) => (left.id < right.id ? -1 : 1));
+  expect(snapshotPrices).toEqual(
+    [
+      { id: seed.variantId, sellingPricePiasters: 30000 },
+      { id: seed.secondVariantId, sellingPricePiasters: 20000 },
+    ].sort((left, right) => (left.id < right.id ? -1 : 1)),
+  );
+  expect(JSON.stringify(snapshot.body)).not.toMatch(/cost|profit|purchase|batch|inventoryValue|unitCost/i);
+
+  const repriced = await api(manager, "PATCH", `/api/internal/catalog/products/${seed.productId}`, {
+    code: "TS-001",
+    nameAr: "تيشيرت أساسي",
+    descriptionAr: "قطن",
+    categoryId: seed.categoryId,
+    defaultSellingPricePiasters: 90000,
+    publication: "hidden",
+    imageRefs: [],
+    variants: [
+      { sizeId: seed.sizeId, colorId: seed.colorId, sellingPricePiastersOverride: null },
+      { sizeId: seed.sizeId, colorId: whiteColorId, sellingPricePiastersOverride: 80000 },
+    ],
+  });
+  expect(repriced.status).toBe(200);
+  await api(cashier, "POST", "/api/internal/active-branch", { branchId: fayoumId });
+
+  const saleId = crypto.randomUUID();
+  const operationId = crypto.randomUUID();
+  const accepted = await api(cashier, "POST", "/api/internal/sales/accepted", {
+    saleId,
+    operationId,
+    deviceId,
+    snapshotId: snapshot.body.snapshotId,
+    occurredAt: "2026-09-11T10:15:00.000Z",
+    physicallyCompleted: true,
+    employeeDiscountPiasters: 5000,
+    discountReason: "اتفاق الصندوق",
+    lines: [
+      { variantId: seed.variantId, quantity: 1, listedUnitPricePiasters: 30000 },
+      { variantId: seed.secondVariantId, quantity: 1, listedUnitPricePiasters: 20000 },
+    ],
+  });
+  expect(accepted.status).toBe(201);
+  expect(accepted.body.soldByDisplayName).toBe("كاشير دون اتصال");
+  expect(accepted.body.branch.code).toBe("abshway");
+  expect(accepted.body.occurredAt).toBe("2026-09-11T10:15:00.000Z");
+  expect(accepted.body.originalTotalPiasters).toBe(50000);
+  expect(accepted.body.employeeDiscountPiasters).toBe(5000);
+  expect(accepted.body.finalTotalPiasters).toBe(45000);
+  const paid = accepted.body.lines
+    .map((line: { variantId: string; paidPiasters: number; listedUnitPricePiasters: number }) => ({
+      variantId: line.variantId,
+      listedUnitPricePiasters: line.listedUnitPricePiasters,
+      paidPiasters: line.paidPiasters,
+    }))
+    .sort((left: { variantId: string }, right: { variantId: string }) =>
+      left.variantId < right.variantId ? -1 : 1,
+    );
+  expect(paid).toEqual(
+    [
+      { variantId: seed.secondVariantId, listedUnitPricePiasters: 20000, paidPiasters: 17500 },
+      { variantId: seed.variantId, listedUnitPricePiasters: 30000, paidPiasters: 27500 },
+    ].sort((left, right) => (left.variantId < right.variantId ? -1 : 1)),
+  );
+
+  const refreshed = await api(cashier, "POST", "/api/internal/sales/pos-snapshots", { deviceId });
+  expect(refreshed.status).toBe(201);
+  expect(refreshed.body.snapshotId).not.toBe(snapshot.body.snapshotId);
+  const refreshedBlack = refreshed.body.products
+    .flatMap((item: { variants: Array<{ id: string; sellingPricePiasters: number }> }) => item.variants)
+    .find((variant: { id: string }) => variant.id === seed.variantId);
+  expect(refreshedBlack.sellingPricePiasters).toBe(90000);
+
+  const replay = await api(cashier, "POST", "/api/internal/sales/accepted", {
+    saleId,
+    operationId,
+    deviceId,
+    snapshotId: snapshot.body.snapshotId,
+    occurredAt: "2026-09-11T10:15:00.000Z",
+    physicallyCompleted: true,
+    employeeDiscountPiasters: 5000,
+    discountReason: "اتفاق الصندوق",
+    lines: [
+      { variantId: seed.variantId, quantity: 1, listedUnitPricePiasters: 30000 },
+      { variantId: seed.secondVariantId, quantity: 1, listedUnitPricePiasters: 20000 },
+    ],
+  });
+  expect(replay.status).toBe(200);
+  expect(replay.body.id).toBe(accepted.body.id);
+  expect(replay.body.finalTotalPiasters).toBe(45000);
+  expect(replay.body.lines.find((line: { variantId: string }) => line.variantId === seed.variantId).listedUnitPricePiasters).toBe(
+    30000,
+  );
+
+  const connected = await api(cashier, "POST", "/api/internal/sales", saleBody(seed.variantId, 1));
+  expect(connected.status).toBe(201);
+  expect(connected.body.lines[0].listedUnitPricePiasters).toBe(90000);
+});
+
+test("tampered listed prices or a fabricated snapshot cannot authorize old catalog prices", async () => {
+  const manager = await signIn("owner", "owner-pass-1");
+  await api(manager, "POST", "/api/internal/active-branch", { branchId: abshwayId });
+  const seed = await seedShirt(manager, { price: 25000 });
+  await receive(manager, seed.variantId, 3, 8000);
+  await api(manager, "POST", "/api/internal/staff", {
+    loginName: "cashier.trusted",
+    displayName: "كاشير موثوق",
+    password: "staff-pass-51",
+    grants: [{ branchId: abshwayId, cashier: true, orderRepresentative: false }],
+  });
+  const cashier = await signIn("cashier.trusted", "staff-pass-51");
+  await api(cashier, "POST", "/api/internal/active-branch", { branchId: abshwayId });
+  const deviceId = crypto.randomUUID();
+  const snapshot = await api(cashier, "POST", "/api/internal/sales/pos-snapshots", { deviceId });
+  expect(snapshot.status).toBe(201);
+
+  const tampered = await api(cashier, "POST", "/api/internal/sales/accepted", {
+    saleId: crypto.randomUUID(),
+    operationId: crypto.randomUUID(),
+    deviceId,
+    snapshotId: snapshot.body.snapshotId,
+    occurredAt: "2026-09-11T11:00:00.000Z",
+    physicallyCompleted: true,
+    employeeDiscountPiasters: 0,
+    lines: [{ variantId: seed.variantId, quantity: 1, listedUnitPricePiasters: 1000 }],
+  });
+  expect(tampered.status).toBe(400);
+  expect(tampered.body.error.code).toBe("VALIDATION");
+
+  const fabricated = await api(cashier, "POST", "/api/internal/sales/accepted", {
+    saleId: crypto.randomUUID(),
+    operationId: crypto.randomUUID(),
+    deviceId,
+    snapshotId: crypto.randomUUID(),
+    occurredAt: "2026-09-11T11:00:00.000Z",
+    physicallyCompleted: true,
+    employeeDiscountPiasters: 0,
+    lines: [{ variantId: seed.variantId, quantity: 1, listedUnitPricePiasters: 25000 }],
+  });
+  expect(fabricated.status).toBe(404);
+
+  const missing = await api(cashier, "POST", "/api/internal/sales/accepted", {
+    saleId: crypto.randomUUID(),
+    operationId: crypto.randomUUID(),
+    deviceId,
+    occurredAt: "2026-09-11T11:00:00.000Z",
+    physicallyCompleted: true,
+    employeeDiscountPiasters: 0,
+    lines: [{ variantId: seed.variantId, quantity: 1, listedUnitPricePiasters: 25000 }],
+  });
+  expect(missing.status).toBe(400);
+
+  const lookup = await api(cashier, "GET", `/api/internal/catalog/lookup?code=${encodeURIComponent("TS-001")}`);
+  expect(lookup.status).toBe(200);
+  expect(lookup.body.variants[0].availableQuantity).toBe(3);
+  const listed = await api(cashier, "GET", "/api/internal/sales");
+  expect(listed.body).toEqual([]);
+});
+
+test("another cashier cannot submit or reattribute an issued snapshot before or after acceptance", async () => {
+  const manager = await signIn("owner", "owner-pass-1");
+  await api(manager, "POST", "/api/internal/active-branch", { branchId: abshwayId });
+  const seed = await seedShirt(manager, { price: 25000 });
+  await receive(manager, seed.variantId, 3, 8000);
+  await api(manager, "POST", "/api/internal/staff", {
+    loginName: "cashier.alpha",
+    displayName: "كاشير ألف",
+    password: "staff-pass-53",
+    grants: [{ branchId: abshwayId, cashier: true, orderRepresentative: false }],
+  });
+  await api(manager, "POST", "/api/internal/staff", {
+    loginName: "cashier.beta",
+    displayName: "كاشير باء",
+    password: "staff-pass-54",
+    grants: [{ branchId: abshwayId, cashier: true, orderRepresentative: false }],
+  });
+  const alpha = await signIn("cashier.alpha", "staff-pass-53");
+  await api(alpha, "POST", "/api/internal/active-branch", { branchId: abshwayId });
+  const beta = await signIn("cashier.beta", "staff-pass-54");
+  await api(beta, "POST", "/api/internal/active-branch", { branchId: abshwayId });
+  const deviceId = crypto.randomUUID();
+  const snapshot = await api(alpha, "POST", "/api/internal/sales/pos-snapshots", { deviceId });
+  expect(snapshot.status).toBe(201);
+  const saleId = crypto.randomUUID();
+  const operationId = crypto.randomUUID();
+  const payload = {
+    saleId,
+    operationId,
+    deviceId,
+    snapshotId: snapshot.body.snapshotId,
+    occurredAt: "2026-09-11T12:00:00.000Z",
+    physicallyCompleted: true,
+    employeeDiscountPiasters: 0,
+    lines: [{ variantId: seed.variantId, quantity: 1, listedUnitPricePiasters: 25000 }],
+  };
+
+  const stolen = await api(beta, "POST", "/api/internal/sales/accepted", payload);
+  expect(stolen.status).toBe(403);
+  expect(JSON.stringify(stolen.body)).not.toMatch(/كاشير ألف/);
+  expect(stolen.body.soldByDisplayName).toBeUndefined();
+  expect(stolen.body.snapshotId).toBeUndefined();
+
+  const remainingBefore = await api(alpha, "GET", `/api/internal/catalog/lookup?code=${encodeURIComponent("TS-001")}`);
+  expect(remainingBefore.body.variants[0].availableQuantity).toBe(3);
+
+  const accepted = await api(alpha, "POST", "/api/internal/sales/accepted", payload);
+  expect(accepted.status).toBe(201);
+  expect(accepted.body.soldByDisplayName).toBe("كاشير ألف");
+  expect(accepted.body.finalTotalPiasters).toBe(25000);
+
+  const replay = await api(alpha, "POST", "/api/internal/sales/accepted", payload);
+  expect(replay.status).toBe(200);
+  expect(replay.body.id).toBe(accepted.body.id);
+
+  const conflict = await api(alpha, "POST", "/api/internal/sales/accepted", {
+    ...payload,
+    employeeDiscountPiasters: 1000,
+  });
+  expect(conflict.status).toBe(409);
+
+  const borrowedSnapshot = await api(beta, "POST", "/api/internal/sales/accepted", {
+    saleId: crypto.randomUUID(),
+    operationId: crypto.randomUUID(),
+    deviceId: crypto.randomUUID(),
+    snapshotId: snapshot.body.snapshotId,
+    occurredAt: "2026-09-11T12:05:00.000Z",
+    physicallyCompleted: true,
+    employeeDiscountPiasters: 0,
+    lines: [{ variantId: seed.variantId, quantity: 1, listedUnitPricePiasters: 25000 }],
+  });
+  expect(borrowedSnapshot.status).toBe(403);
+  expect(JSON.stringify(borrowedSnapshot.body)).not.toMatch(/كاشير ألف/);
+
+  const betaDevice = crypto.randomUUID();
+  const betaSnapshot = await api(beta, "POST", "/api/internal/sales/pos-snapshots", { deviceId: betaDevice });
+  expect(betaSnapshot.status).toBe(201);
+  const betaSale = await api(beta, "POST", "/api/internal/sales/accepted", {
+    saleId: crypto.randomUUID(),
+    operationId: crypto.randomUUID(),
+    deviceId: betaDevice,
+    snapshotId: betaSnapshot.body.snapshotId,
+    occurredAt: "2026-09-11T12:10:00.000Z",
+    physicallyCompleted: true,
+    employeeDiscountPiasters: 0,
+    lines: [{ variantId: seed.variantId, quantity: 1, listedUnitPricePiasters: 25000 }],
+  });
+  expect(betaSale.status).toBe(201);
+  expect(betaSale.body.soldByDisplayName).toBe("كاشير باء");
+
+  const remaining = await api(alpha, "GET", `/api/internal/catalog/lookup?code=${encodeURIComponent("TS-001")}`);
+  expect(remaining.body.variants[0].availableQuantity).toBe(1);
+});
+
+test("accepted replay is checked before merged-quantity pricing and huge repeated lines stay bounded", async () => {
+  const manager = await signIn("owner", "owner-pass-1");
+  await api(manager, "POST", "/api/internal/active-branch", { branchId: abshwayId });
+  const seed = await seedShirt(manager, { price: 25000 });
+  await receive(manager, seed.variantId, 2, 8000);
+  await api(manager, "POST", "/api/internal/staff", {
+    loginName: "cashier.bound",
+    displayName: "كاشير الحدود",
+    password: "staff-pass-55",
+    grants: [{ branchId: abshwayId, cashier: true, orderRepresentative: false }],
+  });
+  const cashier = await signIn("cashier.bound", "staff-pass-55");
+  await api(cashier, "POST", "/api/internal/active-branch", { branchId: abshwayId });
+  const deviceId = crypto.randomUUID();
+  const snapshot = await api(cashier, "POST", "/api/internal/sales/pos-snapshots", { deviceId });
+  expect(snapshot.status).toBe(201);
+  const saleId = crypto.randomUUID();
+  const operationId = crypto.randomUUID();
+  const accepted = await api(cashier, "POST", "/api/internal/sales/accepted", {
+    saleId,
+    operationId,
+    deviceId,
+    snapshotId: snapshot.body.snapshotId,
+    occurredAt: "2026-09-11T13:00:00.000Z",
+    physicallyCompleted: true,
+    employeeDiscountPiasters: 0,
+    lines: [{ variantId: seed.variantId, quantity: 1, listedUnitPricePiasters: 25000 }],
+  });
+  expect(accepted.status).toBe(201);
+
+  const started = Date.now();
+  const conflictingHuge = await api(cashier, "POST", "/api/internal/sales/accepted", {
+    saleId,
+    operationId,
+    deviceId,
+    snapshotId: snapshot.body.snapshotId,
+    occurredAt: "2026-09-11T13:00:00.000Z",
+    physicallyCompleted: true,
+    employeeDiscountPiasters: 0,
+    lines: [
+      { variantId: seed.variantId, quantity: 1_000_000, listedUnitPricePiasters: 25000 },
+      { variantId: seed.variantId, quantity: 1_000_000, listedUnitPricePiasters: 25000 },
+    ],
+  });
+  expect(Date.now() - started).toBeLessThan(2_000);
+  expect(conflictingHuge.status).toBe(409);
+  expect(conflictingHuge.body.error.code).toBe("CONFLICT");
+
+  const hugeNew = await api(cashier, "POST", "/api/internal/sales/accepted", {
+    saleId: crypto.randomUUID(),
+    operationId: crypto.randomUUID(),
+    deviceId,
+    snapshotId: snapshot.body.snapshotId,
+    occurredAt: "2026-09-11T13:05:00.000Z",
+    physicallyCompleted: true,
+    employeeDiscountPiasters: 0,
+    lines: [
+      { variantId: seed.variantId, quantity: 1_000_000, listedUnitPricePiasters: 25000 },
+      { variantId: seed.variantId, quantity: 1_000_000, listedUnitPricePiasters: 25000 },
+    ],
+  });
+  expect(Date.now() - started).toBeLessThan(2_000);
+  expect(hugeNew.status).toBe(400);
+  expect(hugeNew.body.error.code).toBe("VALIDATION");
+  expect(hugeNew.body.error.messageAr).toBe("الكمية غير صالحة.");
+
+  const listed = await api(cashier, "GET", "/api/internal/sales");
+  const mine = listed.body.filter((sale: { soldByDisplayName: string }) => sale.soldByDisplayName === "كاشير الحدود");
+  expect(mine).toHaveLength(1);
+  expect(mine[0].id).toBe(accepted.body.id);
+  expect(mine[0].lines[0].quantity).toBe(1);
+  const lookup = await api(cashier, "GET", `/api/internal/catalog/lookup?code=${encodeURIComponent("TS-001")}`);
+  expect(lookup.body.variants[0].availableQuantity).toBe(1);
+});
+
+test("POS update activation defers undeclared schema jumps", () => {
+  expect(isDeclaredSafeMigration(1, 2)).toBe(true);
+  expect(isDeclaredSafeMigration(2, 3)).toBe(true);
+  expect(isDeclaredSafeMigration(2, 99)).toBe(false);
+  expect(evaluatePosUpdate({ storedSchemaVersion: 3, incomingSchemaVersion: 3, incomingMigrationSafe: true })).toBe(
+    "activate",
+  );
+  expect(evaluatePosUpdate({ storedSchemaVersion: 2, incomingSchemaVersion: 3, incomingMigrationSafe: true })).toBe(
+    "activate",
+  );
+  expect(evaluatePosUpdate({ storedSchemaVersion: 1, incomingSchemaVersion: 2, incomingMigrationSafe: true })).toBe(
+    "activate",
+  );
+  expect(evaluatePosUpdate({ storedSchemaVersion: 3, incomingSchemaVersion: 99, incomingMigrationSafe: false })).toBe(
+    "defer",
+  );
+  expect(evaluatePosUpdate({ storedSchemaVersion: 3, incomingSchemaVersion: 1, incomingMigrationSafe: true })).toBe(
+    "defer",
+  );
 });
 
 async function startApp(overrides: { databasePoolMax?: number } = {}) {

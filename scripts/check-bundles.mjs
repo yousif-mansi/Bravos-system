@@ -86,6 +86,30 @@ if (dynamicSales.length === 0) {
   throw new Error("Cashier sales chunk is not loaded through a dynamic import from the login graph.");
 }
 
+const swFile = internalFiles.find((file) => /(^|\/)sw\.js$/.test(file.replaceAll("\\", "/")));
+if (!swFile) {
+  throw new Error("Production service worker is missing.");
+}
+const swSource = await readFile(swFile, "utf8");
+if (!swSource.includes("cashier-lookup")) {
+  throw new Error("Service worker does not precache the essential POS lookup chunk.");
+}
+if (!swSource.includes("cashier-sales")) {
+  throw new Error("Service worker does not precache the essential POS sales chunk.");
+}
+if (!swSource.includes("POS_SW_SCHEMA_VERSION") && !swSource.includes("schemaVersion")) {
+  throw new Error("Service worker does not publish POS schema version to waiting clients.");
+}
+if (swSource.includes("staff-management") || swSource.includes("catalog-maintenance") || swSource.includes("receiving-stock")) {
+  throw new Error("Service worker precaches optional manager/receiving chunks.");
+}
+if (/\/api\/(?:auth|internal)/.test(swSource) && swSource.includes("CacheFirst")) {
+  throw new Error("Service worker must not cache auth or privileged APIs with CacheFirst.");
+}
+if (swSource.includes("unitCostPiasters") || swSource.includes("inventoryValue")) {
+  throw new Error("Service worker precache contains restricted cost data.");
+}
+
 const storefrontFiles = await collect(storefrontNext, /\.(js|html)$/);
 if (storefrontFiles.length === 0) {
   throw new Error("Public storefront production build is missing.");

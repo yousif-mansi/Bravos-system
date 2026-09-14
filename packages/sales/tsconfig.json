@@ -5,6 +5,7 @@
     "noEmit": true,
     "declaration": false,
     "declarationMap": false,
+    "lib": ["ES2022", "DOM"],
     "types": ["node"]
   },
   "include": ["src"]

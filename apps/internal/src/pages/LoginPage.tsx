@@ -1,14 +1,13 @@
 import { type FormEvent, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 import type { WorkspaceDto } from "@bravos/contracts";
 import { ApiError, getWorkspace, signIn } from "../api.ts";
 
 export function LoginPage({
   onSignedIn,
 }: {
-  onSignedIn: (workspace: WorkspaceDto) => void;
+  onSignedIn: (workspace: WorkspaceDto) => void | Promise<void>;
 }) {
-  const navigate = useNavigate();
   const [loginName, setLoginName] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -21,8 +20,7 @@ export function LoginPage({
     try {
       await signIn(loginName, password);
       const workspace = await getWorkspace();
-      onSignedIn(workspace);
-      navigate(workspace.activeBranch ? "/workspace" : "/select-branch");
+      await onSignedIn(workspace);
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.messageAr : "تعذر تسجيل الدخول.");
     } finally {

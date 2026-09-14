@@ -30,6 +30,8 @@ test("apply, down the latest migration, and reapply works with multiple migratio
       "004_receiving.sql",
       "005_inventory_allocation.sql",
       "006_sales.sql",
+      "007_sales_pos_snapshot.sql",
+      "008_sales_money_ranges.sql",
     ]);
     expect(await listAppliedMigrations(pool)).toEqual(first);
     expect(await tableNames(pool)).toEqual(
@@ -46,27 +48,40 @@ test("apply, down the latest migration, and reapply works with multiple migratio
     );
 
     const reverted = await revertLastMigration(pool);
-    expect(reverted).toBe("006_sales.sql");
+    expect(reverted).toBe("008_sales_money_ranges.sql");
     expect(await listAppliedMigrations(pool)).toEqual([
       "001_identity.sql",
       "002_catalog.sql",
       "003_inventory.sql",
       "004_receiving.sql",
       "005_inventory_allocation.sql",
+      "006_sales.sql",
+      "007_sales_pos_snapshot.sql",
     ]);
     const afterDown = await tableNames(pool);
     expect(afterDown).toEqual(
-      expect.arrayContaining(["user", "staff_profile", "catalog_product", "inventory_batch", "receiving_receipt", "inventory_allocation"]),
+      expect.arrayContaining([
+        "user",
+        "staff_profile",
+        "catalog_product",
+        "inventory_batch",
+        "receiving_receipt",
+        "inventory_allocation",
+        "sales_sale",
+        "sales_pos_snapshot",
+      ]),
     );
-    expect(afterDown).not.toContain("sales_sale");
-    expect(afterDown).not.toContain("sales_sale_line");
+    expect(await columnType(pool, "sales_sale", "final_total_piasters")).toBe("integer");
+    expect(await columnExists(pool, "sales_sale_unit", "quantity")).toBe(false);
 
     const reapplied = await applyMigrations(pool);
-    expect(reapplied).toEqual(["006_sales.sql"]);
+    expect(reapplied).toEqual(["008_sales_money_ranges.sql"]);
     expect(await listAppliedMigrations(pool)).toEqual(first);
     expect(await tableNames(pool)).toEqual(
-      expect.arrayContaining(["user", "staff_profile", "catalog_product", "inventory_batch", "receiving_receipt", "sales_sale"]),
+      expect.arrayContaining(["user", "staff_profile", "catalog_product", "inventory_batch", "receiving_receipt", "sales_sale", "sales_pos_snapshot"]),
     );
+    expect(await columnType(pool, "sales_sale", "final_total_piasters")).toBe("bigint");
+    expect(await columnExists(pool, "sales_sale_unit", "quantity")).toBe(true);
 
     const fullyReverted: string[] = [];
     for (;;) {
@@ -77,6 +92,8 @@ test("apply, down the latest migration, and reapply works with multiple migratio
       fullyReverted.push(id);
     }
     expect(fullyReverted).toEqual([
+      "008_sales_money_ranges.sql",
+      "007_sales_pos_snapshot.sql",
       "006_sales.sql",
       "005_inventory_allocation.sql",
       "004_receiving.sql",
@@ -95,6 +112,126 @@ test("apply, down the latest migration, and reapply works with multiple migratio
     const restored = await applyMigrations(pool);
     expect(restored).toEqual(first);
     expect(await listAppliedMigrations(pool)).toEqual(first);
+  } finally {
+    await pool.end();
+  }
+});
+
+test("008 down expands counted unit ranges into one legacy row per ordinal", async () => {
+  const databaseName = `bravos_migrate_${crypto.randomUUID().replaceAll("-", "")}`;
+  await cluster.createDatabase(databaseName);
+  const pool = new Pool({ connectionString: cluster.connectionString(databaseName), max: 3 });
+  try {
+    await applyMigrations(pool);
+    await pool.query(`
+      INSERT INTO "user" (id, name, email, "emailVerified", "createdAt", "updatedAt")
+      VALUES ('staff-range', 'Range', 'range@bravos.test', true, now(), now());
+      INSERT INTO staff_profile (staff_id, display_name_ar, is_owner)
+      VALUES ('staff-range', 'موظف النطاق', true);
+      INSERT INTO catalog_category (id, name_ar)
+      VALUES ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'تصنيف');
+      INSERT INTO catalog_size (id, name_ar)
+      VALUES ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'مقاس');
+      INSERT INTO catalog_color (id, name_ar)
+      VALUES ('cccccccc-cccc-4ccc-8ccc-cccccccccccc', 'لون');
+      INSERT INTO catalog_product (
+        id, code, name_ar, description_ar, category_id, default_selling_price_piasters, publication
+      ) VALUES (
+        'dddddddd-dddd-4ddd-8ddd-dddddddddddd', 'RNG-001', 'قميص', 'قطن',
+        'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 100, 'hidden'
+      );
+      INSERT INTO catalog_product_variant (id, product_id, size_id, color_id)
+      VALUES (
+        'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+        'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+        'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+      );
+      INSERT INTO sales_sale (
+        id, operation_id, branch_id, sold_by_staff_id, sold_by_display_name,
+        occurred_at, recorded_at, original_total_piasters, employee_discount_piasters,
+        final_total_piasters, payload_fingerprint, physically_completed
+      ) VALUES (
+        'ffffffff-ffff-4fff-8fff-ffffffffffff',
+        '99999999-9999-4999-8999-999999999999',
+        '11111111-1111-4111-8111-111111111111',
+        'staff-range',
+        'موظف النطاق',
+        now(),
+        now(),
+        200,
+        2,
+        198,
+        'range-fingerprint',
+        true
+      );
+      INSERT INTO sales_sale_line (
+        id, sale_id, variant_id, quantity, listed_unit_price_piasters, original_piasters,
+        discount_piasters, paid_piasters, allocated_quantity, unallocated_quantity, line_index
+      ) VALUES (
+        '12121212-1212-4121-8121-121212121212',
+        'ffffffff-ffff-4fff-8fff-ffffffffffff',
+        'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+        2,
+        100,
+        200,
+        2,
+        198,
+        0,
+        0,
+        0
+      );
+      INSERT INTO sales_sale_unit (
+        id, sale_id, line_id, unit_index, quantity, listed_piasters, discount_piasters, paid_piasters
+      ) VALUES (
+        '34343434-3434-4343-8343-343434343434',
+        'ffffffff-ffff-4fff-8fff-ffffffffffff',
+        '12121212-1212-4121-8121-121212121212',
+        0,
+        1,
+        100,
+        1,
+        99
+      ), (
+        '56565656-5656-4565-8565-565656565656',
+        'ffffffff-ffff-4fff-8fff-ffffffffffff',
+        '12121212-1212-4121-8121-121212121212',
+        1,
+        1,
+        100,
+        1,
+        99
+      );
+    `);
+    await pool.query(`
+      DELETE FROM sales_sale_unit WHERE id = '56565656-5656-4565-8565-565656565656';
+      UPDATE sales_sale_unit
+      SET quantity = 2, unit_index = 0
+      WHERE id = '34343434-3434-4343-8343-343434343434';
+    `);
+    const before = await pool.query<{ unit_index: number; quantity: number; paid_piasters: number }>(
+      `SELECT unit_index, quantity, paid_piasters FROM sales_sale_unit ORDER BY unit_index`,
+    );
+    expect(before.rows).toEqual([{ unit_index: 0, quantity: 2, paid_piasters: 99 }]);
+
+    expect(await revertLastMigration(pool)).toBe("008_sales_money_ranges.sql");
+    expect(await columnExists(pool, "sales_sale_unit", "quantity")).toBe(false);
+    const expanded = await pool.query<{ unit_index: number; paid_piasters: number }>(
+      `SELECT unit_index, paid_piasters FROM sales_sale_unit ORDER BY unit_index`,
+    );
+    expect(expanded.rows).toEqual([
+      { unit_index: 0, paid_piasters: 99 },
+      { unit_index: 1, paid_piasters: 99 },
+    ]);
+
+    expect(await applyMigrations(pool)).toEqual(["008_sales_money_ranges.sql"]);
+    const restored = await pool.query<{ unit_index: number; quantity: number; paid_piasters: number }>(
+      `SELECT unit_index, quantity, paid_piasters FROM sales_sale_unit ORDER BY unit_index`,
+    );
+    expect(restored.rows).toEqual([
+      { unit_index: 0, quantity: 1, paid_piasters: 99 },
+      { unit_index: 1, quantity: 1, paid_piasters: 99 },
+    ]);
   } finally {
     await pool.end();
   }
@@ -140,4 +277,24 @@ async function tableNames(pool: Pool): Promise<string[]> {
     `SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename`,
   );
   return result.rows.map((row) => row.tablename);
+}
+
+async function columnExists(pool: Pool, table: string, column: string): Promise<boolean> {
+  const result = await pool.query<{ exists: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1 FROM information_schema.columns
+       WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2
+     ) AS exists`,
+    [table, column],
+  );
+  return result.rows[0]?.exists === true;
+}
+
+async function columnType(pool: Pool, table: string, column: string): Promise<string | undefined> {
+  const result = await pool.query<{ data_type: string }>(
+    `SELECT data_type FROM information_schema.columns
+     WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2`,
+    [table, column],
+  );
+  return result.rows[0]?.data_type;
 }

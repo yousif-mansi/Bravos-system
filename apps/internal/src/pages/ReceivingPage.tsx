@@ -18,10 +18,10 @@ import {
   listReceipts,
   lookupReceivingOperation,
   setVariantLowStockThreshold,
-  signOut,
   updateInventorySettings,
 } from "../api.ts";
 import { egpInputToPiasters, formatEgpFromPiasters } from "../money.ts";
+import { signOutPreservingSales } from "../session.ts";
 import {
   assignPendingReceive,
   clearPendingReceive,
@@ -170,8 +170,11 @@ export default function ReceivingPage({
   }, [workspace.staff.id]);
 
   async function logout() {
-    await signOut();
-    onChanged(null);
+    const accepted = await signOutPreservingSales(workspace.staff.id);
+    if (!accepted) {
+      return;
+    }
+    await onChanged(null);
     navigate("/login");
   }
 
@@ -432,6 +435,9 @@ export default function ReceivingPage({
           </button>
         </div>
       </header>
+      {typeof navigator !== "undefined" && !navigator.onLine ? (
+        <div className="error" role="alert">استلام المخزون يتطلب اتصالاً.</div>
+      ) : null}
       {error ? <div className="error" role="alert">{error}</div> : null}
       {notice ? <div className="notice" role="status">{notice}</div> : null}
 

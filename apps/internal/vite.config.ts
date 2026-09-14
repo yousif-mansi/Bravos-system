@@ -1,6 +1,7 @@
 import path from "node:path";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
+import { VitePWA } from "vite-plugin-pwa";
 
 const apiProxy = {
   "/api": {
@@ -10,7 +11,36 @@ const apiProxy = {
 };
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [
+    react(),
+    VitePWA({
+      strategies: "injectManifest",
+      srcDir: "src",
+      filename: "sw.ts",
+      registerType: "prompt",
+      injectRegister: false,
+      includeAssets: [],
+      manifest: {
+        name: "برافوس",
+        short_name: "برافوس",
+        start_url: "/workspace",
+        display: "standalone",
+        lang: "ar",
+        dir: "rtl",
+        background_color: "#f3f5f8",
+        theme_color: "#1d4ed8",
+      },
+      injectManifest: {
+        globPatterns: ["**/*.{js,css,html,svg,ico,woff2,webmanifest}"],
+        globIgnores: ["**/staff-management-*.js", "**/catalog-maintenance-*.js", "**/receiving-stock-*.js"],
+      },
+      workbox: {
+        skipWaiting: false,
+        clientsClaim: true,
+      },
+      devOptions: { enabled: false },
+    }),
+  ],
   server: {
     port: 5173,
     strictPort: true,

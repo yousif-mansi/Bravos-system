@@ -1,6 +1,8 @@
 import type { Pool, PoolClient } from "pg";
 import { OperationConflictError, type InventoryTransaction } from "@bravos/inventory";
 import type {
+  PriceSnapshotRecord,
+  PriceSnapshotStore,
   SaleInsert,
   SaleLineWrite,
   SaleRecord,
@@ -22,10 +24,10 @@ type SaleRow = {
   recorded_at: Date | null;
   customer_name: string | null;
   customer_phone: string | null;
-  original_total_piasters: number;
-  employee_discount_piasters: number;
+  original_total_piasters: number | string;
+  employee_discount_piasters: number | string;
   discount_reason: string | null;
-  final_total_piasters: number;
+  final_total_piasters: number | string;
   payload_fingerprint: string;
   physically_completed: boolean;
   costs_incomplete: boolean;
@@ -37,9 +39,9 @@ type LineRow = {
   variant_id: string;
   quantity: number;
   listed_unit_price_piasters: number;
-  original_piasters: number;
-  discount_piasters: number;
-  paid_piasters: number;
+  original_piasters: number | string;
+  discount_piasters: number | string;
+  paid_piasters: number | string;
   allocated_quantity: number;
   unallocated_quantity: number;
   line_index: number;
@@ -50,9 +52,10 @@ type UnitRow = {
   sale_id: string;
   line_id: string;
   unit_index: number;
-  listed_piasters: number;
-  discount_piasters: number;
-  paid_piasters: number;
+  quantity: number | string;
+  listed_piasters: number | string;
+  discount_piasters: number | string;
+  paid_piasters: number | string;
 };
 
 export function createPostgresSaleStore(queryable: Queryable): SaleStore {
@@ -189,6 +192,7 @@ export function createPostgresSalesUnitOfWork(
         const result = await work({
           sales: createPostgresSaleStore(client),
           inventory: inventoryFor(client),
+          snapshots: createPostgresPriceSnapshotStore(client),
         });
         await client.query("COMMIT");
         return result;
@@ -232,9 +236,17 @@ async function insertLines(queryable: Queryable, saleId: string, lines: SaleLine
 async function insertUnit(queryable: Queryable, saleId: string, lineId: string, unit: SaleUnitWrite) {
   await queryable.query(
     `INSERT INTO sales_sale_unit (
-       id, sale_id, line_id, unit_index, listed_piasters, discount_piasters, paid_piasters
-     ) VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6)`,
-    [saleId, lineId, unit.unitIndex, unit.listedPiasters, unit.discountPiasters, unit.paidPiasters],
+       id, sale_id, line_id, unit_index, quantity, listed_piasters, discount_piasters, paid_piasters
+     ) VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7)`,
+    [
+      saleId,
+      lineId,
+      unit.unitIndex,
+      unit.quantity,
+      unit.listedPiasters,
+      unit.discountPiasters,
+      unit.paidPiasters,
+    ],
   );
 }
 
@@ -286,9 +298,10 @@ async function loadLinesForSales(queryable: Queryable, saleIds: string[]): Promi
     const list = unitsByLine.get(row.line_id) ?? [];
     list.push({
       unitIndex: row.unit_index,
-      listedPiasters: row.listed_piasters,
-      discountPiasters: row.discount_piasters,
-      paidPiasters: row.paid_piasters,
+      quantity: asSafeInteger(row.quantity),
+      listedPiasters: asSafeInteger(row.listed_piasters),
+      discountPiasters: asSafeInteger(row.discount_piasters),
+      paidPiasters: asSafeInteger(row.paid_piasters),
     });
     unitsByLine.set(row.line_id, list);
   }
@@ -297,11 +310,11 @@ async function loadLinesForSales(queryable: Queryable, saleIds: string[]): Promi
     list.push({
       id: row.id,
       variantId: row.variant_id,
-      quantity: row.quantity,
-      listedUnitPricePiasters: row.listed_unit_price_piasters,
-      originalPiasters: row.original_piasters,
-      discountPiasters: row.discount_piasters,
-      paidPiasters: row.paid_piasters,
+      quantity: asSafeInteger(row.quantity),
+      listedUnitPricePiasters: asSafeInteger(row.listed_unit_price_piasters),
+      originalPiasters: asSafeInteger(row.original_piasters),
+      discountPiasters: asSafeInteger(row.discount_piasters),
+      paidPiasters: asSafeInteger(row.paid_piasters),
       allocatedQuantity: row.allocated_quantity,
       unallocatedQuantity: row.unallocated_quantity,
       lineIndex: row.line_index,
@@ -324,10 +337,10 @@ function toSale(row: SaleRow, lines: SaleLineWrite[]): SaleRecord {
     recordedAt: row.recorded_at,
     customerName: row.customer_name,
     customerPhone: row.customer_phone,
-    originalTotalPiasters: row.original_total_piasters,
-    employeeDiscountPiasters: row.employee_discount_piasters,
+    originalTotalPiasters: asSafeInteger(row.original_total_piasters),
+    employeeDiscountPiasters: asSafeInteger(row.employee_discount_piasters),
     discountReason: row.discount_reason,
-    finalTotalPiasters: row.final_total_piasters,
+    finalTotalPiasters: asSafeInteger(row.final_total_piasters),
     payloadFingerprint: row.payload_fingerprint,
     physicallyCompleted: row.physically_completed,
     costsIncomplete: row.costs_incomplete,
@@ -337,4 +350,68 @@ function toSale(row: SaleRow, lines: SaleLineWrite[]): SaleRecord {
 
 function isUniqueViolation(error: unknown): boolean {
   return Boolean(error && typeof error === "object" && "code" in error && (error as { code?: string }).code === "23505");
+}
+
+function asSafeInteger(value: number | string): number {
+  const parsed = typeof value === "string" ? Number(value) : value;
+  if (typeof parsed !== "number" || !Number.isSafeInteger(parsed)) {
+    throw new Error("Unrepresentable monetary value.");
+  }
+  return parsed;
+}
+
+type SnapshotRow = {
+  id: string;
+  staff_id: string;
+  branch_id: string;
+  device_id: string;
+  issued_at: Date;
+  price_fingerprint: string;
+};
+
+export function createPostgresPriceSnapshotStore(queryable: Queryable): PriceSnapshotStore {
+  return {
+    async insert(input) {
+      const fingerprint = input.prices
+        .map((price) => `${price.variantId}:${price.listedUnitPricePiasters}`)
+        .sort()
+        .join("|");
+      await queryable.query(
+        `INSERT INTO sales_pos_snapshot (id, staff_id, branch_id, device_id, issued_at, price_fingerprint)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [input.id, input.staffId, input.branchId, input.deviceId, input.issuedAt, fingerprint],
+      );
+      for (const price of input.prices) {
+        await queryable.query(
+          `INSERT INTO sales_pos_snapshot_price (snapshot_id, variant_id, listed_unit_price_piasters)
+           VALUES ($1, $2, $3)`,
+          [input.id, price.variantId, price.listedUnitPricePiasters],
+        );
+      }
+      return input;
+    },
+
+    async getById(id) {
+      const header = await queryable.query<SnapshotRow>(`SELECT * FROM sales_pos_snapshot WHERE id = $1`, [id]);
+      const row = header.rows[0];
+      if (!row) {
+        return null;
+      }
+      const prices = await queryable.query<{ variant_id: string; listed_unit_price_piasters: number }>(
+        `SELECT variant_id, listed_unit_price_piasters FROM sales_pos_snapshot_price WHERE snapshot_id = $1`,
+        [id],
+      );
+      return {
+        id: row.id,
+        staffId: row.staff_id,
+        branchId: row.branch_id,
+        deviceId: row.device_id,
+        issuedAt: row.issued_at,
+        prices: prices.rows.map((item) => ({
+          variantId: item.variant_id,
+          listedUnitPricePiasters: item.listed_unit_price_piasters,
+        })),
+      };
+    },
+  };
 }

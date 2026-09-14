@@ -292,6 +292,52 @@ test("cashier lookup selects an explicit variant, ignores website visibility, an
   expect(keys).toEqual(["code", "descriptionAr", "id", "nameAr", "variants"]);
 });
 
+test("cashier POS snapshot lists selling prices and availability without cost data", async () => {
+  const manager = await signIn("owner", "owner-pass-1");
+  await api(manager, "POST", "/api/internal/active-branch", { branchId: abshwayId });
+  const seed = await seedTaxonomy(manager);
+  const created = await api(manager, "POST", "/api/internal/catalog/products", productWrite(seed));
+  expect(created.status).toBe(201);
+  const variantId = created.body.variants[0].id as string;
+  const received = await api(manager, "POST", "/api/internal/receiving/receipts", {
+    operationId: crypto.randomUUID(),
+    receiptDate: "2026-09-11",
+    lines: [{ variantId, quantity: 4, unitCostPiasters: 8000 }],
+  });
+  expect(received.status).toBe(201);
+  await api(manager, "POST", "/api/internal/staff", {
+    loginName: "cashier.snapshot",
+    displayName: "كاشير اللقطة",
+    password: "staff-pass-40",
+    grants: [{ branchId: abshwayId, cashier: true, orderRepresentative: false }],
+  });
+  const cashier = await signIn("cashier.snapshot", "staff-pass-40");
+  await api(cashier, "POST", "/api/internal/active-branch", { branchId: abshwayId });
+
+  const snapshot = await api(cashier, "GET", "/api/internal/catalog/pos-snapshot");
+  expect(snapshot.status).toBe(200);
+  expect(snapshot.body).toHaveLength(1);
+  expect(snapshot.body[0]).toMatchObject({
+    code: "TS-001",
+    nameAr: "تيشيرت أساسي",
+  });
+  expect(snapshot.body[0].variants[0]).toEqual({
+    id: variantId,
+    size: { id: seed.sizeId, nameAr: "L" },
+    color: { id: seed.colorId, nameAr: "أسود" },
+    sellingPricePiasters: 25000,
+    availableQuantity: 4,
+  });
+  expect(JSON.stringify(snapshot.body)).not.toMatch(/cost|profit|purchase|batch|inventoryValue|unitCost/i);
+
+  const batches = await api(cashier, "GET", "/api/internal/inventory/batches");
+  expect(batches.status).toBe(403);
+
+  const noBranch = await signIn("cashier.snapshot", "staff-pass-40");
+  const denied = await api(noBranch, "GET", "/api/internal/catalog/pos-snapshot");
+  expect(denied.status).toBe(403);
+});
+
 test("concurrent duplicate product creates keep a precise duplicate-code error", async () => {
   const manager = await signIn("owner", "owner-pass-1");
   const seed = await seedTaxonomy(manager);

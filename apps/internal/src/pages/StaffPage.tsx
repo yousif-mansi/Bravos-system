@@ -8,8 +8,8 @@ import {
   listStaff,
   resetStaffPassword,
   setStaffGrants,
-  signOut,
 } from "../api.ts";
+import { signOutPreservingSales } from "../session.ts";
 
 type GrantDraft = {
   assigned: boolean;
@@ -74,8 +74,11 @@ export default function StaffPage({
   }
 
   async function logout() {
-    await signOut();
-    onChanged(null);
+    const accepted = await signOutPreservingSales(workspace.staff.id);
+    if (!accepted) {
+      return;
+    }
+    await onChanged(null);
     navigate("/login");
   }
 

@@ -1,7 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { accountGeneration, subscribeAccount } from "../account-session.ts";
 import { Link, useNavigate } from "react-router-dom";
 import type { ManagerSaleDto, SaleDto, WorkspaceDto } from "@bravos/contracts";
-import { ApiError, getSale, listSales, signOut } from "../api.ts";
+import { ApiError, getSale, listSales } from "../api.ts";
+import { pos, saleFromOffline } from "../pos.ts";
+import { signOutPreservingSales } from "../session.ts";
 import { formatEgpFromPiasters } from "../money.ts";
 import { SaleSummary } from "./SaleSummary.tsx";
 
@@ -16,34 +19,96 @@ export default function SalesPage({
   const [error, setError] = useState("");
   const [sales, setSales] = useState<SaleDto[]>([]);
   const [selected, setSelected] = useState<SaleDto | ManagerSaleDto | null>(null);
+  const generationRef = useRef(accountGeneration());
+  const canSeeCosts = workspace.staff.role === "manager" && workspace.capabilities.manageInventory;
 
   async function logout() {
-    await signOut();
-    onChanged(null);
+    const accepted = await signOutPreservingSales(workspace.staff.id);
+    if (!accepted) {
+      return;
+    }
+    await onChanged(null);
     navigate("/login");
   }
 
   useEffect(() => {
-    void listSales()
-      .then((rows) => {
+    return subscribeAccount((payload) => {
+      generationRef.current = payload.generation;
+      if (payload.staffId !== workspace.staff.id) {
+        setSales([]);
+        setSelected(null);
+      }
+    });
+  }, [workspace.staff.id]);
+
+  useEffect(() => {
+    const generation = accountGeneration();
+    generationRef.current = generation;
+    const staffId = workspace.staff.id;
+    const role = workspace.staff.role;
+    setSales([]);
+    setSelected(null);
+    setError("");
+    void (async () => {
+      const local = (await pos.listCompleted(staffId)).map(saleFromOffline);
+      if (generationRef.current !== generation) {
+        return;
+      }
+      try {
+        const remote = await listSales();
+        if (generationRef.current !== generation) {
+          return;
+        }
+        const byId = new Map(local.map((sale) => [sale.id, sale]));
+        for (const sale of remote) {
+          if (role !== "manager" && sale.soldByStaffId !== staffId) {
+            continue;
+          }
+          byId.set(sale.id, sale);
+        }
+        const rows = [...byId.values()];
         setSales(rows);
         setSelected(rows[0] ?? null);
-      })
-      .catch((caught: unknown) => {
+      } catch (caught: unknown) {
+        if (generationRef.current !== generation) {
+          return;
+        }
+        if (local.length > 0) {
+          setSales(local);
+          setSelected(local[0] ?? null);
+          return;
+        }
         setError(caught instanceof ApiError ? caught.messageAr : "تعذر تحميل المبيعات.");
-      });
-  }, []);
+      }
+    })();
+  }, [workspace.staff.id, workspace.staff.role]);
 
   async function openSale(id: string) {
+    const generation = generationRef.current;
+    const local = sales.find((sale) => sale.id === id);
+    if (local && !local.recordedAt) {
+      setSelected(local);
+      return;
+    }
     try {
       const detail = await getSale(id);
+      if (generationRef.current !== generation) {
+        return;
+      }
       setSelected(detail);
     } catch (caught) {
+      if (generationRef.current !== generation) {
+        return;
+      }
+      if (local) {
+        setSelected(local);
+        return;
+      }
       setError(caught instanceof ApiError ? caught.messageAr : "تعذر تحميل البيع.");
     }
   }
 
-  const managerSale = selected && "allocations" in selected ? selected : null;
+  const managerSale = canSeeCosts && selected && "allocations" in selected ? selected : null;
 
   return (
     <main className="shell">
@@ -74,6 +139,7 @@ export default function SalesPage({
                 <li key={sale.id}>
                   <button type="button" className="secondary" onClick={() => void openSale(sale.id)}>
                     {sale.soldByDisplayName} — {sale.branch.nameAr} — {formatEgpFromPiasters(sale.finalTotalPiasters)}
+                    {sale.recordedAt ? "" : " — غير مزامن"}
                   </button>
                 </li>
               ))}

@@ -27,7 +27,11 @@ import {
   createSalesServices,
   type SalesServices,
 } from "@bravos/sales";
-import { createPostgresSaleStore, createPostgresSalesUnitOfWork } from "@bravos/sales/node";
+import {
+  createPostgresPriceSnapshotStore,
+  createPostgresSaleStore,
+  createPostgresSalesUnitOfWork,
+} from "@bravos/sales/node";
 import {
   BranchNotAuthorizedError,
   DuplicateLoginNameError,
@@ -149,6 +153,10 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
       },
       prices: { getListedPrices: (ids) => catalogStore.getListedPrices(ids) },
       sales: saleStore,
+      snapshots: createPostgresPriceSnapshotStore(pool),
+      cashierCatalog: {
+        listCashierProducts: (auth) => catalog.listCashierCatalog(auth),
+      },
       uow: createPostgresSalesUnitOfWork(pool, createInventoryTransaction),
       allocations: { listAllocations: (operationId) => inventoryStore.listAllocations(operationId) },
     });
@@ -403,6 +411,10 @@ async function registerRoutes(
     return handle(reply, async () => catalog.lookupByCode(await verifiedAuth(identity, request), code));
   });
 
+  app.get("/api/internal/catalog/pos-snapshot", async (request, reply) => {
+    return handle(reply, async () => catalog.listCashierCatalog(await verifiedAuth(identity, request)));
+  });
+
   app.post("/api/internal/receiving/receipts", async (request, reply) => {
     return handle(reply, async () => {
       const result = await receiving.finalize(await verifiedAuth(identity, request), request.body);
@@ -452,9 +464,25 @@ async function registerRoutes(
     );
   });
 
+  app.post("/api/internal/sales/pos-snapshots", async (request, reply) => {
+    return handle(reply, async () => {
+      const snapshot = await sales.issuePriceSnapshot(await verifiedAuth(identity, request), request.body);
+      reply.status(201);
+      return snapshot;
+    });
+  });
+
   app.post("/api/internal/sales/prepare", async (request, reply) => {
     return handle(reply, async () => {
       const result = await sales.prepare(await verifiedAuth(identity, request), request.body);
+      reply.status(result.created ? 201 : 200);
+      return result.sale;
+    });
+  });
+
+  app.post("/api/internal/sales/accepted", async (request, reply) => {
+    return handle(reply, async () => {
+      const result = await sales.acceptOffline(await verifiedAuth(identity, request), request.body);
       reply.status(result.created ? 201 : 200);
       return result.sale;
     });

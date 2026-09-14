@@ -18,7 +18,7 @@ const built = await buildApp({
   authBaseUrl: "http://127.0.0.1:3011",
   internalOrigin: "http://127.0.0.1:5174",
   publicOrigin: "http://127.0.0.1:3001",
-  trustedOrigins: ["http://127.0.0.1:5174", "http://127.0.0.1:5175", "http://127.0.0.1:3011"],
+  trustedOrigins: ["http://127.0.0.1:5174", "http://127.0.0.1:5175", "http://127.0.0.1:5176", "http://127.0.0.1:3011"],
   secureCookies: false,
   ownerRecoveryAdapter: "local-outbox",
   ownerRecoveryOutboxDir: outboxDir,
@@ -45,6 +45,22 @@ try {
       loginName: "cashier",
       displayName: "كاشير تجريبي",
       password: "e2e-cashier-pass",
+      role: "employee",
+      grants: [{ branchId: abshwayId, cashier: true, orderRepresentative: false }],
+    },
+    { isOwner: false, role: "employee", actorStaffId: null },
+  );
+} catch (error) {
+  if (!(error instanceof DuplicateLoginNameError)) {
+    throw error;
+  }
+}
+try {
+  await built.services.createStaffRecord(
+    {
+      loginName: "cashier-b",
+      displayName: "كاشير ثان",
+      password: "e2e-cashier-b-pass",
       role: "employee",
       grants: [{ branchId: abshwayId, cashier: true, orderRepresentative: false }],
     },

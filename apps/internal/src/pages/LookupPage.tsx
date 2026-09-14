@@ -1,17 +1,16 @@
 import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import type { CashierProductLookupDto, CashierVariantDto, SaleDto, WorkspaceDto } from "@bravos/contracts";
+import type { CashierProductLookupDto, CashierVariantDto, PosPriceSnapshotDto, SaleDto, WorkspaceDto } from "@bravos/contracts";
 import { SaleSummary } from "./SaleSummary.tsx";
-import { ApiError, completeSale, lookupProductByCode, lookupSaleOperation, prepareSale, signOut } from "../api.ts";
+import { ApiError, acceptOfflineSale, completeSale, issuePosSnapshot, lookupProductByCode, lookupSaleOperation, prepareSale } from "../api.ts";
 import { egpInputToPiasters, formatEgpFromPiasters } from "../money.ts";
+import { cacheIssuedSnapshot, offlineFromQuote, pos, PosStorageError, saleFromOffline } from "../pos.ts";
+import { mergeVariantQuantities, SalesValidationError } from "@bravos/sales/browser";
+import { accountGeneration, subscribeAccount } from "../account-session.ts";
+import { isNetworkFailure, signOutPreservingSales } from "../session.ts";
 import {
-  assignPendingSale,
-  clearPendingSale,
   createPendingSale,
   digestSalePayload,
-  loadPendingSale,
-  pendingSaleStorageKey,
-  savePendingSale,
   withPendingSaleLock,
   type PendingSale,
   type SalePayload,
@@ -36,6 +35,34 @@ type CartLine = {
   variant: CashierVariantDto;
   quantity: number;
 };
+
+function cachedQuantitiesFromSnapshot(snapshot: PosPriceSnapshotDto): Map<string, number> {
+  const cached = new Map<string, number>();
+  for (const product of snapshot.products) {
+    for (const variant of product.variants) {
+      cached.set(variant.id, variant.availableQuantity);
+    }
+  }
+  return cached;
+}
+
+function cachedQuantitiesFromCart(lines: CartLine[]): Map<string, number> {
+  return new Map(lines.map((line) => [line.variant.id, line.variant.availableQuantity]));
+}
+
+function recordFromCached(cached: Map<string, number> | null): Record<string, number> | null {
+  if (!cached) {
+    return null;
+  }
+  return Object.fromEntries(cached.entries());
+}
+
+function cachedFromRecord(record: Record<string, number> | null | undefined): Map<string, number> | null {
+  if (!record) {
+    return null;
+  }
+  return new Map(Object.entries(record));
+}
 
 export default function LookupPage({
   workspace,
@@ -75,70 +102,154 @@ export default function LookupPage({
   const submitEpochRef = useRef(0);
   const [revisionBlock, setRevisionBlock] = useState(false);
   const [foreignRecovery, setForeignRecovery] = useState<PendingSale | null>(null);
+  const [effectiveByVariant, setEffectiveByVariant] = useState<Record<string, number>>({});
+  const quoteOriginRef = useRef<"server" | "snapshot" | null>(null);
+  const quoteSnapshotRef = useRef<PosPriceSnapshotDto | null>(null);
+  const quoteCachedRef = useRef<Map<string, number> | null>(null);
   cartRef.current = cart;
 
   useEffect(() => {
-    const stored = loadPendingSale(workspace.staff.id);
-    if (!stored) {
-      return;
-    }
-    pendingSaleRef.current = stored;
-    setPendingSale(stored);
-    if (stored.payload) {
-      frozenPayloadRef.current = stored.payload;
-      setFrozenPayload(stored.payload);
-      setCustomerName(stored.payload.customerName ?? "");
-      setCustomerPhone(stored.payload.customerPhone ?? "");
-      setDiscountEgp((stored.payload.employeeDiscountPiasters / 100).toString());
-      setDiscountReason(stored.payload.discountReason ?? "");
-    }
+    return subscribeAccount((payload) => {
+      if (payload.staffId !== workspace.staff.id) {
+        setCart([]);
+        setQuote(null);
+        setCompleted(null);
+        setPendingSale(null);
+        pendingSaleRef.current = null;
+        setHandedOver(false);
+      }
+    });
+  }, [workspace.staff.id]);
+
+  useEffect(() => {
+    setCart([]);
+    setQuote(null);
+    setCompleted(null);
+    setError("");
+    setNotice("");
+    setHandedOver(false);
+    pendingSaleRef.current = null;
+    setPendingSale(null);
+    foreignRecoveryRef.current = null;
+    setForeignRecovery(null);
+    quoteOriginRef.current = null;
+    quoteSnapshotRef.current = null;
+    quoteCachedRef.current = null;
+  }, [workspace.staff.id]);
+
+  useEffect(() => {
     let cancelled = false;
-    inFlightRef.current = true;
-    setPending("check");
-    lookupSaleOperation(stored.operationId)
-      .then(async (found) => {
-        if (cancelled) {
-          return;
-        }
-        if (found?.physicallyCompleted) {
-          await acceptSale(found, "تم العثور على البيع المحفوظ.");
-          return;
-        }
-        if (stored.physicallyCompleted) {
-          setHandedOver(true);
-          setError("تم تسليم البضاعة واستلام النقد. لا تطلب الدفع مرة أخرى. أعد المحاولة لحفظ البيع.");
+    void pos.migrateLegacyMarkers().then(async () => {
+      const recoverable = await pos.listRecoverablePending(workspace.staff.id);
+      const stored = recoverable.find((row) => row.physicallyCompleted) ?? recoverable[0];
+      const extras = recoverable.filter((row) => row.saleId !== stored?.saleId);
+      if (cancelled || !stored) {
+        return;
+      }
+      if (extras[0]) {
+        const blocked: PendingSale = {
+          saleId: extras[0].saleId,
+          operationId: extras[0].operationId,
+          staffId: extras[0].staffId,
+          phase: extras[0].phase,
+          digest: extras[0].digest,
+          physicallyCompleted: extras[0].physicallyCompleted,
+          payload: extras[0].payload,
+          occurredAt: extras[0].occurredAt,
+        };
+        foreignRecoveryRef.current = blocked;
+        setForeignRecovery(blocked);
+      }
+      const pending: PendingSale = {
+        saleId: stored.saleId,
+        operationId: stored.operationId,
+        staffId: stored.staffId,
+        phase: stored.phase,
+        digest: stored.digest,
+        physicallyCompleted: stored.physicallyCompleted,
+        payload: stored.payload,
+        occurredAt: stored.occurredAt,
+      };
+      pendingSaleRef.current = pending;
+      setPendingSale(pending);
+      if (stored.payload) {
+        frozenPayloadRef.current = stored.payload;
+        setFrozenPayload(stored.payload);
+        setCustomerName(stored.payload.customerName ?? "");
+        setCustomerPhone(stored.payload.customerPhone ?? "");
+        setDiscountEgp((stored.payload.employeeDiscountPiasters / 100).toString());
+        setDiscountReason(stored.payload.discountReason ?? "");
+      }
+      if (stored.quote) {
+        setQuote(stored.quote);
+      }
+      if (stored.snapshot) {
+        quoteSnapshotRef.current = stored.snapshot;
+      }
+      if (stored.quoteOrigin) {
+        quoteOriginRef.current = stored.quoteOrigin;
+      }
+      if (stored.cachedByVariant) {
+        quoteCachedRef.current = cachedFromRecord(stored.cachedByVariant);
+      } else if (stored.quote && stored.snapshot) {
+        quoteCachedRef.current = cachedQuantitiesFromSnapshot(stored.snapshot);
+      }
+      inFlightRef.current = true;
+      setPending("check");
+      return lookupSaleOperation(stored.operationId)
+        .then(async (found) => {
+          if (cancelled) {
+            return;
+          }
+          if (found?.physicallyCompleted) {
+            await acceptSale(found, "تم العثور على البيع المحفوظ.");
+            return;
+          }
+          if (stored.physicallyCompleted) {
+            setHandedOver(true);
+            setError("تم تسليم البضاعة واستلام النقد. لا تطلب الدفع مرة أخرى. أعد المحاولة لحفظ البيع.");
+            if (found && !found.physicallyCompleted) {
+              setQuote(found);
+              const recovered = await completeSale(saleWriteFromRecord(found, stored.occurredAt));
+              if (!cancelled && recovered.physicallyCompleted) {
+                await acceptSale(recovered, "تم حفظ البيع النقدي.");
+              }
+            }
+            return;
+          }
           if (found && !found.physicallyCompleted) {
             setQuote(found);
-            const recovered = await completeSale(saleWriteFromRecord(found, stored.occurredAt));
-            if (!cancelled && recovered.physicallyCompleted) {
-              await acceptSale(recovered, "تم حفظ البيع النقدي.");
-            }
+            const prepared: PendingSale = {
+              saleId: stored.saleId,
+              operationId: stored.operationId,
+              staffId: stored.staffId,
+              phase: "prepared",
+              digest: stored.digest,
+              physicallyCompleted: stored.physicallyCompleted,
+              payload: stored.payload,
+              occurredAt: stored.occurredAt,
+            };
+            pendingSaleRef.current = prepared;
+            setPendingSale(prepared);
+            setNotice("تم استعادة الأسعار المقبولة. يمكنك التعديل أو تأكيد التسليم.");
+            return;
           }
-          return;
-        }
-        if (found && !found.physicallyCompleted) {
-          setQuote(found);
-          const prepared: PendingSale = { ...stored, phase: "prepared" };
-          pendingSaleRef.current = prepared;
-          setPendingSale(prepared);
-          setNotice("تم استعادة الأسعار المقبولة. يمكنك التعديل أو تأكيد التسليم.");
-          return;
-        }
-        if (stored.phase === "uncertain") {
-          setError("لم يُؤكد حفظ البيع بعد. أدخل البيانات نفسها ثم أعد المحاولة.");
-        }
-      })
-      .catch((caught: unknown) => {
-        if (!cancelled) {
-          setError(caught instanceof ApiError ? caught.messageAr : "تعذر التحقق من البيع.");
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          inFlightRef.current = false;
-          setPending("");
-        }
-      });
+          if (stored.phase === "uncertain") {
+            setError("لم يُؤكد حفظ البيع بعد. أدخل البيانات نفسها ثم أعد المحاولة.");
+          }
+        })
+        .catch((caught: unknown) => {
+          if (!cancelled && !isNetworkFailure(caught)) {
+            setError(caught instanceof ApiError ? caught.messageAr : "تعذر التحقق من البيع.");
+          }
+        })
+        .finally(() => {
+          if (!cancelled) {
+            inFlightRef.current = false;
+            setPending("");
+          }
+        });
+    });
     return () => {
       cancelled = true;
       inFlightRef.current = false;
@@ -146,33 +257,48 @@ export default function LookupPage({
   }, [workspace.staff.id]);
 
   useEffect(() => {
-    function onStorage(event: StorageEvent) {
-      if (event.key !== pendingSaleStorageKey(workspace.staff.id)) {
+    let cancelled = false;
+    const epoch = accountGeneration();
+    const staffId = workspace.staff.id;
+    void (async () => {
+      if (!navigator.onLine) {
         return;
       }
-      if (pendingSaleRef.current) {
-        return;
+      try {
+        const deviceId = await pos.deviceId();
+        if (cancelled || accountGeneration() !== epoch) {
+          return;
+        }
+        const snapshot = await issuePosSnapshot(deviceId);
+        if (cancelled || accountGeneration() !== epoch) {
+          return;
+        }
+        await cacheIssuedSnapshot(staffId, snapshot);
+      } catch {
+        /* keep last issued snapshot */
       }
-      const stored = loadPendingSale(workspace.staff.id);
-      if (!stored || (!stored.physicallyCompleted && stored.phase !== "uncertain")) {
-        return;
-      }
-      if (cartRef.current.length > 0 || localIdentityRef.current) {
-        foreignRecoveryRef.current = stored;
-        setForeignRecovery(stored);
-        return;
-      }
-      pendingSaleRef.current = stored;
-      setPendingSale(stored);
-    }
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [workspace.staff.id]);
 
   async function logout() {
-    await signOut();
-    onChanged(null);
+    const accepted = await signOutPreservingSales(workspace.staff.id);
+    if (!accepted) {
+      return;
+    }
+    await onChanged(null);
     navigate("/login");
+  }
+
+  async function withLocalAvailability(found: CashierProductLookupDto): Promise<CashierProductLookupDto> {
+    const next: Record<string, number> = {};
+    for (const variant of found.variants) {
+      next[variant.id] = await pos.availableQuantity(variant.id, variant.availableQuantity);
+    }
+    setEffectiveByVariant(next);
+    return found;
   }
 
   async function onSearch(event: FormEvent) {
@@ -180,8 +306,19 @@ export default function LookupPage({
     setError("");
     setPending("search");
     try {
-      const found = await lookupProductByCode(code);
-      setProduct(found);
+      let found;
+      try {
+        found = await lookupProductByCode(code);
+      } catch (caught) {
+        if (!isNetworkFailure(caught)) {
+          throw caught;
+        }
+        found = await pos.lookupProduct(workspace.staff.id, code);
+        if (!found) {
+          throw new ApiError(404, "NOT_FOUND", "المنتج غير موجود.");
+        }
+      }
+      setProduct(await withLocalAvailability(found));
       setSizeId("");
       setColorId("");
     } catch (caught) {
@@ -219,6 +356,8 @@ export default function LookupPage({
   }, [product, sizeId]);
 
   const selected = product?.variants.find((variant) => variant.size.id === sizeId && variant.color.id === colorId) ?? null;
+  const selectedEffective =
+    selected ? (effectiveByVariant[selected.id] ?? selected.availableQuantity) : 0;
 
   function addSelected() {
     if (!product || !selected) {
@@ -227,15 +366,7 @@ export default function LookupPage({
     if (!beginCartRevision()) {
       return;
     }
-    setCart((current) => {
-      const existing = current.find((line) => line.variant.id === selected.id);
-      if (existing) {
-        return current.map((line) =>
-          line.variant.id === selected.id ? { ...line, quantity: line.quantity + 1 } : line,
-        );
-      }
-      return [...current, { key: crypto.randomUUID(), product, variant: selected, quantity: 1 }];
-    });
+    setCart((current) => [...current, { key: crypto.randomUUID(), product, variant: selected, quantity: 1 }]);
   }
 
   function updateQuantity(key: string, quantity: number) {
@@ -283,6 +414,9 @@ export default function LookupPage({
     frozenPayloadRef.current = null;
     setFrozenPayload(null);
     setQuote(null);
+    quoteOriginRef.current = null;
+    quoteSnapshotRef.current = null;
+    quoteCachedRef.current = null;
     setHandedOver(false);
     const expectedId = pendingSaleRef.current?.saleId ?? null;
     invalidationTailRef.current = invalidationTailRef.current.then(() => abandonPreparedQuote(expectedId));
@@ -298,9 +432,7 @@ export default function LookupPage({
     if (current.physicallyCompleted || current.phase === "uncertain") {
       return;
     }
-    await withPendingSaleLock(workspace.staff.id, () => {
-      clearPendingSale(workspace.staff.id, targetId);
-    });
+    await withPendingSaleLock(workspace.staff.id, () => pos.clearPending(workspace.staff.id, targetId));
     if (pendingSaleRef.current?.saleId !== targetId) {
       return;
     }
@@ -316,9 +448,7 @@ export default function LookupPage({
   }
 
   async function acceptSale(sale: SaleDto, messageAr: string) {
-    await withPendingSaleLock(workspace.staff.id, () => {
-      clearPendingSale(workspace.staff.id, sale.id);
-    });
+    await withPendingSaleLock(workspace.staff.id, () => pos.clearPending(workspace.staff.id, sale.id));
     const recoveringForeign = Boolean(foreignRecoveryRef.current && foreignRecoveryRef.current.saleId === sale.id);
     const recoveringLocal = Boolean(pendingSaleRef.current && pendingSaleRef.current.saleId === sale.id);
     if (recoveringForeign) {
@@ -348,6 +478,187 @@ export default function LookupPage({
     setCompleted(sale);
     setNotice(messageAr);
     setError("");
+    quoteOriginRef.current = null;
+    quoteSnapshotRef.current = null;
+    quoteCachedRef.current = null;
+    if (product) {
+      void withLocalAvailability(product).then((next) => {
+        setProduct(next);
+      });
+    }
+  }
+
+  async function assertLocalCartStock(lines: CartLine[]) {
+    const merged = mergeVariantQuantities(lines.map((line) => ({ variantId: line.variant.id, quantity: line.quantity })));
+    for (const item of merged) {
+      const source = lines.find((line) => line.variant.id === item.variantId);
+      const cached = source?.variant.availableQuantity ?? 0;
+      const available = await pos.availableQuantity(item.variantId, cached);
+      if (available < item.quantity) {
+        throw new SalesValidationError("الكمية المتاحة غير كافية.");
+      }
+    }
+  }
+
+  async function quoteFromSnapshot(pending: PendingSale, payload: SalePayload): Promise<SaleDto> {
+    const snapshot = quoteSnapshotRef.current ?? (await pos.loadSnapshot(workspace.staff.id));
+    if (!snapshot || !workspace.activeBranch) {
+      throw new ApiError(503, "VALIDATION", "لم تكتمل جاهزية نقطة البيع دون اتصال بعد.");
+    }
+    await assertLocalCartStock(cart);
+    quoteSnapshotRef.current = snapshot;
+    quoteCachedRef.current = cachedQuantitiesFromSnapshot(snapshot);
+    const priced = pos.priceCart({
+      staffId: workspace.staff.id,
+      saleId: pending.saleId,
+      operationId: pending.operationId,
+      deviceId: await pos.deviceId(),
+      snapshot,
+      kind: "accepted",
+      branch: snapshot.branch,
+      soldByDisplayName: workspace.staff.displayName,
+      occurredAt: pending.occurredAt ?? new Date().toISOString(),
+      customerName: payload.customerName,
+      customerPhone: payload.customerPhone,
+      employeeDiscountPiasters: payload.employeeDiscountPiasters,
+      discountReason: payload.discountReason,
+      lines: cart.map((line) => ({
+        variantId: line.variant.id,
+        quantity: line.quantity,
+        product: line.product,
+        variant: line.variant,
+      })),
+    });
+    quoteOriginRef.current = "snapshot";
+    return {
+      id: pending.saleId,
+      operationId: pending.operationId,
+      branch: snapshot.branch,
+      soldByStaffId: workspace.staff.id,
+      soldByDisplayName: workspace.staff.displayName,
+      occurredAt: pending.occurredAt ?? new Date().toISOString(),
+      recordedAt: null,
+      customerName: payload.customerName,
+      customerPhone: payload.customerPhone,
+      originalTotalPiasters: priced.originalTotalPiasters,
+      employeeDiscountPiasters: payload.employeeDiscountPiasters,
+      discountReason: payload.discountReason,
+      discountedByStaffId: payload.employeeDiscountPiasters > 0 ? workspace.staff.id : null,
+      finalTotalPiasters: priced.finalTotalPiasters,
+      physicallyCompleted: false,
+      discrepancy: null,
+      lines: priced.lines.map((line) => {
+        const source = cart.find((item) => item.variant.id === line.variantId);
+        if (!source) {
+          throw new ApiError(400, "VALIDATION", "المتغير المحدد غير موجود.");
+        }
+        return {
+          id: crypto.randomUUID(),
+          variantId: line.variantId,
+          quantity: line.quantity,
+          listedUnitPricePiasters: line.listedUnitPricePiasters,
+          originalPiasters: line.originalPiasters,
+          discountPiasters: line.discountPiasters,
+          paidPiasters: line.paidPiasters,
+          allocatedQuantity: 0,
+          unallocatedQuantity: 0,
+          units: line.units,
+          variant: {
+            id: source.variant.id,
+            product: { id: source.product.id, code: source.product.code, nameAr: source.product.nameAr },
+            size: source.variant.size,
+            color: source.variant.color,
+          },
+        };
+      }),
+    };
+  }
+
+  async function persistPhysicalSale(pending: PendingSale, payload: SalePayload): Promise<SaleDto> {
+    const occurredAt = pending.occurredAt ?? new Date().toISOString();
+    const pinnedQuote = quote;
+    const pinnedSnapshot = quoteSnapshotRef.current;
+    const origin = quoteOriginRef.current;
+    if (pinnedQuote && origin === "server") {
+      const recorded = await pos.recordCompleted(
+        offlineFromQuote({
+          staffId: workspace.staff.id,
+          deviceId: await pos.deviceId(),
+          quote: pinnedQuote,
+          occurredAt,
+          kind: "connected",
+          snapshotId: null,
+        }),
+        quoteCachedRef.current ?? cachedQuantitiesFromCart(cart),
+      );
+      return saleFromOffline(recorded);
+    }
+    if (pinnedQuote && origin === "snapshot" && pinnedSnapshot) {
+      const recorded = await pos.recordCompleted(
+        offlineFromQuote({
+          staffId: workspace.staff.id,
+          deviceId: pinnedSnapshot.deviceId,
+          quote: pinnedQuote,
+          occurredAt,
+          kind: "accepted",
+          snapshotId: pinnedSnapshot.snapshotId,
+        }),
+        quoteCachedRef.current ?? cachedQuantitiesFromSnapshot(pinnedSnapshot),
+      );
+      return saleFromOffline(recorded);
+    }
+    throw new PosStorageError("لم تكتمل جاهزية نقطة البيع دون اتصال بعد.");
+  }
+
+  async function syncPersistedSale(saleId: string) {
+    const rows = await pos.listUnsynced(workspace.staff.id);
+    const local = rows.find((row) => row.id === saleId);
+    if (!local) {
+      return;
+    }
+    try {
+      if (local.kind === "accepted" && local.snapshotId) {
+        const synced = await acceptOfflineSale({
+          saleId: local.id,
+          operationId: local.operationId,
+          deviceId: local.deviceId,
+          snapshotId: local.snapshotId,
+          occurredAt: local.occurredAt,
+          customerName: local.customerName,
+          customerPhone: local.customerPhone,
+          employeeDiscountPiasters: local.employeeDiscountPiasters,
+          discountReason: local.discountReason,
+          lines: local.lines.map((line) => ({
+            variantId: line.variantId,
+            quantity: line.quantity,
+            listedUnitPricePiasters: line.listedUnitPricePiasters,
+          })),
+        });
+        if (
+          synced.id === local.id &&
+          synced.finalTotalPiasters === local.finalTotalPiasters &&
+          synced.soldByStaffId === local.soldByStaffId
+        ) {
+          await pos.markAcknowledged(workspace.staff.id, local.id);
+        }
+        return;
+      }
+      const synced = await completeSale({
+        saleId: local.id,
+        operationId: local.operationId,
+        occurredAt: local.occurredAt,
+        customerName: local.customerName,
+        customerPhone: local.customerPhone,
+        employeeDiscountPiasters: local.employeeDiscountPiasters,
+        discountReason: local.discountReason,
+        lines: local.lines.map((line) => ({ variantId: line.variantId, quantity: line.quantity })),
+      });
+      if (synced.id === local.id && synced.finalTotalPiasters === local.finalTotalPiasters) {
+        await pos.markAcknowledged(workspace.staff.id, local.id);
+      }
+    } catch {
+      /* keep unacknowledged */
+    }
   }
 
   async function submit(kind: "prepare" | "complete") {
@@ -446,27 +757,44 @@ export default function LookupPage({
       return;
     }
     try {
-      const assignment = await withPendingSaleLock(workspace.staff.id, () =>
-        assignPendingSale({
-          staffId: workspace.staff.id,
-          digest,
-          localSaleId: local.saleId,
-          localOperationId: local.operationId,
-          physicallyCompleted: physical,
-          payload,
-          occurredAt: local.occurredAt,
-        }),
-      );
-      if (assignment.kind === "blocked") {
+      const pendingRecord = {
+        staffId: workspace.staff.id,
+        saleId: local.saleId,
+        operationId: local.operationId,
+        phase: "uncertain" as const,
+        digest,
+        physicallyCompleted: physical || local.physicallyCompleted,
+        payload,
+        occurredAt: local.occurredAt,
+        quote,
+        snapshot: quoteSnapshotRef.current,
+        quoteOrigin: quoteOriginRef.current,
+        cachedByVariant: recordFromCached(quoteCachedRef.current),
+      };
+      const assignment = await withPendingSaleLock(workspace.staff.id, () => pos.savePending(pendingRecord));
+      if (assignment === "blocked") {
+        const stored = await pos.loadPending(workspace.staff.id);
         setError(
-          assignment.pending.physicallyCompleted
+          stored?.physicallyCompleted
             ? "تم تسليم البضاعة واستلام النقد. لا تطلب الدفع مرة أخرى. تحقق من النتيجة أو أعد المحاولة بنفس البيانات."
             : "توجد عملية بيع غير مؤكدة. تحقق من نتيجتها قبل بدء بيع جديد.",
         );
         submittedRef.current = local;
         localIdentityRef.current = { saleId: local.saleId, operationId: local.operationId };
-        foreignRecoveryRef.current = assignment.pending;
-        setForeignRecovery(assignment.pending);
+        if (stored) {
+          const blocked: PendingSale = {
+            saleId: stored.saleId,
+            operationId: stored.operationId,
+            staffId: stored.staffId,
+            phase: stored.phase,
+            digest: stored.digest,
+            physicallyCompleted: stored.physicallyCompleted,
+            payload: stored.payload,
+            occurredAt: stored.occurredAt,
+          };
+          foreignRecoveryRef.current = blocked;
+          setForeignRecovery(blocked);
+        }
         if (local.physicallyCompleted) {
           pendingSaleRef.current = local;
           setPendingSale(local);
@@ -475,7 +803,13 @@ export default function LookupPage({
         }
         return;
       }
-      const nextPending = assignment.pending;
+      const nextPending: PendingSale = {
+        ...local,
+        digest,
+        phase: "uncertain",
+        physicallyCompleted: physical || local.physicallyCompleted,
+        payload,
+      };
       pendingSaleRef.current = nextPending;
       submittedRef.current = nextPending;
       setPendingSale(nextPending);
@@ -487,7 +821,24 @@ export default function LookupPage({
         occurredAt: nextPending.occurredAt,
         ...payload,
       };
-      const result = kind === "prepare" ? await prepareSale(body) : await completeSale(body);
+      if (kind === "complete") {
+        const saved = await persistPhysicalSale(nextPending, payload);
+        await acceptSale(saved, "تم حفظ البيع النقدي.");
+        void syncPersistedSale(saved.id);
+        return;
+      }
+      await assertLocalCartStock(cart);
+      let result: SaleDto;
+      try {
+        result = await prepareSale(body);
+        quoteOriginRef.current = "server";
+        quoteCachedRef.current = cachedQuantitiesFromCart(cart);
+      } catch (caught) {
+        if (!isNetworkFailure(caught)) {
+          throw caught;
+        }
+        result = await quoteFromSnapshot(nextPending, payload);
+      }
       if (revisionEpochRef.current !== epoch) {
         setError("أكد الأسعار بعد تعديل السلة قبل إتمام البيع.");
         revisionBlockRef.current = true;
@@ -496,18 +847,27 @@ export default function LookupPage({
         return;
       }
       if (result.physicallyCompleted) {
-        await acceptSale(result, kind === "complete" ? "تم حفظ البيع النقدي." : "تم العثور على البيع المحفوظ.");
+        await acceptSale(result, "تم العثور على البيع المحفوظ.");
         return;
       }
       const prepared: PendingSale = { ...nextPending, phase: "prepared", payload };
       pendingSaleRef.current = prepared;
-      await withPendingSaleLock(workspace.staff.id, () => {
-        const stored = loadPendingSale(workspace.staff.id);
-        if (stored && stored.saleId !== prepared.saleId) {
-          return;
-        }
-        savePendingSale(prepared);
-      });
+      await withPendingSaleLock(workspace.staff.id, () =>
+        pos.savePending({
+          staffId: workspace.staff.id,
+          saleId: prepared.saleId,
+          operationId: prepared.operationId,
+          phase: "prepared",
+          digest,
+          physicallyCompleted: false,
+          payload,
+          occurredAt: prepared.occurredAt,
+          quote: result,
+          snapshot: quoteSnapshotRef.current,
+          quoteOrigin: quoteOriginRef.current,
+          cachedByVariant: recordFromCached(quoteCachedRef.current),
+        }),
+      );
       setPendingSale(prepared);
       setQuote(result);
       revisionBlockRef.current = false;
@@ -515,6 +875,34 @@ export default function LookupPage({
       setNotice("تم قبول الأسعار من الخادم. يمكنك تعديل السلة أو تأكيد التسليم والدفع.");
     } catch (caught) {
       const current = submittedRef.current ?? pendingSaleRef.current;
+      if (caught instanceof PosStorageError) {
+        if (current) {
+          const uncertain: PendingSale = {
+            ...current,
+            phase: "uncertain",
+            physicallyCompleted: physical || current.physicallyCompleted,
+            payload,
+          };
+          pendingSaleRef.current = uncertain;
+          setPendingSale(uncertain);
+        }
+        setError("تعذر حفظ البيع محلياً. لا تطلب الدفع مرة أخرى. أعد المحاولة للحفظ.");
+        return;
+      }
+      if (caught instanceof SalesValidationError) {
+        if (current && (physical || current.physicallyCompleted)) {
+          const uncertain: PendingSale = {
+            ...current,
+            phase: "uncertain",
+            physicallyCompleted: true,
+            payload,
+          };
+          pendingSaleRef.current = uncertain;
+          setPendingSale(uncertain);
+        }
+        setError(caught.message);
+        return;
+      }
       if (caught instanceof ApiError && caught.status === 409) {
         const found = await lookupSaleOperation(current?.operationId ?? "");
         if (found?.physicallyCompleted) {
@@ -524,13 +912,22 @@ export default function LookupPage({
       }
       if (caught instanceof ApiError && (caught.status === 400 || caught.status === 404) && current && !current.physicallyCompleted) {
         const rejected: PendingSale = { ...current, phase: "rejected", digest: null };
-        await withPendingSaleLock(workspace.staff.id, () => {
-          const stored = loadPendingSale(workspace.staff.id);
-          if (stored && stored.saleId !== rejected.saleId) {
-            return;
-          }
-          savePendingSale(rejected);
-        });
+        await withPendingSaleLock(workspace.staff.id, () =>
+          pos.savePending({
+            staffId: workspace.staff.id,
+            saleId: rejected.saleId,
+            operationId: rejected.operationId,
+            phase: "rejected",
+            digest: null,
+            physicallyCompleted: false,
+            payload: rejected.payload,
+            occurredAt: rejected.occurredAt,
+            quote: null,
+            snapshot: null,
+            quoteOrigin: null,
+            cachedByVariant: null,
+          }),
+        );
         pendingSaleRef.current = rejected;
         submittedRef.current = rejected;
         frozenPayloadRef.current = null;
@@ -547,13 +944,22 @@ export default function LookupPage({
           physicallyCompleted: physical || current.physicallyCompleted,
           payload,
         };
-        await withPendingSaleLock(workspace.staff.id, () => {
-          const stored = loadPendingSale(workspace.staff.id);
-          if (stored && stored.saleId !== uncertain.saleId) {
-            return;
-          }
-          savePendingSale(uncertain);
-        });
+        await withPendingSaleLock(workspace.staff.id, () =>
+          pos.savePending({
+            staffId: workspace.staff.id,
+            saleId: uncertain.saleId,
+            operationId: uncertain.operationId,
+            phase: "uncertain",
+            digest,
+            physicallyCompleted: uncertain.physicallyCompleted,
+            payload,
+            occurredAt: uncertain.occurredAt,
+            quote,
+            snapshot: quoteSnapshotRef.current,
+            quoteOrigin: quoteOriginRef.current,
+            cachedByVariant: recordFromCached(quoteCachedRef.current),
+          }),
+        );
         pendingSaleRef.current = uncertain;
         submittedRef.current = uncertain;
         setPendingSale(uncertain);
@@ -717,8 +1123,8 @@ export default function LookupPage({
           {selected ? (
             <div data-testid="selected-variant">
               <p>سعر البيع: {formatEgpFromPiasters(selected.sellingPricePiasters)}</p>
-              <p data-testid="available-quantity">الكمية المتاحة: {selected.availableQuantity}</p>
-              {selected.availableQuantity === 0 ? (
+              <p data-testid="available-quantity">الكمية المتاحة: {selectedEffective}</p>
+              {selectedEffective === 0 ? (
                 <p className="muted">غير متوفر في المخزون حتى يتم الاستلام.</p>
               ) : (
                 <button type="button" disabled={formLocked} onClick={addSelected}>إضافة إلى السلة</button>

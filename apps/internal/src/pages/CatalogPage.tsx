@@ -18,13 +18,13 @@ import {
   listColors,
   listProducts,
   listSizes,
-  signOut,
   updateCategory,
   updateColor,
   updateProduct,
   updateSize,
 } from "../api.ts";
 import { egpInputToPiasters, formatEgpFromPiasters, piastersToEgpInput } from "../money.ts";
+import { signOutPreservingSales } from "../session.ts";
 
 type VariantDraft = {
   key: string;
@@ -103,8 +103,11 @@ export default function CatalogPage({
   }, []);
 
   async function logout() {
-    await signOut();
-    onChanged(null);
+    const accepted = await signOutPreservingSales(workspace.staff.id);
+    if (!accepted) {
+      return;
+    }
+    await onChanged(null);
     navigate("/login");
   }
 

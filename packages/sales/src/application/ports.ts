@@ -1,6 +1,8 @@
 import type {
   BranchDto,
+  CashierProductLookupDto,
   ManagerSaleDto,
+  PosPriceSnapshotDto,
   SaleDto,
   VariantIdentityDto,
 } from "@bravos/contracts";
@@ -26,8 +28,32 @@ export type ListedPriceReader = {
   getListedPrices(ids: string[]): Promise<ListedPriceBasis[]>;
 };
 
+export type CashierCatalogReader = {
+  listCashierProducts(auth: VerifiedAuth): Promise<CashierProductLookupDto[]>;
+};
+
+export type PriceSnapshotPrice = {
+  variantId: string;
+  listedUnitPricePiasters: number;
+};
+
+export type PriceSnapshotRecord = {
+  id: string;
+  staffId: string;
+  branchId: string;
+  deviceId: string;
+  issuedAt: Date;
+  prices: PriceSnapshotPrice[];
+};
+
+export type PriceSnapshotStore = {
+  insert(input: PriceSnapshotRecord): Promise<PriceSnapshotRecord>;
+  getById(id: string): Promise<PriceSnapshotRecord | null>;
+};
+
 export type SaleUnitWrite = {
   unitIndex: number;
+  quantity: number;
   listedPiasters: number;
   discountPiasters: number;
   paidPiasters: number;
@@ -111,8 +137,16 @@ export type SaleStore = {
 };
 
 export type SalesUnitOfWork = {
-  run<T>(work: (tx: { sales: SaleStore; inventory: InventoryTransaction }) => Promise<T>): Promise<T>;
+  run<T>(
+    work: (tx: {
+      sales: SaleStore;
+      inventory: InventoryTransaction;
+      snapshots: PriceSnapshotStore;
+    }) => Promise<T>,
+  ): Promise<T>;
 };
+
+export type IssuePriceSnapshotResult = PosPriceSnapshotDto;
 
 export type PricedCommandLines = VariantLineAllocation[];
 
