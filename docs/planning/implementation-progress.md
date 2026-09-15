@@ -2,7 +2,7 @@
 
 Updated: 2026-09-15 (Cairo). The user authorized the full 28-ticket queue and now requests parallel native GPT-5.6 Sol agents at HIGH effort. Root guides, reviews, independently verifies and commits accepted slices. Internal operations launch before the public store. No hosting or domain purchase is authorized now.
 
-Current work: Seventeen of 28 tickets are independently accepted: 01–15, 17 and 18. The Sol HIGH batch for offline promotions (11), exchanges (13), and receiving corrections (15) is complete after independent Standards/Spec review, repairs and root verification of the integrated application. See [the accepted batch review](../reviews/offline-promotions-exchanges-receiving-review.md) for exact evidence. Quantity corrections (16) and public checkout (19) are now the next unblocked deliverables. No important features have been removed.
+Current work: Seventeen of 28 tickets are independently accepted: 01–15, 17 and 18. Commit `8993585` is pushed and issues #12, #14 and #16 are closed. The user instructed continuation. Three native Sol HIGH agents are implementing quantity corrections (16), guest checkout backend and delivery-area management (19), and storefront checkout UI (19) from that accepted baseline. Root coordinates their public contracts, independent review, integration and final verification. No additional ticket is accepted until those checks pass. No important features have been removed.
 
 ## Source and delivery status
 
@@ -34,10 +34,10 @@ Each item includes its necessary schema, business behavior, API, usable UI and b
 | [13](https://github.com/yousif-mansi/Bravos-system/issues/14) | Complete exchanges with replacement stock and actual cash differences | 12, 09, 10 | 88 / A06, A25, A26, A36 | Independently verified |
 | [14](https://github.com/yousif-mansi/Bravos-system/issues/15) | Correct erroneous saved sales and Returns while preserving actual effects | 12 | 41, 79, 87 / A12, A24, A25 | Independently verified |
 | [15](https://github.com/yousif-mansi/Bravos-system/issues/16) | Correct receiving quantities and historical costs through linked records | 03, 12 | 26, 83, 95 / A22, A25 | Independently verified |
-| [16](https://github.com/yousif-mansi/Bravos-system/issues/17) | Coordinate quantity corrections and reconcile late completed sales | 06, 15 | 27, 28, 48 / A20, A22 | Queued |
+| [16](https://github.com/yousif-mansi/Bravos-system/issues/17) | Coordinate quantity corrections and reconcile late completed sales | 06, 15 | 27, 28, 48 / A20, A22 | Implementing with Sol HIGH |
 | [17](https://github.com/yousif-mansi/Bravos-system/issues/18) | Manage product media and publication with a safe public catalog | 03 | 11, 16, 17, 18, 19, 50 / A02, A03, A04 | Independently verified |
 | [18](https://github.com/yousif-mansi/Bravos-system/issues/19) | Browse the Arabic storefront and maintain a valid guest cart | 17 | 51, 52, 53, 54, 60, 62, 105, 106 / A02, A04, A06, A33 | Independently verified |
-| [19](https://github.com/yousif-mansi/Bravos-system/issues/20) | Configure delivery areas and submit validated guest COD requests | 18, 09, 10 | 55, 56, 57, 58, 59, 61, 64, 111, 114 / A06, A10, A13, A29, A35 | Queued |
+| [19](https://github.com/yousif-mansi/Bravos-system/issues/20) | Configure delivery areas and submit validated guest COD requests | 18, 09, 10 | 55, 56, 57, 58, 59, 61, 64, 111, 114 / A06, A10, A13, A29, A35 | Implementing with Sol HIGH |
 | [20](https://github.com/yousif-mansi/Bravos-system/issues/21) | Confirm WhatsApp-agreed online orders with protected FIFO allocations | 19, 06 | 63, 65, 66, 67, 71, 72, 73 / A01, A10, A11, A13, A14, A16 | Queued |
 | [21](https://github.com/yousif-mansi/Bravos-system/issues/22) | Fulfill online orders and close inspected failed deliveries | 20 | 68, 69, 70, 74, 113 / A10, A14, A15, A16, A36 | Queued |
 | [22](https://github.com/yousif-mansi/Bravos-system/issues/23) | Handle delivered online Returns and exchanges with exact refund breakdowns | 12, 13, 21 | 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 97 / A23, A24, A25, A26, A29, A36 | Queued |
@@ -135,3 +135,15 @@ The user instructed continuation after accepted commit `1caace4`. All prerequisi
 | 15 receiving quantity/cost corrections | .scratch/worktrees/15-receiving-corrections | 019 | 55454 |
 
 Root coordinated public interfaces, independent reviews and integration. Read/edit work ran in parallel; tests/builds used one runtime slot to avoid Windows memory contention. These three tickets are accepted, bringing the count to 17/28. Root verified all 16 workspace projects, 145 distinct HTTP tests (141/145 full run plus repaired 4/4 recheck), 81 distinct browser tests (80/81 full run plus repaired 1/1 recheck), production builds and bundle separation, architecture boundaries, migrations 001–019 with rollback and zero-advisory audit. All actionable findings on both review axes are resolved. See [the batch review](../reviews/offline-promotions-exchanges-receiving-review.md) for repairs, exact evidence and migration downgrade constraints. Tickets 16 and 19 are unblocked; later work remains queued.
+
+## Active batch 16 and 19 — 2026-09-15
+
+All three GPT-5.6 Sol HIGH lanes start from accepted `8993585`. Ticket 16 uses migration 020; ticket 19 uses migration 021. Checkout API and UI agents agree a public contract before dependent implementation. Each lane has separate dependencies; heavy runtime checks use one slot to avoid memory contention.
+
+| Scope | Worktree | Agent |
+| --- | --- | --- |
+| 16 coordinated quantity correction and late-sale reconciliation | .scratch/worktrees/16-stock-corrections | sol16_stock_corrections |
+| 19 guest request API and manager delivery areas | .scratch/worktrees/19-checkout-api | sol19_checkout_api |
+| 19 storefront checkout and browser acceptance | .scratch/worktrees/19-checkout-ui | sol19_checkout_ui |
+
+Root owns integration, review, verification and commits. Count-boundary/device evidence, safe late-sale reconciliation, real batch costs, no-hold pending requests, safe guest replay, current quantity/price/fee validation and usable Arabic recovery are the primary acceptance focus. Dependent order confirmation and opening import remain queued until their prerequisite is accepted.
