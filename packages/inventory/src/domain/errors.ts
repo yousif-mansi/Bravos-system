@@ -13,3 +13,19 @@ export class OperationConflictError extends Error {
     this.name = "OperationConflictError";
   }
 }
+
+export class StockMutationPausedError extends Error {
+  readonly code = "STOCK_MUTATION_PAUSED" as const;
+  constructor(message = "تغييرات المخزون متوقفة مؤقتاً لحين انتهاء تنسيق العد.") {
+    super(message);
+    this.name = "StockMutationPausedError";
+  }
+}
+
+export class CoordinationStaleError extends Error {
+  readonly code = "COORDINATION_STALE" as const;
+  constructor(message = "تغير المخزون بعد بدء التنسيق. ألغِ التنسيق وابدأ مزامنة وعداً جديدين.") {
+    super(message);
+    this.name = "CoordinationStaleError";
+  }
+}

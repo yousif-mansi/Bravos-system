@@ -26,7 +26,9 @@ const ExpensesPage = lazy(() => import("./pages/ExpensesPage.tsx"));
 const OffersPage = lazy(() => import("./pages/OffersPage.tsx"));
 const ReturnsPage = lazy(() => import("./pages/ReturnsPage.tsx"));
 const CorrectionsPage = lazy(() => import("./pages/CorrectionsPage.tsx"));
+const StockCorrectionsPage = lazy(() => import("./pages/StockCorrectionsPage.tsx"));
 const StorefrontSettingsPage = lazy(() => import("./pages/StorefrontSettingsPage.tsx"));
+const DeliveryAreasPage = lazy(() => import("./pages/DeliveryAreasPage.tsx"));
 
 export function App() {
   const location = useLocation();
@@ -412,6 +414,18 @@ export function App() {
           }
         />
         <Route
+          path="/delivery-areas"
+          element={
+            workspace?.capabilities.manageCatalog ? (
+              <Suspense fallback={<main className="shell">جارٍ التحميل…</main>}>
+                <DeliveryAreasPage workspace={workspace} />
+              </Suspense>
+            ) : (
+              <Navigate to={workspace ? "/workspace" : "/login"} replace />
+            )
+          }
+        />
+        <Route
           path="/lookup"
           element={
             workspace?.capabilities.cashier ? (
@@ -489,6 +503,18 @@ export function App() {
             workspace?.activeBranch && workspace.staff.role === "manager" && workspace.capabilities.manageInventory ? (
               <Suspense fallback={<main className="shell">جارٍ التحميل…</main>}>
                 <CorrectionsPage workspace={workspace} onChanged={replaceWorkspace} />
+              </Suspense>
+            ) : (
+              <Navigate to={workspace?.activeBranch ? "/workspace" : workspace ? "/select-branch" : "/login"} replace />
+            )
+          }
+        />
+        <Route
+          path="/stock-corrections"
+          element={
+            workspace?.activeBranch && workspace.staff.role === "manager" && workspace.capabilities.manageInventory ? (
+              <Suspense fallback={<main className="shell">جارٍ التحميل…</main>}>
+                <StockCorrectionsPage workspace={workspace} />
               </Suspense>
             ) : (
               <Navigate to={workspace?.activeBranch ? "/workspace" : workspace ? "/select-branch" : "/login"} replace />

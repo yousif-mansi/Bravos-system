@@ -1,7 +1,11 @@
 import type {
+  CountCoordinationDto,
   InventoryBatchDto,
   InventorySettingsDto,
   LowStockVariantDto,
+  StockCorrectionDto,
+  StockReconciliationCaseDto,
+  StockReconciliationDto,
   VariantLowStockDto,
 } from "@bravos/contracts";
 import {
@@ -10,11 +14,14 @@ import {
   UnauthenticatedError,
 } from "@bravos/identity";
 import { InventoryValidationError } from "../domain/errors.ts";
-import { assertThreshold } from "../domain/money.ts";
+import { assertQuantity, assertThreshold } from "../domain/money.ts";
 import type {
   InventoryActorPort,
+  CountCoordinationRecord,
   InventoryReadStore,
   InventoryServices,
+  StockCoordinationStore,
+  StockCorrectionRecord,
   VariantIdentityReader,
   VerifiedAuth,
 } from "./ports.ts";
@@ -27,15 +34,17 @@ export function createInventoryServices(ports: {
   store: InventoryReadStore;
   actors: InventoryActorPort;
   variants: VariantIdentityReader;
+  coordination: StockCoordinationStore;
 }): InventoryServices {
-  async function requireManager(auth: VerifiedAuth | null) {
-    if (!auth) {
-      throw new UnauthenticatedError();
-    }
+  async function requireStaff(auth: VerifiedAuth | null) {
+    if (!auth) throw new UnauthenticatedError();
     const staff = await ports.actors.getStaff(auth.staffId);
-    if (!staff || staff.disabled) {
-      throw new UnauthenticatedError();
-    }
+    if (!staff || staff.disabled) throw new UnauthenticatedError();
+    return staff;
+  }
+
+  async function requireManager(auth: VerifiedAuth | null) {
+    const staff = await requireStaff(auth);
     if (!isManager(staff)) {
       throw new ForbiddenError();
     }
@@ -47,6 +56,58 @@ export function createInventoryServices(ports: {
     const found = await ports.variants.getVariants(unique);
     const byId = new Map(found.map((item) => [item.id, item]));
     return byId;
+  }
+
+  async function staffSummary(staffId: string) {
+    const staff = await ports.actors.getStaff(staffId);
+    if (!staff) throw new InventoryValidationError("المستخدم المسؤول غير موجود.");
+    return {
+      id: staff.id,
+      loginName: staff.loginName,
+      displayName: staff.displayName,
+      role: staff.role,
+      disabled: staff.disabled,
+    };
+  }
+
+  async function hydrateCoordination(record: CountCoordinationRecord) {
+    return {
+      id: record.id,
+      operationId: record.operationId,
+      status: record.status,
+      boundaryStockVersion: record.boundaryStockVersion,
+      boundaryAt: record.boundaryAt,
+      expiresAt: record.expiresAt,
+      startedBy: await staffSummary(record.startedByStaffId),
+      finishedBy: record.finishedByStaffId ? await staffSummary(record.finishedByStaffId) : null,
+      finishedAt: record.finishedAt,
+      devices: record.devices,
+    } satisfies CountCoordinationDto;
+  }
+
+  async function hydrateCorrection(record: StockCorrectionRecord) {
+    const variants = await hydrateVariants([record.variantId]);
+    const variant = variants.get(record.variantId);
+    if (!variant) throw new InventoryValidationError("المتغير المحدد غير موجود.");
+    return {
+      id: record.id,
+      operationId: record.operationId,
+      coordinationId: record.coordinationId,
+      variantId: record.variantId,
+      variant,
+      previousAvailableQuantity: record.previousAvailableQuantity,
+      correctedAvailableQuantity: record.correctedAvailableQuantity,
+      quantityDelta: record.quantityDelta,
+      reason: record.reason,
+      positiveSourceBatchId: record.positiveSourceBatchId,
+      changedBy: await staffSummary(record.changedByStaffId),
+      changedAt: record.changedAt,
+      boundaryStockVersion: record.boundaryStockVersion,
+      coordinationBoundaryAt: record.coordinationBoundaryAt,
+      boundaryAt: record.boundaryAt,
+      devices: record.devices,
+      batches: record.batches,
+    } satisfies StockCorrectionDto;
   }
 
   return {
@@ -128,6 +189,175 @@ export function createInventoryServices(ports: {
       const threshold = assertThreshold(body.lowStockThreshold, "حد التنبيه غير صالح.");
       return ports.store.upsertVariantThreshold(id, threshold, staff.id);
     },
+
+    async currentCoordination(auth) {
+      await requireManager(auth);
+      const record = await ports.coordination.current();
+      return record ? hydrateCoordination(record) : null;
+    },
+
+    async currentStockPause(auth) {
+      await requireStaff(auth);
+      const record = await ports.coordination.current();
+      if (!record || record.status !== "active" || new Date(record.expiresAt).getTime() <= Date.now()) return null;
+      return {
+        coordinationId: record.id,
+        boundaryStockVersion: record.boundaryStockVersion,
+        boundaryAt: record.boundaryAt,
+        expiresAt: record.expiresAt,
+      };
+    },
+
+    async acknowledgeCoordination(auth, input) {
+      const staff = await requireStaff(auth);
+      const body = expectObject(input, "بيانات تأكيد نقطة البيع غير صالحة.");
+      assertAllowedKeys(body, new Set(["coordinationId", "deviceId", "snapshotId"]), "بيانات تأكيد نقطة البيع غير صالحة.");
+      return ports.coordination.acknowledge({
+        coordinationId: assertUuid(body.coordinationId, "تنسيق العد غير موجود."),
+        deviceId: assertUuid(body.deviceId, "معرّف الجهاز غير صالح."),
+        snapshotId: assertUuid(body.snapshotId, "لقطة المزامنة غير موجودة."),
+        actorStaffId: staff.id,
+      });
+    },
+
+    async startCoordination(auth, input) {
+      const manager = await requireManager(auth);
+      const body = expectObject(input, "بيانات تنسيق العد غير صالحة.");
+      assertAllowedKeys(body, new Set(["operationId"]), "بيانات تنسيق العد غير صالحة.");
+      const operationId = assertUuid(body.operationId, "معرّف العملية غير صالح.");
+      const payloadFingerprint = await sha256(JSON.stringify({ target: "count-coordination", operationId, actorStaffId: manager.id }));
+      const result = await ports.coordination.start({
+        id: crypto.randomUUID(),
+        operationId,
+        payloadFingerprint,
+        actorStaffId: manager.id,
+        expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+      });
+      return { value: await hydrateCoordination(result.value), created: result.created };
+    },
+
+    async cancelCoordination(auth, input) {
+      const manager = await requireManager(auth);
+      const body = expectObject(input, "بيانات إلغاء التنسيق غير صالحة.");
+      assertAllowedKeys(body, new Set(["operationId", "coordinationId"]), "بيانات إلغاء التنسيق غير صالحة.");
+      const operationId = assertUuid(body.operationId, "معرّف العملية غير صالح.");
+      const coordinationId = assertUuid(body.coordinationId, "تنسيق العد غير موجود.");
+      const payloadFingerprint = await sha256(JSON.stringify({ target: "cancel-count-coordination", operationId, coordinationId, actorStaffId: manager.id }));
+      return hydrateCoordination(await ports.coordination.cancel({
+        operationId,
+        coordinationId,
+        payloadFingerprint,
+        actorStaffId: manager.id,
+      }));
+    },
+
+    async finalizeStockCorrection(auth, input) {
+      const manager = await requireManager(auth);
+      const body = expectObject(input, "بيانات تصحيح الكمية غير صالحة.");
+      assertAllowedKeys(
+        body,
+        new Set(["operationId", "coordinationId", "variantId", "previousAvailableQuantity", "correctedAvailableQuantity", "reason", "positiveSourceBatchId"]),
+        "بيانات تصحيح الكمية غير صالحة.",
+      );
+      const operationId = assertUuid(body.operationId, "معرّف العملية غير صالح.");
+      const coordinationId = assertUuid(body.coordinationId, "تنسيق العد غير موجود.");
+      const variantId = assertUuid(body.variantId, "المتغير المحدد غير موجود.");
+      const previousAvailableQuantity = assertThreshold(body.previousAvailableQuantity, "الكمية السابقة غير صالحة.");
+      const correctedAvailableQuantity = assertThreshold(body.correctedAvailableQuantity, "الكمية المصححة غير صالحة.");
+      const reason = assertReason(body.reason);
+      const positiveSourceBatchId = body.positiveSourceBatchId === undefined || body.positiveSourceBatchId === null
+        ? null
+        : assertUuid(body.positiveSourceBatchId, "دفعة التكلفة المحددة غير موجودة.");
+      if (!(await ports.variants.getVariants([variantId]))[0]) throw new InventoryValidationError("المتغير المحدد غير موجود.");
+      const payloadFingerprint = await sha256(JSON.stringify({
+        target: "stock-correction",
+        operationId,
+        coordinationId,
+        variantId,
+        previousAvailableQuantity,
+        correctedAvailableQuantity,
+        reason,
+        positiveSourceBatchId,
+        actorStaffId: manager.id,
+      }));
+      const result = await ports.coordination.finalize({
+        id: crypto.randomUUID(),
+        operationId,
+        payloadFingerprint,
+        coordinationId,
+        variantId,
+        previousAvailableQuantity,
+        correctedAvailableQuantity,
+        reason,
+        positiveSourceBatchId,
+        actorStaffId: manager.id,
+      });
+      return { value: await hydrateCorrection(result.value), created: result.created };
+    },
+
+    async listStockCorrections(auth) {
+      await requireManager(auth);
+      return Promise.all((await ports.coordination.listCorrections()).map(hydrateCorrection));
+    },
+
+    async listStockReconciliations(auth) {
+      await requireManager(auth);
+      const rows = await ports.coordination.listReconciliations();
+      return Promise.all(rows.map(async ({ resolvedByStaffId, ...row }) => ({
+        ...row,
+        resolvedBy: await staffSummary(resolvedByStaffId),
+      } satisfies StockReconciliationDto)));
+    },
+
+    async listStockReconciliationCases(auth) {
+      await requireManager(auth);
+      return ports.coordination.listReconciliationCases() as Promise<StockReconciliationCaseDto[]>;
+    },
+
+    async reconcileLateSale(auth, input) {
+      const manager = await requireManager(auth);
+      const body = expectObject(input, "بيانات مصالحة البيع المتأخر غير صالحة.");
+      assertAllowedKeys(
+        body,
+        new Set(["operationId", "correctionId", "saleId", "variantId", "resolution", "quantity"]),
+        "بيانات مصالحة البيع المتأخر غير صالحة.",
+      );
+      const operationId = assertUuid(body.operationId, "معرّف العملية غير صالح.");
+      const correctionId = assertUuid(body.correctionId, "تصحيح الكمية المحدد غير موجود.");
+      const saleId = assertUuid(body.saleId, "البيع المحدد غير موجود.");
+      const variantId = assertUuid(body.variantId, "المتغير المحدد غير موجود.");
+      const resolution = assertReconciliationResolution(body.resolution);
+      const quantity = assertQuantity(body.quantity, "كمية المصالحة غير صالحة.");
+      const payloadFingerprint = await sha256(JSON.stringify({
+        target: "stock-reconciliation",
+        operationId,
+        correctionId,
+        saleId,
+        variantId,
+        resolution,
+        quantity,
+        actorStaffId: manager.id,
+      }));
+      const result = await ports.coordination.reconcile({
+        id: crypto.randomUUID(),
+        operationId,
+        payloadFingerprint,
+        correctionId,
+        saleId,
+        variantId,
+        resolution,
+        quantity,
+        actorStaffId: manager.id,
+      });
+      const { resolvedByStaffId, ...row } = result.value;
+      return {
+        value: {
+          ...row,
+          resolvedBy: await staffSummary(resolvedByStaffId),
+        },
+        created: result.created,
+      };
+    },
   };
 }
 
@@ -200,6 +430,27 @@ function assertUuid(value: unknown, messageAr: string): string {
     throw new InventoryValidationError(messageAr);
   }
   return value;
+}
+
+function assertReason(value: unknown): string {
+  if (typeof value !== "string") throw new InventoryValidationError("سبب التصحيح مطلوب.");
+  const reason = value.trim();
+  if (!reason || reason.length > 500) throw new InventoryValidationError("سبب التصحيح مطلوب وبحد أقصى 500 حرف.");
+  return reason;
+}
+
+function assertReconciliationResolution(
+  value: unknown,
+): "included_in_count" | "allocate_missing_source" {
+  if (value !== "included_in_count" && value !== "allocate_missing_source") {
+    throw new InventoryValidationError("طريقة مصالحة البيع المتأخر غير صالحة.");
+  }
+  return value;
+}
+
+async function sha256(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest), (item) => item.toString(16).padStart(2, "0")).join("");
 }
 
 export type { InventoryServices, VariantLowStockDto, InventorySettingsDto };

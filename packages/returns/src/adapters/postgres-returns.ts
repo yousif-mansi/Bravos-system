@@ -22,6 +22,31 @@ import type {
 
 type Queryable = Pick<Pool, "query"> | PoolClient;
 
+export function createPostgresStockReconciliationReturnFacts(queryable: Queryable) {
+  return {
+    async hasPostedForSourceLines(saleId: string, saleLineIds: string[]) {
+      if (saleLineIds.length === 0) return false;
+      const result = await queryable.query<{ present: boolean }>(
+        `SELECT EXISTS (
+           SELECT 1
+           FROM returns_return r
+           JOIN returns_return_line rl ON rl.return_id = r.id
+           WHERE r.source_sale_id = $1 AND rl.source_sale_line_id = ANY($2::uuid[]) AND r.status = 'posted'
+         ) AS present`,
+        [saleId, saleLineIds],
+      );
+      return result.rows[0]?.present ?? false;
+    },
+    async listIdsForSale(saleId: string) {
+      const result = await queryable.query<{ id: string }>(
+        `SELECT id FROM returns_return WHERE source_sale_id = $1`,
+        [saleId],
+      );
+      return result.rows.map((row) => row.id);
+    },
+  };
+}
+
 type SourceRow = {
   id: string;
   operation_id: string;

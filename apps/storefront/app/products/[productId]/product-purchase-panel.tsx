@@ -26,12 +26,12 @@ export function ProductPurchasePanel({ product }: { product: PurchaseProduct }) 
   );
   const remaining = Math.max(0, (selected?.availableQuantity ?? 0) - alreadyInCart);
 
-  function addToCart() {
+  async function addToCart() {
     if (!selected) {
       setMessage("اختر المقاس واللون أولاً.");
       return;
     }
-    const added = cart.add({
+    const added = await cart.add({
       productId: product.id,
       variantId: selected.id,
       productNameAr: product.nameAr,
@@ -85,7 +85,7 @@ export function ProductPurchasePanel({ product }: { product: PurchaseProduct }) 
             disabled={!selected || remaining === 0}
             onChange={(event) => setQuantity(Number(event.target.value))}
           />
-          <button type="button" disabled={!selected || remaining === 0 || !Number.isInteger(quantity) || quantity < 1 || quantity > remaining} onClick={addToCart}>
+          <button type="button" disabled={!selected || remaining === 0 || !Number.isInteger(quantity) || quantity < 1 || quantity > remaining} onClick={() => void addToCart()}>
             {remaining === 0 && selected ? "الكمية المتاحة في السلة" : "أضف إلى السلة"}
           </button>
         </div>

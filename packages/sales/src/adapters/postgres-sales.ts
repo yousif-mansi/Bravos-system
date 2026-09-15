@@ -1,7 +1,12 @@
 import type { CompletedOperationProofDto } from "@bravos/contracts";
 import type { Pool, PoolClient } from "pg";
 import type { CouponUsageTransaction } from "@bravos/pricing";
-import { OperationConflictError, type InventoryTransaction } from "@bravos/inventory";
+import {
+  OperationConflictError,
+  type InventoryTransaction,
+  type StockReconciliationSale,
+  type StockReconciliationSalesPort,
+} from "@bravos/inventory";
 import type {
   AutomaticPricingPort,
   ListedPriceReader,
@@ -61,6 +66,8 @@ type SaleRow = {
   costs_incomplete: boolean;
   recovered_by_staff_id: string | null;
   recovered_at: Date | null;
+  source_device_id: string | null;
+  source_snapshot_id: string | null;
 };
 
 type LineRow = {
@@ -120,11 +127,11 @@ export function createPostgresSaleStore(queryable: Queryable): SaleStore {
              physically_completed, costs_incomplete, recovered_by_staff_id, recovered_at,
              exchange_credit_applied_piasters, cash_received_piasters,
              coupon_usage_discrepancy_detected_at, coupon_usage_limit, coupon_usage_count_before,
-             coupon_usage_actual_count
+             coupon_usage_actual_count, source_device_id, source_snapshot_id
            ) VALUES (
              $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
              $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34,
-             $35, $36, $37, $38, $39, $40
+             $35, $36, $37, $38, $39, $40, $41, $42
            ) ON CONFLICT (id) DO NOTHING
            RETURNING id`,
           [
@@ -168,6 +175,8 @@ export function createPostgresSaleStore(queryable: Queryable): SaleStore {
             input.couponUsageDiscrepancy?.usageLimit ?? null,
             input.couponUsageDiscrepancy?.countBefore ?? null,
             input.couponUsageDiscrepancy?.actualCount ?? null,
+            input.sourceDeviceId ?? null,
+            input.sourceSnapshotId ?? null,
           ],
         );
         if (!inserted.rows[0]) {
@@ -270,6 +279,86 @@ export function createPostgresSaleStore(queryable: Queryable): SaleStore {
         [variantIds],
       );
       return result.rows.map((row) => row.variant_id);
+    },
+  };
+}
+
+export function createPostgresStockReconciliationSales(queryable: Queryable): StockReconciliationSalesPort {
+  const toReconciliationSale = async (sale: SaleRecord): Promise<StockReconciliationSale | null> => {
+    if (!sale.physicallyCompleted || !sale.recordedAt) return null;
+    const snapshot = sale.sourceSnapshotId
+      ? await queryable.query<{ issued_at: Date }>(`SELECT issued_at FROM sales_pos_snapshot WHERE id = $1`, [sale.sourceSnapshotId])
+      : null;
+    return {
+      id: sale.id,
+      operationId: sale.operationId,
+      sourceDeviceId: sale.sourceDeviceId,
+      sourceSnapshotId: sale.sourceSnapshotId,
+      sourceSnapshotIssuedAt: snapshot?.rows[0]?.issued_at ?? null,
+      occurredAt: sale.occurredAt,
+      recordedAt: sale.recordedAt,
+      costsIncomplete: sale.costsIncomplete,
+      lines: sale.lines.map((line) => ({
+        id: line.id,
+        variantId: line.variantId,
+        quantity: line.quantity,
+        allocatedQuantity: line.allocatedQuantity,
+        unallocatedQuantity: line.unallocatedQuantity,
+      })),
+    };
+  };
+  return {
+    async getById(id, lock = false) {
+      if (lock) await queryable.query(`SELECT id FROM sales_sale WHERE id = $1 FOR UPDATE`, [id]);
+      const sale = await loadById(queryable, id);
+      return sale ? await toReconciliationSale(sale) : null;
+    },
+    async listRecordedAfter(at) {
+      const rows = await loadMany(
+        queryable,
+        `SELECT * FROM sales_sale
+         WHERE physically_completed = true AND recorded_at > $1 AND source_device_id IS NOT NULL
+         ORDER BY recorded_at, id`,
+        [at],
+      );
+      const projected = await Promise.all(rows.map(toReconciliationSale));
+      return projected.filter((row): row is StockReconciliationSale => row !== null);
+    },
+    async applyAllocatedRemainder(input) {
+      let remaining = input.quantity;
+      const lines = await queryable.query<{
+        id: string;
+        unallocated_quantity: number;
+      }>(
+        `SELECT id, unallocated_quantity
+         FROM sales_sale_line
+         WHERE sale_id = $1 AND variant_id = $2 AND unallocated_quantity > 0
+         ORDER BY line_index, id
+         FOR UPDATE`,
+        [input.saleId, input.variantId],
+      );
+      for (const line of lines.rows) {
+        if (remaining === 0) break;
+        const allocated = Math.min(remaining, line.unallocated_quantity);
+        await queryable.query(
+          `UPDATE sales_sale_line
+           SET allocated_quantity = allocated_quantity + $2,
+               unallocated_quantity = unallocated_quantity - $2
+           WHERE id = $1`,
+          [line.id, allocated],
+        );
+        remaining -= allocated;
+      }
+      if (remaining > 0) throw new OperationConflictError("الكمية غير المخصصة لا تطابق واقعة البيع.");
+      const state = await queryable.query<{ incomplete: boolean }>(
+        `SELECT EXISTS (
+           SELECT 1 FROM sales_sale_line WHERE sale_id = $1 AND unallocated_quantity > 0
+         ) AS incomplete`,
+        [input.saleId],
+      );
+      const costsIncomplete = state.rows[0]?.incomplete ?? true;
+      await queryable.query(`UPDATE sales_sale SET costs_incomplete = $2 WHERE id = $1`, [input.saleId, costsIncomplete]);
+      return { costsIncomplete };
     },
   };
 }
@@ -535,6 +624,8 @@ function toSale(row: SaleRow, lines: SaleLineWrite[]): SaleRecord {
     costsIncomplete: row.costs_incomplete,
     recoveredByStaffId: row.recovered_by_staff_id,
     recoveredAt: row.recovered_at,
+    sourceDeviceId: row.source_device_id,
+    sourceSnapshotId: row.source_snapshot_id,
     lines,
   };
 }

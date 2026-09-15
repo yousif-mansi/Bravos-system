@@ -1,8 +1,8 @@
 import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import type { CashierProductLookupDto, CashierVariantDto, PosPriceSnapshotDto, SaleDto, WorkspaceDto } from "@bravos/contracts";
+import type { CashierProductLookupDto, CashierVariantDto, PosPriceSnapshotDto, SaleDto, StockPauseDto, WorkspaceDto } from "@bravos/contracts";
 import { SaleSummary } from "./SaleSummary.tsx";
-import { ApiError, acceptOfflineSale, completeSale, getWorkspace, issuePosSnapshot, lookupProductByCode, lookupSaleOperation, prepareSale } from "../api.ts";
+import { ApiError, acceptOfflineSale, completeSale, getStockPause, getWorkspace, issuePosSnapshot, lookupProductByCode, lookupSaleOperation, prepareSale } from "../api.ts";
 import { egpInputToPiasters, formatEgpFromPiasters } from "../money.ts";
 import {
   acceptedPayload,
@@ -115,6 +115,7 @@ export default function LookupPage({
   const [revisionBlock, setRevisionBlock] = useState(false);
   const [foreignRecovery, setForeignRecovery] = useState<PendingSale | null>(null);
   const [effectiveByVariant, setEffectiveByVariant] = useState<Record<string, number>>({});
+  const [stockPause, setStockPause] = useState<StockPauseDto | null>(null);
   const quoteOriginRef = useRef<"server" | "snapshot" | null>(null);
   const quoteSnapshotRef = useRef<PosPriceSnapshotDto | null>(null);
   const quoteCachedRef = useRef<Map<string, number> | null>(null);
@@ -132,6 +133,32 @@ export default function LookupPage({
       }
     });
   }, [workspace.staff.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const epoch = accountGeneration();
+    const refresh = async () => {
+      if (cancelled || accountGeneration() !== epoch) return;
+      if (stockPause && new Date(stockPause.expiresAt).getTime() <= Date.now()) setStockPause(null);
+      if (!navigator.onLine) return;
+      try {
+        const current = await getStockPause();
+        if (!cancelled && accountGeneration() === epoch) setStockPause(current);
+      } catch {
+        /* the transactional server guard remains authoritative while refresh is unavailable */
+      }
+    };
+    const interval = window.setInterval(() => void refresh(), 5_000);
+    window.addEventListener("focus", refresh);
+    window.addEventListener("online", refresh);
+    void refresh();
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refresh);
+      window.removeEventListener("online", refresh);
+    };
+  }, [workspace.staff.id, stockPause?.coordinationId, stockPause?.expiresAt]);
 
   useEffect(() => {
     setCart([]);
@@ -302,6 +329,7 @@ export default function LookupPage({
           return;
         }
         await cacheIssuedSnapshot(staffId, snapshot);
+        setStockPause(snapshot.stockPause);
       } catch {
         /* keep last issued snapshot */
       }
@@ -683,6 +711,13 @@ export default function LookupPage({
     submitEpochRef.current = epoch;
     const generation = accountGeneration();
     const physical = kind === "complete";
+    const alreadyCompleted = handedOver || pendingSaleRef.current?.physicallyCompleted === true;
+    if (stockPause && (kind === "prepare" || !alreadyCompleted)) {
+      inFlightRef.current = false;
+      setPending("");
+      setError("تغييرات المخزون متوقفة مؤقتاً. لا تبدأ بيعاً جديداً ولا تسلّم بضاعة حتى انتهاء التوقف.");
+      return;
+    }
     if (typeof navigator !== "undefined" && navigator.onLine && !pendingSaleRef.current?.physicallyCompleted) {
       try {
         const fresh = await getWorkspace();
@@ -1144,6 +1179,11 @@ export default function LookupPage({
         </div>
       </header>
       {error ? <div className="error" role="alert">{error}</div> : null}
+      {stockPause ? (
+        <div className="error" data-testid="stock-pause" role="alert">
+          تغييرات المخزون متوقفة مؤقتاً لإجراء تصحيح كمية. لا تبدأ بيعاً جديداً ولا تسلّم بضاعة.
+        </div>
+      ) : null}
       {notice ? <div className="notice" role="status">{notice}</div> : null}
       <form className="card" aria-label="البحث برمز المنتج" onSubmit={(event) => void onSearch(event)}>
         <div className="field">
@@ -1191,7 +1231,7 @@ export default function LookupPage({
               {selectedEffective === 0 ? (
                 <p className="muted">غير متوفر في المخزون حتى يتم الاستلام.</p>
               ) : (
-                <button type="button" disabled={formLocked} onClick={addSelected}>إضافة إلى السلة</button>
+                <button type="button" disabled={formLocked || Boolean(stockPause)} onClick={addSelected}>إضافة إلى السلة</button>
               )}
             </div>
           ) : (
@@ -1279,14 +1319,14 @@ export default function LookupPage({
               id="handedOver"
               type="checkbox"
               checked={handedOver || pendingSale?.physicallyCompleted === true}
-              disabled={!quote && !pendingSale?.physicallyCompleted}
+              disabled={Boolean(stockPause) || (!quote && !pendingSale?.physicallyCompleted)}
               onChange={(event) => setHandedOver(event.target.checked)}
             />
             {" "}استلم الزبون البضاعة ودفع نقداً
           </label>
         </div>
         <div className="actions">
-          <button type="button" disabled={Boolean(pending) || cart.length === 0 || formLocked} onClick={() => void submit("prepare")}>
+          <button type="button" disabled={Boolean(stockPause) || Boolean(pending) || cart.length === 0 || formLocked} onClick={() => void submit("prepare")}>
             {pending === "prepare" ? "جارٍ قبول الأسعار…" : "قبول الأسعار"}
           </button>
           {quote && !formLocked ? (
@@ -1294,7 +1334,7 @@ export default function LookupPage({
               إلغاء عرض السعر
             </button>
           ) : null}
-          <button type="button" disabled={Boolean(pending) || revisionBlock || (!quote && !pendingSale?.physicallyCompleted)} onClick={() => void submit("complete")}>
+          <button type="button" disabled={(Boolean(stockPause) && !handedOver && !pendingSale?.physicallyCompleted) || Boolean(pending) || revisionBlock || (!quote && !pendingSale?.physicallyCompleted)} onClick={() => void submit("complete")}>
             {pending === "complete" ? "جارٍ الحفظ…" : "إتمام البيع"}
           </button>
           {pendingSale ? (

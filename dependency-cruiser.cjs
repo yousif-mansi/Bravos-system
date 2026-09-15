@@ -272,6 +272,29 @@ module.exports = {
       from: { path: "^packages/storefront-config" },
       to: { path: "^packages/(catalog|inventory|receiving|sales|expenses|persistence)" },
     },
+    {
+      name: "online-orders-domain-inward-only",
+      comment: "Online-order domain code must not import application, adapters, other features, UI or infrastructure.",
+      severity: "error",
+      from: { path: "^packages/online-orders/src/domain" },
+      to: {
+        path: "(packages/online-orders/src/(application|adapters)|packages/(identity|catalog|inventory|receiving|pricing|sales|expenses|returns|corrections|storefront-config|persistence)|apps/|better-auth|fastify|react|next|vite|pg)",
+      },
+    },
+    {
+      name: "no-private-online-orders-imports",
+      comment: "Cross-package imports must use the online-orders public interface.",
+      severity: "error",
+      from: { pathNot: "^packages/online-orders/src" },
+      to: { path: "^packages/online-orders/src/(domain|application|adapters)/" },
+    },
+    {
+      name: "online-orders-isolated-by-ports",
+      comment: "Online orders coordinates catalog, inventory and pricing through application ports supplied at composition.",
+      severity: "error",
+      from: { path: "^packages/online-orders" },
+      to: { path: "^packages/(catalog|inventory|receiving|pricing|sales|expenses|returns|corrections|storefront-config|persistence)" },
+    },
   ],
   options: {
     exclude: {

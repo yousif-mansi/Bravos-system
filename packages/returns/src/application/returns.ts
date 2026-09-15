@@ -398,6 +398,7 @@ export function createReturnServices(ports: {
           throw new OperationConflictError("تغيرت المسودة. أعد تحميلها قبل ترحيل الإرجاع.");
         }
         if (record.status === "posted") return { record, created: false };
+        await tx.inventory.assertStockMutationAllowed();
         const now = clock.now();
         if (now.getTime() > source.returnDeadlineAt.getTime()) throw new ReturnWindowExpiredError();
         const plan = planReturn(source, record.lines.map((line) => ({
@@ -603,6 +604,7 @@ export function createReturnServices(ports: {
           }
           return { record, created: false };
         }
+        await tx.inventory.assertStockMutationAllowed();
         if (record.revision !== command.expectedRevision) {
           throw new OperationConflictError("تغيرت المسودة. أعد تحميلها قبل إتمام الاستبدال.");
         }

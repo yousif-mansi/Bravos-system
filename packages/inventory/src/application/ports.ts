@@ -1,7 +1,13 @@
 import type {
+  CountCoordinationDto,
+  CountCoordinationAcknowledgementDto,
   InventoryBatchDto,
   InventorySettingsDto,
   LowStockVariantDto,
+  StockCorrectionDto,
+  StockPauseDto,
+  StockReconciliationDto,
+  StockReconciliationCaseDto,
   VariantIdentityDto,
   VariantLowStockDto,
 } from "@bravos/contracts";
@@ -131,6 +137,12 @@ export type InventoryTransaction = {
     payloadFingerprint: string;
     actorStaffId: string;
   }): Promise<ClaimedOperation>;
+  claimStockCorrectionOperation(input: {
+    operationId: string;
+    payloadFingerprint: string;
+    actorStaffId: string;
+    kind?: "stock_correction" | "stock_reconciliation";
+  }): Promise<ClaimedOperation>;
   receiveBatches(input: {
     operationId: string;
     receiptId: string;
@@ -150,6 +162,25 @@ export type InventoryTransaction = {
     recordedAt: Date;
     allowPartial: boolean;
   }): Promise<AllocateResult>;
+  allocateHeldFromOldestAvailable(input: {
+    operationId: string;
+    variantId: string;
+    quantity: number;
+    recordedAt: Date;
+  }): Promise<AllocateResult>;
+  attributeHeldAllocation(input: {
+    operationId: string;
+    batchId: string;
+    variantId: string;
+    quantity: number;
+    recordedAt: Date;
+  }): Promise<AllocationRecord>;
+  removeAllocation(input: {
+    operationId: string;
+    batchId: string;
+    variantId: string;
+    quantity: number;
+  }): Promise<void>;
   allocateCorrectionFromOldestAvailable(input: {
     operationId: string;
     variantId: string;
@@ -178,6 +209,11 @@ export type InventoryTransaction = {
     allocatedQuantity: number;
     recordedAt: Date;
   }): Promise<DiscrepancyRecord>;
+  resolveDiscrepancy(input: {
+    operationId: string;
+    variantId: string;
+    allocatedQuantity: number;
+  }): Promise<DiscrepancyRecord | null>;
   listAllocations(operationId: string): Promise<AllocationRecord[]>;
   listDiscrepancies(operationId: string): Promise<DiscrepancyRecord[]>;
   quantitiesFor(variantIds: string[]): Promise<Map<string, number>>;
@@ -187,6 +223,16 @@ export type InventoryTransaction = {
   lockStockClock(mode: "share" | "update"): Promise<void>;
   bumpStockVersion(): Promise<number>;
   currentStockVersion(): Promise<number>;
+  assertStockMutationAllowed(): Promise<void>;
+  recordTillSnapshot(input: {
+    deviceId: string;
+    staffId: string;
+    snapshotId: string;
+    issuedAt: Date;
+    stockVersion: number;
+    pendingOperationIds: string[];
+    includedOperationIds: string[];
+  }): Promise<StockPauseDto | null>;
 };
 
 export type InventoryReadStore = {
@@ -220,4 +266,119 @@ export type InventoryServices = {
     variantId: string,
     input: unknown,
   ): Promise<VariantLowStockDto>;
+  currentCoordination(auth: VerifiedAuth | null): Promise<CountCoordinationDto | null>;
+  currentStockPause(auth: VerifiedAuth | null): Promise<StockPauseDto | null>;
+  acknowledgeCoordination(
+    auth: VerifiedAuth | null,
+    input: unknown,
+  ): Promise<CountCoordinationAcknowledgementDto>;
+  startCoordination(
+    auth: VerifiedAuth | null,
+    input: unknown,
+  ): Promise<{ value: CountCoordinationDto; created: boolean }>;
+  cancelCoordination(auth: VerifiedAuth | null, input: unknown): Promise<CountCoordinationDto>;
+  finalizeStockCorrection(
+    auth: VerifiedAuth | null,
+    input: unknown,
+  ): Promise<{ value: StockCorrectionDto; created: boolean }>;
+  listStockCorrections(auth: VerifiedAuth | null): Promise<StockCorrectionDto[]>;
+  listStockReconciliations(auth: VerifiedAuth | null): Promise<StockReconciliationDto[]>;
+  listStockReconciliationCases(auth: VerifiedAuth | null): Promise<StockReconciliationCaseDto[]>;
+  reconcileLateSale(
+    auth: VerifiedAuth | null,
+    input: unknown,
+  ): Promise<{ value: StockReconciliationDto; created: boolean }>;
+};
+
+export type CountCoordinationRecord = Omit<CountCoordinationDto, "startedBy" | "finishedBy"> & {
+  startedByStaffId: string;
+  finishedByStaffId: string | null;
+};
+
+export type StockCorrectionRecord = Omit<StockCorrectionDto, "variant" | "changedBy"> & {
+  changedByStaffId: string;
+};
+
+export type StockCoordinationStore = {
+  current(): Promise<CountCoordinationRecord | null>;
+  start(input: {
+    id: string;
+    operationId: string;
+    payloadFingerprint: string;
+    actorStaffId: string;
+    expiresAt: Date;
+  }): Promise<{ value: CountCoordinationRecord; created: boolean }>;
+  acknowledge(input: {
+    coordinationId: string;
+    deviceId: string;
+    snapshotId: string;
+    actorStaffId: string;
+  }): Promise<CountCoordinationAcknowledgementDto>;
+  cancel(input: {
+    operationId: string;
+    coordinationId: string;
+    payloadFingerprint: string;
+    actorStaffId: string;
+  }): Promise<CountCoordinationRecord>;
+  finalize(input: {
+    id: string;
+    operationId: string;
+    payloadFingerprint: string;
+    coordinationId: string;
+    variantId: string;
+    previousAvailableQuantity: number;
+    correctedAvailableQuantity: number;
+    reason: string;
+    positiveSourceBatchId: string | null;
+    actorStaffId: string;
+  }): Promise<{ value: StockCorrectionRecord; created: boolean }>;
+  listCorrections(): Promise<StockCorrectionRecord[]>;
+  listReconciliations(): Promise<Array<Omit<StockReconciliationDto, "resolvedBy"> & { resolvedByStaffId: string }>>;
+  listReconciliationCases(): Promise<StockReconciliationCaseDto[]>;
+  reconcile(input: {
+    id: string;
+    operationId: string;
+    payloadFingerprint: string;
+    correctionId: string;
+    saleId: string;
+    variantId: string;
+    resolution: "included_in_count" | "allocate_missing_source";
+    quantity: number;
+    actorStaffId: string;
+  }): Promise<{
+    value: Omit<StockReconciliationDto, "resolvedBy"> & { resolvedByStaffId: string };
+    created: boolean;
+  }>;
+};
+
+export type StockReconciliationSale = {
+  id: string;
+  operationId: string;
+  sourceDeviceId: string | null;
+  sourceSnapshotId: string | null;
+  sourceSnapshotIssuedAt: Date | null;
+  occurredAt: Date;
+  recordedAt: Date;
+  costsIncomplete: boolean;
+  lines: Array<{
+    id: string;
+    variantId: string;
+    quantity: number;
+    allocatedQuantity: number;
+    unallocatedQuantity: number;
+  }>;
+};
+
+export type StockReconciliationSalesPort = {
+  getById(id: string, lock?: boolean): Promise<StockReconciliationSale | null>;
+  listRecordedAfter(at: Date): Promise<StockReconciliationSale[]>;
+  applyAllocatedRemainder(input: {
+    saleId: string;
+    variantId: string;
+    quantity: number;
+  }): Promise<{ costsIncomplete: boolean }>;
+};
+
+export type StockReconciliationDownstreamFactsPort = {
+  hasDownstreamFacts(saleId: string, saleLineIds: string[]): Promise<boolean>;
 };

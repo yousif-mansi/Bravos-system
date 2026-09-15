@@ -49,3 +49,67 @@ export type PublicStorefrontContactsDto = {
   instagramUrl: string | null;
   tiktokUrl: string | null;
 };
+
+export type PublicDeliveryAreaDto = {
+  id: string;
+  nameAr: string;
+  feePiasters: number;
+};
+
+export type CheckoutRequestLine = {
+  variantId: string;
+  quantity: number;
+};
+
+export type CheckoutQuoteRequest = {
+  lines: CheckoutRequestLine[];
+  deliveryAreaId: string;
+  couponCode?: string | null;
+};
+
+export type CheckoutBasketLineDto = {
+  variantId: string;
+  productId: string;
+  productNameAr: string;
+  sizeNameAr: string;
+  colorNameAr: string;
+  quantity: number;
+  listedUnitPricePiasters: number;
+  originalPiasters: number;
+  automaticOfferDiscountPiasters: number;
+  couponDiscountPiasters: number;
+  merchandiseTotalPiasters: number;
+};
+
+export type CheckoutQuoteDto = {
+  quoteId: string;
+  area: PublicDeliveryAreaDto;
+  lines: CheckoutBasketLineDto[];
+  merchandiseOriginalPiasters: number;
+  automaticOfferDiscountPiasters: number;
+  couponDiscountPiasters: number;
+  merchandiseTotalPiasters: number;
+  deliveryFeePiasters: number;
+  finalTotalPiasters: number;
+  appliedAutomaticOffer: { id: string; nameAr: string; discountPiasters: number } | null;
+  appliedCoupon: { code: string; discountPiasters: number } | null;
+};
+
+export type PublicOrderSubmissionDto = {
+  orderId: string;
+  reference: string;
+  status: "pending";
+  submittedAt: string;
+  quote: CheckoutQuoteDto;
+};
+
+export type PublicOrderSubmissionRequest = CheckoutQuoteRequest & {
+  operationId: string;
+  quoteId: string;
+  customerName: string;
+  primaryPhone: string;
+  detailedAddress: string;
+  alternatePhone?: string | null;
+  landmark?: string | null;
+  notes?: string | null;
+};

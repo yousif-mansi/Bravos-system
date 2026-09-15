@@ -33,6 +33,8 @@ try {
       "017_offline_promotions.sql",
       "018_exchanges.sql",
       "019_receiving_corrections.sql",
+      "020_stock_quantity_corrections.sql",
+      "021_online_checkout.sql",
     ];
     if (first.join(",") !== expectedMigrations.join(",") || afterApply.join(",") !== first.join(",")) {
       throw new Error(`Scratch apply did not record multiple migrations: ${first.join(",")}`);
@@ -276,7 +278,13 @@ async function columnExists(pool: Pool, tableName: string, columnName: string): 
 
 async function assertCurrentBatchStorage(pool: Pool, present: boolean): Promise<void> {
   const tables = await tableNames(pool);
-  for (const table of ["returns_exchange", "returns_exchange_quote", "receiving_correction", "receiving_correction_line"]) {
+  for (const table of [
+    "returns_exchange", "returns_exchange_quote", "receiving_correction", "receiving_correction_line",
+    "inventory_known_till", "inventory_count_coordination", "inventory_count_coordination_device",
+    "inventory_stock_correction", "inventory_stock_correction_batch",
+    "inventory_stock_reconciliation", "inventory_stock_reconciliation_batch",
+    "delivery_area", "online_checkout_quote", "online_order", "online_order_line",
+  ]) {
     if (tables.includes(table) !== present) throw new Error(`Expected ${table} presence=${present}.`);
   }
   for (const [table, column] of [

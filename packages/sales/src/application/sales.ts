@@ -477,9 +477,11 @@ export function createSalesServices(ports: {
             costsIncomplete: allocated.costsIncomplete,
             completedLines,
             occurredAt: input.command.occurredAt,
-            recoveredByStaffId: input.recoveredByStaffId,
-            recoveredAt: input.recoveredAt,
-            couponUsageDiscrepancy,
+              recoveredByStaffId: input.recoveredByStaffId,
+              recoveredAt: input.recoveredAt,
+              sourceDeviceId: input.command.deviceId,
+              sourceSnapshotId: input.command.snapshotId,
+              couponUsageDiscrepancy,
           },
         ),
       );
@@ -515,6 +517,7 @@ export function createSalesServices(ports: {
           assertCanRead(current.staff, existing);
           return { record: existing, created: false };
         }
+        await tx.inventory.assertStockMutationAllowed();
         const available = await tx.inventory.quantitiesFor(quantities.map((item) => item.variantId));
         for (const item of quantities) {
           if ((available.get(item.variantId) ?? 0) < item.quantity) {
@@ -792,7 +795,16 @@ export function createSalesServices(ports: {
           coupons: pricingSnapshot.coupons,
           couponAccountedOperations: pricingSnapshot.couponAccountedOperations,
         });
-        return { record, stockVersion, quantities, includedOperations };
+        const stockPause = await tx.inventory.recordTillSnapshot({
+          deviceId: request.deviceId,
+          staffId: current.staff.id,
+          snapshotId: record.id,
+          issuedAt,
+          stockVersion,
+          pendingOperationIds: request.pendingOperationIds,
+          includedOperationIds: includedOperations.map((proof) => proof.operationId),
+        });
+        return { record, stockVersion, quantities, includedOperations, stockPause };
       });
       return {
         snapshotId: stock.record.id,
@@ -802,6 +814,7 @@ export function createSalesServices(ports: {
         deviceId: stock.record.deviceId,
         issuedAt: stock.record.issuedAt.toISOString(),
         stockVersion: stock.stockVersion,
+        stockPause: stock.stockPause,
         includedOperationIds: stock.includedOperations.map((proof) => proof.operationId),
         includedOperations: stock.includedOperations,
         automaticOffers: stock.record.automaticOffers,
@@ -1148,6 +1161,8 @@ function toInsert(
     recoveredByStaffId?: string | null;
     recoveredAt?: Date | null;
     couponUsageDiscrepancy?: SaleRecord["couponUsageDiscrepancy"];
+    sourceDeviceId?: string | null;
+    sourceSnapshotId?: string | null;
   },
 ): SaleInsert {
   const pricedLines = priced.lines;
@@ -1203,6 +1218,8 @@ function toInsert(
     costsIncomplete: options.costsIncomplete,
     recoveredByStaffId: options.recoveredByStaffId ?? null,
     recoveredAt: options.recoveredAt ?? null,
+    sourceDeviceId: options.sourceDeviceId ?? null,
+    sourceSnapshotId: options.sourceSnapshotId ?? null,
     lines,
   };
 }

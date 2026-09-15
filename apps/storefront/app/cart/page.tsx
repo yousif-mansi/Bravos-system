@@ -56,7 +56,7 @@ export default function CartPage() {
           || next.orderable !== item.orderable
           || ("unitPricePiasters" in next && next.unitPricePiasters !== item.unitPricePiasters)
         ) changed = true;
-        cart.refreshLine(item.variantId, next);
+        await cart.refreshLine(item.variantId, next);
       }
       setAvailabilityMessage(changed ? "تغيّرت بعض بيانات السلة حسب المخزون الحالي. راجع التنبيهات قبل المتابعة." : "السلة مطابقة للمخزون الحالي.");
     } catch {
@@ -116,19 +116,19 @@ export default function CartPage() {
                       type="button"
                       aria-label="تقليل الكمية"
                       disabled={item.quantity <= 1 || unavailable || excessive}
-                      onClick={() => cart.setQuantity(item.variantId, item.quantity - 1, item.knownAvailableQuantity)}
+                      onClick={() => void cart.setQuantity(item.variantId, item.quantity - 1, item.knownAvailableQuantity)}
                     >−</button>
                     <output aria-live="polite">{item.quantity}</output>
                     <button
                       type="button"
                       aria-label="زيادة الكمية"
                       disabled={unavailable || excessive || item.quantity >= item.knownAvailableQuantity}
-                      onClick={() => cart.setQuantity(item.variantId, item.quantity + 1, item.knownAvailableQuantity)}
+                      onClick={() => void cart.setQuantity(item.variantId, item.quantity + 1, item.knownAvailableQuantity)}
                     >+</button>
                     {excessive && item.knownAvailableQuantity > 0 ? (
-                      <button className="fit-stock" type="button" onClick={() => cart.setQuantity(item.variantId, item.knownAvailableQuantity, item.knownAvailableQuantity)}>ضبط للمتاح</button>
+                      <button className="fit-stock" type="button" onClick={() => void cart.setQuantity(item.variantId, item.knownAvailableQuantity, item.knownAvailableQuantity)}>ضبط للمتاح</button>
                     ) : null}
-                    <button className="remove-line" type="button" onClick={() => cart.remove(item.variantId)}>حذف</button>
+                    <button className="remove-line" type="button" onClick={() => void cart.remove(item.variantId)}>حذف</button>
                   </div>
                 </article>
               );
@@ -141,6 +141,11 @@ export default function CartPage() {
             <button type="button" className="secondary-action" disabled={checking} onClick={() => void revalidateCart()}>
               {checking ? "جارٍ التحقق…" : "تحديث المخزون"}
             </button>
+            {cart.items.every((item) => item.orderable && item.quantity <= item.knownAvailableQuantity) ? (
+              <Link className="button-link cart-checkout-link" href="/checkout">متابعة إتمام الطلب</Link>
+            ) : (
+              <p className="stock-warning">عدّل الاختيارات غير المتوفرة قبل إتمام الطلب.</p>
+            )}
             <p className="muted">لا يتم حجز أي قطعة داخل السلة.</p>
           </aside>
         </div>

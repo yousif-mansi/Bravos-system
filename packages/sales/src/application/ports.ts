@@ -173,6 +173,8 @@ export type SaleRecord = {
   costsIncomplete: boolean;
   recoveredByStaffId: string | null;
   recoveredAt: Date | null;
+  sourceDeviceId: string | null;
+  sourceSnapshotId: string | null;
   lines: SaleLineWrite[];
 };
 
@@ -203,6 +205,8 @@ export type SaleInsert = {
   costsIncomplete: boolean;
   recoveredByStaffId?: string | null;
   recoveredAt?: Date | null;
+  sourceDeviceId?: string | null;
+  sourceSnapshotId?: string | null;
   lines: SaleLineWrite[];
 };
 

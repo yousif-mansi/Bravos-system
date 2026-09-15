@@ -14,6 +14,26 @@ import type {
 type Queryable = Pick<Pool, "query"> | PoolClient;
 type Target = "sale" | "return";
 
+export function createPostgresStockReconciliationCorrectionFacts(queryable: Queryable) {
+  return {
+    async hasForSale(saleId: string) {
+      const result = await queryable.query<{ present: boolean }>(
+        `SELECT EXISTS (SELECT 1 FROM recording_correction WHERE sale_id = $1) AS present`,
+        [saleId],
+      );
+      return result.rows[0]?.present ?? false;
+    },
+    async hasForReturns(returnIds: string[]) {
+      if (returnIds.length === 0) return false;
+      const result = await queryable.query<{ present: boolean }>(
+        `SELECT EXISTS (SELECT 1 FROM recording_correction WHERE return_id = ANY($1::uuid[])) AS present`,
+        [returnIds],
+      );
+      return result.rows[0]?.present ?? false;
+    },
+  };
+}
+
 type SaleRow = {
   id: string;
   operation_id: string;
@@ -80,6 +100,7 @@ async function changeSale(client: PoolClient, inventory: InventoryTransaction, i
   if (!locked.rows[0]?.physically_completed) return { kind: "not-found" };
   const existingOperation = await correctionByOperation(client, input.operationId);
   if (existingOperation) return replaySale(client, input, existingOperation);
+  await inventory.assertStockMutationAllowed();
   const current = await loadSale(client, input.saleId);
   if (!current) return { kind: "not-found" };
   if (current.revision !== input.expectedRevision) return { kind: "stale" };
@@ -157,6 +178,7 @@ async function changeReturn(client: PoolClient, inventory: InventoryTransaction,
   if (locked.rows[0]?.status !== "posted") return { kind: "not-found" };
   const existingOperation = await correctionByOperation(client, input.operationId);
   if (existingOperation) return replayReturn(client, input, existingOperation);
+  await inventory.assertStockMutationAllowed();
   const current = await loadReturn(client, input.returnId);
   if (!current) return { kind: "not-found" };
   if (current.revision !== input.expectedRevision) return { kind: "stale" };

@@ -357,6 +357,45 @@ export function createPostgresListedPriceReader(queryable: Queryable): Pick<Cata
   return { getListedPrices: (ids) => loadListedPrices(queryable, ids) };
 }
 
+export function createPostgresCheckoutCatalogReader(queryable: Queryable) {
+  return {
+    async getLines(ids: string[]) {
+      if (ids.length === 0) return [];
+      const result = await queryable.query<VariantIdentityRow & {
+        category_id: string;
+        default_selling_price_piasters: number | string;
+        selling_price_piasters_override: number | string | null;
+        publication: "available" | "coming_soon" | "hidden";
+      }>(
+        `SELECT v.id, p.id AS product_id, p.code AS product_code, p.name_ar AS product_name_ar,
+                s.id AS size_id, s.name_ar AS size_name_ar,
+                col.id AS color_id, col.name_ar AS color_name_ar,
+                p.category_id, p.default_selling_price_piasters, v.selling_price_piasters_override,
+                p.publication
+         FROM catalog_product_variant v
+         JOIN catalog_product p ON p.id = v.product_id
+         JOIN catalog_size s ON s.id = v.size_id
+         JOIN catalog_color col ON col.id = v.color_id
+         WHERE v.id = ANY($1::uuid[])`,
+        [ids],
+      );
+      return result.rows.map((row) => ({
+        variantId: row.id,
+        productId: row.product_id,
+        categoryId: row.category_id,
+        productNameAr: row.product_name_ar,
+        sizeNameAr: row.size_name_ar,
+        colorNameAr: row.color_name_ar,
+        listedUnitPricePiasters: resolvedSellingPricePiasters(
+          asSafeInteger(row.default_selling_price_piasters),
+          row.selling_price_piasters_override === null ? null : asSafeInteger(row.selling_price_piasters_override),
+        ),
+        publication: row.publication,
+      }));
+    },
+  };
+}
+
 async function loadListedPrices(queryable: Queryable, ids: string[]) {
   if (ids.length === 0) return [];
   const result = await queryable.query<VariantIdentityRow & {
@@ -626,4 +665,10 @@ function mustRow<T>(row: T | undefined): T {
     throw new Error("Expected a database row.");
   }
   return row;
+}
+
+function asSafeInteger(value: number | string): number {
+  const parsed = typeof value === "string" ? Number(value) : value;
+  if (!Number.isSafeInteger(parsed)) throw new Error("Unrepresentable catalog monetary value.");
+  return parsed;
 }

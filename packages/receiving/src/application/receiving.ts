@@ -163,6 +163,7 @@ export function createReceivingServices(ports: {
           }
           return { record: existing, created: false };
         }
+        await tx.inventory.assertStockMutationAllowed();
 
         const receiptId = crypto.randomUUID();
         const prepared = command.lines.map((line) => ({
@@ -241,6 +242,7 @@ export function createReceivingServices(ports: {
           }
           return { record, created: false, acceptedRevision: existing.revision };
         }
+        await tx.inventory.assertStockMutationAllowed();
         const history = await tx.corrections.listForReceipt(receiptId);
         const revision = history.at(-1)?.revision ?? 0;
         if (revision !== command.expectedRevision) {

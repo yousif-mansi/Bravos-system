@@ -1,8 +1,17 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import type { WorkspaceDto } from "@bravos/contracts";
+import type { PosPriceSnapshotDto, WorkspaceDto } from "@bravos/contracts";
 import { accountGeneration } from "../account-session.ts";
-import { acceptOfflineSale, ApiError, completeSale, getWorkspace, issuePosSnapshot, recoverOfflineSale } from "../api.ts";
+import {
+  acceptOfflineSale,
+  acknowledgeCountCoordination,
+  ApiError,
+  completeSale,
+  getStockPause,
+  getWorkspace,
+  issuePosSnapshot,
+  recoverOfflineSale,
+} from "../api.ts";
 import { posCodeIsCached } from "../offline-ready.ts";
 import {
   acceptedPayload,
@@ -34,6 +43,9 @@ export function WorkspacePage({
   const [syncing, setSyncing] = useState(false);
   const [persistent, setPersistent] = useState<boolean | null>(null);
   const [updateDeferred, setUpdateDeferred] = useState(false);
+  const [pauseSnapshot, setPauseSnapshot] = useState<PosPriceSnapshotDto | null>(null);
+  const [pauseAcknowledged, setPauseAcknowledged] = useState(false);
+  const [observedPause, setObservedPause] = useState<PosPriceSnapshotDto["stockPause"]>(null);
 
   useEffect(() => {
     function syncOnline() {
@@ -87,6 +99,43 @@ export function WorkspacePage({
       cancelled = true;
     };
   }, [workspace, online]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const staffId = workspace.staff.id;
+    const epoch = accountGeneration();
+    const stillCurrent = () => !cancelled && workspace.staff.id === staffId && accountGeneration() === epoch;
+    const refresh = async () => {
+      if (!stillCurrent()) return;
+      if (observedPause && new Date(observedPause.expiresAt).getTime() <= Date.now()) {
+        setObservedPause(null);
+        setPauseSnapshot(null);
+        setPauseAcknowledged(false);
+      }
+      if (!navigator.onLine) return;
+      try {
+        const current = await getStockPause();
+        if (!stillCurrent()) return;
+        setObservedPause(current);
+        if (!current) {
+          setPauseSnapshot(null);
+          setPauseAcknowledged(false);
+        }
+      } catch {
+        /* keep the last observed finite pause until a later refresh */
+      }
+    };
+    const interval = window.setInterval(() => void refresh(), 5_000);
+    window.addEventListener("focus", refresh);
+    window.addEventListener("online", refresh);
+    void refresh();
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refresh);
+      window.removeEventListener("online", refresh);
+    };
+  }, [workspace.staff.id, observedPause?.coordinationId, observedPause?.expiresAt]);
 
   async function runSync(stillCurrent: () => boolean) {
     const staffId = workspace.staff.id;
@@ -166,6 +215,9 @@ export function WorkspacePage({
             return;
           }
           await cacheIssuedSnapshot(staffId, snapshot);
+          setPauseSnapshot(snapshot.stockPause ? snapshot : null);
+          setObservedPause(snapshot.stockPause);
+          setPauseAcknowledged(false);
         } catch (caught) {
           if (!stillCurrent()) {
             return;
@@ -267,6 +319,33 @@ export function WorkspacePage({
     }
   }
 
+  async function acknowledgePause() {
+    const snapshot = pauseSnapshot;
+    if (!snapshot?.stockPause) return;
+    setSyncing(true);
+    setSyncError("");
+    const staffId = workspace.staff.id;
+    const epoch = accountGeneration();
+    const stillCurrent = () => workspace.staff.id === staffId && accountGeneration() === epoch;
+    try {
+      const pendingOperationIds = await pos.listPendingOperationIds();
+      if (pendingOperationIds.length > 0) {
+        setSyncError("يجب إرسال كل المبيعات المكتملة قبل تأكيد التوقف.");
+        return;
+      }
+      await acknowledgeCountCoordination({
+        coordinationId: snapshot.stockPause.coordinationId,
+        deviceId: snapshot.deviceId,
+        snapshotId: snapshot.snapshotId,
+      });
+      if (stillCurrent()) setPauseAcknowledged(true);
+    } catch (caught) {
+      if (stillCurrent()) setSyncError(caught instanceof ApiError ? caught.messageAr : "تعذر تأكيد توقف نقطة البيع.");
+    } finally {
+      if (stillCurrent()) setSyncing(false);
+    }
+  }
+
   return (
     <main className="shell">
       <header className="brand">
@@ -285,6 +364,9 @@ export function WorkspacePage({
           {online && workspace.capabilities.manageCatalog ? (
             <Link className="button secondary" to="/storefront-settings">روابط المتجر</Link>
           ) : null}
+          {online && workspace.capabilities.manageCatalog ? (
+            <Link className="button secondary" to="/delivery-areas">مناطق التوصيل</Link>
+          ) : null}
           {online && workspace.capabilities.manageInventory ? (
             <Link className="button secondary" to="/receiving">استلام المخزون</Link>
           ) : null}
@@ -296,6 +378,9 @@ export function WorkspacePage({
           ) : null}
           {online && workspace.staff.role === "manager" && workspace.capabilities.manageInventory ? (
             <Link className="button secondary" to="/corrections">تصحيح التسجيلات</Link>
+          ) : null}
+          {online && workspace.staff.role === "manager" && workspace.capabilities.manageInventory ? (
+            <Link className="button secondary" to="/stock-corrections">تصحيح كميات المخزون</Link>
           ) : null}
           {workspace.capabilities.cashier ? (
             <Link className="button secondary" to="/lookup">البحث عن منتج</Link>
@@ -315,6 +400,24 @@ export function WorkspacePage({
         الفرع النشط: {workspace.activeBranch?.nameAr}
       </div>
       <p data-testid="unsynced-count">مبيعات غير مزامنة: {unsynced}</p>
+      {observedPause ? (
+        <div className="error" data-testid="stock-pause" role="alert">
+          <p>تغييرات المخزون متوقفة مؤقتاً لإجراء تصحيح كمية.</p>
+          <p>لا تبدأ بيعاً جديداً ولا تسلّم بضاعة حتى انتهاء التوقف.</p>
+          {pauseAcknowledged ? (
+            <p data-testid="stock-pause-acknowledged">تم تأكيد مزامنة هذا الجهاز والتوقف.</p>
+          ) : (
+            pauseSnapshot?.stockPause?.coordinationId === observedPause.coordinationId ? <button
+              type="button"
+              data-testid="acknowledge-stock-pause"
+              disabled={syncing || unsynced > 0}
+              onClick={() => void acknowledgePause()}
+            >
+              تأكيد مزامنة هذا الجهاز والتوقف
+            </button> : <p className="muted">أعد مزامنة المبيعات لإصدار لقطة مرتبطة بهذا التوقف قبل التأكيد.</p>
+          )}
+        </div>
+      ) : null}
       {syncStatus ? (
         <p data-testid="sync-status" role="status">{syncStatus}</p>
       ) : null}

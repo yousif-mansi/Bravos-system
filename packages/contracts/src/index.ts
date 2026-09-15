@@ -162,6 +162,55 @@ export type AppliedCouponDto = Pick<
   discountPiasters: number;
 };
 
+export type DeliveryAreaDto = {
+  id: string;
+  nameAr: string;
+  feePiasters: number;
+  active: boolean;
+  changedByStaffId: string;
+  changedAt: string;
+};
+
+export type OnlineOrderLineDto = {
+  id: string;
+  variantId: string;
+  productId: string;
+  productNameAr: string;
+  sizeNameAr: string;
+  colorNameAr: string;
+  requestedQuantity: number;
+  requestedListedUnitPricePiasters: number;
+  requestedOriginalPiasters: number;
+  requestedAutomaticOfferDiscountPiasters: number;
+  requestedCouponDiscountPiasters: number;
+  requestedMerchandiseTotalPiasters: number;
+};
+
+export type OnlineOrderDto = {
+  id: string;
+  operationId: string;
+  reference: string;
+  status: "pending";
+  customerName: string;
+  primaryPhone: string;
+  alternatePhone: string | null;
+  detailedAddress: string;
+  landmark: string | null;
+  notes: string | null;
+  deliveryArea: { id: string; nameAr: string; feePiasters: number };
+  requestedCouponCode: string | null;
+  requestedMerchandiseOriginalPiasters: number;
+  requestedAutomaticOfferDiscountPiasters: number;
+  requestedCouponDiscountPiasters: number;
+  requestedMerchandiseTotalPiasters: number;
+  requestedDeliveryFeePiasters: number;
+  requestedFinalTotalPiasters: number;
+  requestedAppliedAutomaticOffer: { id: string; nameAr: string; discountPiasters: number } | null;
+  requestedAppliedCoupon: { code: string; discountPiasters: number } | null;
+  lines: OnlineOrderLineDto[];
+  submittedAt: string;
+};
+
 export type SizeDto = {
   id: string;
   nameAr: string;
@@ -324,6 +373,107 @@ export type VariantLowStockDto = {
   updatedAt: string;
 };
 
+export type CountCoordinationDeviceDto = {
+  deviceId: string;
+  knownSnapshotId: string;
+  knownSnapshotAt: string;
+  knownStockVersion: number | null;
+  acknowledgedSnapshotId: string | null;
+  acknowledgedAt: string | null;
+  acknowledgedStockVersion: number | null;
+};
+
+export type CountCoordinationDto = {
+  id: string;
+  operationId: string;
+  status: "active" | "completed" | "cancelled" | "expired";
+  boundaryStockVersion: number;
+  boundaryAt: string;
+  expiresAt: string;
+  startedBy: StaffSummaryDto;
+  finishedBy: StaffSummaryDto | null;
+  finishedAt: string | null;
+  devices: CountCoordinationDeviceDto[];
+};
+
+export type StockPauseDto = {
+  coordinationId: string;
+  boundaryStockVersion: number;
+  boundaryAt: string;
+  expiresAt: string;
+};
+
+export type CountCoordinationAcknowledgementDto = {
+  coordinationId: string;
+  deviceId: string;
+  snapshotId: string;
+  acknowledgedAt: string;
+  acknowledgedStockVersion: number;
+};
+
+export type StockCorrectionBatchEffectDto = {
+  batchId: string;
+  direction: "restore" | "deduct";
+  quantity: number;
+  unitCostPiasters: number;
+  effectiveUnitCostPiasters: number;
+};
+
+export type StockCorrectionDto = {
+  id: string;
+  operationId: string;
+  coordinationId: string;
+  variantId: string;
+  variant: VariantIdentityDto;
+  previousAvailableQuantity: number;
+  correctedAvailableQuantity: number;
+  quantityDelta: number;
+  reason: string;
+  positiveSourceBatchId: string | null;
+  changedBy: StaffSummaryDto;
+  changedAt: string;
+  boundaryStockVersion: number;
+  coordinationBoundaryAt: string;
+  boundaryAt: string;
+  devices: CountCoordinationDeviceDto[];
+  batches: StockCorrectionBatchEffectDto[];
+};
+
+export type StockReconciliationDto = {
+  id: string;
+  operationId: string;
+  correctionId: string;
+  saleId: string;
+  variantId: string;
+  resolution: "included_in_count" | "allocate_missing_source";
+  quantity: number;
+  previousAvailableQuantity: number;
+  resultingAvailableQuantity: number;
+  resolvedBy: StaffSummaryDto;
+  resolvedAt: string;
+  batches: Array<Omit<StockCorrectionBatchEffectDto, "direction"> & { direction: "restore" | "allocate" }>;
+};
+
+export type StockReconciliationCaseDto = {
+  correctionId: string;
+  saleId: string;
+  saleOperationId: string;
+  variantId: string;
+  deviceId: string;
+  sourceSnapshotId: string;
+  sourceSnapshotIssuedAt: string;
+  occurredAt: string;
+  recordedAt: string;
+  boundaryAt: string;
+  timing: "before_count" | "after_count";
+  soldQuantity: number;
+  allocatedQuantity: number;
+  unallocatedQuantity: number;
+  costsIncomplete: boolean;
+  alreadyCountedQuantity: number;
+  maximumCountedQuantity: number;
+};
+
 export type FifoBatchRef = {
   batchId: string;
   variantId: string;
@@ -383,6 +533,7 @@ export type PosPriceSnapshotDto = {
   deviceId: string;
   issuedAt: string;
   stockVersion: number;
+  stockPause: StockPauseDto | null;
   includedOperationIds: string[];
   includedOperations: CompletedOperationProofDto[];
   couponAccountedOperations: CouponUsageProofDto[];
@@ -782,6 +933,8 @@ export type ApiErrorCode =
   | "NOT_FOUND"
   | "ORIGIN_DENIED"
   | "CONFLICT"
+  | "STOCK_MUTATION_PAUSED"
+  | "COORDINATION_STALE"
   | "VARIANT_REFERENCED";
 
 export type ApiErrorBody = {

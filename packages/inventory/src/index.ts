@@ -3,13 +3,25 @@ export type {
   ApiErrorCode,
   FifoBatchRef,
   InventoryBatchDto,
+  CountCoordinationDto,
+  CountCoordinationDeviceDto,
+  CountCoordinationAcknowledgementDto,
   InventorySettingsDto,
   LowStockVariantDto,
+  StockCorrectionDto,
+  StockPauseDto,
+  StockReconciliationDto,
+  StockReconciliationCaseDto,
   ReceiptDto,
   VariantIdentityDto,
   VariantLowStockDto,
 } from "@bravos/contracts";
-export { InventoryValidationError, OperationConflictError } from "./domain/errors.ts";
+export {
+  CoordinationStaleError,
+  InventoryValidationError,
+  OperationConflictError,
+  StockMutationPausedError,
+} from "./domain/errors.ts";
 export { sortFifoBatches, toFifoBatchRef } from "./domain/fifo.ts";
 export { fingerprintReceivePayload, normalizeReceivePayload } from "./domain/fingerprint.ts";
 export { assertPiasters, assertQuantity, assertThreshold } from "./domain/money.ts";
@@ -22,11 +34,17 @@ export type {
   AllocateResult,
   AllocationRecord,
   ClaimedOperation,
+  CountCoordinationRecord,
   DiscrepancyRecord,
   InventoryActorPort,
   InventoryReadStore,
   InventoryServices,
   InventoryTransaction,
+  StockCoordinationStore,
+  StockCorrectionRecord,
+  StockReconciliationSale,
+  StockReconciliationSalesPort,
+  StockReconciliationDownstreamFactsPort,
   BatchRecord,
   ReceivingBatchCorrection,
   ReceivingBatchCorrectionResult,

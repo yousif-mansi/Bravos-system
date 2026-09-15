@@ -42,6 +42,8 @@ test("apply, down the latest migration, and reapply works with multiple migratio
       "017_offline_promotions.sql",
       "018_exchanges.sql",
       "019_receiving_corrections.sql",
+      "020_stock_quantity_corrections.sql",
+      "021_online_checkout.sql",
     ]);
     expect(await listAppliedMigrations(pool)).toEqual(first);
     expect(await tableNames(pool)).toEqual(
@@ -70,6 +72,14 @@ test("apply, down the latest migration, and reapply works with multiple migratio
         "returns_exchange_quote",
         "receiving_correction",
         "receiving_correction_line",
+        "inventory_known_till",
+        "inventory_count_coordination",
+        "inventory_stock_correction",
+        "inventory_stock_reconciliation",
+        "delivery_area",
+        "online_checkout_quote",
+        "online_order",
+        "online_order_line",
       ]),
     );
 
@@ -114,6 +124,14 @@ test("apply, down the latest migration, and reapply works with multiple migratio
     expect(afterDown).not.toContain("returns_exchange_quote");
     expect(afterDown).not.toContain("receiving_correction");
     expect(afterDown).not.toContain("receiving_correction_line");
+    expect(afterDown).not.toContain("inventory_known_till");
+    expect(afterDown).not.toContain("inventory_count_coordination");
+    expect(afterDown).not.toContain("inventory_stock_correction");
+    expect(afterDown).not.toContain("inventory_stock_reconciliation");
+    expect(afterDown).not.toContain("delivery_area");
+    expect(afterDown).not.toContain("online_checkout_quote");
+    expect(afterDown).not.toContain("online_order");
+    expect(afterDown).not.toContain("online_order_line");
     expect(await columnExists(pool, "sales_pos_snapshot", "pricing_version")).toBe(false);
     expect(await columnExists(pool, "sales_sale", "cash_received_piasters")).toBe(false);
     expect(await columnExists(pool, "inventory_batch", "effective_received_quantity")).toBe(false);
@@ -140,6 +158,8 @@ test("apply, down the latest migration, and reapply works with multiple migratio
 
     expect(await tableNames(pool)).toEqual(expect.arrayContaining([
       "returns_exchange", "returns_exchange_quote", "receiving_correction", "receiving_correction_line",
+      "inventory_known_till", "inventory_count_coordination", "inventory_stock_correction", "inventory_stock_reconciliation",
+      "delivery_area", "online_checkout_quote", "online_order", "online_order_line",
     ]));
     expect(await columnExists(pool, "sales_pos_snapshot", "pricing_version")).toBe(true);
     expect(await columnExists(pool, "sales_pos_snapshot", "coupon_accounted_operations")).toBe(true);
@@ -301,6 +321,8 @@ test("008 down expands counted unit ranges into one legacy row per ordinal", asy
       "017_offline_promotions.sql",
       "018_exchanges.sql",
       "019_receiving_corrections.sql",
+      "020_stock_quantity_corrections.sql",
+      "021_online_checkout.sql",
     ]);
     const restored = await pool.query<{ unit_index: number; quantity: number; paid_piasters: number }>(
       `SELECT unit_index, quantity, paid_piasters FROM sales_sale_unit ORDER BY unit_index`,
@@ -308,6 +330,96 @@ test("008 down expands counted unit ranges into one legacy row per ordinal", asy
     expect(restored.rows).toEqual([
       { unit_index: 0, quantity: 1, paid_piasters: 99 },
       { unit_index: 1, quantity: 1, paid_piasters: 99 },
+    ]);
+  } finally {
+    await pool.end();
+  }
+});
+
+test("020 backfills each legacy till from its latest snapshot without inventing synchronization", async () => {
+  const databaseName = `bravos_migrate_${crypto.randomUUID().replaceAll("-", "")}`;
+  await cluster.createDatabase(databaseName);
+  const pool = new Pool({ connectionString: cluster.connectionString(databaseName), max: 3 });
+  try {
+    await applyMigrations(pool);
+    for (;;) {
+      const applied = await listAppliedMigrations(pool);
+      if (applied.at(-1) === "019_receiving_corrections.sql") break;
+      expect(await revertLastMigration(pool)).toBeTruthy();
+    }
+
+    await pool.query(`
+      INSERT INTO "user" (id, name, email, "emailVerified", "createdAt", "updatedAt")
+      VALUES ('staff-legacy-till', 'Legacy Till', 'legacy-till@bravos.test', true, now(), now());
+      INSERT INTO staff_profile (staff_id, display_name_ar, is_owner)
+      VALUES ('staff-legacy-till', 'موظف الجهاز القديم', true);
+      INSERT INTO sales_pos_snapshot (id, staff_id, branch_id, device_id, issued_at, price_fingerprint)
+      VALUES
+        (
+          '30303030-3030-4030-8030-303030303030',
+          'staff-legacy-till',
+          '11111111-1111-4111-8111-111111111111',
+          '10101010-1010-4010-8010-101010101010',
+          '2026-09-13T08:00:00Z',
+          'device-one-older'
+        ),
+        (
+          '31313131-3131-4131-8131-313131313131',
+          'staff-legacy-till',
+          '11111111-1111-4111-8111-111111111111',
+          '10101010-1010-4010-8010-101010101010',
+          '2026-09-14T08:00:00Z',
+          'device-one-latest'
+        ),
+        (
+          '32323232-3232-4232-8232-323232323232',
+          'staff-legacy-till',
+          '22222222-2222-4222-8222-222222222222',
+          '20202020-2020-4020-8020-202020202020',
+          '2026-09-12T08:00:00Z',
+          'device-two-only'
+        );
+    `);
+
+    expect(await applyMigrations(pool)).toEqual([
+      "020_stock_quantity_corrections.sql",
+      "021_online_checkout.sql",
+    ]);
+    const knownTills = await pool.query<{
+      device_id: string;
+      latest_snapshot_id: string;
+      stock_version: string | null;
+      pending_operation_ids: string[];
+      included_operation_ids: string[];
+      synchronization_complete: boolean;
+    }>(`
+      SELECT
+        device_id,
+        latest_snapshot_id,
+        stock_version,
+        pending_operation_ids,
+        included_operation_ids,
+        synchronization_complete
+      FROM inventory_known_till
+      ORDER BY device_id
+    `);
+    expect(knownTills.rows).toEqual([
+      {
+        device_id: "10101010-1010-4010-8010-101010101010",
+        latest_snapshot_id: "31313131-3131-4131-8131-313131313131",
+        stock_version: null,
+        pending_operation_ids: [],
+        included_operation_ids: [],
+        synchronization_complete: false,
+      },
+      {
+        device_id: "20202020-2020-4020-8020-202020202020",
+        latest_snapshot_id: "32323232-3232-4232-8232-323232323232",
+        stock_version: null,
+        pending_operation_ids: [],
+        included_operation_ids: [],
+        synchronization_complete: false,
+      },
     ]);
   } finally {
     await pool.end();

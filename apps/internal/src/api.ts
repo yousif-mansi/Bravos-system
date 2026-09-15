@@ -5,7 +5,10 @@ import type {
   CategoryDto,
   CouponDto,
   CouponWriteDto,
+  CountCoordinationAcknowledgementDto,
+  CountCoordinationDto,
   ColorDto,
+  DeliveryAreaDto,
   ExpenseCategoryDto,
   ExpenseDto,
   ExpenseTotalsDto,
@@ -24,6 +27,10 @@ import type {
   SaleDto,
   SizeDto,
   StaffAccountDto,
+  StockCorrectionDto,
+  StockPauseDto,
+  StockReconciliationCaseDto,
+  StockReconciliationDto,
   StorefrontContactsDto,
   UploadedProductMediaDto,
   VariantLowStockDto,
@@ -259,6 +266,24 @@ export function updateStorefrontContacts(input: {
   });
 }
 
+export function listDeliveryAreas() {
+  return request<DeliveryAreaDto[]>("/api/internal/delivery-areas");
+}
+
+export function createDeliveryArea(input: { nameAr: string; feePiasters: number; active: boolean }) {
+  return request<DeliveryAreaDto>("/api/internal/delivery-areas", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateDeliveryArea(areaId: string, input: { nameAr: string; feePiasters: number; active: boolean }) {
+  return request<DeliveryAreaDto>(`/api/internal/delivery-areas/${areaId}`, {
+    method: "PUT",
+    body: JSON.stringify(input),
+  });
+}
+
 export async function uploadProductImage(file: File) {
   if (file.size > MAX_PRODUCT_IMAGE_BYTES) {
     throw new ApiError(400, "VALIDATION", "حجم الصورة غير صالح. الحد الأقصى 5 ميجابايت.");
@@ -391,6 +416,80 @@ export function setVariantLowStockThreshold(variantId: string, lowStockThreshold
   return request<VariantLowStockDto>(`/api/internal/inventory/variants/${variantId}/low-stock-threshold`, {
     method: "PUT",
     body: JSON.stringify({ lowStockThreshold }),
+  });
+}
+
+export function getCountCoordination() {
+  return request<CountCoordinationDto | null>("/api/internal/inventory/count-coordination");
+}
+
+export function getStockPause() {
+  return request<StockPauseDto | null>("/api/internal/inventory/stock-pause");
+}
+
+export function startCountCoordination(operationId: string) {
+  return request<CountCoordinationDto>("/api/internal/inventory/count-coordination", {
+    method: "POST",
+    body: JSON.stringify({ operationId }),
+  });
+}
+
+export function acknowledgeCountCoordination(input: {
+  coordinationId: string;
+  deviceId: string;
+  snapshotId: string;
+}) {
+  return request<CountCoordinationAcknowledgementDto>(
+    "/api/internal/inventory/count-coordination/acknowledgements",
+    { method: "POST", body: JSON.stringify(input) },
+  );
+}
+
+export function cancelCountCoordination(operationId: string, coordinationId: string) {
+  return request<CountCoordinationDto>("/api/internal/inventory/count-coordination/cancel", {
+    method: "POST",
+    body: JSON.stringify({ operationId, coordinationId }),
+  });
+}
+
+export function listStockCorrections() {
+  return request<StockCorrectionDto[]>("/api/internal/inventory/stock-corrections");
+}
+
+export function finalizeStockCorrection(input: {
+  operationId: string;
+  coordinationId: string;
+  variantId: string;
+  previousAvailableQuantity: number;
+  correctedAvailableQuantity: number;
+  reason: string;
+  positiveSourceBatchId?: string | null;
+}) {
+  return request<StockCorrectionDto>("/api/internal/inventory/stock-corrections", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function listStockReconciliationCases() {
+  return request<StockReconciliationCaseDto[]>("/api/internal/inventory/stock-reconciliation-cases");
+}
+
+export function listStockReconciliations() {
+  return request<StockReconciliationDto[]>("/api/internal/inventory/stock-reconciliations");
+}
+
+export function reconcileLateSale(input: {
+  operationId: string;
+  correctionId: string;
+  saleId: string;
+  variantId: string;
+  resolution: "included_in_count" | "allocate_missing_source";
+  quantity: number;
+}) {
+  return request<StockReconciliationDto>("/api/internal/inventory/stock-reconciliations", {
+    method: "POST",
+    body: JSON.stringify(input),
   });
 }
 

@@ -104,6 +104,21 @@ const forbidden = [
     message: "Deep storefront configuration imports are not part of the public interface.",
   },
   {
+    from: ["apps", "packages"],
+    pattern: /@bravos\/online-orders\/src\//,
+    message: "Deep online-orders imports are not part of the public interface.",
+  },
+  {
+    from: ["packages/online-orders/src/domain", "packages/online-orders/src/application"],
+    pattern: /from ["'](better-auth|fastify|pg|react|next|vite|dexie)/,
+    message: "Online-order inner layers cannot import infrastructure SDKs.",
+  },
+  {
+    from: ["packages/online-orders"],
+    pattern: /@bravos\/(catalog|inventory|receiving|pricing|sales|expenses|returns|corrections|storefront-config|persistence)/,
+    message: "Online orders must coordinate other features through its own declared ports.",
+  },
+  {
     from: ["packages/identity/src/domain", "packages/identity/src/application", "packages/catalog/src/domain", "packages/catalog/src/application", "packages/inventory/src/domain", "packages/inventory/src/application", "packages/receiving/src/domain", "packages/receiving/src/application", "packages/pricing/src/domain", "packages/pricing/src/application", "packages/sales/src/domain", "packages/sales/src/application", "packages/expenses/src/domain", "packages/expenses/src/application", "packages/returns/src/domain", "packages/returns/src/application", "packages/corrections/src/domain", "packages/corrections/src/application", "packages/storefront-config/src/domain", "packages/storefront-config/src/application"],
     pattern: /from ["'](better-auth|fastify|pg|react|next|vite|dexie)/,
     message: "Inner feature layers cannot import infrastructure SDKs.",

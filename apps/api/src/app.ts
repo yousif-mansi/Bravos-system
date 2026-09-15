@@ -12,6 +12,7 @@ import { CorrectionsValidationError, createCorrectionServices, type CorrectionSe
 import {
   createPostgresCorrectionsRepository,
   createPostgresReturnCorrectionStateReader,
+  createPostgresStockReconciliationCorrectionFacts,
 } from "@bravos/corrections/node";
 import {
   CatalogValidationError,
@@ -20,15 +21,21 @@ import {
   createCatalogServices,
   type CatalogServices,
 } from "@bravos/catalog";
-import { createLocalProductMediaStorage, createPostgresCatalogStore, createPostgresListedPriceReader } from "@bravos/catalog/node";
+import { createLocalProductMediaStorage, createPostgresCatalogStore, createPostgresCheckoutCatalogReader, createPostgresListedPriceReader } from "@bravos/catalog/node";
 import {
   InventoryValidationError,
   OperationConflictError,
+  CoordinationStaleError,
+  StockMutationPausedError,
   createInventoryAvailabilityReader,
   createInventoryServices,
   type InventoryServices,
 } from "@bravos/inventory";
-import { createInventoryTransaction, createPostgresInventoryStore } from "@bravos/inventory/node";
+import {
+  createInventoryTransaction,
+  createPostgresInventoryStore,
+  createPostgresStockCoordinationStore,
+} from "@bravos/inventory/node";
 import {
   ReceivingValidationError,
   createReceivingServices,
@@ -50,6 +57,7 @@ import {
   createPostgresPriceSnapshotStore,
   createPostgresPricingQuoteReader,
   createPostgresSaleStore,
+  createPostgresStockReconciliationSales,
   createPostgresSalesUnitOfWork,
 } from "@bravos/sales/node";
 import {
@@ -57,7 +65,11 @@ import {
   createReturnServices,
   type ReturnServices,
 } from "@bravos/returns";
-import { createPostgresReturnsStore, createPostgresReturnsUnitOfWork } from "@bravos/returns/node";
+import {
+  createPostgresReturnsStore,
+  createPostgresReturnsUnitOfWork,
+  createPostgresStockReconciliationReturnFacts,
+} from "@bravos/returns/node";
 import {
   StorefrontConfigValidationError,
   createStorefrontConfigServices,
@@ -91,6 +103,18 @@ import {
   createPostgresCouponStore,
   createPostgresCouponUsageTransaction,
 } from "@bravos/pricing/node";
+import {
+  InsufficientStockError,
+  OnlineOrderOperationConflictError,
+  OnlineOrderValidationError,
+  QuoteAlreadyUsedError,
+  QuoteStaleError,
+  UnsupportedDeliveryAreaError,
+  VariantNotOrderableError,
+  createOnlineOrderServices,
+  type OnlineOrderServices,
+} from "@bravos/online-orders";
+import { createPostgresOnlineOrderStore, createPostgresOnlineOrderUnitOfWork } from "@bravos/online-orders/node";
 import type { AppConfig } from "./config.ts";
 
 const ALLOWED_AUTH_ROUTES = new Set([
@@ -113,6 +137,7 @@ export type BuiltApp = {
   returns: ReturnServices;
   corrections: CorrectionServices;
   storefrontConfig: StorefrontConfigServices;
+  onlineOrders: OnlineOrderServices;
   auth: ReturnType<typeof createBetterAuth>;
   identity: IdentityGateway;
   close: () => Promise<void>;
@@ -180,6 +205,22 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
         getVariants: (ids) => catalogStore.getVariants(ids),
         listIds: () => catalogStore.listVariantIds(),
       },
+      coordination: createPostgresStockCoordinationStore(
+        pool,
+        createInventoryTransaction,
+        createPostgresStockReconciliationSales,
+        (queryable) => {
+          const returnFacts = createPostgresStockReconciliationReturnFacts(queryable);
+          const correctionFacts = createPostgresStockReconciliationCorrectionFacts(queryable);
+          return {
+            async hasDownstreamFacts(saleId, saleLineIds) {
+              if (await returnFacts.hasPostedForSourceLines(saleId, saleLineIds)) return true;
+              if (await correctionFacts.hasForSale(saleId)) return true;
+              return correctionFacts.hasForReturns(await returnFacts.listIdsForSale(saleId));
+            },
+          };
+        },
+      ),
     });
     const receiving = createReceivingServices({
       actors,
@@ -260,10 +301,21 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
       actors,
       contacts: createPostgresStorefrontContactsStore(pool),
     });
+    const onlineOrderStore = createPostgresOnlineOrderStore(pool);
+    const onlineOrders = createOnlineOrderServices({
+      actors,
+      store: onlineOrderStore,
+      uow: createPostgresOnlineOrderUnitOfWork(pool, (client) => ({
+        catalog: createPostgresCheckoutCatalogReader(client),
+        inventory: createInventoryTransaction(client),
+        pricing: createPostgresAutomaticPricingReader(client),
+      })),
+      clock: { now: config.businessClock ?? (() => new Date()) },
+    });
 
     const instance = Fastify({ logger: false });
     app = instance;
-    await registerRoutes(instance, config, auth, identity, services, catalog, inventory, receiving, pricing, sales, expenses, returns, corrections, storefrontConfig);
+    await registerRoutes(instance, config, auth, identity, services, catalog, inventory, receiving, pricing, sales, expenses, returns, corrections, storefrontConfig, onlineOrders);
 
     return {
       app: instance,
@@ -278,6 +330,7 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
       returns,
       corrections,
       storefrontConfig,
+      onlineOrders,
       auth,
       identity,
       async close() {
@@ -316,6 +369,7 @@ async function registerRoutes(
   returns: ReturnServices,
   corrections: CorrectionServices,
   storefrontConfig: StorefrontConfigServices,
+  onlineOrders: OnlineOrderServices,
 ) {
   app.addHook("onRequest", async (request, reply) => {
     if (isPrivilegedPath(request.url) && !isTrustedInternalOrigin(request, config)) {
@@ -365,6 +419,25 @@ async function registerRoutes(
     return handle(reply, async () => storefrontConfig.publicContacts());
   });
 
+  app.get("/api/public/checkout/delivery-areas", async (_request, reply) => {
+    reply.header("cache-control", "no-store");
+    return handle(reply, async () => onlineOrders.publicAreas());
+  });
+
+  app.post("/api/public/checkout/quote", async (request, reply) => {
+    reply.header("cache-control", "no-store");
+    return handle(reply, async () => onlineOrders.quote(request.body));
+  });
+
+  app.post("/api/public/checkout/orders", async (request, reply) => {
+    reply.header("cache-control", "no-store");
+    return handle(reply, async () => {
+      const result = await onlineOrders.submit(request.body);
+      reply.status(result.created ? 201 : 200);
+      return result.result;
+    });
+  });
+
   app.get("/api/public/catalog/products/:productId", async (request, reply) => {
     const params = request.params as { productId: string };
     reply.header("cache-control", "no-store");
@@ -393,6 +466,32 @@ async function registerRoutes(
 
   app.patch("/api/internal/storefront/contacts", async (request, reply) => {
     return handle(reply, async () => storefrontConfig.updateContacts(await verifiedAuth(identity, request), request.body));
+  });
+
+  app.get("/api/internal/delivery-areas", async (request, reply) => {
+    return handle(reply, async () => onlineOrders.listAreas(await verifiedAuth(identity, request)));
+  });
+
+  app.post("/api/internal/delivery-areas", async (request, reply) => {
+    return handle(reply, async () => {
+      const area = await onlineOrders.createArea(await verifiedAuth(identity, request), request.body);
+      reply.status(201);
+      return area;
+    });
+  });
+
+  app.put("/api/internal/delivery-areas/:areaId", async (request, reply) => {
+    const params = request.params as { areaId: string };
+    return handle(reply, async () => onlineOrders.updateArea(await verifiedAuth(identity, request), params.areaId, request.body));
+  });
+
+  app.get("/api/internal/online-orders", async (request, reply) => {
+    return handle(reply, async () => onlineOrders.listOrders(await verifiedAuth(identity, request)));
+  });
+
+  app.get("/api/internal/online-orders/:orderId", async (request, reply) => {
+    const params = request.params as { orderId: string };
+    return handle(reply, async () => onlineOrders.getOrder(await verifiedAuth(identity, request), params.orderId));
   });
 
   app.get("/api/internal/branches", async (request, reply) => {
@@ -703,6 +802,58 @@ async function registerRoutes(
     return handle(reply, async () =>
       inventory.setVariantThreshold(await verifiedAuth(identity, request), params.variantId, request.body),
     );
+  });
+
+  app.get("/api/internal/inventory/count-coordination", async (request, reply) => {
+    return handle(reply, async () => inventory.currentCoordination(await verifiedAuth(identity, request)));
+  });
+
+  app.get("/api/internal/inventory/stock-pause", async (request, reply) => {
+    return handle(reply, async () => inventory.currentStockPause(await verifiedAuth(identity, request)));
+  });
+
+  app.post("/api/internal/inventory/count-coordination/acknowledgements", async (request, reply) => {
+    return handle(reply, async () => inventory.acknowledgeCoordination(await verifiedAuth(identity, request), request.body));
+  });
+
+  app.post("/api/internal/inventory/count-coordination", async (request, reply) => {
+    return handle(reply, async () => {
+      const result = await inventory.startCoordination(await verifiedAuth(identity, request), request.body);
+      reply.status(result.created ? 201 : 200);
+      return result.value;
+    });
+  });
+
+  app.post("/api/internal/inventory/count-coordination/cancel", async (request, reply) => {
+    return handle(reply, async () => inventory.cancelCoordination(await verifiedAuth(identity, request), request.body));
+  });
+
+  app.get("/api/internal/inventory/stock-corrections", async (request, reply) => {
+    return handle(reply, async () => inventory.listStockCorrections(await verifiedAuth(identity, request)));
+  });
+
+  app.post("/api/internal/inventory/stock-corrections", async (request, reply) => {
+    return handle(reply, async () => {
+      const result = await inventory.finalizeStockCorrection(await verifiedAuth(identity, request), request.body);
+      reply.status(result.created ? 201 : 200);
+      return result.value;
+    });
+  });
+
+  app.get("/api/internal/inventory/stock-reconciliations", async (request, reply) => {
+    return handle(reply, async () => inventory.listStockReconciliations(await verifiedAuth(identity, request)));
+  });
+
+  app.get("/api/internal/inventory/stock-reconciliation-cases", async (request, reply) => {
+    return handle(reply, async () => inventory.listStockReconciliationCases(await verifiedAuth(identity, request)));
+  });
+
+  app.post("/api/internal/inventory/stock-reconciliations", async (request, reply) => {
+    return handle(reply, async () => {
+      const result = await inventory.reconcileLateSale(await verifiedAuth(identity, request), request.body);
+      reply.status(result.created ? 201 : 200);
+      return result.value;
+    });
   });
 
   app.post("/api/internal/sales/pos-snapshots", async (request, reply) => {
@@ -1058,11 +1209,26 @@ function sendError(reply: FastifyReply, error: unknown) {
   if (error instanceof OperationConflictError) {
     return reply.status(409).send(errorBody(error.code, error.message));
   }
+  if (error instanceof StockMutationPausedError || error instanceof CoordinationStaleError) {
+    return reply.status(409).send(errorBody(error.code, error.message));
+  }
   if (error instanceof CouponUsageConflictError) {
     return reply.status(409).send(errorBody(error.code, error.message));
   }
   if (error instanceof ExpenseOperationConflictError || error instanceof ExpenseRevisionConflictError) {
     return reply.status(409).send(errorBody(error.code, error.message));
+  }
+  if (
+    error instanceof OnlineOrderOperationConflictError ||
+    error instanceof QuoteAlreadyUsedError ||
+    error instanceof QuoteStaleError ||
+    error instanceof VariantNotOrderableError ||
+    error instanceof InsufficientStockError
+  ) {
+    return reply.status(409).send(errorBody(error.code, error.message));
+  }
+  if (error instanceof UnsupportedDeliveryAreaError) {
+    return reply.status(400).send(errorBody(error.code, error.message));
   }
   if (
     error instanceof IdentityValidationError ||
@@ -1075,6 +1241,7 @@ function sendError(reply: FastifyReply, error: unknown) {
     error instanceof ReturnsValidationError ||
     error instanceof CorrectionsValidationError ||
     error instanceof StorefrontConfigValidationError
+    || error instanceof OnlineOrderValidationError
   ) {
     return reply.status(400).send(errorBody(error.code, error.message));
   }
