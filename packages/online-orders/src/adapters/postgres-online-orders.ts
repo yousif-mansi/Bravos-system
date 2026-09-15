@@ -1,13 +1,22 @@
-import type { DeliveryAreaDto, OnlineOrderDto, OnlineOrderLineDto } from "@bravos/contracts";
+import type {
+  DeliveryAreaDto,
+  OnlineOrderAgreementQuoteDto,
+  OnlineOrderContactAttemptDto,
+  OnlineOrderDto,
+  OnlineOrderLineDto,
+  OnlineOrderSettingsDto,
+} from "@bravos/contracts";
 import type { CheckoutQuoteDto, PublicDeliveryAreaDto, PublicOrderSubmissionDto } from "@bravos/contracts/public";
 import type { Pool, PoolClient, QueryResultRow } from "pg";
 import { OnlineOrderValidationError, QuoteAlreadyUsedError } from "../domain/errors.ts";
 import type {
   AcceptedOrderWrite,
+  AgreementQuoteWrite,
   CheckoutDependencies,
   DeliveryAreaWrite,
   OnlineOrderStore,
   OnlineOrderUnitOfWork,
+  StoredOrderOperation,
   StoredQuote,
 } from "../application/ports.ts";
 
@@ -32,7 +41,7 @@ type SubmissionRow = {
   operation_id: string;
   payload_fingerprint: string;
   reference: string;
-  status: "pending";
+  status: string;
   submitted_at: Date;
   quote_json: CheckoutQuoteDto;
 };
@@ -40,7 +49,8 @@ type OrderRow = {
   id: string;
   operation_id: string;
   reference: string;
-  status: "pending";
+  status: OnlineOrderDto["status"];
+  revision: number;
   customer_name: string;
   primary_phone: string;
   alternate_phone: string | null;
@@ -58,6 +68,11 @@ type OrderRow = {
   requested_final_total_piasters: number | string;
   requested_applied_automatic_offer: OnlineOrderDto["requestedAppliedAutomaticOffer"];
   requested_applied_coupon: OnlineOrderDto["requestedAppliedCoupon"];
+  confirmed_by_staff_id: string | null;
+  confirmed_at: Date | null;
+  cancelled_by_staff_id: string | null;
+  cancelled_at: Date | null;
+  cancellation_reason: string | null;
   submitted_at: Date;
 };
 type LineRow = {
@@ -73,6 +88,50 @@ type LineRow = {
   requested_automatic_offer_discount_piasters: number | string;
   requested_coupon_discount_piasters: number | string;
   requested_merchandise_total_piasters: number | string;
+};
+type AgreementQuoteRow = {
+  id: string;
+  order_id: string;
+  order_revision: number;
+  request_fingerprint: string;
+  review_digest: string;
+  request_json: AgreementQuoteWrite["request"];
+  quote_json: OnlineOrderAgreementQuoteDto;
+  pricing_snapshot_json: AgreementQuoteWrite["pricingSnapshot"];
+  reviewed_by_staff_id: string;
+  reviewed_at: Date;
+};
+type OperationRow = {
+  operation_id: string;
+  order_id: string;
+  operation_type: StoredOrderOperation["operationType"];
+  payload_fingerprint: string;
+  response_json: OnlineOrderDto;
+  actor_staff_id: string;
+  accepted_at: Date;
+};
+type ContactAttemptRow = {
+  id: string;
+  operation_id: string;
+  actor_staff_id: string;
+  outcome: OnlineOrderContactAttemptDto["outcome"];
+  note: string | null;
+  occurred_at: Date;
+};
+type AgreedRevisionRow = {
+  version: number;
+  operation_id: string;
+  agreed_by_staff_id: string;
+  agreed_at: Date;
+  quote_json: OnlineOrderAgreementQuoteDto;
+};
+type ConfirmationRow = { confirmed_quote_json: OnlineOrderAgreementQuoteDto };
+type SettingsRow = {
+  revision: number;
+  unreachable_wait_hours: number;
+  minimum_contact_attempts: number;
+  changed_by_staff_id: string | null;
+  changed_at: Date | null;
 };
 
 export function createPostgresOnlineOrderStore(queryable: Queryable): OnlineOrderStore {
@@ -195,7 +254,100 @@ export function createPostgresOnlineOrderStore(queryable: Queryable): OnlineOrde
       const orders = await Promise.all(result.rows.map((row) => loadOrder(queryable, row.id)));
       return orders.filter((order): order is OnlineOrderDto => order !== null);
     },
-    getOrder(id) { return loadOrder(queryable, id); },
+    getOrder(id, lock = false) { return loadOrder(queryable, id, lock); },
+    async insertAgreementQuote(input) {
+      await queryable.query(
+        `INSERT INTO online_order_agreement_quote (
+           id,order_id,order_revision,request_fingerprint,review_digest,request_json,quote_json,
+           pricing_snapshot_json,reviewed_by_staff_id,reviewed_at
+         ) VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8::jsonb,$9,$10)`,
+        [input.id,input.orderId,input.orderRevision,input.requestFingerprint,input.reviewDigest,
+          JSON.stringify(input.request),JSON.stringify(input.quote),JSON.stringify(input.pricingSnapshot),
+          input.actorStaffId,input.reviewedAt],
+      );
+    },
+    async getAgreementQuote(id, lock = false) {
+      const result = await queryable.query<AgreementQuoteRow>(
+        `SELECT * FROM online_order_agreement_quote WHERE id=$1${lock ? " FOR UPDATE" : ""}`,
+        [id],
+      );
+      return result.rows[0] ? agreementQuote(result.rows[0]) : null;
+    },
+    async getOperation(operationId) {
+      const result = await queryable.query<OperationRow>("SELECT * FROM online_order_operation WHERE operation_id=$1", [operationId]);
+      const row = result.rows[0];
+      return row ? {
+        operationId: row.operation_id, orderId: row.order_id, operationType: row.operation_type,
+        payloadFingerprint: row.payload_fingerprint, response: row.response_json,
+        actorStaffId: row.actor_staff_id, acceptedAt: row.accepted_at,
+      } : null;
+    },
+    async insertContactAttempt(input) {
+      await insertOperationShell(queryable, input, "contact_attempt", input.occurredAt);
+      await queryable.query(
+        `INSERT INTO online_order_contact_attempt
+           (id,order_id,operation_id,actor_staff_id,outcome,note,occurred_at)
+         VALUES (gen_random_uuid(),$1,$2,$3,$4,$5,$6)`,
+        [input.orderId,input.operationId,input.actorStaffId,input.outcome,input.note,input.occurredAt],
+      );
+      await setRevision(queryable, input.orderId, input.nextRevision);
+      return finishOperation(queryable, input.operationId, input.orderId);
+    },
+    async insertAgreedRevision(input) {
+      await insertOperationShell(queryable, input, "agreed_revision", input.agreedAt);
+      await queryable.query(
+        `INSERT INTO online_order_agreed_revision
+           (order_id,version,operation_id,quote_id,review_digest,agreed_by_staff_id,agreed_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+        [input.orderId,input.nextRevision,input.operationId,input.quoteId,input.reviewDigest,input.actorStaffId,input.agreedAt],
+      );
+      await setRevision(queryable, input.orderId, input.nextRevision);
+      return finishOperation(queryable, input.operationId, input.orderId);
+    },
+    async confirm(input) {
+      await insertOperationShell(queryable, input, "confirmation", input.confirmedAt);
+      await queryable.query(
+        `INSERT INTO online_order_confirmation (
+           order_id,operation_id,agreed_revision,quote_id,review_digest,confirmed_quote_json,
+           pricing_snapshot_json,confirmed_by_staff_id,confirmed_at
+         ) SELECT $1,$2,$3,$4,$5,q.quote_json,q.pricing_snapshot_json,$6,$7
+           FROM online_order_agreement_quote q WHERE q.id=$4`,
+        [input.orderId,input.operationId,input.agreedRevision,input.quoteId,input.reviewDigest,input.actorStaffId,input.confirmedAt],
+      );
+      await queryable.query(
+        `UPDATE online_order SET status='confirmed',revision=$2,confirmed_by_staff_id=$3,confirmed_at=$4 WHERE id=$1`,
+        [input.orderId,input.nextRevision,input.actorStaffId,input.confirmedAt],
+      );
+      return finishOperation(queryable, input.operationId, input.orderId);
+    },
+    async cancelUnreachable(input) {
+      await insertOperationShell(queryable, input, "unreachable_cancellation", input.cancelledAt);
+      await queryable.query(
+        `INSERT INTO online_order_unreachable_cancellation
+           (order_id,operation_id,reason,cancelled_by_staff_id,cancelled_at)
+         VALUES ($1,$2,$3,$4,$5)`,
+        [input.orderId,input.operationId,input.reason,input.actorStaffId,input.cancelledAt],
+      );
+      await queryable.query(
+        `UPDATE online_order SET status='cancelled_unreachable',revision=$2,cancelled_by_staff_id=$3,
+           cancelled_at=$4,cancellation_reason=$5 WHERE id=$1`,
+        [input.orderId,input.nextRevision,input.actorStaffId,input.cancelledAt,input.reason],
+      );
+      return finishOperation(queryable, input.operationId, input.orderId);
+    },
+    async getSettings() {
+      const result = await queryable.query<SettingsRow>("SELECT * FROM online_order_settings WHERE singleton=TRUE");
+      return settings(required(result.rows[0]));
+    },
+    async updateSettings(input) {
+      const result = await queryable.query<SettingsRow>(
+        `UPDATE online_order_settings SET revision=revision+1,unreachable_wait_hours=$2,
+           minimum_contact_attempts=$3,changed_by_staff_id=$4,changed_at=$5
+         WHERE singleton=TRUE AND revision=$1 RETURNING *`,
+        [input.expectedRevision,input.unreachableWaitHours,input.minimumContactAttempts,input.actorStaffId,input.changedAt],
+      );
+      return result.rows[0] ? settings(result.rows[0]) : null;
+    },
   };
 }
 
@@ -233,13 +385,23 @@ export function createPostgresOnlineOrderUnitOfWork(
   };
 }
 
-async function loadOrder(queryable: Queryable, id: string): Promise<OnlineOrderDto | null> {
-  const result = await queryable.query<OrderRow>("SELECT * FROM online_order WHERE id=$1", [id]);
+async function loadOrder(queryable: Queryable, id: string, lock = false): Promise<OnlineOrderDto | null> {
+  const result = await queryable.query<OrderRow>(`SELECT * FROM online_order WHERE id=$1${lock ? " FOR UPDATE" : ""}`, [id]);
   const row = result.rows[0];
   if (!row) return null;
-  const lineResult = await queryable.query<LineRow>("SELECT * FROM online_order_line WHERE order_id=$1 ORDER BY line_index", [id]);
+  const [lineResult, attemptResult, agreedResult, confirmationResult] = await Promise.all([
+    queryable.query<LineRow>("SELECT * FROM online_order_line WHERE order_id=$1 ORDER BY line_index", [id]),
+    queryable.query<ContactAttemptRow>("SELECT * FROM online_order_contact_attempt WHERE order_id=$1 ORDER BY occurred_at,id", [id]),
+    queryable.query<AgreedRevisionRow>(
+      `SELECT r.version,r.operation_id,r.agreed_by_staff_id,r.agreed_at,q.quote_json
+       FROM online_order_agreed_revision r JOIN online_order_agreement_quote q ON q.id=r.quote_id
+       WHERE r.order_id=$1 ORDER BY r.version DESC LIMIT 1`, [id],
+    ),
+    queryable.query<ConfirmationRow>("SELECT confirmed_quote_json FROM online_order_confirmation WHERE order_id=$1", [id]),
+  ]);
+  const agreed = agreedResult.rows[0];
   return {
-    id: row.id, operationId: row.operation_id, reference: row.reference, status: row.status,
+    id: row.id, operationId: row.operation_id, reference: row.reference, status: row.status, revision: row.revision,
     customerName: row.customer_name, primaryPhone: row.primary_phone, alternatePhone: row.alternate_phone,
     detailedAddress: row.detailed_address, landmark: row.landmark, notes: row.notes,
     deliveryArea: { id: row.delivery_area_id, nameAr: row.requested_delivery_area_name_ar, feePiasters: integer(row.requested_delivery_fee_piasters) },
@@ -253,8 +415,64 @@ async function loadOrder(queryable: Queryable, id: string): Promise<OnlineOrderD
     requestedAppliedAutomaticOffer: row.requested_applied_automatic_offer,
     requestedAppliedCoupon: row.requested_applied_coupon,
     lines: lineResult.rows.map(lineDto),
+    contactAttempts: attemptResult.rows.map(contactAttempt),
+    agreedRevision: agreed ? {
+      version: agreed.version, operationId: agreed.operation_id, agreedByStaffId: agreed.agreed_by_staff_id,
+      agreedAt: agreed.agreed_at.toISOString(), quote: agreed.quote_json,
+    } : null,
+    confirmedQuote: confirmationResult.rows[0]?.confirmed_quote_json ?? null,
+    confirmedByStaffId: row.confirmed_by_staff_id,
+    confirmedAt: row.confirmed_at?.toISOString() ?? null,
+    cancelledByStaffId: row.cancelled_by_staff_id,
+    cancelledAt: row.cancelled_at?.toISOString() ?? null,
+    cancellationReason: row.cancellation_reason,
     submittedAt: row.submitted_at.toISOString(),
   };
+}
+
+async function insertOperationShell(
+  queryable: Queryable,
+  input: { orderId: string; operationId: string; payloadFingerprint: string; actorStaffId: string },
+  operationType: StoredOrderOperation["operationType"],
+  acceptedAt: Date,
+) {
+  await queryable.query(
+    `INSERT INTO online_order_operation
+       (operation_id,order_id,operation_type,payload_fingerprint,response_json,actor_staff_id,accepted_at)
+     VALUES ($1,$2,$3,$4,'{}'::jsonb,$5,$6)`,
+    [input.operationId,input.orderId,operationType,input.payloadFingerprint,input.actorStaffId,acceptedAt],
+  );
+}
+
+async function setRevision(queryable: Queryable, orderId: string, revision: number) {
+  await queryable.query("UPDATE online_order SET revision=$2 WHERE id=$1", [orderId,revision]);
+}
+
+async function finishOperation(queryable: Queryable, operationId: string, orderId: string): Promise<OnlineOrderDto> {
+  const response = await loadOrder(queryable, orderId);
+  if (!response) throw new Error("Accepted online order could not be loaded.");
+  await queryable.query("UPDATE online_order_operation SET response_json=$2::jsonb WHERE operation_id=$1", [operationId,JSON.stringify(response)]);
+  return response;
+}
+
+function agreementQuote(row: AgreementQuoteRow) {
+  return {
+    id: row.id, orderId: row.order_id, orderRevision: row.order_revision,
+    requestFingerprint: row.request_fingerprint, reviewDigest: row.review_digest,
+    request: row.request_json, quote: row.quote_json, pricingSnapshot: row.pricing_snapshot_json,
+    actorStaffId: row.reviewed_by_staff_id, reviewedAt: row.reviewed_at,
+  };
+}
+
+function contactAttempt(row: ContactAttemptRow): OnlineOrderContactAttemptDto {
+  return { id: row.id, operationId: row.operation_id, actorStaffId: row.actor_staff_id,
+    outcome: row.outcome, note: row.note, occurredAt: row.occurred_at.toISOString() };
+}
+
+function settings(row: SettingsRow): OnlineOrderSettingsDto {
+  return { revision: row.revision, unreachableWaitHours: row.unreachable_wait_hours,
+    minimumContactAttempts: row.minimum_contact_attempts, changedByStaffId: row.changed_by_staff_id,
+    changedAt: row.changed_at?.toISOString() ?? null };
 }
 
 function lineDto(row: LineRow): OnlineOrderLineDto {
@@ -270,7 +488,7 @@ function lineDto(row: LineRow): OnlineOrderLineDto {
 }
 
 function publicSubmission(row: SubmissionRow): PublicOrderSubmissionDto {
-  return { orderId: row.id, reference: row.reference, status: row.status, submittedAt: row.submitted_at.toISOString(), quote: row.quote_json };
+  return { orderId: row.id, reference: row.reference, status: "pending", submittedAt: row.submitted_at.toISOString(), quote: row.quote_json };
 }
 function area(row: AreaRow): DeliveryAreaDto {
   return { ...publicArea(row), active: row.active, changedByStaffId: row.changed_by_staff_id, changedAt: row.changed_at.toISOString() };

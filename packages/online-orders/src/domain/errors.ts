@@ -31,3 +31,18 @@ export class QuoteAlreadyUsedError extends Error {
   readonly code = "QUOTE_ALREADY_USED";
   constructor(message = "تم استخدام مراجعة الطلب هذه من قبل.") { super(message); }
 }
+
+export class OnlineOrderRevisionConflictError extends Error {
+  readonly code = "ORDER_REVISION_CONFLICT";
+  constructor(message = "تغير الطلب. حدّث البيانات ثم أعد المحاولة.") { super(message); }
+}
+
+export class OnlineOrderStateConflictError extends Error {
+  readonly code = "ORDER_STATE_CONFLICT";
+  constructor(message = "حالة الطلب لا تسمح بهذه العملية.") { super(message); }
+}
+
+export class UnreachablePolicyError extends Error {
+  readonly code = "UNREACHABLE_POLICY_NOT_MET";
+  constructor(message = "لم تكتمل مدة الانتظار ومحاولات التواصل المطلوبة للإلغاء.") { super(message); }
+}

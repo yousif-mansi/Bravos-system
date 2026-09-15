@@ -16,6 +16,9 @@ import type {
   InventorySettingsDto,
   LowStockVariantDto,
   ManagerProductDto,
+  OnlineOrderAgreementQuoteDto,
+  OnlineOrderDto,
+  OnlineOrderSettingsDto,
   PosPriceSnapshotDto,
   ReceiptDto,
   ReturnCorrectionDetailDto,
@@ -36,6 +39,7 @@ import type {
   VariantLowStockDto,
   WorkspaceDto,
 } from "@bravos/contracts";
+import type { PublicCatalogBrowseDto, PublicProductDto } from "@bravos/contracts/public";
 
 export class ApiError extends Error {
   constructor(
@@ -282,6 +286,97 @@ export function updateDeliveryArea(areaId: string, input: { nameAr: string; feeP
     method: "PUT",
     body: JSON.stringify(input),
   });
+}
+
+export function listOnlineOrders() {
+  return request<OnlineOrderDto[]>("/api/internal/online-orders");
+}
+
+export function getOnlineOrder(orderId: string) {
+  return request<OnlineOrderDto>(`/api/internal/online-orders/${orderId}`);
+}
+
+export function recordOnlineOrderContactAttempt(orderId: string, input: {
+  operationId: string;
+  expectedRevision: number;
+  outcome: "no_answer" | "reached";
+  note?: string;
+}) {
+  return request<OnlineOrderDto>(`/api/internal/online-orders/${orderId}/contact-attempts`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function reviewOnlineOrderAgreement(orderId: string, input: {
+  expectedRevision: number;
+  lines: Array<{ variantId: string; quantity: number }>;
+  couponCode?: string;
+}) {
+  return request<OnlineOrderAgreementQuoteDto>(`/api/internal/online-orders/${orderId}/agreement-quotes`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function saveOnlineOrderAgreement(orderId: string, input: {
+  operationId: string;
+  expectedRevision: number;
+  quoteId: string;
+  reviewDigest: string;
+  customerAgreed: true;
+}) {
+  return request<OnlineOrderDto>(`/api/internal/online-orders/${orderId}/agreed-revisions`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function confirmOnlineOrder(orderId: string, input: {
+  operationId: string;
+  expectedRevision: number;
+  agreedRevision: number;
+  itemsLocatedAndSetAside: true;
+}) {
+  return request<OnlineOrderDto>(`/api/internal/online-orders/${orderId}/confirm`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function cancelUnreachableOnlineOrder(orderId: string, input: {
+  operationId: string;
+  expectedRevision: number;
+  reason: string;
+}) {
+  return request<OnlineOrderDto>(`/api/internal/online-orders/${orderId}/cancel-unreachable`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function getOnlineOrderSettings() {
+  return request<OnlineOrderSettingsDto>("/api/internal/online-order-settings");
+}
+
+export function updateOnlineOrderSettings(input: {
+  expectedRevision: number;
+  unreachableWaitHours: number;
+  minimumContactAttempts: number;
+}) {
+  return request<OnlineOrderSettingsDto>("/api/internal/online-order-settings", {
+    method: "PUT",
+    body: JSON.stringify(input),
+  });
+}
+
+export function searchPublicProducts(query: string) {
+  const params = new URLSearchParams({ q: query });
+  return request<PublicCatalogBrowseDto>(`/api/public/storefront/catalog?${params.toString()}`);
+}
+
+export function getPublicProduct(productId: string) {
+  return request<PublicProductDto>(`/api/public/catalog/products/${productId}`);
 }
 
 export async function uploadProductImage(file: File) {

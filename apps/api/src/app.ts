@@ -106,9 +106,12 @@ import {
 import {
   InsufficientStockError,
   OnlineOrderOperationConflictError,
+  OnlineOrderRevisionConflictError,
+  OnlineOrderStateConflictError,
   OnlineOrderValidationError,
   QuoteAlreadyUsedError,
   QuoteStaleError,
+  UnreachablePolicyError,
   UnsupportedDeliveryAreaError,
   VariantNotOrderableError,
   createOnlineOrderServices,
@@ -309,6 +312,7 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
         catalog: createPostgresCheckoutCatalogReader(client),
         inventory: createInventoryTransaction(client),
         pricing: createPostgresAutomaticPricingReader(client),
+        couponUsage: createPostgresCouponUsageTransaction(client),
       })),
       clock: { now: config.businessClock ?? (() => new Date()) },
     });
@@ -492,6 +496,59 @@ async function registerRoutes(
   app.get("/api/internal/online-orders/:orderId", async (request, reply) => {
     const params = request.params as { orderId: string };
     return handle(reply, async () => onlineOrders.getOrder(await verifiedAuth(identity, request), params.orderId));
+  });
+
+  app.post("/api/internal/online-orders/:orderId/agreement-quotes", async (request, reply) => {
+    const params = request.params as { orderId: string };
+    return handle(reply, async () => {
+      const quote = await onlineOrders.createAgreementQuote(await verifiedAuth(identity, request), params.orderId, request.body);
+      reply.status(201);
+      return quote;
+    });
+  });
+
+  app.post("/api/internal/online-orders/:orderId/agreed-revisions", async (request, reply) => {
+    const params = request.params as { orderId: string };
+    return handle(reply, async () => {
+      const result = await onlineOrders.agreeRevision(await verifiedAuth(identity, request), params.orderId, request.body);
+      reply.status(result.created ? 201 : 200);
+      return result.result;
+    });
+  });
+
+  app.post("/api/internal/online-orders/:orderId/contact-attempts", async (request, reply) => {
+    const params = request.params as { orderId: string };
+    return handle(reply, async () => {
+      const result = await onlineOrders.recordContactAttempt(await verifiedAuth(identity, request), params.orderId, request.body);
+      reply.status(result.created ? 201 : 200);
+      return result.result;
+    });
+  });
+
+  app.post("/api/internal/online-orders/:orderId/confirm", async (request, reply) => {
+    const params = request.params as { orderId: string };
+    return handle(reply, async () => {
+      const result = await onlineOrders.confirm(await verifiedAuth(identity, request), params.orderId, request.body);
+      reply.status(result.created ? 201 : 200);
+      return result.result;
+    });
+  });
+
+  app.post("/api/internal/online-orders/:orderId/cancel-unreachable", async (request, reply) => {
+    const params = request.params as { orderId: string };
+    return handle(reply, async () => {
+      const result = await onlineOrders.cancelUnreachable(await verifiedAuth(identity, request), params.orderId, request.body);
+      reply.status(result.created ? 201 : 200);
+      return result.result;
+    });
+  });
+
+  app.get("/api/internal/online-order-settings", async (request, reply) => {
+    return handle(reply, async () => onlineOrders.getSettings(await verifiedAuth(identity, request)));
+  });
+
+  app.put("/api/internal/online-order-settings", async (request, reply) => {
+    return handle(reply, async () => onlineOrders.updateSettings(await verifiedAuth(identity, request), request.body));
   });
 
   app.get("/api/internal/branches", async (request, reply) => {
@@ -1220,10 +1277,13 @@ function sendError(reply: FastifyReply, error: unknown) {
   }
   if (
     error instanceof OnlineOrderOperationConflictError ||
+    error instanceof OnlineOrderRevisionConflictError ||
+    error instanceof OnlineOrderStateConflictError ||
     error instanceof QuoteAlreadyUsedError ||
     error instanceof QuoteStaleError ||
     error instanceof VariantNotOrderableError ||
-    error instanceof InsufficientStockError
+    error instanceof InsufficientStockError ||
+    error instanceof UnreachablePolicyError
   ) {
     return reply.status(409).send(errorBody(error.code, error.message));
   }

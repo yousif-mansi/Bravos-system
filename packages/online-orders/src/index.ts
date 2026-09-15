@@ -1,4 +1,12 @@
-export type { DeliveryAreaDto, OnlineOrderDto } from "@bravos/contracts";
+export type {
+  DeliveryAreaDto,
+  OnlineOrderAgreedRevisionDto,
+  OnlineOrderAgreementQuoteDto,
+  OnlineOrderAgreementQuoteLineDto,
+  OnlineOrderContactAttemptDto,
+  OnlineOrderDto,
+  OnlineOrderSettingsDto,
+} from "@bravos/contracts";
 export type {
   CheckoutQuoteDto,
   CheckoutQuoteRequest,
@@ -11,6 +19,9 @@ export {
   OnlineOrderOperationConflictError,
   OnlineOrderValidationError,
   QuoteAlreadyUsedError,
+  OnlineOrderRevisionConflictError,
+  OnlineOrderStateConflictError,
+  UnreachablePolicyError,
   QuoteStaleError,
   UnsupportedDeliveryAreaError,
   VariantNotOrderableError,

@@ -35,6 +35,8 @@ try {
       "019_receiving_corrections.sql",
       "020_stock_quantity_corrections.sql",
       "021_online_checkout.sql",
+      "022_protected_order_allocations.sql",
+      "023_order_confirmation.sql",
     ];
     if (first.join(",") !== expectedMigrations.join(",") || afterApply.join(",") !== first.join(",")) {
       throw new Error(`Scratch apply did not record multiple migrations: ${first.join(",")}`);
@@ -284,6 +286,10 @@ async function assertCurrentBatchStorage(pool: Pool, present: boolean): Promise<
     "inventory_stock_correction", "inventory_stock_correction_batch",
     "inventory_stock_reconciliation", "inventory_stock_reconciliation_batch",
     "delivery_area", "online_checkout_quote", "online_order", "online_order_line",
+    "inventory_protected_order", "inventory_protected_order_allocation",
+    "online_order_agreement_quote", "online_order_operation", "online_order_contact_attempt",
+    "online_order_agreed_revision", "online_order_confirmation", "online_order_unreachable_cancellation",
+    "online_order_settings",
   ]) {
     if (tables.includes(table) !== present) throw new Error(`Expected ${table} presence=${present}.`);
   }

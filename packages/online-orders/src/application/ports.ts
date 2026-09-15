@@ -1,4 +1,11 @@
-import type { AppliedAutomaticOfferDto, AppliedCouponDto, DeliveryAreaDto, OnlineOrderDto } from "@bravos/contracts";
+import type {
+  AppliedAutomaticOfferDto,
+  AppliedCouponDto,
+  DeliveryAreaDto,
+  OnlineOrderAgreementQuoteDto,
+  OnlineOrderDto,
+  OnlineOrderSettingsDto,
+} from "@bravos/contracts";
 import type { CheckoutQuoteDto, PublicDeliveryAreaDto, PublicOrderSubmissionDto } from "@bravos/contracts/public";
 import type { AuthenticatedStaff, VerifiedAuth } from "@bravos/identity";
 
@@ -39,10 +46,27 @@ export type CheckoutPricingResult = {
   couponDiscountPiasters: number;
   couponUnitRanges: Array<{
     variantId: string;
+    unitIndex: number;
     quantity: number;
+    listedPiasters: number;
     automaticOfferDiscountPiasters: number;
     couponDiscountPiasters: number;
   }>;
+};
+
+export type ProtectedOrderAllocation = {
+  allocationId: string;
+  variantId: string;
+  quantity: number;
+  protectedAt: Date;
+};
+
+export type ProtectOnlineOrderResult = {
+  kind: "created" | "replay";
+  operationId: string;
+  orderId: string;
+  recordedAt: Date;
+  allocations: ProtectedOrderAllocation[];
 };
 
 export type CheckoutDependencies = {
@@ -50,8 +74,51 @@ export type CheckoutDependencies = {
   inventory: {
     lockStockClock(mode: "share" | "update"): Promise<void>;
     quantitiesFor(variantIds: string[]): Promise<Map<string, number>>;
+    protectOnlineOrder(input: {
+      orderId: string;
+      operationId: string;
+      payloadFingerprint: string;
+      actorStaffId: string;
+      lines: Array<{ variantId: string; quantity: number }>;
+    }): Promise<ProtectOnlineOrderResult>;
+    bumpStockVersion(): Promise<number>;
   };
   pricing: { evaluate(lines: CheckoutPricingLine[], at: Date, couponCode: string | null): Promise<CheckoutPricingResult> };
+  couponUsage: {
+    claim(input: {
+      couponId: string;
+      sourceType: "online_order";
+      sourceId: string;
+      operationId: string;
+      payloadFingerprint: string;
+      claimedAt: Date;
+    }): Promise<"claimed" | "replay">;
+  };
+};
+
+export type AgreementQuoteWrite = {
+  id: string;
+  orderId: string;
+  orderRevision: number;
+  requestFingerprint: string;
+  reviewDigest: string;
+  request: { lines: Array<{ variantId: string; quantity: number }>; couponCode: string | null };
+  quote: OnlineOrderAgreementQuoteDto;
+  pricingSnapshot: CheckoutPricingResult;
+  actorStaffId: string;
+  reviewedAt: Date;
+};
+
+export type StoredAgreementQuote = AgreementQuoteWrite;
+
+export type StoredOrderOperation = {
+  operationId: string;
+  orderId: string;
+  operationType: "contact_attempt" | "agreed_revision" | "confirmation" | "unreachable_cancellation";
+  payloadFingerprint: string;
+  response: OnlineOrderDto;
+  actorStaffId: string;
+  acceptedAt: Date;
 };
 
 export type StoredQuote = {
@@ -90,7 +157,58 @@ export type OnlineOrderStore = {
   getSubmissionByOperation(operationId: string): Promise<{ payloadFingerprint: string; result: PublicOrderSubmissionDto } | null>;
   insertOrder(input: AcceptedOrderWrite): Promise<PublicOrderSubmissionDto>;
   listOrders(): Promise<OnlineOrderDto[]>;
-  getOrder(id: string): Promise<OnlineOrderDto | null>;
+  getOrder(id: string, lock?: boolean): Promise<OnlineOrderDto | null>;
+  insertAgreementQuote(input: AgreementQuoteWrite): Promise<void>;
+  getAgreementQuote(id: string, lock?: boolean): Promise<StoredAgreementQuote | null>;
+  getOperation(operationId: string): Promise<StoredOrderOperation | null>;
+  insertContactAttempt(input: {
+    orderId: string;
+    operationId: string;
+    payloadFingerprint: string;
+    actorStaffId: string;
+    outcome: "no_answer" | "reached";
+    note: string | null;
+    occurredAt: Date;
+    nextRevision: number;
+  }): Promise<OnlineOrderDto>;
+  insertAgreedRevision(input: {
+    orderId: string;
+    operationId: string;
+    payloadFingerprint: string;
+    actorStaffId: string;
+    quoteId: string;
+    reviewDigest: string;
+    agreedAt: Date;
+    nextRevision: number;
+  }): Promise<OnlineOrderDto>;
+  confirm(input: {
+    orderId: string;
+    operationId: string;
+    payloadFingerprint: string;
+    actorStaffId: string;
+    agreedRevision: number;
+    quoteId: string;
+    reviewDigest: string;
+    confirmedAt: Date;
+    nextRevision: number;
+  }): Promise<OnlineOrderDto>;
+  cancelUnreachable(input: {
+    orderId: string;
+    operationId: string;
+    payloadFingerprint: string;
+    actorStaffId: string;
+    reason: string;
+    cancelledAt: Date;
+    nextRevision: number;
+  }): Promise<OnlineOrderDto>;
+  getSettings(): Promise<OnlineOrderSettingsDto>;
+  updateSettings(input: {
+    expectedRevision: number;
+    unreachableWaitHours: number;
+    minimumContactAttempts: number;
+    actorStaffId: string;
+    changedAt: Date;
+  }): Promise<OnlineOrderSettingsDto | null>;
 };
 
 export type OnlineOrderUnitOfWork = {

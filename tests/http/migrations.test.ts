@@ -44,6 +44,8 @@ test("apply, down the latest migration, and reapply works with multiple migratio
       "019_receiving_corrections.sql",
       "020_stock_quantity_corrections.sql",
       "021_online_checkout.sql",
+      "022_protected_order_allocations.sql",
+      "023_order_confirmation.sql",
     ]);
     expect(await listAppliedMigrations(pool)).toEqual(first);
     expect(await tableNames(pool)).toEqual(
@@ -80,6 +82,15 @@ test("apply, down the latest migration, and reapply works with multiple migratio
         "online_checkout_quote",
         "online_order",
         "online_order_line",
+        "inventory_protected_order",
+        "inventory_protected_order_allocation",
+        "online_order_agreement_quote",
+        "online_order_operation",
+        "online_order_contact_attempt",
+        "online_order_agreed_revision",
+        "online_order_confirmation",
+        "online_order_unreachable_cancellation",
+        "online_order_settings",
       ]),
     );
 
@@ -132,6 +143,15 @@ test("apply, down the latest migration, and reapply works with multiple migratio
     expect(afterDown).not.toContain("online_checkout_quote");
     expect(afterDown).not.toContain("online_order");
     expect(afterDown).not.toContain("online_order_line");
+    expect(afterDown).not.toContain("inventory_protected_order");
+    expect(afterDown).not.toContain("inventory_protected_order_allocation");
+    expect(afterDown).not.toContain("online_order_agreement_quote");
+    expect(afterDown).not.toContain("online_order_operation");
+    expect(afterDown).not.toContain("online_order_contact_attempt");
+    expect(afterDown).not.toContain("online_order_agreed_revision");
+    expect(afterDown).not.toContain("online_order_confirmation");
+    expect(afterDown).not.toContain("online_order_unreachable_cancellation");
+    expect(afterDown).not.toContain("online_order_settings");
     expect(await columnExists(pool, "sales_pos_snapshot", "pricing_version")).toBe(false);
     expect(await columnExists(pool, "sales_sale", "cash_received_piasters")).toBe(false);
     expect(await columnExists(pool, "inventory_batch", "effective_received_quantity")).toBe(false);
@@ -160,6 +180,10 @@ test("apply, down the latest migration, and reapply works with multiple migratio
       "returns_exchange", "returns_exchange_quote", "receiving_correction", "receiving_correction_line",
       "inventory_known_till", "inventory_count_coordination", "inventory_stock_correction", "inventory_stock_reconciliation",
       "delivery_area", "online_checkout_quote", "online_order", "online_order_line",
+      "inventory_protected_order", "inventory_protected_order_allocation",
+      "online_order_agreement_quote", "online_order_operation", "online_order_contact_attempt",
+      "online_order_agreed_revision", "online_order_confirmation", "online_order_unreachable_cancellation",
+      "online_order_settings",
     ]));
     expect(await columnExists(pool, "sales_pos_snapshot", "pricing_version")).toBe(true);
     expect(await columnExists(pool, "sales_pos_snapshot", "coupon_accounted_operations")).toBe(true);
@@ -323,6 +347,8 @@ test("008 down expands counted unit ranges into one legacy row per ordinal", asy
       "019_receiving_corrections.sql",
       "020_stock_quantity_corrections.sql",
       "021_online_checkout.sql",
+      "022_protected_order_allocations.sql",
+      "023_order_confirmation.sql",
     ]);
     const restored = await pool.query<{ unit_index: number; quantity: number; paid_piasters: number }>(
       `SELECT unit_index, quantity, paid_piasters FROM sales_sale_unit ORDER BY unit_index`,
@@ -384,6 +410,8 @@ test("020 backfills each legacy till from its latest snapshot without inventing 
     expect(await applyMigrations(pool)).toEqual([
       "020_stock_quantity_corrections.sql",
       "021_online_checkout.sql",
+      "022_protected_order_allocations.sql",
+      "023_order_confirmation.sql",
     ]);
     const knownTills = await pool.query<{
       device_id: string;

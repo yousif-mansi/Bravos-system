@@ -367,6 +367,9 @@ export function WorkspacePage({
           {online && workspace.capabilities.manageCatalog ? (
             <Link className="button secondary" to="/delivery-areas">مناطق التوصيل</Link>
           ) : null}
+          {online && (workspace.staff.role === "manager" || workspace.capabilities.orderRepresentative) ? (
+            <Link className="button secondary" to="/online-orders">الطلبات الأونلاين</Link>
+          ) : null}
           {online && workspace.capabilities.manageInventory ? (
             <Link className="button secondary" to="/receiving">استلام المخزون</Link>
           ) : null}

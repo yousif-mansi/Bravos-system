@@ -309,3 +309,37 @@ button, .button, input, select {
 @media (min-width: 800px) {
   .return-search { grid-template-columns: repeat(3, 1fr); }
 }
+
+.online-orders-page { display: grid; gap: 1rem; }
+.online-orders-page .card { margin: 0; }
+.order-back { justify-content: flex-start; }
+.order-heading, .online-order-row, .agreement-line, .order-line, .order-price-summary > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.order-heading h2, .order-heading p, .online-order-row p, .agreement-line p, .order-line p { margin-bottom: 0; }
+.order-lines, .replacement-picker, .replacement-variant, .price-review { display: grid; gap: 0.75rem; }
+.order-lines, .replacement-picker, .price-review { margin-top: 1rem; }
+.order-line, .agreement-line { border-bottom: 1px solid var(--line); padding: 0.75rem 0; }
+.agreement-line { align-items: end; }
+.compact-field { width: min(9rem, 35%); margin-bottom: 0; }
+.replacement-picker, .price-review { border: 1px solid var(--line); border-radius: 12px; padding: 1rem; }
+.replacement-picker .summary-card { margin-top: 0.5rem; }
+.replacement-variant { grid-template-columns: 2fr 1fr auto; align-items: end; }
+.replacement-variant .field { margin-bottom: 0; }
+.order-price-summary { display: grid; gap: 0.4rem; margin: 1rem 0 0; }
+.order-price-summary dt, .order-price-summary dd { margin: 0; }
+.order-final { border-top: 2px solid var(--ink); padding-top: 0.55rem; font-weight: 800; }
+.agreed-order { border-color: #86efac; }
+.confirmation-card { border-color: #93c5fd; }
+.cancellation-card { border-color: #fecaca; }
+.uncertain-order-attempt { margin: 0; }
+.order-customer-details p { margin-bottom: 0.5rem; }
+
+@media (max-width: 700px) {
+  .order-heading, .online-order-row, .agreement-line, .order-line { align-items: stretch; flex-direction: column; }
+  .compact-field { width: 100%; }
+  .replacement-variant { grid-template-columns: 1fr; }
+}

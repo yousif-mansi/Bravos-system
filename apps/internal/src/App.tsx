@@ -29,6 +29,7 @@ const CorrectionsPage = lazy(() => import("./pages/CorrectionsPage.tsx"));
 const StockCorrectionsPage = lazy(() => import("./pages/StockCorrectionsPage.tsx"));
 const StorefrontSettingsPage = lazy(() => import("./pages/StorefrontSettingsPage.tsx"));
 const DeliveryAreasPage = lazy(() => import("./pages/DeliveryAreasPage.tsx"));
+const OnlineOrdersPage = lazy(() => import("./pages/OnlineOrdersPage.tsx"));
 
 export function App() {
   const location = useLocation();
@@ -515,6 +516,18 @@ export function App() {
             workspace?.activeBranch && workspace.staff.role === "manager" && workspace.capabilities.manageInventory ? (
               <Suspense fallback={<main className="shell">جارٍ التحميل…</main>}>
                 <StockCorrectionsPage workspace={workspace} />
+              </Suspense>
+            ) : (
+              <Navigate to={workspace?.activeBranch ? "/workspace" : workspace ? "/select-branch" : "/login"} replace />
+            )
+          }
+        />
+        <Route
+          path="/online-orders/:orderId?"
+          element={
+            workspace && (workspace.staff.role === "manager" || workspace.capabilities.orderRepresentative) ? (
+              <Suspense fallback={<main className="shell">جارٍ التحميل…</main>}>
+                <OnlineOrdersPage key={workspace.staff.id} workspace={workspace} />
               </Suspense>
             ) : (
               <Navigate to={workspace?.activeBranch ? "/workspace" : workspace ? "/select-branch" : "/login"} replace />

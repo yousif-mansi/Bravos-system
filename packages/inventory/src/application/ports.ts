@@ -111,6 +111,21 @@ export type AllocateResult = {
   unallocatedQuantity: number;
 };
 
+export type ProtectedOrderAllocation = {
+  allocationId: string;
+  variantId: string;
+  quantity: number;
+  protectedAt: Date;
+};
+
+export type ProtectOnlineOrderResult = {
+  kind: "created" | "replay";
+  operationId: string;
+  orderId: string;
+  recordedAt: Date;
+  allocations: ProtectedOrderAllocation[];
+};
+
 /**
  * Public inventory transaction contract used by receiving and cash-sale
  * allocation. FIFO is recorded_at then batch id. releaseAllocation and
@@ -155,6 +170,13 @@ export type InventoryTransaction = {
     recordedAt: Date;
     lines: ReceivingBatchCorrection[];
   }): Promise<ReceivingBatchCorrectionResult[]>;
+  protectOnlineOrder(input: {
+    orderId: string;
+    operationId: string;
+    payloadFingerprint: string;
+    actorStaffId: string;
+    lines: Array<{ variantId: string; quantity: number }>;
+  }): Promise<ProtectOnlineOrderResult>;
   allocateFromOldestAvailable(input: {
     operationId: string;
     variantId: string;

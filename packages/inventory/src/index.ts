@@ -40,6 +40,8 @@ export type {
   InventoryReadStore,
   InventoryServices,
   InventoryTransaction,
+  ProtectedOrderAllocation,
+  ProtectOnlineOrderResult,
   StockCoordinationStore,
   StockCorrectionRecord,
   StockReconciliationSale,

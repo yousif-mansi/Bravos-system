@@ -48,6 +48,10 @@ const storefrontSettingsChunk = internalFiles.find((file) => path.basename(file)
 if (!storefrontSettingsChunk) {
   throw new Error("Storefront settings were not split into their own chunk.");
 }
+const onlineOrdersChunk = internalFiles.find((file) => path.basename(file).includes("online-order-operations"));
+if (!onlineOrdersChunk) {
+  throw new Error("Online order operations were not split into their own chunk.");
+}
 
 const loginHtml = await readFile(path.join(internalDist, "index.html"), "utf8");
 const referenced = [...loginHtml.matchAll(/assets\/[^\s"]+\.js/g)].map((match) => match[0]);
@@ -61,6 +65,9 @@ for (const asset of referenced) {
 }
 
 for (const file of staticGraph) {
+  if (file === onlineOrdersChunk) {
+    throw new Error("Login entry statically imports online order operations.");
+  }
   const source = await readFile(file, "utf8");
   if (source.includes("إنشاء حساب موظف") || source.includes("StaffPage")) {
     throw new Error(`${path.relative(internalDist, file)} should not include staff management for the initial login route.`);
@@ -86,6 +93,7 @@ const dynamicOffers = [];
 const dynamicReturns = [];
 const dynamicCorrections = [];
 const dynamicStorefrontSettings = [];
+const dynamicOnlineOrders = [];
 for (const file of staticGraph) {
   const source = await readFile(file, "utf8");
   const specifiers = dynamicImportSpecifiers(source);
@@ -99,6 +107,7 @@ for (const file of staticGraph) {
   dynamicReturns.push(...specifiers.filter((specifier) => specifier.includes("physical-returns")));
   dynamicCorrections.push(...specifiers.filter((specifier) => specifier.includes("recording-corrections")));
   dynamicStorefrontSettings.push(...specifiers.filter((specifier) => specifier.includes("storefront-settings")));
+  dynamicOnlineOrders.push(...specifiers.filter((specifier) => specifier.includes("online-order-operations")));
 }
 if (dynamicStaff.length === 0) {
   throw new Error("Staff management chunk is not loaded through a dynamic import from the login graph.");
@@ -130,12 +139,18 @@ if (dynamicCorrections.length === 0) {
 if (dynamicStorefrontSettings.length === 0) {
   throw new Error("Storefront settings chunk is not loaded through a dynamic import from the login graph.");
 }
+if (dynamicOnlineOrders.length === 0) {
+  throw new Error("Online order operations are not loaded through a dynamic import from the login graph.");
+}
 
 const swFile = internalFiles.find((file) => /(^|\/)sw\.js$/.test(file.replaceAll("\\", "/")));
 if (!swFile) {
   throw new Error("Production service worker is missing.");
 }
 const swSource = await readFile(swFile, "utf8");
+if (swSource.includes("online-order-operations")) {
+  throw new Error("Service worker precaches online-only order operations.");
+}
 if (!swSource.includes("cashier-lookup")) {
   throw new Error("Service worker does not precache the essential POS lookup chunk.");
 }

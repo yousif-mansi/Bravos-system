@@ -11,6 +11,7 @@ import type {
   DiscrepancyRecord,
   InventoryReadStore,
   InventoryTransaction,
+  ProtectOnlineOrderResult,
   ReceivedBatchRecord,
   SettingsRecord,
 } from "../application/ports.ts";
@@ -41,6 +42,19 @@ type BatchRow = {
 
 type SettingsRow = {
   low_stock_threshold: number;
+};
+
+type ProtectedOrderRow = {
+  order_id: string;
+  operation_id: string;
+  protected_at: Date;
+};
+
+type ProtectedAllocationRow = {
+  allocation_id: string;
+  variant_id: string;
+  quantity: number;
+  protected_at: Date;
 };
 
 export function createPostgresInventoryStore(queryable: Queryable): InventoryReadStore {
@@ -292,7 +306,7 @@ export function createInventoryTransaction(client: PoolClient): InventoryTransac
                remaining_quantity = remaining_quantity + $4
            WHERE id = $1
              AND remaining_quantity + $4 >= 0
-             AND remaining_quantity + $4 <= $2
+             AND remaining_quantity + $4 <= $2 - (${activeProtectedQuantitySql("inventory_batch.id")})
            RETURNING remaining_quantity`,
           [line.batchId, line.effectiveQuantity, line.effectiveUnitCostPiasters, quantityDelta],
         );
@@ -326,6 +340,10 @@ export function createInventoryTransaction(client: PoolClient): InventoryTransac
         });
       }
       return results;
+    },
+
+    protectOnlineOrder(input) {
+      return protectOnlineOrder(client, input);
     },
 
     async allocateFromOldestAvailable(input) {
@@ -365,6 +383,10 @@ export function createInventoryTransaction(client: PoolClient): InventoryTransac
       const rows = await client.query<{ id: string; quantity: number }>(
         `SELECT id, quantity FROM inventory_allocation
          WHERE operation_id = $1 AND batch_id = $2 AND variant_id = $3
+           AND NOT EXISTS (
+             SELECT 1 FROM inventory_protected_order_allocation protected
+             WHERE protected.allocation_id = inventory_allocation.id
+           )
          ORDER BY recorded_at DESC, id DESC
          FOR UPDATE`,
         [input.operationId, input.batchId, input.variantId],
@@ -391,6 +413,7 @@ export function createInventoryTransaction(client: PoolClient): InventoryTransac
          SET remaining_quantity = remaining_quantity + $3
          WHERE id = $1 AND variant_id = $2
            AND remaining_quantity + $3 <= effective_received_quantity
+             - (${activeProtectedQuantitySql("inventory_batch.id")})
          RETURNING remaining_quantity`,
         [input.batchId, input.variantId, input.quantity],
       );
@@ -414,6 +437,7 @@ export function createInventoryTransaction(client: PoolClient): InventoryTransac
          SET remaining_quantity = remaining_quantity + $3
          WHERE id = $1 AND variant_id = $2
            AND remaining_quantity + $3 BETWEEN 0 AND effective_received_quantity
+             - (${activeProtectedQuantitySql("inventory_batch.id")})
          RETURNING unit_cost_piasters, effective_unit_cost_piasters`,
         [input.batchId, input.variantId, delta],
       );
@@ -533,15 +557,7 @@ export function createInventoryTransaction(client: PoolClient): InventoryTransac
     lockStockClock: (mode) => lockStockClock(client, mode),
     bumpStockVersion: () => bumpStockVersion(client),
     currentStockVersion: () => currentStockVersion(client),
-    async assertStockMutationAllowed() {
-      await expireActiveCoordination(client);
-      const active = await client.query<{ id: string }>(
-        `SELECT id FROM inventory_count_coordination
-         WHERE status = 'active' AND expires_at > now()
-         LIMIT 1`,
-      );
-      if (active.rows[0]) throw new StockMutationPausedError();
-    },
+    assertStockMutationAllowed: () => assertStockMutationAllowed(client),
     async recordTillSnapshot(input) {
       const pending = [...new Set(input.pendingOperationIds)].sort();
       const included = [...new Set(input.includedOperationIds)].sort();
@@ -610,6 +626,145 @@ async function expireActiveCoordination(queryable: Queryable): Promise<void> {
   );
 }
 
+async function assertStockMutationAllowed(queryable: Queryable): Promise<void> {
+  await expireActiveCoordination(queryable);
+  const active = await queryable.query<{ id: string }>(
+    `SELECT id FROM inventory_count_coordination
+     WHERE status = 'active' AND expires_at > now()
+     LIMIT 1`,
+  );
+  if (active.rows[0]) throw new StockMutationPausedError();
+}
+
+async function protectOnlineOrder(
+  client: PoolClient,
+  input: Parameters<InventoryTransaction["protectOnlineOrder"]>[0],
+): Promise<ProtectOnlineOrderResult> {
+  const quantities = new Map<string, number>();
+  for (const line of input.lines) {
+    if (!Number.isInteger(line.quantity) || line.quantity <= 0) {
+      throw new InventoryValidationError("كمية الصنف غير صالحة.");
+    }
+    const quantity = (quantities.get(line.variantId) ?? 0) + line.quantity;
+    if (!Number.isSafeInteger(quantity) || quantity > 1_000_000) {
+      throw new InventoryValidationError("كمية الصنف غير صالحة.");
+    }
+    quantities.set(line.variantId, quantity);
+  }
+  if (quantities.size === 0) {
+    throw new InventoryValidationError("يجب تحديد صنف واحد على الأقل للحجز.");
+  }
+
+  const inserted = await client.query<OperationRow>(
+    `INSERT INTO inventory_operation (id, kind, payload_fingerprint, actor_staff_id, recorded_at)
+     VALUES ($1, 'order_confirmation', $2, $3, now())
+     ON CONFLICT (id) DO NOTHING
+     RETURNING id, payload_fingerprint, recorded_at`,
+    [input.operationId, input.payloadFingerprint, input.actorStaffId],
+  );
+  const created = inserted.rows[0];
+  if (!created) {
+    const existing = await client.query<OperationRow & { kind: string }>(
+      `SELECT id, kind, payload_fingerprint, recorded_at
+       FROM inventory_operation
+       WHERE id = $1`,
+      [input.operationId],
+    );
+    const operation = existing.rows[0];
+    if (
+      !operation
+      || operation.kind !== "order_confirmation"
+      || operation.payload_fingerprint !== input.payloadFingerprint
+    ) {
+      throw new OperationConflictError();
+    }
+    return loadProtectedOrderResult(client, input.orderId, operation, "replay");
+  }
+
+  await assertStockMutationAllowed(client);
+  const protectedOrder = await client.query<ProtectedOrderRow>(
+    `INSERT INTO inventory_protected_order (order_id, operation_id, protected_at)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (order_id) DO NOTHING
+     RETURNING order_id, operation_id, protected_at`,
+    [input.orderId, input.operationId, created.recorded_at],
+  );
+  const header = protectedOrder.rows[0];
+  if (!header) {
+    throw new OperationConflictError("تم تأكيد هذا الطلب بعملية أخرى.");
+  }
+
+  for (const [variantId, quantity] of [...quantities.entries()].sort(([left], [right]) => left.localeCompare(right))) {
+    await allocateFromOldestAvailable(client, {
+      operationId: input.operationId,
+      variantId,
+      quantity,
+      recordedAt: created.recorded_at,
+      allowPartial: false,
+      movementKind: "order_confirmation",
+    });
+  }
+  await client.query(
+    `INSERT INTO inventory_protected_order_allocation (protected_order_id, operation_id, allocation_id)
+     SELECT $1, $2, id
+     FROM inventory_allocation
+     WHERE operation_id = $2
+     ORDER BY id`,
+    [input.orderId, input.operationId],
+  );
+  return loadProtectedOrderResult(client, input.orderId, created, "created");
+}
+
+async function loadProtectedOrderResult(
+  queryable: Queryable,
+  orderId: string,
+  operation: OperationRow,
+  kind: "created" | "replay",
+): Promise<ProtectOnlineOrderResult> {
+  const protectedOrder = await queryable.query<ProtectedOrderRow>(
+    `SELECT order_id, operation_id, protected_at
+     FROM inventory_protected_order
+     WHERE operation_id = $1`,
+    [operation.id],
+  );
+  const header = protectedOrder.rows[0];
+  if (!header || header.order_id !== orderId) {
+    throw new OperationConflictError();
+  }
+  const protectedAllocations = await queryable.query<ProtectedAllocationRow>(
+    `SELECT a.id AS allocation_id, a.variant_id, a.quantity, p.protected_at
+     FROM inventory_protected_order p
+     JOIN inventory_protected_order_allocation pa ON pa.protected_order_id = p.order_id
+     JOIN inventory_allocation a ON a.id = pa.allocation_id
+     JOIN inventory_batch b ON b.id = a.batch_id
+     WHERE p.order_id = $1
+     ORDER BY a.variant_id, b.recorded_at, b.id, a.id`,
+    [orderId],
+  );
+  if (protectedAllocations.rows.length === 0) {
+    throw new OperationConflictError();
+  }
+  return {
+    kind,
+    operationId: operation.id,
+    orderId: header.order_id,
+    recordedAt: operation.recorded_at,
+    allocations: protectedAllocations.rows.map((row) => ({
+      allocationId: row.allocation_id,
+      variantId: row.variant_id,
+      quantity: row.quantity,
+      protectedAt: row.protected_at,
+    })),
+  };
+}
+
+function activeProtectedQuantitySql(batchIdSql: string): string {
+  return `SELECT COALESCE(SUM(a.quantity), 0)::int
+          FROM inventory_protected_order_allocation pa
+          JOIN inventory_allocation a ON a.id = pa.allocation_id
+          WHERE a.batch_id = ${batchIdSql}`;
+}
+
 async function allocateFromOldestAvailable(
   client: PoolClient,
   input: {
@@ -618,7 +773,7 @@ async function allocateFromOldestAvailable(
     quantity: number;
     recordedAt: Date;
     allowPartial: boolean;
-    movementKind?: "sale" | "correction_deduct";
+    movementKind?: "sale" | "correction_deduct" | "order_confirmation";
     ignoreHeld?: boolean;
   },
 ): Promise<AllocateResult> {

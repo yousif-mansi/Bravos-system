@@ -186,11 +186,80 @@ export type OnlineOrderLineDto = {
   requestedMerchandiseTotalPiasters: number;
 };
 
+export type OnlineOrderContactAttemptDto = {
+  id: string;
+  operationId: string;
+  actorStaffId: string;
+  outcome: "no_answer" | "reached";
+  note: string | null;
+  occurredAt: string;
+};
+
+export type OnlineOrderAgreementQuoteLineDto = {
+  id: string;
+  variantId: string;
+  productId: string;
+  productNameAr: string;
+  sizeNameAr: string;
+  colorNameAr: string;
+  quantity: number;
+  availableQuantity: number;
+  listedUnitPricePiasters: number;
+  originalPiasters: number;
+  automaticOfferDiscountPiasters: number;
+  couponDiscountPiasters: number;
+  merchandiseTotalPiasters: number;
+  units: Array<{
+    unitIndex: number;
+    quantity: number;
+    listedPiasters: number;
+    automaticOfferDiscountPiasters: number;
+    couponDiscountPiasters: number;
+    paidPiasters: number;
+  }>;
+};
+
+export type OnlineOrderAgreementQuoteDto = {
+  quoteId: string;
+  reviewDigest: string;
+  orderId: string;
+  orderRevision: number;
+  couponCode: string | null;
+  lines: OnlineOrderAgreementQuoteLineDto[];
+  merchandiseOriginalPiasters: number;
+  automaticOfferDiscountPiasters: number;
+  couponDiscountPiasters: number;
+  merchandiseTotalPiasters: number;
+  deliveryFeePiasters: number;
+  finalTotalPiasters: number;
+  appliedAutomaticOffer: AppliedAutomaticOfferDto | null;
+  appliedCoupon: AppliedCouponDto | null;
+  reviewedByStaffId: string;
+  reviewedAt: string;
+};
+
+export type OnlineOrderAgreedRevisionDto = {
+  version: number;
+  operationId: string;
+  agreedByStaffId: string;
+  agreedAt: string;
+  quote: OnlineOrderAgreementQuoteDto;
+};
+
+export type OnlineOrderSettingsDto = {
+  revision: number;
+  unreachableWaitHours: number;
+  minimumContactAttempts: number;
+  changedByStaffId: string | null;
+  changedAt: string | null;
+};
+
 export type OnlineOrderDto = {
   id: string;
   operationId: string;
   reference: string;
-  status: "pending";
+  status: "pending" | "confirmed" | "cancelled_unreachable";
+  revision: number;
   customerName: string;
   primaryPhone: string;
   alternatePhone: string | null;
@@ -208,6 +277,14 @@ export type OnlineOrderDto = {
   requestedAppliedAutomaticOffer: { id: string; nameAr: string; discountPiasters: number } | null;
   requestedAppliedCoupon: { code: string; discountPiasters: number } | null;
   lines: OnlineOrderLineDto[];
+  contactAttempts: OnlineOrderContactAttemptDto[];
+  agreedRevision: OnlineOrderAgreedRevisionDto | null;
+  confirmedQuote: OnlineOrderAgreementQuoteDto | null;
+  confirmedByStaffId: string | null;
+  confirmedAt: string | null;
+  cancelledByStaffId: string | null;
+  cancelledAt: string | null;
+  cancellationReason: string | null;
   submittedAt: string;
 };
 
