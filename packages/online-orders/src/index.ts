@@ -26,14 +26,22 @@ export {
   UnsupportedDeliveryAreaError,
   VariantNotOrderableError,
 } from "./domain/errors.ts";
-export { createOnlineOrderServices, type OnlineOrderServices } from "./application/online-orders.ts";
+export {
+  createOnlineOrderServices,
+  validateOpeningDeliveryArea,
+  validateOpeningOnlineOrderSettings,
+  type OnlineOrderServices,
+} from "./application/online-orders.ts";
 export type {
   CheckoutCatalogLine,
   CheckoutDependencies,
   CheckoutPricingLine,
   CheckoutPricingResult,
+  DeliveredOnlineOrderSource,
+  DeliveredOnlineOrderSourceReader,
   OnlineOrderActorPort,
   OnlineOrderStore,
   OnlineOrderUnitOfWork,
+  OpeningOnlineOrderTransaction,
   VerifiedAuth,
 } from "./application/ports.ts";

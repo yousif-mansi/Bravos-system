@@ -84,5 +84,10 @@ export type ExpenseRepository = {
   totals(scope: ExpenseScope): Promise<ExpenseTotalsDto>;
 };
 
+export type OpeningExpenseTransaction = {
+  inspectOpeningCategories(rows: Array<{ nameAr: string; line: number }>): Promise<{ state: unknown; errors: Array<{ file: "configuration.csv"; line: number; column: string; code: string; messageAr: string }> }>;
+  insertOpeningCategories(rows: Array<{ id: string; nameAr: string; active: boolean }>, actorStaffId: string, at: Date): Promise<void>;
+};
+
 export type CreateExpenseResult = { expense: ExpenseDto; created: boolean };
 export type ChangeExpenseResult = { expense: ExpenseDto; created: boolean };

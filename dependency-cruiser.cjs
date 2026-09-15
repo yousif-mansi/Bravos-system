@@ -93,9 +93,9 @@ module.exports = {
       name: "application-inward-only",
       comment: "Application use cases depend inward, not on Fastify, pg, React or Better Auth.",
       severity: "error",
-      from: { path: "^packages/(identity|catalog|inventory|receiving|pricing|sales|expenses|returns|corrections|storefront-config)/src/application" },
+      from: { path: "^packages/(identity|catalog|inventory|receiving|pricing|sales|expenses|returns|corrections|storefront-config|opening-import)/src/application" },
       to: {
-        path: "(packages/(identity|catalog|inventory|receiving|pricing|sales|expenses|returns|corrections|storefront-config)/src/adapters|apps/|better-auth|fastify|react|next|vite|\\bpg\\b|dexie)",
+        path: "(packages/(identity|catalog|inventory|receiving|pricing|sales|expenses|returns|corrections|storefront-config|opening-import)/src/adapters|apps/|better-auth|fastify|react|next|vite|\\bpg\\b|dexie)",
       },
     },
     {
@@ -287,6 +287,27 @@ module.exports = {
       severity: "error",
       from: { pathNot: "^packages/online-orders/src" },
       to: { path: "^packages/online-orders/src/(domain|application|adapters)/" },
+    },
+    {
+      name: "opening-import-domain-inward-only",
+      comment: "Opening import domain code cannot depend on its use cases, persistence or UI infrastructure.",
+      severity: "error",
+      from: { path: "^packages/opening-import/src/domain" },
+      to: { path: "(packages/opening-import/src/(application|adapters)|apps/|better-auth|fastify|react|next|vite|\\bpg\\b|dexie)" },
+    },
+    {
+      name: "opening-import-server-only",
+      comment: "Import business data and costs are available only through authenticated server operations.",
+      severity: "error",
+      from: { path: "^(apps/internal|apps/storefront|packages/contracts)" },
+      to: { path: "^packages/opening-import" },
+    },
+    {
+      name: "no-private-opening-import-imports",
+      comment: "Cross-package imports must use the opening-import public interface.",
+      severity: "error",
+      from: { pathNot: "^packages/opening-import/src" },
+      to: { path: "^packages/opening-import/src/(domain|application|adapters)/" },
     },
     {
       name: "online-orders-isolated-by-ports",

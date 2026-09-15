@@ -18,7 +18,11 @@ import type {
   ManagerProductDto,
   OnlineOrderAgreementQuoteDto,
   OnlineOrderDto,
+  OnlineOrderMutationResponseDto,
   OnlineOrderSettingsDto,
+  OpeningImportAcceptRequest,
+  OpeningImportPreviewDto,
+  OpeningImportPreviewRequest,
   PosPriceSnapshotDto,
   ReceiptDto,
   ReturnCorrectionDetailDto,
@@ -288,6 +292,24 @@ export function updateDeliveryArea(areaId: string, input: { nameAr: string; feeP
   });
 }
 
+export function createOpeningImportPreview(input: OpeningImportPreviewRequest) {
+  return request<OpeningImportPreviewDto>("/api/internal/opening-import/previews", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function getOpeningImportPreview(previewId: string) {
+  return request<OpeningImportPreviewDto>(`/api/internal/opening-import/previews/${previewId}`);
+}
+
+export function acceptOpeningImportPreview(previewId: string, input: OpeningImportAcceptRequest) {
+  return request<OpeningImportPreviewDto>(`/api/internal/opening-import/previews/${previewId}/accept`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
 export function listOnlineOrders() {
   return request<OnlineOrderDto[]>("/api/internal/online-orders");
 }
@@ -350,6 +372,92 @@ export function cancelUnreachableOnlineOrder(orderId: string, input: {
   reason: string;
 }) {
   return request<OnlineOrderDto>(`/api/internal/online-orders/${orderId}/cancel-unreachable`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function shipOnlineOrder(orderId: string, input: {
+  operationId: string;
+  expectedRevision: number;
+}) {
+  return request<OnlineOrderMutationResponseDto>(`/api/internal/online-orders/${orderId}/ship`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function deliverOnlineOrder(orderId: string, input: {
+  operationId: string;
+  expectedRevision: number;
+  customerReceivedAt: string;
+}) {
+  return request<OnlineOrderMutationResponseDto>(`/api/internal/online-orders/${orderId}/deliver`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function markOnlineOrderDeliveryFailed(orderId: string, input: {
+  operationId: string;
+  expectedRevision: number;
+  reason?: string;
+}) {
+  return request<OnlineOrderMutationResponseDto>(`/api/internal/online-orders/${orderId}/delivery-failure`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function cancelOnlineOrderBeforeShipment(orderId: string, input: {
+  operationId: string;
+  expectedRevision: number;
+  reason: string;
+}) {
+  return request<OnlineOrderMutationResponseDto>(`/api/internal/online-orders/${orderId}/cancel-before-shipment`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function draftOnlineOrderFailedReturnInspection(orderId: string, input: {
+  operationId: string;
+  expectedRevision: number;
+  lines: Array<{ variantId: string; receivedQuantity: number; sellableQuantity: number }>;
+}) {
+  return request<OnlineOrderMutationResponseDto>(`/api/internal/online-orders/${orderId}/failed-return-inspections`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function postOnlineOrderFailedReturnInspection(orderId: string, inspectionId: string, input: {
+  operationId: string;
+  expectedRevision: number;
+}) {
+  return request<OnlineOrderMutationResponseDto>(`/api/internal/online-orders/${orderId}/failed-return-inspections/${inspectionId}/post`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function abandonOnlineOrderFailedReturnInspection(orderId: string, inspectionId: string, input: {
+  operationId: string;
+  expectedRevision: number;
+  reason: string;
+}) {
+  return request<OnlineOrderMutationResponseDto>(`/api/internal/online-orders/${orderId}/failed-return-inspections/${inspectionId}/abandon`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function closeOnlineOrderFailedDelivery(orderId: string, input: {
+  operationId: string;
+  expectedRevision: number;
+  reason: string;
+}) {
+  return request<OnlineOrderMutationResponseDto>(`/api/internal/online-orders/${orderId}/close-failed-delivery`, {
     method: "POST",
     body: JSON.stringify(input),
   });

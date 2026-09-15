@@ -80,7 +80,7 @@ export function createExpenseServices(ports: { actors: ExpenseActorPort; expense
       const created = await ports.expenses.createCategory({
         id: crypto.randomUUID(),
         nameAr,
-        normalizedNameAr: normalizeName(nameAr),
+        normalizedNameAr: normalizeExpenseCategoryName(nameAr),
         actorStaffId: staff.id,
         at: new Date(),
       });
@@ -98,7 +98,7 @@ export function createExpenseServices(ports: { actors: ExpenseActorPort; expense
       const outcome = await ports.expenses.updateCategory({
         id: categoryId,
         nameAr,
-        normalizedNameAr: normalizeName(nameAr),
+        normalizedNameAr: normalizeExpenseCategoryName(nameAr),
         active: body.active,
         actorStaffId: staff.id,
         at: new Date(),
@@ -309,6 +309,6 @@ function cairoDate(value: unknown): string {
   return value;
 }
 
-function normalizeName(value: string): string {
+export function normalizeExpenseCategoryName(value: string): string {
   return value.normalize("NFKC").trim().replace(/\s+/g, " ").toLocaleLowerCase("ar");
 }

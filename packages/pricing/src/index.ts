@@ -8,7 +8,7 @@ export type {
   CouponDto,
   CouponWriteDto,
 } from "@bravos/contracts";
-export { createPricingServices, type PricingServices } from "./application/pricing.ts";
+export { createPricingServices, validateAutomaticOfferWrite, validateCouponWrite, type PricingServices } from "./application/pricing.ts";
 export type {
   AutomaticOfferStore,
   AutomaticOfferWrite,
@@ -16,6 +16,7 @@ export type {
   CouponUsageClaim,
   CouponUsageTransaction,
   CouponWrite,
+  OpeningPricingTransaction,
   PricingActorPort,
   VerifiedAuth,
 } from "./application/ports.ts";

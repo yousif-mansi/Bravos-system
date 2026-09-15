@@ -18,6 +18,15 @@ export type {
 export { CatalogValidationError, DuplicateProductCodeError, ReferencedVariantError } from "./domain/errors.ts";
 export { assertPiasters, resolvedSellingPricePiasters } from "./domain/money.ts";
 export {
+  assertDescription,
+  assertImageRefs,
+  assertProductCode,
+  assertProductName,
+  assertPublication,
+  assertSizeGuide,
+  assertTaxonomyName,
+} from "./domain/product.ts";
+export {
   createCatalogServices,
   unreferencedVariants,
   unstockedAvailability,
@@ -27,6 +36,9 @@ export type {
   AvailabilityReader,
   CatalogActorPort,
   CatalogStore,
+  OpeningCatalogPlan,
+  OpeningCatalogReference,
+  OpeningCatalogTransaction,
   ListedPriceBasis,
   ProductWrite,
   ProductMediaStorage,

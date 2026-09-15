@@ -29,6 +29,17 @@ export type ReceiptRecord = {
   lines: ReceiptLineWrite[];
 };
 
+export type OpeningReceivingTransaction = {
+  insertOpeningReceipt(input: {
+    receiptId: string;
+    operationId: string;
+    receiptDate: string;
+    actorStaffId: string;
+    recordedAt: Date;
+    lines: Array<ReceiptLineWrite & { lineIndex: number }>;
+  }): Promise<void>;
+};
+
 export type ReceiptCorrectionLineRecord = {
   lineId: string;
   previousQuantity: number;

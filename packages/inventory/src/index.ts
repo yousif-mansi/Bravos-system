@@ -42,6 +42,7 @@ export type {
   InventoryTransaction,
   ProtectedOrderAllocation,
   ProtectOnlineOrderResult,
+  ProtectedOrderAllocationProvenance,
   StockCoordinationStore,
   StockCorrectionRecord,
   StockReconciliationSale,

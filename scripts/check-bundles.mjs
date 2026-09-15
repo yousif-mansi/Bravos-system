@@ -52,6 +52,10 @@ const onlineOrdersChunk = internalFiles.find((file) => path.basename(file).inclu
 if (!onlineOrdersChunk) {
   throw new Error("Online order operations were not split into their own chunk.");
 }
+const openingImportChunk = internalFiles.find((file) => path.basename(file).includes("opening-import"));
+if (!openingImportChunk) {
+  throw new Error("Opening import was not split into its own chunk.");
+}
 
 const loginHtml = await readFile(path.join(internalDist, "index.html"), "utf8");
 const referenced = [...loginHtml.matchAll(/assets\/[^\s"]+\.js/g)].map((match) => match[0]);
@@ -65,6 +69,9 @@ for (const asset of referenced) {
 }
 
 for (const file of staticGraph) {
+  if (file === openingImportChunk) {
+    throw new Error("Login entry statically imports opening import.");
+  }
   if (file === onlineOrdersChunk) {
     throw new Error("Login entry statically imports online order operations.");
   }
@@ -94,6 +101,7 @@ const dynamicReturns = [];
 const dynamicCorrections = [];
 const dynamicStorefrontSettings = [];
 const dynamicOnlineOrders = [];
+const dynamicOpeningImport = [];
 for (const file of staticGraph) {
   const source = await readFile(file, "utf8");
   const specifiers = dynamicImportSpecifiers(source);
@@ -108,6 +116,7 @@ for (const file of staticGraph) {
   dynamicCorrections.push(...specifiers.filter((specifier) => specifier.includes("recording-corrections")));
   dynamicStorefrontSettings.push(...specifiers.filter((specifier) => specifier.includes("storefront-settings")));
   dynamicOnlineOrders.push(...specifiers.filter((specifier) => specifier.includes("online-order-operations")));
+  dynamicOpeningImport.push(...specifiers.filter((specifier) => specifier.includes("opening-import")));
 }
 if (dynamicStaff.length === 0) {
   throw new Error("Staff management chunk is not loaded through a dynamic import from the login graph.");
@@ -142,12 +151,18 @@ if (dynamicStorefrontSettings.length === 0) {
 if (dynamicOnlineOrders.length === 0) {
   throw new Error("Online order operations are not loaded through a dynamic import from the login graph.");
 }
+if (dynamicOpeningImport.length === 0) {
+  throw new Error("Opening import is not loaded through a dynamic import from the login graph.");
+}
 
 const swFile = internalFiles.find((file) => /(^|\/)sw\.js$/.test(file.replaceAll("\\", "/")));
 if (!swFile) {
   throw new Error("Production service worker is missing.");
 }
 const swSource = await readFile(swFile, "utf8");
+if (swSource.includes("opening-import")) {
+  throw new Error("Service worker precaches online-only opening import.");
+}
 if (swSource.includes("online-order-operations")) {
   throw new Error("Service worker precaches online-only order operations.");
 }
@@ -176,6 +191,9 @@ if (storefrontFiles.length === 0) {
 }
 for (const file of storefrontFiles) {
   const source = await readFile(file, "utf8");
+  if (source.includes("@bravos/opening-import") || source.includes("OpeningImportPage") || source.includes("مراجعة واستيراد البيانات الافتتاحية")) {
+    throw new Error(`Public build leaked opening import: ${file}`);
+  }
   if (source.includes("@bravos/identity") || source.includes("إدارة الموظفين") || source.includes("إدارة المنتجات") || source.includes("استلام المخزون") || source.includes("الإلغاء وحده لا يعيد بضاعة") || source.includes("مصروف جديد") || source.includes("ExpensesPage") || source.includes("CorrectionsPage") || source.includes("@bravos/catalog") || source.includes("@bravos/inventory") || source.includes("@bravos/receiving") || source.includes("@bravos/sales") || source.includes("@bravos/expenses") || source.includes("@bravos/corrections")) {
     throw new Error(`Public build leaked internal staff modules: ${file}`);
   }

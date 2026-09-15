@@ -12,3 +12,8 @@ export type StorefrontContactsStore = {
   getManager(): Promise<StorefrontContactsDto>;
   update(input: PublicStorefrontContactsDto & { actorStaffId: string; at: Date }): Promise<StorefrontContactsDto>;
 };
+
+export type OpeningStorefrontConfigTransaction = {
+  inspectOpeningContacts(): Promise<{ whatsappUrl: string | null; facebookUrl: string | null; instagramUrl: string | null; tiktokUrl: string | null }>;
+  upsertOpeningContacts(input: { whatsappUrl: string | null; facebookUrl: string | null; instagramUrl: string | null; tiktokUrl: string | null; actorStaffId: string; at: Date }): Promise<void>;
+};

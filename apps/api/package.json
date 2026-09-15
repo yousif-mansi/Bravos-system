@@ -17,6 +17,7 @@
     "@bravos/identity": "workspace:*",
     "@bravos/inventory": "workspace:*",
     "@bravos/online-orders": "workspace:*",
+    "@bravos/opening-import": "workspace:*",
     "@bravos/persistence": "workspace:*",
     "@bravos/pricing": "workspace:*",
     "@bravos/receiving": "workspace:*",

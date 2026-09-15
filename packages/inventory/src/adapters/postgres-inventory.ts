@@ -11,6 +11,7 @@ import type {
   DiscrepancyRecord,
   InventoryReadStore,
   InventoryTransaction,
+  OnlineOrderDispositionResult,
   ProtectOnlineOrderResult,
   ReceivedBatchRecord,
   SettingsRecord,
@@ -55,6 +56,24 @@ type ProtectedAllocationRow = {
   variant_id: string;
   quantity: number;
   protected_at: Date;
+};
+
+type ActiveProtectedAllocationRow = {
+  allocation_id: string;
+  batch_id: string;
+  source_line_id: string;
+  variant_id: string;
+  quantity: number;
+  disposed_quantity: number;
+  batch_recorded_at: Date;
+};
+
+type DispositionAllocationRow = {
+  allocation_id: string;
+  source_line_id: string;
+  variant_id: string;
+  disposition: "sellable_restored" | "nonsellable_removed";
+  quantity: number;
 };
 
 export function createPostgresInventoryStore(queryable: Queryable): InventoryReadStore {
@@ -105,6 +124,35 @@ export function createPostgresInventoryStore(queryable: Queryable): InventoryRea
 
 export function createInventoryTransaction(client: PoolClient): InventoryTransaction {
   return {
+    async openingImportState(variantIds) {
+      const [version, settings, thresholds] = await Promise.all([
+        currentStockVersion(client),
+        loadSettings(client),
+        client.query<{ variant_id: string; low_stock_threshold: number | null }>(
+          "SELECT variant_id,low_stock_threshold FROM inventory_variant_setting WHERE variant_id=ANY($1::uuid[]) ORDER BY variant_id",
+          [variantIds],
+        ),
+      ]);
+      return {
+        stockVersion: version,
+        defaultThreshold: settings.lowStockThreshold,
+        variantThresholds: thresholds.rows.map((row) => ({ variantId: row.variant_id, threshold: row.low_stock_threshold })),
+      };
+    },
+    async claimOpeningImportOperation(input) {
+      const inserted = await client.query<OperationRow>(
+        `INSERT INTO inventory_operation (id, kind, payload_fingerprint, actor_staff_id, recorded_at)
+         VALUES ($1, 'receive', $2, $3, now())
+         ON CONFLICT (id) DO NOTHING RETURNING id, payload_fingerprint, recorded_at`,
+        [input.operationId, input.payloadFingerprint, input.actorStaffId],
+      );
+      const created = inserted.rows[0];
+      if (created) return { kind: "created", operationId: created.id, recordedAt: created.recorded_at };
+      const existing = await client.query<OperationRow & { kind: string }>("SELECT id,kind,payload_fingerprint,recorded_at FROM inventory_operation WHERE id=$1", [input.operationId]);
+      const row = existing.rows[0];
+      if (!row || row.kind !== "receive" || row.payload_fingerprint !== input.payloadFingerprint) throw new OperationConflictError();
+      return { kind: "replay", operationId: row.id, recordedAt: row.recorded_at };
+    },
     async claimReceiveOperation(input) {
       const fingerprint = fingerprintReceivePayload(input.payload);
       const inserted = await client.query<OperationRow>(
@@ -271,6 +319,42 @@ export function createInventoryTransaction(client: PoolClient): InventoryTransac
       return created;
     },
 
+    async importOpeningBatches(input) {
+      const created: ReceivedBatchRecord[] = [];
+      for (const line of input.lines) {
+        const inserted = await client.query<BatchRow>(
+          `INSERT INTO inventory_batch (
+             id, variant_id, received_quantity, effective_received_quantity,
+             remaining_quantity, unit_cost_piasters, effective_unit_cost_piasters,
+             recorded_at, operation_id, source_receipt_id, receipt_date, source_line_id
+           ) VALUES ($1,$2,$3,$3,$3,$4,$4,$5,$6,$7,$8::date,$9)
+           RETURNING id,variant_id,received_quantity,effective_received_quantity,remaining_quantity,
+                     unit_cost_piasters,effective_unit_cost_piasters,recorded_at,source_receipt_id,
+                     receipt_date::text AS receipt_date,source_line_id`,
+          [line.batchId,line.variantId,line.quantity,line.unitCostPiasters,line.recordedAt,input.operationId,input.receiptId,line.receiptDate,line.lineId],
+        );
+        const batch = toReceivedBatch(mustRow(inserted.rows[0]));
+        await client.query(
+          `INSERT INTO inventory_movement (id,batch_id,variant_id,operation_id,kind,quantity,recorded_at)
+           VALUES ($1,$2,$3,$4,'receive',$5,$6)`,
+          [line.movementId,line.batchId,line.variantId,input.operationId,line.quantity,line.recordedAt],
+        );
+        created.push(batch);
+      }
+      return created;
+    },
+
+    async applyOpeningSettings(input) {
+      if (input.defaultThreshold !== null) {
+        await client.query(`UPDATE inventory_settings SET low_stock_threshold=$1,updated_by_staff_id=$2,updated_at=$3 WHERE id='default'`, [input.defaultThreshold,input.actorStaffId,input.at]);
+      }
+      for (const row of input.variantThresholds) {
+        await client.query(`INSERT INTO inventory_variant_setting (variant_id,low_stock_threshold,updated_by_staff_id,updated_at)
+          VALUES ($1,$2,$3,$4)
+          ON CONFLICT (variant_id) DO UPDATE SET low_stock_threshold=EXCLUDED.low_stock_threshold,updated_by_staff_id=EXCLUDED.updated_by_staff_id,updated_at=EXCLUDED.updated_at`,[row.variantId,row.threshold,input.actorStaffId,input.at]);
+      }
+    },
+
     async applyReceivingCorrection(input) {
       const batchIds = [...new Set(input.lines.map((line) => line.batchId))].sort();
       const locked = await client.query<BatchRow>(
@@ -344,6 +428,12 @@ export function createInventoryTransaction(client: PoolClient): InventoryTransac
 
     protectOnlineOrder(input) {
       return protectOnlineOrder(client, input);
+    },
+    disposeProtectedOnlineOrder(input) {
+      return disposeProtectedOnlineOrder(client, input);
+    },
+    lockProtectedOrderAllocations(orderId) {
+      return loadProtectedOrderAllocationProvenance(client, orderId, true);
     },
 
     async allocateFromOldestAvailable(input) {
@@ -640,18 +730,21 @@ async function protectOnlineOrder(
   client: PoolClient,
   input: Parameters<InventoryTransaction["protectOnlineOrder"]>[0],
 ): Promise<ProtectOnlineOrderResult> {
-  const quantities = new Map<string, number>();
+  const lines = new Map<string, { lineId: string; quantity: number }>();
   for (const line of input.lines) {
     if (!Number.isInteger(line.quantity) || line.quantity <= 0) {
       throw new InventoryValidationError("كمية الصنف غير صالحة.");
     }
-    const quantity = (quantities.get(line.variantId) ?? 0) + line.quantity;
+    if (lines.has(line.variantId)) {
+      throw new InventoryValidationError("يجب تجميع المتغير في سطر طلب مؤكد واحد.");
+    }
+    const quantity = line.quantity;
     if (!Number.isSafeInteger(quantity) || quantity > 1_000_000) {
       throw new InventoryValidationError("كمية الصنف غير صالحة.");
     }
-    quantities.set(line.variantId, quantity);
+    lines.set(line.variantId, { lineId: line.lineId, quantity });
   }
-  if (quantities.size === 0) {
+  if (lines.size === 0) {
     throw new InventoryValidationError("يجب تحديد صنف واحد على الأقل للحجز.");
   }
 
@@ -694,24 +787,27 @@ async function protectOnlineOrder(
     throw new OperationConflictError("تم تأكيد هذا الطلب بعملية أخرى.");
   }
 
-  for (const [variantId, quantity] of [...quantities.entries()].sort(([left], [right]) => left.localeCompare(right))) {
+  for (const [variantId, line] of [...lines.entries()].sort(([left], [right]) => left.localeCompare(right))) {
     await allocateFromOldestAvailable(client, {
       operationId: input.operationId,
       variantId,
-      quantity,
+      quantity: line.quantity,
       recordedAt: created.recorded_at,
       allowPartial: false,
       movementKind: "order_confirmation",
     });
   }
-  await client.query(
-    `INSERT INTO inventory_protected_order_allocation (protected_order_id, operation_id, allocation_id)
-     SELECT $1, $2, id
-     FROM inventory_allocation
-     WHERE operation_id = $2
-     ORDER BY id`,
-    [input.orderId, input.operationId],
-  );
+  for (const [variantId, line] of [...lines.entries()].sort(([left], [right]) => left.localeCompare(right))) {
+    await client.query(
+      `INSERT INTO inventory_protected_order_allocation
+         (protected_order_id, operation_id, allocation_id, source_line_id)
+       SELECT $1, $2, id, $3
+       FROM inventory_allocation
+       WHERE operation_id = $2 AND variant_id = $4
+       ORDER BY id`,
+      [input.orderId, input.operationId, line.lineId, variantId],
+    );
+  }
   return loadProtectedOrderResult(client, input.orderId, created, "created");
 }
 
@@ -759,10 +855,249 @@ async function loadProtectedOrderResult(
 }
 
 function activeProtectedQuantitySql(batchIdSql: string): string {
-  return `SELECT COALESCE(SUM(a.quantity), 0)::int
+  return `SELECT COALESCE(SUM(a.quantity - COALESCE(disposed.quantity, 0)), 0)::int
           FROM inventory_protected_order_allocation pa
           JOIN inventory_allocation a ON a.id = pa.allocation_id
+          LEFT JOIN LATERAL (
+            SELECT SUM(d.quantity)::int AS quantity
+            FROM inventory_order_disposition_allocation d
+            WHERE d.allocation_id = a.id
+          ) disposed ON true
           WHERE a.batch_id = ${batchIdSql}`;
+}
+
+async function disposeProtectedOnlineOrder(
+  client: PoolClient,
+  input: Parameters<InventoryTransaction["disposeProtectedOnlineOrder"]>[0],
+): Promise<OnlineOrderDispositionResult> {
+  const inserted = await client.query<OperationRow>(
+    `INSERT INTO inventory_operation (id, kind, payload_fingerprint, actor_staff_id, recorded_at)
+     VALUES ($1, 'order_disposition', $2, $3, now())
+     ON CONFLICT (id) DO NOTHING
+     RETURNING id, payload_fingerprint, recorded_at`,
+    [input.operationId, input.payloadFingerprint, input.actorStaffId],
+  );
+  const created = inserted.rows[0];
+  if (!created) {
+    const existing = await client.query<OperationRow & { kind: string }>(
+      `SELECT id, kind, payload_fingerprint, recorded_at
+       FROM inventory_operation WHERE id = $1`,
+      [input.operationId],
+    );
+    const operation = existing.rows[0];
+    if (!operation || operation.kind !== "order_disposition"
+      || operation.payload_fingerprint !== input.payloadFingerprint) throw new OperationConflictError();
+    return loadOrderDispositionResult(client, input.orderId, operation, "replay");
+  }
+
+  await assertStockMutationAllowed(client);
+  const protectedHeader = await client.query<{ order_id: string }>(
+    `SELECT order_id FROM inventory_protected_order WHERE order_id = $1 FOR UPDATE`,
+    [input.orderId],
+  );
+  if (!protectedHeader.rows[0]) throw new InventoryValidationError("لا توجد تخصيصات محمية لهذا الطلب.");
+
+  const allocations = await client.query<ActiveProtectedAllocationRow>(
+    `SELECT a.id AS allocation_id, a.batch_id, pa.source_line_id, a.variant_id, a.quantity,
+            COALESCE((
+              SELECT SUM(disposition.quantity)::int
+              FROM inventory_order_disposition_allocation disposition
+              WHERE disposition.allocation_id = a.id
+            ), 0)::int AS disposed_quantity,
+            batch.recorded_at AS batch_recorded_at
+     FROM inventory_protected_order_allocation pa
+     JOIN inventory_allocation a ON a.id = pa.allocation_id
+     JOIN inventory_batch batch ON batch.id = a.batch_id
+     WHERE pa.protected_order_id = $1
+     ORDER BY a.variant_id, batch.recorded_at, a.batch_id, a.id
+     FOR UPDATE OF a, batch`,
+    [input.orderId],
+  );
+  const active = allocations.rows.filter((row) => row.quantity > row.disposed_quantity);
+  if (active.length === 0) throw new InventoryValidationError("تم التصرف في كل تخصيصات هذا الطلب بالفعل.");
+
+  const requested = new Map<string, { sourceLineId: string; variantId: string; sellable: number; nonsellable: number }>();
+  if (input.dispositionType === "pre_shipment_cancellation") {
+    for (const row of active) {
+      const key = `${row.source_line_id}:${row.variant_id}`;
+      const current = requested.get(key) ?? {
+        sourceLineId: row.source_line_id,
+        variantId: row.variant_id,
+        sellable: 0,
+        nonsellable: 0,
+      };
+      current.sellable += row.quantity - row.disposed_quantity;
+      requested.set(key, current);
+    }
+  } else {
+    for (const line of input.lines) {
+      if (!Number.isSafeInteger(line.sellableQuantity) || line.sellableQuantity < 0
+        || !Number.isSafeInteger(line.nonsellableQuantity) || line.nonsellableQuantity < 0
+        || line.sellableQuantity + line.nonsellableQuantity <= 0) {
+        throw new InventoryValidationError("كميات فحص المرتجع غير صالحة.");
+      }
+      const key = `${line.sourceLineId}:${line.variantId}`;
+      if (requested.has(key)) throw new InventoryValidationError("تكرر سطر فحص المرتجع.");
+      requested.set(key, {
+        sourceLineId: line.sourceLineId,
+        variantId: line.variantId,
+        sellable: line.sellableQuantity,
+        nonsellable: line.nonsellableQuantity,
+      });
+    }
+    if (requested.size === 0) throw new InventoryValidationError("يجب تسجيل صنف مستلم واحد على الأقل.");
+  }
+
+  for (const item of requested.values()) {
+    const remaining = active
+      .filter((row) => row.source_line_id === item.sourceLineId && row.variant_id === item.variantId)
+      .reduce((sum, row) => sum + row.quantity - row.disposed_quantity, 0);
+    if (remaining < item.sellable + item.nonsellable) {
+      throw new InventoryValidationError("كمية الفحص تتجاوز الكمية المحمية غير المصنفة.");
+    }
+  }
+
+  await client.query(
+    `INSERT INTO inventory_order_disposition (operation_id, order_id, disposition_type, recorded_at)
+     VALUES ($1, $2, $3, $4)`,
+    [input.operationId, input.orderId, input.dispositionType, created.recorded_at],
+  );
+
+  const availableByAllocation = new Map(active.map((row) => [
+    row.allocation_id,
+    row.quantity - row.disposed_quantity,
+  ]));
+  for (const item of [...requested.values()].sort((left, right) =>
+    left.variantId.localeCompare(right.variantId) || left.sourceLineId.localeCompare(right.sourceLineId))) {
+    for (const disposition of ["sellable_restored", "nonsellable_removed"] as const) {
+      let needed = disposition === "sellable_restored" ? item.sellable : item.nonsellable;
+      for (const allocation of active) {
+        if (needed === 0) break;
+        if (allocation.source_line_id !== item.sourceLineId || allocation.variant_id !== item.variantId) continue;
+        const available = availableByAllocation.get(allocation.allocation_id) ?? 0;
+        if (available === 0) continue;
+        const take = Math.min(available, needed);
+        await client.query(
+          `INSERT INTO inventory_order_disposition_allocation (
+             id, operation_id, allocation_id, source_line_id, variant_id,
+             disposition, quantity, recorded_at
+           ) VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7)`,
+          [input.operationId, allocation.allocation_id, allocation.source_line_id,
+            allocation.variant_id, disposition, take, created.recorded_at],
+        );
+        availableByAllocation.set(allocation.allocation_id, available - take);
+        if (disposition === "sellable_restored") {
+          const restored = await client.query(
+            `UPDATE inventory_batch
+             SET remaining_quantity = remaining_quantity + $2
+             WHERE id = $1
+               AND remaining_quantity + $2 <= effective_received_quantity
+                 - (${activeProtectedQuantitySql("inventory_batch.id")})
+             RETURNING id`,
+            [allocation.batch_id, take],
+          );
+          if (!restored.rows[0]) throw new InventoryValidationError("تعذر استعادة الصنف إلى دفعته الأصلية.");
+          await client.query(
+            `INSERT INTO inventory_movement (
+               id, batch_id, variant_id, operation_id, kind, quantity, recorded_at
+             ) VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6)`,
+            [allocation.batch_id, allocation.variant_id, input.operationId,
+              input.dispositionType === "pre_shipment_cancellation"
+                ? "order_cancellation_restore" : "failed_delivery_restore",
+              take, created.recorded_at],
+          );
+        }
+        needed -= take;
+      }
+      if (needed !== 0) throw new InventoryValidationError("كمية الفحص لا تطابق التخصيصات الأصلية.");
+    }
+  }
+  return loadOrderDispositionResult(client, input.orderId, created, "created");
+}
+
+async function loadOrderDispositionResult(
+  queryable: Queryable,
+  orderId: string,
+  operation: OperationRow,
+  kind: "created" | "replay",
+): Promise<OnlineOrderDispositionResult> {
+  const header = await queryable.query<{ order_id: string; recorded_at: Date }>(
+    `SELECT order_id, recorded_at FROM inventory_order_disposition WHERE operation_id = $1`,
+    [operation.id],
+  );
+  const row = header.rows[0];
+  if (!row || row.order_id !== orderId) throw new OperationConflictError();
+  const allocations = await queryable.query<DispositionAllocationRow>(
+    `SELECT allocation_id, source_line_id, variant_id, disposition, quantity
+     FROM inventory_order_disposition_allocation
+     WHERE operation_id = $1
+     ORDER BY variant_id, source_line_id, disposition, allocation_id`,
+    [operation.id],
+  );
+  return {
+    kind,
+    operationId: operation.id,
+    orderId,
+    recordedAt: row.recorded_at,
+    allocations: allocations.rows.map((item) => ({
+      allocationId: item.allocation_id,
+      sourceLineId: item.source_line_id,
+      variantId: item.variant_id,
+      disposition: item.disposition,
+      quantity: item.quantity,
+    })),
+  };
+}
+
+async function loadProtectedOrderAllocationProvenance(
+  queryable: Queryable,
+  orderId: string,
+  lock: boolean,
+) {
+  const result = await queryable.query<{
+    allocation_id: string;
+    source_line_id: string;
+    batch_id: string;
+    variant_id: string;
+    quantity: number;
+    unit_cost_piasters: number | string;
+    effective_unit_cost_piasters: number | string;
+    allocated_at: Date;
+    sellable_restored_quantity: number;
+    nonsellable_removed_quantity: number;
+  }>(
+    `SELECT allocation.id AS allocation_id,protected.source_line_id,allocation.batch_id,
+            allocation.variant_id,allocation.quantity,allocation.unit_cost_piasters,
+            batch.effective_unit_cost_piasters,allocation.recorded_at AS allocated_at,
+            COALESCE((SELECT SUM(item.quantity)::int
+              FROM inventory_order_disposition_allocation item
+              WHERE item.allocation_id=allocation.id AND item.disposition='sellable_restored'),0)::int
+              AS sellable_restored_quantity,
+            COALESCE((SELECT SUM(item.quantity)::int
+              FROM inventory_order_disposition_allocation item
+              WHERE item.allocation_id=allocation.id AND item.disposition='nonsellable_removed'),0)::int
+              AS nonsellable_removed_quantity
+     FROM inventory_protected_order_allocation protected
+     JOIN inventory_allocation allocation ON allocation.id=protected.allocation_id
+     JOIN inventory_batch batch ON batch.id=allocation.batch_id
+     WHERE protected.protected_order_id=$1
+     ORDER BY allocation.variant_id,batch.recorded_at,batch.id,allocation.id
+     ${lock ? "FOR UPDATE OF allocation,batch" : ""}`,
+    [orderId],
+  );
+  return result.rows.map((row) => ({
+    allocationId: row.allocation_id,
+    sourceLineId: row.source_line_id,
+    batchId: row.batch_id,
+    variantId: row.variant_id,
+    quantity: row.quantity,
+    unitCostPiasters: asSafeInteger(row.unit_cost_piasters),
+    effectiveUnitCostPiasters: asSafeInteger(row.effective_unit_cost_piasters),
+    allocatedAt: row.allocated_at,
+    sellableRestoredQuantity: row.sellable_restored_quantity,
+    nonsellableRemovedQuantity: row.nonsellable_removed_quantity,
+    undisposedQuantity: row.quantity - row.sellable_restored_quantity - row.nonsellable_removed_quantity,
+  }));
 }
 
 async function allocateFromOldestAvailable(

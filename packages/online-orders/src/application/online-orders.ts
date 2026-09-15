@@ -42,6 +42,11 @@ const SUBMIT_KEYS = new Set([
   "operationId", "quoteId", "lines", "deliveryAreaId", "couponCode", "customerName", "primaryPhone",
   "alternatePhone", "detailedAddress", "landmark", "notes",
 ]);
+const MUTATION_KEYS = new Set(["operationId", "expectedRevision"]);
+const DELIVERY_KEYS = new Set(["operationId", "expectedRevision", "customerReceivedAt"]);
+const REASON_KEYS = new Set(["operationId", "expectedRevision", "reason"]);
+const INSPECTION_KEYS = new Set(["operationId", "expectedRevision", "lines"]);
+const INSPECTION_LINE_KEYS = new Set(["variantId", "receivedQuantity", "sellableQuantity"]);
 
 export type OnlineOrderServices = ReturnType<typeof createOnlineOrderServices>;
 
@@ -139,13 +144,18 @@ export function createOnlineOrderServices(ports: {
     },
 
     async listOrders(auth: VerifiedAuth | null): Promise<OnlineOrderDto[]> {
-      await requireOrderReader(auth);
-      return ports.store.listOrders();
+      const actor = await requireOrderReader(auth);
+      return (await ports.store.listOrders()).map((order) => presentOrder(order, isManager(actor)));
     },
 
     async getOrder(auth: VerifiedAuth | null, id: string): Promise<OnlineOrderDto> {
-      await requireOrderReader(auth);
-      return requiredOrder(await ports.store.getOrder(uuid(id)));
+      const actor = await requireOrderReader(auth);
+      return presentOrder(requiredOrder(await ports.store.getOrder(uuid(id))), isManager(actor));
+    },
+
+    async listCompletedOrders(auth: VerifiedAuth | null) {
+      await requireManager(auth);
+      return ports.store.listCompletedOrders();
     },
 
     async createAgreementQuote(auth: VerifiedAuth | null, id: string, input: unknown): Promise<OnlineOrderAgreementQuoteDto> {
@@ -215,7 +225,7 @@ export function createOnlineOrderServices(ports: {
       return ports.uow.run(async ({ store, ...dependencies }) => {
         await dependencies.inventory.lockStockClock("share");
         const replay = await replayMutation(store, orderId, "agreed_revision", command.operationId, payloadFingerprint);
-        if (replay) return { created: false, result: replay };
+        if (replay) return { created: false, result: presentOrder(replay, isManager(actor)) };
         const order = requiredOrder(await store.getOrder(orderId, true));
         assertPendingRevision(order, command.expectedRevision);
         const quote = await store.getAgreementQuote(command.quoteId, true);
@@ -226,7 +236,7 @@ export function createOnlineOrderServices(ports: {
           orderId, operationId: command.operationId, payloadFingerprint, actorStaffId: actor.id,
           quoteId: quote.id, reviewDigest: command.reviewDigest, agreedAt: now(), nextRevision: order.revision + 1,
         });
-        return { created: true, result };
+        return { created: true, result: presentOrder(result, isManager(actor)) };
       }, command.operationId);
     },
 
@@ -238,14 +248,14 @@ export function createOnlineOrderServices(ports: {
       return ports.uow.run(async ({ store, ...dependencies }) => {
         await dependencies.inventory.lockStockClock("share");
         const replay = await replayMutation(store, orderId, "contact_attempt", command.operationId, payloadFingerprint);
-        if (replay) return { created: false, result: replay };
+        if (replay) return { created: false, result: presentOrder(replay, isManager(actor)) };
         const order = requiredOrder(await store.getOrder(orderId, true));
         assertPendingRevision(order, command.expectedRevision);
         const result = await store.insertContactAttempt({
           orderId, operationId: command.operationId, payloadFingerprint, actorStaffId: actor.id,
           outcome: command.outcome, note: command.note, occurredAt: now(), nextRevision: order.revision + 1,
         });
-        return { created: true, result };
+        return { created: true, result: presentOrder(result, isManager(actor)) };
       }, command.operationId);
     },
 
@@ -257,7 +267,7 @@ export function createOnlineOrderServices(ports: {
       return ports.uow.run(async ({ store, ...dependencies }) => {
         await dependencies.inventory.lockStockClock("update");
         const replay = await replayMutation(store, orderId, "confirmation", command.operationId, payloadFingerprint);
-        if (replay) return { created: false, result: replay };
+        if (replay) return { created: false, result: presentOrder(replay, isManager(actor)) };
         const order = requiredOrder(await store.getOrder(orderId, true));
         assertPendingRevision(order, command.expectedRevision);
         const agreed = order.agreedRevision;
@@ -278,7 +288,11 @@ export function createOnlineOrderServices(ports: {
         }
         const protection = await dependencies.inventory.protectOnlineOrder({
           orderId, operationId: command.operationId, payloadFingerprint, actorStaffId: actor.id,
-          lines: accepted.request.lines,
+          lines: accepted.quote.lines.map((line) => ({
+            lineId: line.id,
+            variantId: line.variantId,
+            quantity: line.quantity,
+          })),
         });
         if (accepted.pricingSnapshot.appliedCoupon) {
           await dependencies.couponUsage.claim({
@@ -293,7 +307,7 @@ export function createOnlineOrderServices(ports: {
           agreedRevision: agreed.version, quoteId: accepted.id, reviewDigest: accepted.reviewDigest,
           confirmedAt, nextRevision: order.revision + 1,
         });
-        return { created: true, result };
+        return { created: true, result: presentOrder(result, isManager(actor)) };
       }, command.operationId);
     },
 
@@ -305,7 +319,7 @@ export function createOnlineOrderServices(ports: {
       return ports.uow.run(async ({ store, ...dependencies }) => {
         await dependencies.inventory.lockStockClock("share");
         const replay = await replayMutation(store, orderId, "unreachable_cancellation", command.operationId, payloadFingerprint);
-        if (replay) return { created: false, result: replay };
+        if (replay) return { created: false, result: presentOrder(replay, isManager(actor)) };
         const order = requiredOrder(await store.getOrder(orderId, true));
         assertPendingRevision(order, command.expectedRevision);
         const settings = await store.getSettings();
@@ -318,7 +332,223 @@ export function createOnlineOrderServices(ports: {
           orderId, operationId: command.operationId, payloadFingerprint, actorStaffId: actor.id,
           reason: command.reason, cancelledAt: now(), nextRevision: order.revision + 1,
         });
-        return { created: true, result };
+        return { created: true, result: presentOrder(result, isManager(actor)) };
+      }, command.operationId);
+    },
+
+    async ship(auth: VerifiedAuth | null, id: string, input: unknown) {
+      const actor = await requireOrderReader(auth);
+      const orderId = uuid(id);
+      const command = parseMutation(input);
+      const payloadFingerprint = fingerprint(command);
+      return ports.uow.run(async ({ store }) => {
+        const replay = await replayMutation(store, orderId, "shipment", command.operationId, payloadFingerprint);
+        if (replay) return { created: false, result: presentOrder(replay, isManager(actor)) };
+        const order = requiredOrder(await store.getOrder(orderId, true));
+        assertRevisionAndStatus(order, command.expectedRevision, ["confirmed"]);
+        const recordedAt = now();
+        const result = await store.transition({
+          orderId, operationId: command.operationId, payloadFingerprint, operationType: "shipment",
+          eventType: "shipped", actorStaffId: actor.id, fromStatus: "confirmed", toStatus: "shipped",
+          occurredAt: recordedAt, recordedAt, reason: null, nextRevision: order.revision + 1,
+        });
+        return { created: true, result: presentOrder(result, isManager(actor)) };
+      }, command.operationId);
+    },
+
+    async deliver(auth: VerifiedAuth | null, id: string, input: unknown) {
+      const actor = await requireOrderReader(auth);
+      const orderId = uuid(id);
+      const command = parseDelivery(input);
+      const payloadFingerprint = fingerprint(command);
+      return ports.uow.run(async ({ store }) => {
+        const replay = await replayMutation(store, orderId, "delivery", command.operationId, payloadFingerprint);
+        if (replay) return { created: false, result: presentOrder(replay, isManager(actor)) };
+        const order = requiredOrder(await store.getOrder(orderId, true));
+        assertRevisionAndStatus(order, command.expectedRevision, ["shipped"]);
+        const recordedAt = now();
+        const customerReceivedAt = new Date(command.customerReceivedAt);
+        if (!order.shippedAt || customerReceivedAt.getTime() < new Date(order.shippedAt).getTime()
+          || customerReceivedAt.getTime() > recordedAt.getTime()) {
+          throw new OnlineOrderValidationError("وقت استلام العميل يجب أن يكون بعد الشحن ولا يتجاوز الوقت الحالي.");
+        }
+        const result = await store.transition({
+          orderId, operationId: command.operationId, payloadFingerprint, operationType: "delivery",
+          eventType: "delivered", actorStaffId: actor.id, fromStatus: "shipped", toStatus: "delivered",
+          occurredAt: customerReceivedAt, recordedAt, reason: null, nextRevision: order.revision + 1,
+        });
+        return { created: true, result: presentOrder(result, isManager(actor)) };
+      }, command.operationId);
+    },
+
+    async markDeliveryFailed(auth: VerifiedAuth | null, id: string, input: unknown) {
+      const actor = await requireOrderReader(auth);
+      const orderId = uuid(id);
+      const command = parseReasonMutation(input, false);
+      const payloadFingerprint = fingerprint(command);
+      return ports.uow.run(async ({ store }) => {
+        const replay = await replayMutation(store, orderId, "delivery_failure", command.operationId, payloadFingerprint);
+        if (replay) return { created: false, result: presentOrder(replay, isManager(actor)) };
+        const order = requiredOrder(await store.getOrder(orderId, true));
+        assertRevisionAndStatus(order, command.expectedRevision, ["shipped"]);
+        const recordedAt = now();
+        const result = await store.transition({
+          orderId, operationId: command.operationId, payloadFingerprint, operationType: "delivery_failure",
+          eventType: "delivery_failed", actorStaffId: actor.id, fromStatus: "shipped", toStatus: "delivery_failed",
+          occurredAt: recordedAt, recordedAt, reason: command.reason, nextRevision: order.revision + 1,
+        });
+        return { created: true, result: presentOrder(result, isManager(actor)) };
+      }, command.operationId);
+    },
+
+    async cancelBeforeShipment(auth: VerifiedAuth | null, id: string, input: unknown) {
+      const actor = await requireOrderReader(auth);
+      const orderId = uuid(id);
+      const command = parseReasonMutation(input, true);
+      const payloadFingerprint = fingerprint(command);
+      return ports.uow.run(async ({ store, ...dependencies }) => {
+        await dependencies.inventory.lockStockClock("update");
+        const replay = await replayMutation(store, orderId, "pre_shipment_cancellation", command.operationId, payloadFingerprint);
+        if (replay) return { created: false, result: presentOrder(replay, isManager(actor)) };
+        const order = requiredOrder(await store.getOrder(orderId, true));
+        assertRevisionAndStatus(order, command.expectedRevision, ["pending", "confirmed"]);
+        const recordedAt = now();
+        if (order.status === "confirmed") {
+          const disposition = await dependencies.inventory.disposeProtectedOnlineOrder({
+            orderId, operationId: command.operationId, payloadFingerprint, actorStaffId: actor.id,
+            dispositionType: "pre_shipment_cancellation", lines: [],
+          });
+          if (disposition.kind === "created" && disposition.allocations.some((item) => item.disposition === "sellable_restored")) {
+            await dependencies.inventory.bumpStockVersion();
+          }
+          await dependencies.couponUsage.releaseOnlineOrder({
+            sourceId: orderId, operationId: command.operationId, payloadFingerprint,
+            actorStaffId: actor.id, releasedAt: recordedAt,
+          });
+        }
+        const result = await store.transition({
+          orderId, operationId: command.operationId, payloadFingerprint, operationType: "pre_shipment_cancellation",
+          eventType: "cancelled_before_shipment", actorStaffId: actor.id, fromStatus: order.status,
+          toStatus: "cancelled_before_shipment", occurredAt: recordedAt, recordedAt,
+          reason: command.reason, nextRevision: order.revision + 1,
+        });
+        return { created: true, result: presentOrder(result, isManager(actor)) };
+      }, command.operationId);
+    },
+
+    async draftFailedReturnInspection(auth: VerifiedAuth | null, id: string, input: unknown) {
+      const actor = await requireOrderReader(auth);
+      const orderId = uuid(id);
+      const command = parseInspection(input);
+      const payloadFingerprint = fingerprint(command);
+      return ports.uow.run(async ({ store, ...dependencies }) => {
+        await dependencies.inventory.lockStockClock("share");
+        const replay = await replayMutation(store, orderId, "failed_return_inspection_draft", command.operationId, payloadFingerprint);
+        if (replay) return { created: false, result: presentOrder(replay, isManager(actor)) };
+        const order = requiredOrder(await store.getOrder(orderId, true));
+        assertRevisionAndStatus(order, command.expectedRevision, ["delivery_failed"]);
+        if (order.failedReturnInspections.some((inspection) => inspection.status === "draft")) {
+          throw new OnlineOrderStateConflictError("توجد مسودة فحص مفتوحة لهذا الطلب.");
+        }
+        const lines = inspectionLines(order, command.lines);
+        const recordedAt = now();
+        const result = await store.insertFailedReturnInspection({
+          id: crypto.randomUUID(), orderId, operationId: command.operationId, payloadFingerprint,
+          actorStaffId: actor.id, recordedAt, nextRevision: order.revision + 1, lines,
+        });
+        return { created: true, result: presentOrder(result, isManager(actor)) };
+      }, command.operationId);
+    },
+
+    async abandonFailedReturnInspection(auth: VerifiedAuth | null, id: string, inspectionIdInput: string, input: unknown) {
+      const actor = await requireOrderReader(auth);
+      const orderId = uuid(id);
+      const inspectionId = uuid(inspectionIdInput);
+      const command = parseReasonMutation(input, true);
+      const payloadFingerprint = fingerprint({ ...command, inspectionId });
+      return ports.uow.run(async ({ store, ...dependencies }) => {
+        await dependencies.inventory.lockStockClock("share");
+        const replay = await replayMutation(store, orderId, "failed_return_inspection_abandon", command.operationId, payloadFingerprint);
+        if (replay) return { created: false, result: presentOrder(replay, isManager(actor)) };
+        const order = requiredOrder(await store.getOrder(orderId, true));
+        assertRevisionAndStatus(order, command.expectedRevision, ["delivery_failed"]);
+        const inspection = await store.getFailedReturnInspection(inspectionId, true);
+        if (!inspection || inspection.status !== "draft"
+          || !order.failedReturnInspections.some((item) => item.id === inspectionId)) {
+          throw new NotFoundError("مسودة فحص المرتجع غير موجودة.");
+        }
+        const abandonedAt = now();
+        const result = await store.abandonFailedReturnInspection({
+          inspectionId, orderId, operationId: command.operationId, payloadFingerprint,
+          actorStaffId: actor.id, reason: command.reason!, abandonedAt, nextRevision: order.revision + 1,
+        });
+        return { created: true, result: presentOrder(result, isManager(actor)) };
+      }, command.operationId);
+    },
+
+    async postFailedReturnInspection(auth: VerifiedAuth | null, id: string, inspectionIdInput: string, input: unknown) {
+      const actor = await requireManager(auth);
+      const orderId = uuid(id);
+      const inspectionId = uuid(inspectionIdInput);
+      const command = parseMutation(input);
+      const payloadFingerprint = fingerprint({ ...command, inspectionId });
+      return ports.uow.run(async ({ store, ...dependencies }) => {
+        await dependencies.inventory.lockStockClock("update");
+        const replay = await replayMutation(store, orderId, "failed_return_inspection_post", command.operationId, payloadFingerprint);
+        if (replay) return { created: false, result: presentOrder(replay, true) };
+        const order = requiredOrder(await store.getOrder(orderId, true));
+        assertRevisionAndStatus(order, command.expectedRevision, ["delivery_failed"]);
+        const inspection = await store.getFailedReturnInspection(inspectionId, true);
+        if (!inspection || inspection.status !== "draft"
+          || !order.failedReturnInspections.some((item) => item.id === inspectionId)) {
+          throw new NotFoundError("مسودة فحص المرتجع غير موجودة.");
+        }
+        const postedAt = now();
+        const disposition = await dependencies.inventory.disposeProtectedOnlineOrder({
+          orderId, operationId: command.operationId, payloadFingerprint, actorStaffId: actor.id,
+          dispositionType: "failed_delivery_inspection",
+          lines: inspection.lines.map((line) => ({
+            sourceLineId: line.confirmedLineId, variantId: line.variantId,
+            sellableQuantity: line.sellableQuantity, nonsellableQuantity: line.nonsellableQuantity,
+          })),
+        });
+        if (disposition.kind === "created" && disposition.allocations.some((item) => item.disposition === "sellable_restored")) {
+          await dependencies.inventory.bumpStockVersion();
+        }
+        const result = await store.postFailedReturnInspection({
+          inspectionId, orderId, operationId: command.operationId, payloadFingerprint,
+          actorStaffId: actor.id, postedAt, nextRevision: order.revision + 1,
+        });
+        return { created: true, result: presentOrder(result, true) };
+      }, command.operationId);
+    },
+
+    async closeFailedDelivery(auth: VerifiedAuth | null, id: string, input: unknown) {
+      const actor = await requireManager(auth);
+      const orderId = uuid(id);
+      const command = parseReasonMutation(input, true);
+      const payloadFingerprint = fingerprint(command);
+      return ports.uow.run(async ({ store, ...dependencies }) => {
+        await dependencies.inventory.lockStockClock("update");
+        const replay = await replayMutation(store, orderId, "failed_delivery_closure", command.operationId, payloadFingerprint);
+        if (replay) return { created: false, result: presentOrder(replay, true) };
+        const order = requiredOrder(await store.getOrder(orderId, true));
+        assertRevisionAndStatus(order, command.expectedRevision, ["delivery_failed"]);
+        if (!allFailedUnitsClassified(order)) {
+          throw new OnlineOrderStateConflictError("لا يمكن إغلاق الطلب قبل استلام وفحص كل الوحدات.");
+        }
+        const recordedAt = now();
+        await dependencies.couponUsage.releaseOnlineOrder({
+          sourceId: orderId, operationId: command.operationId, payloadFingerprint,
+          actorStaffId: actor.id, releasedAt: recordedAt,
+        });
+        const result = await store.transition({
+          orderId, operationId: command.operationId, payloadFingerprint, operationType: "failed_delivery_closure",
+          eventType: "cancelled_after_failed_delivery", actorStaffId: actor.id,
+          fromStatus: "delivery_failed", toStatus: "cancelled_after_failed_delivery",
+          occurredAt: recordedAt, recordedAt, reason: command.reason, nextRevision: order.revision + 1,
+        });
+        return { created: true, result: presentOrder(result, true) };
       }, command.operationId);
     },
 
@@ -422,6 +652,85 @@ function assertPendingRevision(order: OnlineOrderDto, expectedRevision: number) 
   if (order.revision !== expectedRevision) throw new OnlineOrderRevisionConflictError();
 }
 
+function assertRevisionAndStatus(
+  order: OnlineOrderDto,
+  expectedRevision: number,
+  statuses: OnlineOrderDto["status"][],
+) {
+  if (!statuses.includes(order.status)) throw new OnlineOrderStateConflictError();
+  if (order.revision !== expectedRevision) throw new OnlineOrderRevisionConflictError();
+}
+
+function inspectionLines(
+  order: OnlineOrderDto,
+  requested: Array<{ variantId: string; receivedQuantity: number; sellableQuantity: number }>,
+) {
+  if (!order.confirmedQuote) throw new OnlineOrderStateConflictError("الطلب لا يملك نسخة تأكيد محفوظة.");
+  const confirmedByVariant = new Map(order.confirmedQuote.lines.map((line) => [line.variantId, line]));
+  return requested.map((line) => {
+    const confirmed = confirmedByVariant.get(line.variantId);
+    if (!confirmed) throw new OnlineOrderValidationError("الصنف ليس ضمن نسخة الطلب المؤكدة.");
+    const alreadyReceived = order.failedReturnInspections
+      .filter((inspection) => inspection.status === "posted")
+      .flatMap((inspection) => inspection.lines)
+      .filter((item) => item.confirmedLineId === confirmed.id)
+      .reduce((sum, item) => sum + item.receivedQuantity, 0);
+    if (alreadyReceived + line.receivedQuantity > confirmed.quantity) {
+      throw new OnlineOrderValidationError("الكمية المستلمة تتجاوز الكمية المتبقية لدى شركة الشحن.");
+    }
+    return {
+      confirmedLineId: confirmed.id,
+      variantId: line.variantId,
+      receivedQuantity: line.receivedQuantity,
+      sellableQuantity: line.sellableQuantity,
+    };
+  });
+}
+
+function allFailedUnitsClassified(order: OnlineOrderDto): boolean {
+  if (!order.confirmedQuote || order.failedReturnInspections.some((inspection) => inspection.status === "draft")) return false;
+  const received = new Map<string, number>();
+  for (const inspection of order.failedReturnInspections.filter((item) => item.status === "posted")) {
+    for (const line of inspection.lines) {
+      received.set(line.confirmedLineId, (received.get(line.confirmedLineId) ?? 0) + line.receivedQuantity);
+    }
+  }
+  return order.confirmedQuote.lines.every((line) => (received.get(line.id) ?? 0) === line.quantity);
+}
+
+function presentOrder(order: OnlineOrderDto, manager: boolean): OnlineOrderDto {
+  const normalized: OnlineOrderDto = {
+    ...order,
+    lifecycle: order.lifecycle ?? [],
+    failedReturnInspections: order.failedReturnInspections ?? [],
+    actionEligibility: order.actionEligibility ?? {
+      canShip: false,
+      canDeliver: false,
+      canMarkDeliveryFailed: false,
+      canCancelBeforeShipment: false,
+      canDraftFailedReturnInspection: false,
+      canPostFailedReturnInspection: false,
+      canAbandonFailedReturnInspection: false,
+      canCloseFailedDelivery: false,
+    },
+  };
+  const hasDraft = normalized.failedReturnInspections.some((inspection) => inspection.status === "draft");
+  const complete = allFailedUnitsClassified(normalized);
+  return {
+    ...normalized,
+    actionEligibility: {
+      canShip: normalized.status === "confirmed",
+      canDeliver: normalized.status === "shipped",
+      canMarkDeliveryFailed: normalized.status === "shipped",
+      canCancelBeforeShipment: normalized.status === "pending" || normalized.status === "confirmed",
+      canDraftFailedReturnInspection: normalized.status === "delivery_failed" && !hasDraft && !complete,
+      canPostFailedReturnInspection: normalized.status === "delivery_failed" && manager && hasDraft,
+      canAbandonFailedReturnInspection: normalized.status === "delivery_failed" && hasDraft,
+      canCloseFailedDelivery: normalized.status === "delivery_failed" && manager && complete,
+    },
+  };
+}
+
 function requiredOrder(order: OnlineOrderDto | null): OnlineOrderDto {
   if (!order) throw new NotFoundError("طلب المتجر غير موجود.");
   return order;
@@ -431,9 +740,38 @@ function parseArea(id: string, actorStaffId: string, input: unknown, changedAt: 
   const body = object(input, "بيانات منطقة التوصيل غير صالحة.");
   exactKeys(body, AREA_KEYS, "بيانات منطقة التوصيل غير صالحة.");
   if (typeof body.active !== "boolean") throw new OnlineOrderValidationError("حالة منطقة التوصيل غير صالحة.");
-  return { id, nameAr: requiredText(body.nameAr, 120, "اسم منطقة التوصيل غير صالح."),
-    feePiasters: integer(body.feePiasters, 0, Number.MAX_SAFE_INTEGER, "رسوم التوصيل غير صالحة."),
-    active: body.active, actorStaffId, changedAt };
+  return {
+    id,
+    ...validateOpeningDeliveryArea(body.nameAr, body.feePiasters),
+    active: body.active,
+    actorStaffId,
+    changedAt,
+  };
+}
+
+export function validateOpeningDeliveryArea(nameAr: unknown, feePiasters: unknown): {
+  nameAr: string;
+  feePiasters: number;
+} {
+  return {
+    nameAr: requiredText(nameAr, 120, "اسم منطقة التوصيل غير صالح."),
+    feePiasters: integer(feePiasters, 0, Number.MAX_SAFE_INTEGER, "رسوم التوصيل غير صالحة."),
+  };
+}
+
+export function validateOpeningOnlineOrderSettings(
+  unreachableWaitHours: unknown,
+  minimumContactAttempts: unknown,
+): { unreachableWaitHours: number; minimumContactAttempts: number } {
+  return {
+    unreachableWaitHours: integer(unreachableWaitHours, 1, 24 * 365, "مدة الانتظار غير صالحة."),
+    minimumContactAttempts: integer(
+      minimumContactAttempts,
+      2,
+      100,
+      "الحد الأدنى لمحاولات التواصل لا يقل عن محاولتين.",
+    ),
+  };
 }
 
 function parseQuote(input: unknown): CheckoutQuoteRequest & { couponCode: string | null } {
@@ -497,6 +835,56 @@ function parseConfirmation(input: unknown) {
     agreedRevision: revision(body.agreedRevision), itemsLocatedAndSetAside: true as const };
 }
 
+function parseMutation(input: unknown) {
+  const body = object(input, "بيانات العملية غير صالحة.");
+  exactKeys(body, MUTATION_KEYS, "بيانات العملية غير صالحة.");
+  return { operationId: uuid(body.operationId), expectedRevision: revision(body.expectedRevision) };
+}
+
+function parseDelivery(input: unknown) {
+  const body = object(input, "بيانات التسليم غير صالحة.");
+  exactKeys(body, DELIVERY_KEYS, "بيانات التسليم غير صالحة.");
+  if (typeof body.customerReceivedAt !== "string") {
+    throw new OnlineOrderValidationError("وقت استلام العميل غير صالح.");
+  }
+  const parsed = new Date(body.customerReceivedAt);
+  if (!Number.isFinite(parsed.getTime())) throw new OnlineOrderValidationError("وقت استلام العميل غير صالح.");
+  return {
+    operationId: uuid(body.operationId),
+    expectedRevision: revision(body.expectedRevision),
+    customerReceivedAt: parsed.toISOString(),
+  };
+}
+
+function parseReasonMutation(input: unknown, required: boolean) {
+  const body = object(input, "بيانات العملية غير صالحة.");
+  exactKeys(body, REASON_KEYS, "بيانات العملية غير صالحة.");
+  const reason = required
+    ? requiredText(body.reason, 500, "يجب تسجيل سبب واضح.")
+    : optionalText(body.reason, 500, "سبب تعذر التسليم غير صالح.");
+  return { operationId: uuid(body.operationId), expectedRevision: revision(body.expectedRevision), reason };
+}
+
+function parseInspection(input: unknown) {
+  const body = object(input, "بيانات فحص المرتجع غير صالحة.");
+  exactKeys(body, INSPECTION_KEYS, "بيانات فحص المرتجع غير صالحة.");
+  if (!Array.isArray(body.lines) || body.lines.length < 1 || body.lines.length > 100) {
+    throw new OnlineOrderValidationError("يجب تسجيل صنف مستلم واحد على الأقل.");
+  }
+  const seen = new Set<string>();
+  const parsed = body.lines.map((value) => {
+    const line = object(value, "سطر فحص المرتجع غير صالح.");
+    exactKeys(line, INSPECTION_LINE_KEYS, "سطر فحص المرتجع غير صالح.");
+    const variantId = uuid(line.variantId);
+    if (seen.has(variantId)) throw new OnlineOrderValidationError("تكرر متغير في فحص المرتجع.");
+    seen.add(variantId);
+    const receivedQuantity = integer(line.receivedQuantity, 1, 1_000_000, "الكمية المستلمة غير صالحة.");
+    const sellableQuantity = integer(line.sellableQuantity, 0, receivedQuantity, "الكمية القابلة للبيع غير صالحة.");
+    return { variantId, receivedQuantity, sellableQuantity };
+  });
+  return { operationId: uuid(body.operationId), expectedRevision: revision(body.expectedRevision), lines: parsed };
+}
+
 function parseUnreachableCancellation(input: unknown) {
   const body = object(input, "بيانات إلغاء الطلب غير صالحة.");
   exactKeys(body, new Set(["operationId", "expectedRevision", "reason"]), "بيانات إلغاء الطلب غير صالحة.");
@@ -507,9 +895,10 @@ function parseUnreachableCancellation(input: unknown) {
 function parseSettings(input: unknown) {
   const body = object(input, "إعدادات الطلبات غير صالحة.");
   exactKeys(body, new Set(["expectedRevision", "unreachableWaitHours", "minimumContactAttempts"]), "إعدادات الطلبات غير صالحة.");
-  return { expectedRevision: revision(body.expectedRevision),
-    unreachableWaitHours: integer(body.unreachableWaitHours, 1, 24 * 365, "مدة الانتظار غير صالحة."),
-    minimumContactAttempts: integer(body.minimumContactAttempts, 2, 100, "الحد الأدنى لمحاولات التواصل لا يقل عن محاولتين.") };
+  return {
+    expectedRevision: revision(body.expectedRevision),
+    ...validateOpeningOnlineOrderSettings(body.unreachableWaitHours, body.minimumContactAttempts),
+  };
 }
 
 function quotePart(input: ReturnType<typeof parseSubmission>) {

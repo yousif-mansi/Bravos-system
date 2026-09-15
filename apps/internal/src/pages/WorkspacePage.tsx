@@ -385,6 +385,12 @@ export function WorkspacePage({
           {online && workspace.staff.role === "manager" && workspace.capabilities.manageInventory ? (
             <Link className="button secondary" to="/stock-corrections">تصحيح كميات المخزون</Link>
           ) : null}
+          {online
+            && workspace.staff.role === "manager"
+            && workspace.capabilities.manageInventory
+            && workspace.capabilities.manageCatalog ? (
+              <Link className="button secondary" to="/opening-import">استيراد بيانات البداية</Link>
+            ) : null}
           {workspace.capabilities.cashier ? (
             <Link className="button secondary" to="/lookup">البحث عن منتج</Link>
           ) : null}

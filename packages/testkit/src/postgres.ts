@@ -1,9 +1,48 @@
+import { execFile } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import EmbeddedPostgres from "embedded-postgres";
 import { Pool } from "pg";
 import { applyMigrations } from "@bravos/persistence";
+
+class ManagedEmbeddedPostgres extends EmbeddedPostgres {
+  private readonly databaseDir: string;
+  private stopPromise: Promise<void> | null = null;
+
+  constructor(databaseDir: string, options: ConstructorParameters<typeof EmbeddedPostgres>[0]) {
+    super(options);
+    this.databaseDir = databaseDir;
+  }
+
+  override stop(): Promise<void> {
+    this.stopPromise ??= this.stopOnce();
+    return this.stopPromise;
+  }
+
+  private async stopOnce(): Promise<void> {
+    if (process.platform !== "win32") {
+      await super.stop();
+      return;
+    }
+    try {
+      await stopWindowsPostgres(this.databaseDir);
+      return;
+    } catch (gracefulError) {
+      try {
+        await super.stop();
+        return;
+      } catch (fallbackError) {
+        throw new AggregateError(
+          [gracefulError, fallbackError],
+          "Postgres graceful shutdown and embedded-postgres fallback both failed.",
+        );
+      }
+    }
+  }
+}
 
 export type PostgresCluster = {
   port: number;
@@ -25,7 +64,7 @@ export async function startPostgresCluster(options?: {
     : await mkdtemp(path.join(tmpdir(), "bravos-pg-"));
   const user = "bravos";
   const password = "bravos-test";
-  const pg = new EmbeddedPostgres({
+  const pg = new ManagedEmbeddedPostgres(databaseDir, {
     databaseDir,
     user,
     password,
@@ -73,6 +112,37 @@ export async function startPostgresCluster(options?: {
       }
     },
   };
+}
+
+async function stopWindowsPostgres(databaseDir: string): Promise<void> {
+  if (process.arch !== "x64") {
+    throw new Error(`Unsupported embedded Postgres Windows architecture: ${process.arch}`);
+  }
+  const require = createRequire(import.meta.url);
+  const embeddedEntry = require.resolve("embedded-postgres");
+  const embeddedRequire = createRequire(embeddedEntry);
+  const binariesEntry = embeddedRequire.resolve("@embedded-postgres/windows-x64");
+  const binaries = await import(pathToFileURL(binariesEntry).href) as { pg_ctl?: unknown };
+  if (typeof binaries.pg_ctl !== "string" || path.basename(binaries.pg_ctl).toLowerCase() !== "pg_ctl.exe") {
+    throw new Error("The installed Windows Postgres package did not expose pg_ctl.exe.");
+  }
+  const pgCtl = path.resolve(binaries.pg_ctl);
+  const resolvedDatabaseDir = path.resolve(databaseDir);
+  await new Promise<void>((resolve, reject) => {
+    execFile(
+      pgCtl,
+      ["stop", "-D", resolvedDatabaseDir, "-m", "fast", "-w", "-t", "30"],
+      { encoding: "utf8", timeout: 35_000, windowsHide: true },
+      (error, stdout, stderr) => {
+        if (!error) {
+          resolve();
+          return;
+        }
+        const detail = stderr.trim() || stdout.trim() || error.message;
+        reject(new Error(`pg_ctl could not stop the embedded Postgres cluster: ${detail}`, { cause: error }));
+      },
+    );
+  });
 }
 
 export async function createMigratedPool(connectionString: string): Promise<Pool> {

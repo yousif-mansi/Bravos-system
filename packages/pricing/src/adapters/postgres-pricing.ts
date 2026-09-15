@@ -251,6 +251,34 @@ export function createPostgresCouponUsageTransaction(queryable: Queryable): Coup
         centralUsedCount: usedBefore + 1,
       };
     },
+    async releaseOnlineOrder(input) {
+      const usage = await queryable.query<{
+        release_operation_id: string | null;
+        release_payload_fingerprint: string | null;
+        released_at: Date | null;
+      }>(
+        `SELECT release_operation_id, release_payload_fingerprint, released_at
+         FROM pricing_coupon_usage
+         WHERE source_type = 'online_order' AND source_id = $1
+         FOR UPDATE`,
+        [input.sourceId],
+      );
+      const row = usage.rows[0];
+      if (!row) return "absent";
+      if (row.released_at) {
+        if (row.release_operation_id === input.operationId
+          && row.release_payload_fingerprint === input.payloadFingerprint) return "replay";
+        throw new CouponUsageConflictError("تم تحرير استخدام كوبون هذا الطلب بعملية أخرى.");
+      }
+      await queryable.query(
+        `UPDATE pricing_coupon_usage
+         SET released_at = $2, release_operation_id = $3,
+             release_payload_fingerprint = $4, released_by_staff_id = $5
+         WHERE source_type = 'online_order' AND source_id = $1 AND released_at IS NULL`,
+        [input.sourceId, input.releasedAt, input.operationId, input.payloadFingerprint, input.actorStaffId],
+      );
+      return "released";
+    },
   };
 }
 

@@ -254,11 +254,76 @@ export type OnlineOrderSettingsDto = {
   changedAt: string | null;
 };
 
+export type OnlineOrderStatus =
+  | "pending"
+  | "confirmed"
+  | "shipped"
+  | "delivered"
+  | "delivery_failed"
+  | "cancelled_unreachable"
+  | "cancelled_before_shipment"
+  | "cancelled_after_failed_delivery";
+
+export type OnlineOrderLifecycleEventDto = {
+  id: string;
+  operationId: string;
+  type:
+    | "confirmed"
+    | "shipped"
+    | "delivered"
+    | "delivery_failed"
+    | "cancelled_unreachable"
+    | "cancelled_before_shipment"
+    | "failed_return_inspection_drafted"
+    | "failed_return_inspection_abandoned"
+    | "failed_return_inspection_posted"
+    | "cancelled_after_failed_delivery";
+  fromStatus: OnlineOrderStatus;
+  toStatus: OnlineOrderStatus;
+  actorStaffId: string;
+  occurredAt: string;
+  recordedAt: string;
+  reason: string | null;
+};
+
+export type OnlineOrderFailedReturnInspectionLineDto = {
+  confirmedLineId: string;
+  variantId: string;
+  receivedQuantity: number;
+  sellableQuantity: number;
+  nonsellableQuantity: number;
+};
+
+export type OnlineOrderFailedReturnInspectionDto = {
+  id: string;
+  operationId: string;
+  status: "draft" | "posted" | "abandoned";
+  lines: OnlineOrderFailedReturnInspectionLineDto[];
+  recordedByStaffId: string;
+  recordedAt: string;
+  postedByStaffId: string | null;
+  postedAt: string | null;
+  abandonedByStaffId: string | null;
+  abandonedAt: string | null;
+  abandonmentReason: string | null;
+};
+
+export type OnlineOrderActionEligibilityDto = {
+  canShip: boolean;
+  canDeliver: boolean;
+  canMarkDeliveryFailed: boolean;
+  canCancelBeforeShipment: boolean;
+  canDraftFailedReturnInspection: boolean;
+  canPostFailedReturnInspection: boolean;
+  canAbandonFailedReturnInspection: boolean;
+  canCloseFailedDelivery: boolean;
+};
+
 export type OnlineOrderDto = {
   id: string;
   operationId: string;
   reference: string;
-  status: "pending" | "confirmed" | "cancelled_unreachable";
+  status: OnlineOrderStatus;
   revision: number;
   customerName: string;
   primaryPhone: string;
@@ -282,10 +347,29 @@ export type OnlineOrderDto = {
   confirmedQuote: OnlineOrderAgreementQuoteDto | null;
   confirmedByStaffId: string | null;
   confirmedAt: string | null;
+  shippedAt: string | null;
+  deliveredAt: string | null;
+  deliveryFailedAt: string | null;
   cancelledByStaffId: string | null;
   cancelledAt: string | null;
   cancellationReason: string | null;
+  lifecycle: OnlineOrderLifecycleEventDto[];
+  failedReturnInspections: OnlineOrderFailedReturnInspectionDto[];
+  actionEligibility: OnlineOrderActionEligibilityDto;
   submittedAt: string;
+};
+
+export type OnlineOrderMutationResponseDto = {
+  created: boolean;
+  result: OnlineOrderDto;
+};
+
+export type CompletedOnlineOrderDto = {
+  orderId: string;
+  reference: string;
+  deliveredAt: string;
+  finalTotalPiasters: number;
+  confirmedQuote: OnlineOrderAgreementQuoteDto;
 };
 
 export type SizeDto = {
@@ -999,6 +1083,110 @@ export type StaffAccountDto = StaffSummaryDto & {
   changes: StaffChangeDto[];
 };
 
+export type OpeningImportFileName = "catalog.csv" | "opening-stock.csv" | "configuration.csv";
+
+export type OpeningImportLineErrorDto = {
+  file: OpeningImportFileName;
+  line: number;
+  column: string | null;
+  code: string;
+  messageAr: string;
+};
+
+export type OpeningImportCountsDto = {
+  categories: number;
+  sizes: number;
+  colors: number;
+  products: number;
+  variants: number;
+  batches: number;
+  openingQuantity: number;
+  expenseCategories: number;
+  deliveryAreas: number;
+  automaticOffers: number;
+  coupons: number;
+};
+
+export type OpeningImportBatchPreviewDto = {
+  key: string;
+  variantKey: string;
+  quantity: number;
+  unitCostPiasters: number;
+  receiptDate: string;
+  batchOrder: number;
+};
+
+export type OpeningImportConfigurationPreviewDto = {
+  recordType: string;
+  key: string;
+  labelAr: string;
+  proposedValue: string;
+  currentValue: string | null;
+};
+
+export type OpeningImportCatalogPreviewDto = {
+  categories: Array<{ key: string; nameAr: string; parentKey: string | null }>;
+  sizes: Array<{ key: string; nameAr: string }>;
+  colors: Array<{ key: string; nameAr: string }>;
+  products: Array<{ key: string; code: string; nameAr: string; descriptionAr: string; categoryKey: string; defaultSellingPricePiasters: number; publication: PublicationStatus; imageRefs: string[]; sizeGuideAr: string | null }>;
+  variants: Array<{ key: string; productKey: string; sizeKey: string; colorKey: string; sellingPricePiastersOverride: number | null }>;
+};
+
+export type OpeningImportConfigurationDetailsDto = {
+  inventoryDefaultThreshold: number | null;
+  variantThresholds: Array<{ key: string; variantKey: string; threshold: number }>;
+  expenseCategories: Array<{ key: string; nameAr: string; active: boolean }>;
+  deliveryAreas: Array<{ key: string; nameAr: string; feePiasters: number; active: boolean }>;
+  contacts: { whatsappUrl: string | null; facebookUrl: string | null; instagramUrl: string | null; tiktokUrl: string | null } | null;
+  onlineOrderSettings: { unreachableWaitHours: number; minimumContactAttempts: number } | null;
+  offers: Array<{
+    key: string; nameAr: string; discountType: AutomaticOfferDiscountType;
+    percentageBasisPoints: number | null; fixedDiscountPiasters: number | null; bundlePricePiasters: number | null;
+    bundleItems: Array<{ variantKey: string; requiredQuantity: number }>;
+    buyQuantity: number | null; rewardQuantity: number | null; rewardPercentageBasisPoints: number | null;
+    productKeys: string[]; categoryKeys: string[]; buyProductKeys: string[]; buyCategoryKeys: string[];
+    rewardProductKeys: string[]; rewardCategoryKeys: string[];
+    startsOn: string; endsOn: string; active: boolean; allowCoupon: boolean;
+  }>;
+  coupons: Array<{
+    key: string; code: string; discountType: CouponDiscountType; percentageBasisPoints: number | null;
+    fixedDiscountPiasters: number | null; startsOn: string; endsOn: string; active: boolean;
+    allowAutomaticOffer: boolean; usageLimit: number; productKeys: string[]; categoryKeys: string[];
+  }>;
+};
+
+export type OpeningImportPreviewDto = {
+  id: string;
+  operationId: string;
+  status: "invalid" | "ready" | "accepted";
+  inputFingerprint: string;
+  previewFingerprint: string;
+  counts: OpeningImportCountsDto;
+  catalog: OpeningImportCatalogPreviewDto;
+  batches: OpeningImportBatchPreviewDto[];
+  configuration: OpeningImportConfigurationPreviewDto[];
+  configurationDetails: OpeningImportConfigurationDetailsDto;
+  errors: OpeningImportLineErrorDto[];
+  createdAt: string;
+  acceptedAt: string | null;
+};
+
+export type OpeningImportFilesDto = {
+  catalog: string;
+  stock: string;
+  configuration: string;
+};
+
+export type OpeningImportPreviewRequest = {
+  operationId: string;
+  files: OpeningImportFilesDto;
+};
+
+export type OpeningImportAcceptRequest = {
+  operationId: string;
+  previewFingerprint: string;
+};
+
 export type ApiErrorCode =
   | "UNAUTHENTICATED"
   | "FORBIDDEN"
@@ -1012,6 +1200,8 @@ export type ApiErrorCode =
   | "CONFLICT"
   | "STOCK_MUTATION_PAUSED"
   | "COORDINATION_STALE"
+  | "OPERATION_CONFLICT"
+  | "OPENING_IMPORT_STALE"
   | "VARIANT_REFERENCED";
 
 export type ApiErrorBody = {

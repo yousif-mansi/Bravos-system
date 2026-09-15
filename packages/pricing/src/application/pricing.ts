@@ -52,12 +52,12 @@ export function createPricingServices(ports: {
 
     async create(auth: VerifiedAuth | null, input: unknown): Promise<AutomaticOfferDto> {
       const manager = await requireManager(auth);
-      return ports.offers.insert(toWrite(crypto.randomUUID(), manager.id, input, now()));
+      return ports.offers.insert(validateAutomaticOfferWrite(crypto.randomUUID(), manager.id, input, now()));
     },
 
     async update(auth: VerifiedAuth | null, id: string, input: unknown): Promise<AutomaticOfferDto> {
       const manager = await requireManager(auth);
-      const updated = await ports.offers.update(toWrite(assertUuid(id), manager.id, input, now()));
+      const updated = await ports.offers.update(validateAutomaticOfferWrite(assertUuid(id), manager.id, input, now()));
       if (!updated) throw new NotFoundError("العرض غير موجود.");
       return updated;
     },
@@ -80,19 +80,19 @@ export function createPricingServices(ports: {
 
     async createCoupon(auth: VerifiedAuth | null, input: unknown): Promise<CouponDto> {
       const manager = await requireManager(auth);
-      return ports.coupons.insert(toCouponWrite(crypto.randomUUID(), manager.id, input, now()));
+      return ports.coupons.insert(validateCouponWrite(crypto.randomUUID(), manager.id, input, now()));
     },
 
     async updateCoupon(auth: VerifiedAuth | null, id: string, input: unknown): Promise<CouponDto> {
       const manager = await requireManager(auth);
-      const updated = await ports.coupons.update(toCouponWrite(assertUuid(id), manager.id, input, now()));
+      const updated = await ports.coupons.update(validateCouponWrite(assertUuid(id), manager.id, input, now()));
       if (!updated) throw new NotFoundError("الكوبون غير موجود.");
       return updated;
     },
   };
 }
 
-function toCouponWrite(id: string, actorStaffId: string, input: unknown, changedAt: Date): CouponWrite {
+export function validateCouponWrite(id: string, actorStaffId: string, input: unknown, changedAt: Date): CouponWrite {
   const body = expectObject(input);
   for (const key of Object.keys(body)) if (!COUPON_KEYS.has(key)) throw new PricingValidationError("بيانات الكوبون غير صالحة.");
   const code = text(body.code, 64, "كود الكوبون غير صالح.");
@@ -119,7 +119,7 @@ function toCouponWrite(id: string, actorStaffId: string, input: unknown, changed
   };
 }
 
-function toWrite(id: string, actorStaffId: string, input: unknown, changedAt: Date): AutomaticOfferWrite {
+export function validateAutomaticOfferWrite(id: string, actorStaffId: string, input: unknown, changedAt: Date): AutomaticOfferWrite {
   const body = expectObject(input);
   for (const key of Object.keys(body)) {
     if (!OFFER_KEYS.has(key)) throw new PricingValidationError("بيانات العرض غير صالحة.");

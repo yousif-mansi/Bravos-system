@@ -1,8 +1,11 @@
 import type {
   DeliveryAreaDto,
+  CompletedOnlineOrderDto,
   OnlineOrderAgreementQuoteDto,
   OnlineOrderContactAttemptDto,
   OnlineOrderDto,
+  OnlineOrderFailedReturnInspectionDto,
+  OnlineOrderLifecycleEventDto,
   OnlineOrderLineDto,
   OnlineOrderSettingsDto,
 } from "@bravos/contracts";
@@ -125,7 +128,48 @@ type AgreedRevisionRow = {
   agreed_at: Date;
   quote_json: OnlineOrderAgreementQuoteDto;
 };
-type ConfirmationRow = { confirmed_quote_json: OnlineOrderAgreementQuoteDto };
+type ConfirmationRow = {
+  operation_id: string;
+  confirmed_quote_json: OnlineOrderAgreementQuoteDto;
+  confirmed_by_staff_id: string;
+  confirmed_at: Date;
+};
+type FulfillmentEventRow = {
+  id: string;
+  operation_id: string;
+  event_type: OnlineOrderLifecycleEventDto["type"];
+  from_status: OnlineOrderDto["status"];
+  to_status: OnlineOrderDto["status"];
+  actor_staff_id: string;
+  occurred_at: Date;
+  recorded_at: Date;
+  reason: string | null;
+};
+type InspectionRow = {
+  id: string;
+  draft_operation_id: string;
+  status: OnlineOrderFailedReturnInspectionDto["status"];
+  recorded_by_staff_id: string;
+  recorded_at: Date;
+  posted_by_staff_id: string | null;
+  posted_at: Date | null;
+  abandoned_by_staff_id: string | null;
+  abandoned_at: Date | null;
+  abandonment_reason: string | null;
+};
+type InspectionLineRow = {
+  inspection_id: string;
+  confirmed_line_id: string;
+  variant_id: string;
+  received_quantity: number;
+  sellable_quantity: number;
+};
+type UnreachableCancellationRow = {
+  operation_id: string;
+  cancelled_by_staff_id: string;
+  cancelled_at: Date;
+  reason: string;
+};
 type SettingsRow = {
   revision: number;
   unreachable_wait_hours: number;
@@ -254,6 +298,55 @@ export function createPostgresOnlineOrderStore(queryable: Queryable): OnlineOrde
       const orders = await Promise.all(result.rows.map((row) => loadOrder(queryable, row.id)));
       return orders.filter((order): order is OnlineOrderDto => order !== null);
     },
+    async listCompletedOrders() {
+      const result = await queryable.query<{
+        id: string;
+        reference: string;
+        delivered_at: Date;
+        confirmed_quote_json: OnlineOrderAgreementQuoteDto;
+      }>(
+        `SELECT order_row.id,order_row.reference,event.occurred_at AS delivered_at,
+                confirmation.confirmed_quote_json
+         FROM online_order order_row
+         JOIN online_order_confirmation confirmation ON confirmation.order_id=order_row.id
+         JOIN online_order_fulfillment_event event
+           ON event.order_id=order_row.id AND event.event_type='delivered'
+         WHERE order_row.status='delivered'
+         ORDER BY event.occurred_at DESC,order_row.id DESC`,
+      );
+      return result.rows.map((row): CompletedOnlineOrderDto => ({
+        orderId: row.id,
+        reference: row.reference,
+        deliveredAt: row.delivered_at.toISOString(),
+        finalTotalPiasters: integer(row.confirmed_quote_json.finalTotalPiasters),
+        confirmedQuote: row.confirmed_quote_json,
+      }));
+    },
+    async getDeliveredSource(orderId, lock = false) {
+      const result = await queryable.query<{
+        id: string;
+        reference: string;
+        delivered_at: Date;
+        confirmed_quote_json: OnlineOrderAgreementQuoteDto;
+      }>(
+        `SELECT order_row.id,order_row.reference,event.occurred_at AS delivered_at,
+                confirmation.confirmed_quote_json
+         FROM online_order order_row
+         JOIN online_order_confirmation confirmation ON confirmation.order_id=order_row.id
+         JOIN online_order_fulfillment_event event
+           ON event.order_id=order_row.id AND event.event_type='delivered'
+         WHERE order_row.id=$1 AND order_row.status='delivered'
+         ${lock ? "FOR UPDATE OF order_row" : ""}`,
+        [orderId],
+      );
+      const row = result.rows[0];
+      return row ? {
+        orderId: row.id,
+        reference: row.reference,
+        customerReceivedAt: row.delivered_at,
+        confirmedQuote: row.confirmed_quote_json,
+      } : null;
+    },
     getOrder(id, lock = false) { return loadOrder(queryable, id, lock); },
     async insertAgreementQuote(input) {
       await queryable.query(
@@ -335,6 +428,98 @@ export function createPostgresOnlineOrderStore(queryable: Queryable): OnlineOrde
       );
       return finishOperation(queryable, input.operationId, input.orderId);
     },
+    async transition(input) {
+      await insertOperationShell(queryable, input, input.operationType, input.recordedAt);
+      await queryable.query(
+        `INSERT INTO online_order_fulfillment_event (
+           id, order_id, operation_id, event_type, from_status, to_status,
+           actor_staff_id, occurred_at, recorded_at, reason
+         ) VALUES (gen_random_uuid(),$1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        [input.orderId,input.operationId,input.eventType,input.fromStatus,input.toStatus,
+          input.actorStaffId,input.occurredAt,input.recordedAt,input.reason],
+      );
+      const cancelled = input.toStatus === "cancelled_before_shipment"
+        || input.toStatus === "cancelled_after_failed_delivery";
+      const updated = await queryable.query(
+        `UPDATE online_order
+         SET status=$2,revision=$3,
+             cancelled_by_staff_id=CASE WHEN $4 THEN $5 ELSE cancelled_by_staff_id END,
+             cancelled_at=CASE WHEN $4 THEN $6 ELSE cancelled_at END,
+             cancellation_reason=CASE WHEN $4 THEN $7 ELSE cancellation_reason END
+         WHERE id=$1 AND status=$8
+         RETURNING id`,
+        [input.orderId,input.toStatus,input.nextRevision,cancelled,input.actorStaffId,
+          input.recordedAt,input.reason,input.fromStatus],
+      );
+      if (!updated.rows[0]) throw new OnlineOrderValidationError("تغيرت حالة الطلب أثناء تنفيذ العملية.");
+      return finishOperation(queryable, input.operationId, input.orderId);
+    },
+    async insertFailedReturnInspection(input) {
+      await insertOperationShell(queryable, input, "failed_return_inspection_draft", input.recordedAt);
+      await queryable.query(
+        `INSERT INTO online_order_failed_return_inspection (
+           id,order_id,draft_operation_id,status,recorded_by_staff_id,recorded_at
+         ) VALUES ($1,$2,$3,'draft',$4,$5)`,
+        [input.id,input.orderId,input.operationId,input.actorStaffId,input.recordedAt],
+      );
+      for (const [index, line] of input.lines.entries()) {
+        await queryable.query(
+          `INSERT INTO online_order_failed_return_inspection_line (
+             inspection_id,confirmed_line_id,variant_id,received_quantity,sellable_quantity,line_index
+           ) VALUES ($1,$2,$3,$4,$5,$6)`,
+          [input.id,line.confirmedLineId,line.variantId,line.receivedQuantity,line.sellableQuantity,index],
+        );
+      }
+      await queryable.query(
+        `INSERT INTO online_order_fulfillment_event (
+           id,order_id,operation_id,event_type,from_status,to_status,actor_staff_id,occurred_at,recorded_at
+         ) VALUES (gen_random_uuid(),$1,$2,'failed_return_inspection_drafted','delivery_failed','delivery_failed',$3,$4,$4)`,
+        [input.orderId,input.operationId,input.actorStaffId,input.recordedAt],
+      );
+      await setRevision(queryable,input.orderId,input.nextRevision);
+      return finishOperation(queryable,input.operationId,input.orderId);
+    },
+    async postFailedReturnInspection(input) {
+      await insertOperationShell(queryable, input, "failed_return_inspection_post", input.postedAt);
+      const posted = await queryable.query(
+        `UPDATE online_order_failed_return_inspection
+         SET status='posted',posted_operation_id=$3,posted_by_staff_id=$4,posted_at=$5
+         WHERE id=$1 AND order_id=$2 AND status='draft'
+         RETURNING id`,
+        [input.inspectionId,input.orderId,input.operationId,input.actorStaffId,input.postedAt],
+      );
+      if (!posted.rows[0]) throw new OnlineOrderValidationError("مسودة الفحص غير موجودة أو تم ترحيلها.");
+      await queryable.query(
+        `INSERT INTO online_order_fulfillment_event (
+           id,order_id,operation_id,event_type,from_status,to_status,actor_staff_id,occurred_at,recorded_at
+         ) VALUES (gen_random_uuid(),$1,$2,'failed_return_inspection_posted','delivery_failed','delivery_failed',$3,$4,$4)`,
+        [input.orderId,input.operationId,input.actorStaffId,input.postedAt],
+      );
+      await setRevision(queryable,input.orderId,input.nextRevision);
+      return finishOperation(queryable,input.operationId,input.orderId);
+    },
+    async abandonFailedReturnInspection(input) {
+      await insertOperationShell(queryable,input,"failed_return_inspection_abandon",input.abandonedAt);
+      const abandoned = await queryable.query(
+        `UPDATE online_order_failed_return_inspection
+         SET status='abandoned',abandoned_by_staff_id=$3,abandoned_at=$4,abandonment_reason=$5
+         WHERE id=$1 AND order_id=$2 AND status='draft'
+         RETURNING id`,
+        [input.inspectionId,input.orderId,input.actorStaffId,input.abandonedAt,input.reason],
+      );
+      if (!abandoned.rows[0]) throw new OnlineOrderValidationError("مسودة الفحص غير موجودة أو لم تعد مفتوحة.");
+      await queryable.query(
+        `INSERT INTO online_order_fulfillment_event (
+           id,order_id,operation_id,event_type,from_status,to_status,actor_staff_id,occurred_at,recorded_at,reason
+         ) VALUES (gen_random_uuid(),$1,$2,'failed_return_inspection_abandoned','delivery_failed','delivery_failed',$3,$4,$4,$5)`,
+        [input.orderId,input.operationId,input.actorStaffId,input.abandonedAt,input.reason],
+      );
+      await setRevision(queryable,input.orderId,input.nextRevision);
+      return finishOperation(queryable,input.operationId,input.orderId);
+    },
+    getFailedReturnInspection(id, lock = false) {
+      return loadInspection(queryable,id,lock);
+    },
     async getSettings() {
       const result = await queryable.query<SettingsRow>("SELECT * FROM online_order_settings WHERE singleton=TRUE");
       return settings(required(result.rows[0]));
@@ -389,7 +574,8 @@ async function loadOrder(queryable: Queryable, id: string, lock = false): Promis
   const result = await queryable.query<OrderRow>(`SELECT * FROM online_order WHERE id=$1${lock ? " FOR UPDATE" : ""}`, [id]);
   const row = result.rows[0];
   if (!row) return null;
-  const [lineResult, attemptResult, agreedResult, confirmationResult] = await Promise.all([
+  const [lineResult, attemptResult, agreedResult, confirmationResult, fulfillmentResult,
+    inspectionResult, inspectionLineResult, unreachableResult] = await Promise.all([
     queryable.query<LineRow>("SELECT * FROM online_order_line WHERE order_id=$1 ORDER BY line_index", [id]),
     queryable.query<ContactAttemptRow>("SELECT * FROM online_order_contact_attempt WHERE order_id=$1 ORDER BY occurred_at,id", [id]),
     queryable.query<AgreedRevisionRow>(
@@ -397,9 +583,67 @@ async function loadOrder(queryable: Queryable, id: string, lock = false): Promis
        FROM online_order_agreed_revision r JOIN online_order_agreement_quote q ON q.id=r.quote_id
        WHERE r.order_id=$1 ORDER BY r.version DESC LIMIT 1`, [id],
     ),
-    queryable.query<ConfirmationRow>("SELECT confirmed_quote_json FROM online_order_confirmation WHERE order_id=$1", [id]),
+    queryable.query<ConfirmationRow>(
+      `SELECT operation_id,confirmed_quote_json,confirmed_by_staff_id,confirmed_at
+       FROM online_order_confirmation WHERE order_id=$1`, [id],
+    ),
+    queryable.query<FulfillmentEventRow>(
+      `SELECT * FROM online_order_fulfillment_event WHERE order_id=$1 ORDER BY recorded_at,id`, [id],
+    ),
+    queryable.query<InspectionRow>(
+      `SELECT id,draft_operation_id,status,recorded_by_staff_id,recorded_at,posted_by_staff_id,posted_at,
+              abandoned_by_staff_id,abandoned_at,abandonment_reason
+       FROM online_order_failed_return_inspection WHERE order_id=$1 ORDER BY recorded_at,id`, [id],
+    ),
+    queryable.query<InspectionLineRow>(
+      `SELECT line.inspection_id,line.confirmed_line_id,line.variant_id,line.received_quantity,line.sellable_quantity
+       FROM online_order_failed_return_inspection_line line
+       JOIN online_order_failed_return_inspection inspection ON inspection.id=line.inspection_id
+       WHERE inspection.order_id=$1 ORDER BY inspection.recorded_at,line.line_index`, [id],
+    ),
+    queryable.query<UnreachableCancellationRow>(
+      `SELECT operation_id,cancelled_by_staff_id,cancelled_at,reason
+       FROM online_order_unreachable_cancellation WHERE order_id=$1`, [id],
+    ),
   ]);
   const agreed = agreedResult.rows[0];
+  const confirmation = confirmationResult.rows[0];
+  const lifecycle: OnlineOrderLifecycleEventDto[] = [];
+  if (confirmation) lifecycle.push({
+    id: confirmation.operation_id,
+    operationId: confirmation.operation_id,
+    type: "confirmed",
+    fromStatus: "pending",
+    toStatus: "confirmed",
+    actorStaffId: confirmation.confirmed_by_staff_id,
+    occurredAt: confirmation.confirmed_at.toISOString(),
+    recordedAt: confirmation.confirmed_at.toISOString(),
+    reason: null,
+  });
+  const unreachable = unreachableResult.rows[0];
+  if (unreachable) lifecycle.push({
+    id: unreachable.operation_id,
+    operationId: unreachable.operation_id,
+    type: "cancelled_unreachable",
+    fromStatus: "pending",
+    toStatus: "cancelled_unreachable",
+    actorStaffId: unreachable.cancelled_by_staff_id,
+    occurredAt: unreachable.cancelled_at.toISOString(),
+    recordedAt: unreachable.cancelled_at.toISOString(),
+    reason: unreachable.reason,
+  });
+  lifecycle.push(...fulfillmentResult.rows.map(lifecycleEvent));
+  lifecycle.sort((left,right) => left.recordedAt.localeCompare(right.recordedAt) || left.id.localeCompare(right.id));
+  const inspectionLines = new Map<string, InspectionLineRow[]>();
+  for (const item of inspectionLineResult.rows) {
+    const lines = inspectionLines.get(item.inspection_id) ?? [];
+    lines.push(item);
+    inspectionLines.set(item.inspection_id,lines);
+  }
+  const inspections = inspectionResult.rows.map((item) => inspection(item,inspectionLines.get(item.id) ?? []));
+  const shipped = fulfillmentResult.rows.find((event) => event.event_type === "shipped");
+  const delivered = fulfillmentResult.rows.find((event) => event.event_type === "delivered");
+  const failed = fulfillmentResult.rows.find((event) => event.event_type === "delivery_failed");
   return {
     id: row.id, operationId: row.operation_id, reference: row.reference, status: row.status, revision: row.revision,
     customerName: row.customer_name, primaryPhone: row.primary_phone, alternatePhone: row.alternate_phone,
@@ -420,13 +664,85 @@ async function loadOrder(queryable: Queryable, id: string, lock = false): Promis
       version: agreed.version, operationId: agreed.operation_id, agreedByStaffId: agreed.agreed_by_staff_id,
       agreedAt: agreed.agreed_at.toISOString(), quote: agreed.quote_json,
     } : null,
-    confirmedQuote: confirmationResult.rows[0]?.confirmed_quote_json ?? null,
+    confirmedQuote: confirmation?.confirmed_quote_json ?? null,
     confirmedByStaffId: row.confirmed_by_staff_id,
     confirmedAt: row.confirmed_at?.toISOString() ?? null,
+    shippedAt: shipped?.occurred_at.toISOString() ?? null,
+    deliveredAt: delivered?.occurred_at.toISOString() ?? null,
+    deliveryFailedAt: failed?.occurred_at.toISOString() ?? null,
     cancelledByStaffId: row.cancelled_by_staff_id,
     cancelledAt: row.cancelled_at?.toISOString() ?? null,
     cancellationReason: row.cancellation_reason,
+    lifecycle,
+    failedReturnInspections: inspections,
+    actionEligibility: {
+      canShip: false,
+      canDeliver: false,
+      canMarkDeliveryFailed: false,
+      canCancelBeforeShipment: false,
+      canDraftFailedReturnInspection: false,
+      canPostFailedReturnInspection: false,
+      canAbandonFailedReturnInspection: false,
+      canCloseFailedDelivery: false,
+    },
     submittedAt: row.submitted_at.toISOString(),
+  };
+}
+
+async function loadInspection(
+  queryable: Queryable,
+  id: string,
+  lock = false,
+): Promise<OnlineOrderFailedReturnInspectionDto | null> {
+  const result = await queryable.query<InspectionRow>(
+    `SELECT id,draft_operation_id,status,recorded_by_staff_id,recorded_at,posted_by_staff_id,posted_at,
+            abandoned_by_staff_id,abandoned_at,abandonment_reason
+     FROM online_order_failed_return_inspection WHERE id=$1${lock ? " FOR UPDATE" : ""}`,
+    [id],
+  );
+  const row = result.rows[0];
+  if (!row) return null;
+  const lines = await queryable.query<InspectionLineRow>(
+    `SELECT inspection_id,confirmed_line_id,variant_id,received_quantity,sellable_quantity
+     FROM online_order_failed_return_inspection_line WHERE inspection_id=$1 ORDER BY line_index`,
+    [id],
+  );
+  return inspection(row,lines.rows);
+}
+
+function inspection(row: InspectionRow, lines: InspectionLineRow[]): OnlineOrderFailedReturnInspectionDto {
+  return {
+    id: row.id,
+    operationId: row.draft_operation_id,
+    status: row.status,
+    lines: lines.map((line) => ({
+      confirmedLineId: line.confirmed_line_id,
+      variantId: line.variant_id,
+      receivedQuantity: line.received_quantity,
+      sellableQuantity: line.sellable_quantity,
+      nonsellableQuantity: line.received_quantity - line.sellable_quantity,
+    })),
+    recordedByStaffId: row.recorded_by_staff_id,
+    recordedAt: row.recorded_at.toISOString(),
+    postedByStaffId: row.posted_by_staff_id,
+    postedAt: row.posted_at?.toISOString() ?? null,
+    abandonedByStaffId: row.abandoned_by_staff_id,
+    abandonedAt: row.abandoned_at?.toISOString() ?? null,
+    abandonmentReason: row.abandonment_reason,
+  };
+}
+
+function lifecycleEvent(row: FulfillmentEventRow): OnlineOrderLifecycleEventDto {
+  return {
+    id: row.id,
+    operationId: row.operation_id,
+    type: row.event_type,
+    fromStatus: row.from_status,
+    toStatus: row.to_status,
+    actorStaffId: row.actor_staff_id,
+    occurredAt: row.occurred_at.toISOString(),
+    recordedAt: row.recorded_at.toISOString(),
+    reason: row.reason,
   };
 }
 

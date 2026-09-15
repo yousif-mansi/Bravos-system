@@ -1,9 +1,12 @@
 import type {
   AppliedAutomaticOfferDto,
   AppliedCouponDto,
+  CompletedOnlineOrderDto,
   DeliveryAreaDto,
   OnlineOrderAgreementQuoteDto,
   OnlineOrderDto,
+  OnlineOrderFailedReturnInspectionDto,
+  OnlineOrderLifecycleEventDto,
   OnlineOrderSettingsDto,
 } from "@bravos/contracts";
 import type { CheckoutQuoteDto, PublicDeliveryAreaDto, PublicOrderSubmissionDto } from "@bravos/contracts/public";
@@ -79,8 +82,21 @@ export type CheckoutDependencies = {
       operationId: string;
       payloadFingerprint: string;
       actorStaffId: string;
-      lines: Array<{ variantId: string; quantity: number }>;
+      lines: Array<{ lineId: string; variantId: string; quantity: number }>;
     }): Promise<ProtectOnlineOrderResult>;
+    disposeProtectedOnlineOrder(input: {
+      orderId: string;
+      operationId: string;
+      payloadFingerprint: string;
+      actorStaffId: string;
+      dispositionType: "pre_shipment_cancellation" | "failed_delivery_inspection";
+      lines: Array<{
+        sourceLineId: string;
+        variantId: string;
+        sellableQuantity: number;
+        nonsellableQuantity: number;
+      }>;
+    }): Promise<{ kind: "created" | "replay"; allocations: Array<{ disposition: string; quantity: number }> }>;
     bumpStockVersion(): Promise<number>;
   };
   pricing: { evaluate(lines: CheckoutPricingLine[], at: Date, couponCode: string | null): Promise<CheckoutPricingResult> };
@@ -93,6 +109,13 @@ export type CheckoutDependencies = {
       payloadFingerprint: string;
       claimedAt: Date;
     }): Promise<"claimed" | "replay">;
+    releaseOnlineOrder(input: {
+      sourceId: string;
+      operationId: string;
+      payloadFingerprint: string;
+      actorStaffId: string;
+      releasedAt: Date;
+    }): Promise<"released" | "replay" | "absent">;
   };
 };
 
@@ -114,7 +137,19 @@ export type StoredAgreementQuote = AgreementQuoteWrite;
 export type StoredOrderOperation = {
   operationId: string;
   orderId: string;
-  operationType: "contact_attempt" | "agreed_revision" | "confirmation" | "unreachable_cancellation";
+  operationType:
+    | "contact_attempt"
+    | "agreed_revision"
+    | "confirmation"
+    | "unreachable_cancellation"
+    | "shipment"
+    | "delivery"
+    | "delivery_failure"
+    | "pre_shipment_cancellation"
+    | "failed_return_inspection_draft"
+    | "failed_return_inspection_abandon"
+    | "failed_return_inspection_post"
+    | "failed_delivery_closure";
   payloadFingerprint: string;
   response: OnlineOrderDto;
   actorStaffId: string;
@@ -146,7 +181,19 @@ export type AcceptedOrderWrite = {
   submittedAt: Date;
 };
 
-export type OnlineOrderStore = {
+export type DeliveredOnlineOrderSource = {
+  orderId: string;
+  reference: string;
+  customerReceivedAt: Date;
+  confirmedQuote: OnlineOrderAgreementQuoteDto;
+};
+
+export type DeliveredOnlineOrderSourceReader = {
+  /** When lock=true, callers must already hold the inventory stock-clock lock. */
+  getDeliveredSource(orderId: string, lock?: boolean): Promise<DeliveredOnlineOrderSource | null>;
+};
+
+export type OnlineOrderStore = DeliveredOnlineOrderSourceReader & {
   listPublicAreas(): Promise<PublicDeliveryAreaDto[]>;
   listAreas(): Promise<DeliveryAreaDto[]>;
   getArea(id: string): Promise<DeliveryAreaDto | null>;
@@ -157,6 +204,7 @@ export type OnlineOrderStore = {
   getSubmissionByOperation(operationId: string): Promise<{ payloadFingerprint: string; result: PublicOrderSubmissionDto } | null>;
   insertOrder(input: AcceptedOrderWrite): Promise<PublicOrderSubmissionDto>;
   listOrders(): Promise<OnlineOrderDto[]>;
+  listCompletedOrders(): Promise<CompletedOnlineOrderDto[]>;
   getOrder(id: string, lock?: boolean): Promise<OnlineOrderDto | null>;
   insertAgreementQuote(input: AgreementQuoteWrite): Promise<void>;
   getAgreementQuote(id: string, lock?: boolean): Promise<StoredAgreementQuote | null>;
@@ -201,6 +249,57 @@ export type OnlineOrderStore = {
     cancelledAt: Date;
     nextRevision: number;
   }): Promise<OnlineOrderDto>;
+  transition(input: {
+    orderId: string;
+    operationId: string;
+    payloadFingerprint: string;
+    operationType: Extract<StoredOrderOperation["operationType"],
+      "shipment" | "delivery" | "delivery_failure" | "pre_shipment_cancellation" | "failed_delivery_closure">;
+    eventType: Extract<OnlineOrderLifecycleEventDto["type"],
+      "shipped" | "delivered" | "delivery_failed" | "cancelled_before_shipment" | "cancelled_after_failed_delivery">;
+    actorStaffId: string;
+    fromStatus: OnlineOrderDto["status"];
+    toStatus: OnlineOrderDto["status"];
+    occurredAt: Date;
+    recordedAt: Date;
+    reason: string | null;
+    nextRevision: number;
+  }): Promise<OnlineOrderDto>;
+  insertFailedReturnInspection(input: {
+    id: string;
+    orderId: string;
+    operationId: string;
+    payloadFingerprint: string;
+    actorStaffId: string;
+    recordedAt: Date;
+    nextRevision: number;
+    lines: Array<{
+      confirmedLineId: string;
+      variantId: string;
+      receivedQuantity: number;
+      sellableQuantity: number;
+    }>;
+  }): Promise<OnlineOrderDto>;
+  postFailedReturnInspection(input: {
+    inspectionId: string;
+    orderId: string;
+    operationId: string;
+    payloadFingerprint: string;
+    actorStaffId: string;
+    postedAt: Date;
+    nextRevision: number;
+  }): Promise<OnlineOrderDto>;
+  abandonFailedReturnInspection(input: {
+    inspectionId: string;
+    orderId: string;
+    operationId: string;
+    payloadFingerprint: string;
+    actorStaffId: string;
+    reason: string;
+    abandonedAt: Date;
+    nextRevision: number;
+  }): Promise<OnlineOrderDto>;
+  getFailedReturnInspection(id: string, lock?: boolean): Promise<OnlineOrderFailedReturnInspectionDto | null>;
   getSettings(): Promise<OnlineOrderSettingsDto>;
   updateSettings(input: {
     expectedRevision: number;
@@ -213,6 +312,20 @@ export type OnlineOrderStore = {
 
 export type OnlineOrderUnitOfWork = {
   run<T>(work: (ports: CheckoutDependencies & { store: OnlineOrderStore }) => Promise<T>, operationId?: string): Promise<T>;
+};
+
+export type OpeningOnlineOrderTransaction = {
+  inspectOpeningConfiguration(areas: Array<{ nameAr: string; line: number }>): Promise<{
+    state: unknown;
+    settings: { unreachableWaitHours: number; minimumContactAttempts: number };
+    errors: Array<{ file: "configuration.csv"; line: number; column: string; code: string; messageAr: string }>;
+  }>;
+  insertOpeningConfiguration(input: {
+    areas: Array<{ id: string; nameAr: string; feePiasters: number; active: boolean }>;
+    settings: { unreachableWaitHours: number; minimumContactAttempts: number } | null;
+    actorStaffId: string;
+    at: Date;
+  }): Promise<void>;
 };
 
 export type OnlineOrderActorPort = {

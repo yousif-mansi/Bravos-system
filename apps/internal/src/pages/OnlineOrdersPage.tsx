@@ -9,17 +9,25 @@ import type {
 import type { PublicProductDto, PublicProductSummaryDto } from "@bravos/contracts/public";
 import { accountGeneration } from "../account-session.ts";
 import {
+  abandonOnlineOrderFailedReturnInspection,
   ApiError,
+  cancelOnlineOrderBeforeShipment,
   cancelUnreachableOnlineOrder,
+  closeOnlineOrderFailedDelivery,
   confirmOnlineOrder,
+  deliverOnlineOrder,
+  draftOnlineOrderFailedReturnInspection,
   getOnlineOrder,
   getOnlineOrderSettings,
   getPublicProduct,
   listOnlineOrders,
+  markOnlineOrderDeliveryFailed,
+  postOnlineOrderFailedReturnInspection,
   recordOnlineOrderContactAttempt,
   reviewOnlineOrderAgreement,
   saveOnlineOrderAgreement,
   searchPublicProducts,
+  shipOnlineOrder,
   updateOnlineOrderSettings,
 } from "../api.ts";
 import { formatEgpFromPiasters } from "../money.ts";
@@ -60,11 +68,122 @@ type CancellationPayload = {
   reason: string;
 };
 
+type RevisionPayload = {
+  operationId: string;
+  expectedRevision: number;
+};
+
+type DeliveryPayload = RevisionPayload & {
+  customerReceivedAt: string;
+};
+
+type OptionalReasonPayload = RevisionPayload & {
+  reason?: string;
+};
+
+type ReasonPayload = RevisionPayload & {
+  reason: string;
+};
+
+type FailedInspectionPayload = RevisionPayload & {
+  lines: Array<{ variantId: string; receivedQuantity: number; sellableQuantity: number }>;
+};
+
+type InspectionLineDraft = {
+  receivedQuantity: string;
+  sellableQuantity: string;
+};
+
 type PendingAttempt =
   | { action: "contact"; orderId: string; payload: ContactPayload }
   | { action: "agreement"; orderId: string; payload: AgreementPayload }
   | { action: "confirmation"; orderId: string; payload: ConfirmationPayload }
-  | { action: "cancellation"; orderId: string; payload: CancellationPayload };
+  | { action: "cancellation"; orderId: string; payload: CancellationPayload }
+  | { action: "ship"; orderId: string; payload: RevisionPayload }
+  | { action: "deliver"; orderId: string; payload: DeliveryPayload }
+  | { action: "deliveryFailure"; orderId: string; payload: OptionalReasonPayload }
+  | { action: "cancelBeforeShipment"; orderId: string; payload: ReasonPayload }
+  | { action: "inspectionDraft"; orderId: string; payload: FailedInspectionPayload }
+  | { action: "inspectionPost"; orderId: string; inspectionId: string; payload: RevisionPayload }
+  | { action: "inspectionAbandon"; orderId: string; inspectionId: string; payload: ReasonPayload }
+  | { action: "failedClose"; orderId: string; payload: ReasonPayload };
+
+type PendingAction = PendingAttempt["action"];
+
+const ATTEMPT_COPY = {
+  contact: {
+    title: "توجد محاولة تواصل لم نعرف نتيجتها",
+    retry: "إعادة محاولة حفظ التواصل بنفس العملية",
+    uncertain: "انقطع الرد وقد تكون محاولة التواصل حُفظت. أعد المحاولة بنفس العملية.",
+    success: "تم تسجيل محاولة التواصل.",
+  },
+  agreement: {
+    title: "توجد محاولة حفظ اتفاق لم نعرف نتيجتها",
+    retry: "إعادة محاولة حفظ الاتفاق بنفس العملية",
+    uncertain: "انقطع الرد وقد يكون الاتفاق حُفظ. أعد المحاولة بنفس العملية قبل إجراء تعديل جديد.",
+    success: "تم حفظ الاتفاق مع العميل.",
+  },
+  confirmation: {
+    title: "توجد محاولة تأكيد لم نعرف نتيجتها",
+    retry: "إعادة محاولة التأكيد بنفس العملية",
+    uncertain: "انقطع الرد وقد يكون التأكيد حُفظ. أعد تحميل الصفحة ثم أعد محاولة التأكيد بنفس العملية.",
+    success: "تم تأكيد الطلب وخصم المخزون مرة واحدة.",
+  },
+  cancellation: {
+    title: "توجد محاولة إلغاء لتعذر الوصول لم نعرف نتيجتها",
+    retry: "إعادة محاولة الإلغاء لتعذر الوصول بنفس العملية",
+    uncertain: "انقطع الرد وقد يكون إلغاء تعذر الوصول حُفظ. أعد المحاولة بنفس العملية.",
+    success: "أُلغي الطلب يدوياً لتعذر الوصول إلى العميل.",
+  },
+  ship: {
+    title: "توجد محاولة تسليم لشركة الشحن لم نعرف نتيجتها",
+    retry: "إعادة محاولة التسليم لشركة الشحن بنفس العملية",
+    uncertain: "انقطع الرد وقد يكون تسليم الطلب لشركة الشحن قد حُفظ. أعد المحاولة بنفس العملية.",
+    success: "تم تسجيل تسليم الطلب لشركة الشحن من دون خصم جديد للمخزون.",
+  },
+  deliver: {
+    title: "توجد محاولة تسجيل استلام العميل لم نعرف نتيجتها",
+    retry: "إعادة محاولة تسجيل استلام العميل بنفس العملية",
+    uncertain: "انقطع الرد وقد يكون استلام العميل قد حُفظ. أعد المحاولة بنفس العملية.",
+    success: "تم تسجيل استلام العميل واكتمال الطلب.",
+  },
+  deliveryFailure: {
+    title: "توجد محاولة تسجيل تعذر التوصيل لم نعرف نتيجتها",
+    retry: "إعادة محاولة تسجيل تعذر التوصيل بنفس العملية",
+    uncertain: "انقطع الرد وقد يكون تعذر التوصيل قد حُفظ. أعد المحاولة بنفس العملية.",
+    success: "سُجل تعذر التوصيل وستظل الشحنة غير متاحة حتى استلامها وفحصها.",
+  },
+  cancelBeforeShipment: {
+    title: "توجد محاولة إلغاء قبل الشحن لم نعرف نتيجتها",
+    retry: "إعادة محاولة الإلغاء قبل الشحن بنفس العملية",
+    uncertain: "انقطع الرد وقد يكون الإلغاء قبل الشحن قد حُفظ. أعد المحاولة بنفس العملية.",
+    success: "أُلغي الطلب قبل الشحن وطُبقت الاستعادة المطلوبة مرة واحدة.",
+  },
+  inspectionDraft: {
+    title: "توجد محاولة حفظ مسودة فحص لم نعرف نتيجتها",
+    retry: "إعادة محاولة حفظ مسودة الفحص بنفس العملية",
+    uncertain: "انقطع الرد وقد تكون مسودة الفحص قد حُفظت. أعد المحاولة بنفس العملية.",
+    success: "حُفظت مسودة الفحص دون إعادة أي كمية للمخزون.",
+  },
+  inspectionPost: {
+    title: "توجد محاولة ترحيل فحص لم نعرف نتيجتها",
+    retry: "إعادة محاولة ترحيل الفحص بنفس العملية",
+    uncertain: "انقطع الرد وقد يكون الفحص قد رُحّل. أعد المحاولة بنفس العملية.",
+    success: "رُحّل الفحص واستُعيدت الكمية القابلة للبيع فقط.",
+  },
+  inspectionAbandon: {
+    title: "توجد محاولة إلغاء مسودة فحص لم نعرف نتيجتها",
+    retry: "إعادة محاولة إلغاء مسودة الفحص بنفس العملية",
+    uncertain: "انقطع الرد وقد تكون مسودة الفحص أُلغيت. أعد المحاولة بنفس العملية.",
+    success: "أُلغيت مسودة الفحص مع حفظها في السجل، ويمكن تسجيل فحص بديل.",
+  },
+  failedClose: {
+    title: "توجد محاولة إغلاق نهائي لم نعرف نتيجتها",
+    retry: "إعادة محاولة الإغلاق النهائي بنفس العملية",
+    uncertain: "انقطع الرد وقد يكون الإغلاق النهائي قد حُفظ. أعد المحاولة بنفس العملية.",
+    success: "أُغلق الطلب بعد استلام كامل الشحنة وفحصها.",
+  },
+} satisfies Record<PendingAction, { title: string; retry: string; uncertain: string; success: string }>;
 
 export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDto }) {
   const { orderId } = useParams();
@@ -96,6 +215,12 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
   const [itemsSetAside, setItemsSetAside] = useState(false);
   const [confirmationNeedsReview, setConfirmationNeedsReview] = useState(false);
   const [cancellationReason, setCancellationReason] = useState("");
+  const [preShipmentCancellationReason, setPreShipmentCancellationReason] = useState("");
+  const [customerReceivedAt, setCustomerReceivedAt] = useState("");
+  const [deliveryFailureReason, setDeliveryFailureReason] = useState("");
+  const [inspectionDraft, setInspectionDraft] = useState<Record<string, InspectionLineDraft>>({});
+  const [inspectionAbandonReason, setInspectionAbandonReason] = useState("");
+  const [failedCloseReason, setFailedCloseReason] = useState("");
   const [uncertainAttempt, setUncertainAttempt] = useState<PendingAttempt | null>(null);
   const manager = workspace.staff.role === "manager";
 
@@ -167,6 +292,15 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
   }, [selected?.id, selected?.agreedRevision?.version]);
 
   useEffect(() => {
+    setPreShipmentCancellationReason("");
+    setCustomerReceivedAt("");
+    setDeliveryFailureReason("");
+    setInspectionDraft({});
+    setInspectionAbandonReason("");
+    setFailedCloseReason("");
+  }, [selected?.id]);
+
+  useEffect(() => {
     if (!orderId) return;
     const key = attemptKey(workspace.staff.id, orderId);
     function onStorage(event: StorageEvent) {
@@ -187,6 +321,7 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
   const agreementDraft = useMemo(() => validateAgreementLines(agreementLines), [agreementLines]);
   const reviewLines = agreementDraft.lines;
   const frozen = Boolean(uncertainAttempt || pending);
+  const failedReturnLines = useMemo(() => selected ? remainingFailedReturnLines(selected) : [], [selected]);
 
   function replaceOrder(order: OnlineOrderDto) {
     setSelected(order);
@@ -354,6 +489,115 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
     });
   }
 
+  async function ship() {
+    if (!selected) return;
+    await executeAttempt({
+      action: "ship",
+      orderId: selected.id,
+      payload: { operationId: crypto.randomUUID(), expectedRevision: selected.revision },
+    });
+  }
+
+  async function deliver() {
+    if (!selected) return;
+    const receivedAt = cairoWallTimeToIso(customerReceivedAt);
+    if (!receivedAt) {
+      setError("أدخل وقت استلام صحيحاً بتوقيت القاهرة. لا تستخدم ساعة مكررة أو غير موجودة عند تغيير التوقيت الصيفي.");
+      return;
+    }
+    await executeAttempt({
+      action: "deliver",
+      orderId: selected.id,
+      payload: {
+        operationId: crypto.randomUUID(),
+        expectedRevision: selected.revision,
+        customerReceivedAt: receivedAt,
+      },
+    });
+  }
+
+  async function markDeliveryFailed() {
+    if (!selected) return;
+    const reason = deliveryFailureReason.trim();
+    await executeAttempt({
+      action: "deliveryFailure",
+      orderId: selected.id,
+      payload: {
+        operationId: crypto.randomUUID(),
+        expectedRevision: selected.revision,
+        ...(reason ? { reason } : {}),
+      },
+    });
+  }
+
+  async function cancelBeforeShipment() {
+    if (!selected || !preShipmentCancellationReason.trim()) return;
+    await executeAttempt({
+      action: "cancelBeforeShipment",
+      orderId: selected.id,
+      payload: {
+        operationId: crypto.randomUUID(),
+        expectedRevision: selected.revision,
+        reason: preShipmentCancellationReason.trim(),
+      },
+    });
+  }
+
+  async function saveFailedInspection() {
+    if (!selected) return;
+    const result = validateInspectionDraft(failedReturnLines, inspectionDraft);
+    if (result.error) {
+      setError(result.error);
+      return;
+    }
+    await executeAttempt({
+      action: "inspectionDraft",
+      orderId: selected.id,
+      payload: {
+        operationId: crypto.randomUUID(),
+        expectedRevision: selected.revision,
+        lines: result.lines,
+      },
+    });
+  }
+
+  async function postFailedInspection(inspectionId: string) {
+    if (!selected) return;
+    await executeAttempt({
+      action: "inspectionPost",
+      orderId: selected.id,
+      inspectionId,
+      payload: { operationId: crypto.randomUUID(), expectedRevision: selected.revision },
+    });
+  }
+
+  async function abandonFailedInspection(inspectionId: string) {
+    if (!selected || !inspectionAbandonReason.trim()) return;
+    await executeAttempt({
+      action: "inspectionAbandon",
+      orderId: selected.id,
+      inspectionId,
+      payload: {
+        operationId: crypto.randomUUID(),
+        expectedRevision: selected.revision,
+        reason: inspectionAbandonReason.trim(),
+      },
+    });
+  }
+
+  async function closeFailedDelivery() {
+    if (!selected || !failedCloseReason.trim()) return;
+    await executeAttempt({
+      action: "failedClose",
+      orderId: selected.id,
+      payload: {
+        operationId: crypto.randomUUID(),
+        expectedRevision: selected.revision,
+        reason: failedCloseReason.trim(),
+      },
+    });
+  }
+
   async function executeAttempt(candidate: PendingAttempt) {
     const staffId = workspace.staff.id;
     const epoch = accountGeneration();
@@ -397,19 +641,28 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
           setContactNote("");
           setAgreementQuote(null);
           setCustomerAgreed(false);
-          setNotice("تم تسجيل محاولة التواصل.");
         } else if (attempt.action === "agreement") {
           setAgreementQuote(null);
           setCustomerAgreed(false);
           setConfirmationNeedsReview(false);
-          setNotice("تم حفظ الاتفاق مع العميل.");
         } else if (attempt.action === "confirmation") {
           setItemsSetAside(false);
-          setNotice("تم تأكيد الطلب وخصم المخزون مرة واحدة.");
-        } else {
+        } else if (attempt.action === "cancellation") {
           setCancellationReason("");
-          setNotice("أُلغي الطلب يدوياً لتعذر الوصول إلى العميل.");
+        } else if (attempt.action === "deliver") {
+          setCustomerReceivedAt("");
+        } else if (attempt.action === "deliveryFailure") {
+          setDeliveryFailureReason("");
+        } else if (attempt.action === "cancelBeforeShipment") {
+          setPreShipmentCancellationReason("");
+        } else if (attempt.action === "inspectionDraft") {
+          setInspectionDraft({});
+        } else if (attempt.action === "inspectionAbandon") {
+          setInspectionAbandonReason("");
+        } else if (attempt.action === "failedClose") {
+          setFailedCloseReason("");
         }
+        setNotice(ATTEMPT_COPY[attempt.action].success);
       } catch (caught) {
         if (!stillCurrent()) return;
         if (caught instanceof ApiError && caught.status < 500) {
@@ -426,7 +679,7 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
           }
           setError(`${caught.messageAr}${direction}`);
         } else {
-          setError(uncertainMessage(attempt.action));
+          setError(ATTEMPT_COPY[attempt.action].uncertain);
         }
       } finally {
         if (stillCurrent()) setPending("");
@@ -435,10 +688,34 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
   }
 
   function dispatchAttempt(attempt: PendingAttempt) {
-    if (attempt.action === "contact") return recordOnlineOrderContactAttempt(attempt.orderId, attempt.payload);
-    if (attempt.action === "agreement") return saveOnlineOrderAgreement(attempt.orderId, attempt.payload);
-    if (attempt.action === "confirmation") return confirmOnlineOrder(attempt.orderId, attempt.payload);
-    return cancelUnreachableOnlineOrder(attempt.orderId, attempt.payload);
+    switch (attempt.action) {
+      case "contact":
+        return recordOnlineOrderContactAttempt(attempt.orderId, attempt.payload);
+      case "agreement":
+        return saveOnlineOrderAgreement(attempt.orderId, attempt.payload);
+      case "confirmation":
+        return confirmOnlineOrder(attempt.orderId, attempt.payload);
+      case "cancellation":
+        return cancelUnreachableOnlineOrder(attempt.orderId, attempt.payload);
+      case "ship":
+        return shipOnlineOrder(attempt.orderId, attempt.payload).then((response) => response.result);
+      case "deliver":
+        return deliverOnlineOrder(attempt.orderId, attempt.payload).then((response) => response.result);
+      case "deliveryFailure":
+        return markOnlineOrderDeliveryFailed(attempt.orderId, attempt.payload).then((response) => response.result);
+      case "cancelBeforeShipment":
+        return cancelOnlineOrderBeforeShipment(attempt.orderId, attempt.payload).then((response) => response.result);
+      case "inspectionDraft":
+        return draftOnlineOrderFailedReturnInspection(attempt.orderId, attempt.payload).then((response) => response.result);
+      case "inspectionPost":
+        return postOnlineOrderFailedReturnInspection(attempt.orderId, attempt.inspectionId, attempt.payload).then((response) => response.result);
+      case "inspectionAbandon":
+        return abandonOnlineOrderFailedReturnInspection(attempt.orderId, attempt.inspectionId, attempt.payload).then((response) => response.result);
+      case "failedClose":
+        return closeOnlineOrderFailedDelivery(attempt.orderId, attempt.payload).then((response) => response.result);
+      default:
+        return assertNever(attempt);
+    }
   }
 
   async function run<T>(action: string, work: () => Promise<T>): Promise<T | null> {
@@ -537,10 +814,10 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
 
           {uncertainAttempt ? (
             <section className="notice uncertain-order-attempt">
-              <h2>{uncertainTitle(uncertainAttempt.action)}</h2>
+              <h2>{ATTEMPT_COPY[uncertainAttempt.action].title}</h2>
               <p>احتفظ النظام بنفس رقم العملية ونفس القيم. أعد المحاولة لمعرفة النتيجة دون تكرار الأثر.</p>
               <button type="button" disabled={Boolean(pending)} onClick={() => void executeAttempt(uncertainAttempt)}>
-                {retryLabel(uncertainAttempt.action)}
+                {ATTEMPT_COPY[uncertainAttempt.action].retry}
               </button>
             </section>
           ) : null}
@@ -596,6 +873,91 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
           </section>
 
           {selected.agreedRevision ? <AgreementSnapshot quote={selected.agreedRevision.quote} agreedAt={selected.agreedRevision.agreedAt} actorId={selected.agreedRevision.agreedByStaffId} /> : null}
+
+          <OrderTimeline order={selected} />
+
+          {selected.actionEligibility.canShip ? (
+            <section className="card fulfillment-card" aria-label="تسليم الطلب للشحن">
+              <h2>تسليم الطلب لشركة الشحن</h2>
+              <p>المخزون خُصم وحُمي عند التأكيد. تسجيل الشحن لا يخصمه مرة أخرى.</p>
+              <button type="button" disabled={frozen} onClick={() => void ship()}>تسليم الطلب لشركة الشحن</button>
+            </section>
+          ) : null}
+
+          {selected.actionEligibility.canDeliver ? (
+            <form className="card fulfillment-card" aria-label="تسجيل استلام العميل" onSubmit={(event) => { event.preventDefault(); void deliver(); }}>
+              <h2>استلام العميل</h2>
+              <p className="muted">سجّل الوقت الفعلي الذي استلم فيه العميل الطلب. وقت التسجيل في النظام يُحفظ منفصلاً.</p>
+              <div className="field">
+                <label htmlFor="customer-received-at">وقت استلام العميل بتوقيت القاهرة</label>
+                <input id="customer-received-at" type="datetime-local" step="1" value={customerReceivedAt} disabled={frozen} onChange={(event) => setCustomerReceivedAt(event.target.value)} required />
+              </div>
+              <button type="submit" disabled={frozen || !customerReceivedAt}>تسجيل الطلب كمُسلّم</button>
+            </form>
+          ) : null}
+
+          {selected.actionEligibility.canMarkDeliveryFailed ? (
+            <form className="card failed-delivery-card" aria-label="تسجيل تعذر التوصيل" onSubmit={(event) => { event.preventDefault(); void markDeliveryFailed(); }}>
+              <h2>تعذر التوصيل</h2>
+              <p>تظل كل أصناف الشحنة غير متاحة حتى تعود فعلياً، ثم تُفحص ويُرحّل المدير نتيجة الفحص.</p>
+              <div className="field">
+                <label htmlFor="delivery-failure-reason">سبب تعذر التوصيل (اختياري)</label>
+                <textarea id="delivery-failure-reason" value={deliveryFailureReason} disabled={frozen} onChange={(event) => setDeliveryFailureReason(event.target.value)} />
+              </div>
+              <button type="submit" className="danger" disabled={frozen}>تسجيل تعذر التوصيل وانتظار رجوع الشحنة</button>
+            </form>
+          ) : null}
+
+          {selected.actionEligibility.canCancelBeforeShipment ? (
+            <form className="card cancellation-card" aria-label={selected.status === "pending" ? "إلغاء طلب معلق قبل الشحن" : "إلغاء طلب مؤكد قبل الشحن"} onSubmit={(event) => { event.preventDefault(); void cancelBeforeShipment(); }}>
+              <h2>إلغاء قبل الشحن</h2>
+              <p>
+                {selected.status === "confirmed"
+                  ? selected.confirmedQuote?.appliedCoupon
+                    ? "يؤدي الإلغاء الآن إلى إعادة الكمية المحمية للمخزون وإتاحة استخدام الكوبون مرة واحدة."
+                    : "يؤدي الإلغاء الآن إلى إعادة الكمية المحمية للمخزون مرة واحدة."
+                  : "هذا الطلب لم يحجز مخزوناً ولم يستهلك كوبوناً، لذلك لا توجد كمية أو استخدام لاستعادتهما."}
+              </p>
+              <div className="field">
+                <label htmlFor="pre-shipment-cancellation-reason">سبب الإلغاء قبل الشحن</label>
+                <textarea id="pre-shipment-cancellation-reason" value={preShipmentCancellationReason} disabled={frozen} onChange={(event) => setPreShipmentCancellationReason(event.target.value)} required />
+              </div>
+              <button className="danger" type="submit" disabled={frozen || !preShipmentCancellationReason.trim()}>
+                {selected.status === "confirmed" ? "إلغاء الطلب وإعادة الكمية المتاحة" : "إلغاء الطلب من دون تغيير المخزون"}
+              </button>
+            </form>
+          ) : null}
+
+          {selected.status === "delivery_failed" || selected.failedReturnInspections.length > 0 ? (
+            <FailedReturnInspections
+              order={selected}
+              remainingLines={failedReturnLines}
+              frozen={frozen}
+              draft={inspectionDraft}
+              onDraftChange={(variantId, value) => setInspectionDraft((current) => ({ ...current, [variantId]: value }))}
+              onSaveDraft={() => void saveFailedInspection()}
+              onPost={(inspectionId) => void postFailedInspection(inspectionId)}
+              abandonReason={inspectionAbandonReason}
+              onAbandonReasonChange={setInspectionAbandonReason}
+              onAbandon={(inspectionId) => void abandonFailedInspection(inspectionId)}
+            />
+          ) : null}
+
+          {selected.actionEligibility.canCloseFailedDelivery ? (
+            <form className="card cancellation-card" aria-label="إغلاق الطلب المتعذر نهائياً" onSubmit={(event) => { event.preventDefault(); void closeFailedDelivery(); }}>
+              <h2>إغلاق الطلب بعد رجوع الشحنة</h2>
+              <p>
+                {selected.confirmedQuote?.appliedCoupon
+                  ? "أصبحت كل الوحدات مستلمة ومصنفة. الإغلاق النهائي يلغي الطلب ويتيح استخدام الكوبون مرة واحدة."
+                  : "أصبحت كل الوحدات مستلمة ومصنفة. الإغلاق النهائي ينهي الطلب من دون أي استعادة مخزون إضافية."}
+              </p>
+              <div className="field">
+                <label htmlFor="failed-close-reason">سبب الإغلاق النهائي</label>
+                <textarea id="failed-close-reason" value={failedCloseReason} disabled={frozen} onChange={(event) => setFailedCloseReason(event.target.value)} required />
+              </div>
+              <button className="danger" type="submit" disabled={frozen || !failedCloseReason.trim()}>إغلاق الطلب نهائياً</button>
+            </form>
+          ) : null}
 
           {selected.status === "pending" ? (
             <>
@@ -727,7 +1089,7 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
                   لا يحدث إلغاء تلقائي.
                 </p>
                 <div className="field">
-                  <label htmlFor="cancellation-reason">سبب الإلغاء</label>
+                  <label htmlFor="cancellation-reason">سبب إلغاء تعذر الوصول</label>
                   <textarea id="cancellation-reason" value={cancellationReason} disabled={frozen} onChange={(event) => setCancellationReason(event.target.value)} required />
                 </div>
                 <button className="danger" type="submit" disabled={frozen || !cancellationReady || !cancellationReason.trim()}>إلغاء يدوياً لتعذر الوصول</button>
@@ -765,6 +1127,132 @@ function AgreementSnapshot({ quote, agreedAt, actorId }: { quote: OnlineOrderAgr
       />
       <PromotionSummary offer={quote.appliedAutomaticOffer} coupon={quote.appliedCoupon} />
       <p className="muted">وافق العميل {formatDate(agreedAt)} — المسؤول {actorId}</p>
+    </section>
+  );
+}
+
+function OrderTimeline({ order }: { order: OnlineOrderDto }) {
+  return (
+    <section className="card" role="region" aria-label="سجل تنفيذ الطلب">
+      <h2>سجل تنفيذ الطلب</h2>
+      <div className="fulfillment-timeline">
+        <article className="history-item">
+          <strong>استلام طلب العميل</strong>
+          <p className="muted">{formatDate(order.submittedAt)}</p>
+        </article>
+        {order.lifecycle.map((event) => (
+          <article className="history-item" key={event.id}>
+            <strong>{lifecycleLabel(event.type)}</strong>
+            <p>من {statusLabel(event.fromStatus)} إلى {statusLabel(event.toStatus)}</p>
+            {event.reason ? <p>السبب: {event.reason}</p> : null}
+            <p className="muted">حدث {formatDate(event.occurredAt)} — المسؤول {event.actorStaffId}</p>
+            {event.recordedAt !== event.occurredAt ? <p className="muted">سُجل في النظام {formatDate(event.recordedAt)}</p> : null}
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+type RemainingFailedReturnLine = {
+  variantId: string;
+  productNameAr: string;
+  sizeNameAr: string;
+  colorNameAr: string;
+  confirmedQuantity: number;
+  receivedQuantity: number;
+  remainingQuantity: number;
+};
+
+function FailedReturnInspections({
+  order,
+  remainingLines,
+  frozen,
+  draft,
+  onDraftChange,
+  onSaveDraft,
+  onPost,
+  abandonReason,
+  onAbandonReasonChange,
+  onAbandon,
+}: {
+  order: OnlineOrderDto;
+  remainingLines: RemainingFailedReturnLine[];
+  frozen: boolean;
+  draft: Record<string, InspectionLineDraft>;
+  onDraftChange: (variantId: string, value: InspectionLineDraft) => void;
+  onSaveDraft: () => void;
+  onPost: (inspectionId: string) => void;
+  abandonReason: string;
+  onAbandonReasonChange: (value: string) => void;
+  onAbandon: (inspectionId: string) => void;
+}) {
+  const remainingTotal = remainingLines.reduce((sum, line) => sum + line.remainingQuantity, 0);
+  const lineNames = new Map((order.confirmedQuote?.lines ?? []).map((line) => [line.variantId, `${line.productNameAr} — ${line.sizeNameAr} / ${line.colorNameAr}`]));
+  return (
+    <section className="card failed-return-card" role="region" aria-label="فحوصات الشحنة المرتجعة">
+      <h2>استلام وفحص الشحنة المرتجعة</h2>
+      <p className="failed-return-remaining" data-testid="failed-return-remaining">المتبقي خارج المحل: {remainingTotal}</p>
+      <p className="muted">المسودة تسجل ما وصل فعلياً فقط. لا تعيد الكمية للمخزون حتى يراجع المدير الفحص ويرحّله.</p>
+
+      {order.failedReturnInspections.length === 0 ? <p className="empty">لم تصل أي كمية للفحص بعد.</p> : (
+        <div className="inspection-history">
+          {order.failedReturnInspections.map((inspection) => (
+            <article className="inspection-record" key={inspection.id}>
+              <div className="inspection-heading">
+                <strong>{inspection.status === "draft" ? "مسودة بانتظار الترحيل أو الإلغاء" : inspection.status === "posted" ? "فحص مرحّل" : "مسودة ملغاة"}</strong>
+                <span>{formatDate(inspection.recordedAt)}</span>
+              </div>
+              {inspection.lines.map((line) => (
+                <p key={line.variantId}>
+                  {lineNames.get(line.variantId) ?? line.variantId}: استُلم {line.receivedQuantity}، قابل للبيع {line.sellableQuantity}، غير قابل للبيع {line.nonsellableQuantity}
+                </p>
+              ))}
+              <p className="muted">سجله المسؤول {inspection.recordedByStaffId}</p>
+              {inspection.postedAt ? <p className="muted">رحّله المدير {inspection.postedByStaffId} في {formatDate(inspection.postedAt)}</p> : null}
+              {inspection.abandonedAt ? <p className="muted">ألغاه المسؤول {inspection.abandonedByStaffId} في {formatDate(inspection.abandonedAt)} — {inspection.abandonmentReason}</p> : null}
+              {inspection.status === "draft" && order.actionEligibility.canPostFailedReturnInspection ? (
+                <button type="button" disabled={frozen} onClick={() => onPost(inspection.id)}>ترحيل الفحص واستعادة القابل للبيع</button>
+              ) : null}
+              {inspection.status === "draft" && order.actionEligibility.canAbandonFailedReturnInspection ? (
+                <form className="inspection-abandon" aria-label="إلغاء مسودة الفحص واستبدالها" onSubmit={(event) => { event.preventDefault(); onAbandon(inspection.id); }}>
+                  <div className="field">
+                    <label htmlFor={`inspection-abandon-reason-${inspection.id}`}>سبب إلغاء مسودة الفحص</label>
+                    <textarea id={`inspection-abandon-reason-${inspection.id}`} value={abandonReason} disabled={frozen} onChange={(event) => onAbandonReasonChange(event.target.value)} required />
+                  </div>
+                  <button className="secondary" type="submit" disabled={frozen || !abandonReason.trim()}>إلغاء المسودة وتسجيل فحص بديل</button>
+                </form>
+              ) : null}
+            </article>
+          ))}
+        </div>
+      )}
+
+      {order.actionEligibility.canDraftFailedReturnInspection ? (
+        <form className="inspection-draft" aria-label="تسجيل استلام وفحص الشحنة المرتجعة" onSubmit={(event) => { event.preventDefault(); onSaveDraft(); }}>
+          <h3>مسودة فحص جديدة</h3>
+          {remainingLines.filter((line) => line.remainingQuantity > 0).map((line) => {
+            const value = draft[line.variantId] ?? { receivedQuantity: "0", sellableQuantity: "0" };
+            return (
+              <fieldset className="inspection-line" key={line.variantId}>
+                <legend>{line.productNameAr} — {line.sizeNameAr} / {line.colorNameAr}</legend>
+                <p>المؤكد: {line.confirmedQuantity} · وصل سابقاً: {line.receivedQuantity} · المتبقي خارج المحل: {line.remainingQuantity}</p>
+                <div className="grid two">
+                  <div className="field">
+                    <label htmlFor={`inspection-received-${line.variantId}`}>الكمية المستلمة</label>
+                    <input id={`inspection-received-${line.variantId}`} type="number" min="0" max={line.remainingQuantity} step="1" value={value.receivedQuantity} disabled={frozen} onChange={(event) => onDraftChange(line.variantId, { ...value, receivedQuantity: event.target.value })} />
+                  </div>
+                  <div className="field">
+                    <label htmlFor={`inspection-sellable-${line.variantId}`}>منها قابلة للبيع</label>
+                    <input id={`inspection-sellable-${line.variantId}`} type="number" min="0" max={value.receivedQuantity || "0"} step="1" value={value.sellableQuantity} disabled={frozen} onChange={(event) => onDraftChange(line.variantId, { ...value, sellableQuantity: event.target.value })} />
+                  </div>
+                </div>
+              </fieldset>
+            );
+          })}
+          <button type="submit" disabled={frozen || remainingTotal === 0}>حفظ مسودة الفحص</button>
+        </form>
+      ) : null}
     </section>
   );
 }
@@ -817,30 +1305,33 @@ function PriceSummary({ original, automatic, coupon, merchandise, delivery, fina
 }
 
 function statusLabel(status: OnlineOrderDto["status"]) {
-  if (status === "confirmed") return "مؤكد";
-  if (status === "cancelled_unreachable") return "ملغي لتعذر الوصول";
-  return "بانتظار التأكيد";
+  switch (status) {
+    case "pending": return "بانتظار التأكيد";
+    case "confirmed": return "مؤكد";
+    case "shipped": return "تم الشحن";
+    case "delivered": return "تم التسليم";
+    case "delivery_failed": return "تعذر التوصيل — بانتظار رجوع الشحنة";
+    case "cancelled_unreachable": return "ملغي لتعذر الوصول";
+    case "cancelled_before_shipment": return "ملغي قبل الشحن";
+    case "cancelled_after_failed_delivery": return "ملغي بعد رجوع الشحنة وفحصها";
+    default: return assertNever(status);
+  }
 }
 
-function uncertainTitle(action: PendingAttempt["action"]) {
-  if (action === "confirmation") return "توجد محاولة تأكيد لم نعرف نتيجتها";
-  if (action === "agreement") return "توجد محاولة حفظ اتفاق لم نعرف نتيجتها";
-  if (action === "contact") return "توجد محاولة تواصل لم نعرف نتيجتها";
-  return "توجد محاولة إلغاء لم نعرف نتيجتها";
-}
-
-function retryLabel(action: PendingAttempt["action"]) {
-  if (action === "confirmation") return "إعادة محاولة التأكيد بنفس العملية";
-  if (action === "agreement") return "إعادة محاولة حفظ الاتفاق بنفس العملية";
-  if (action === "contact") return "إعادة محاولة حفظ التواصل بنفس العملية";
-  return "إعادة محاولة الإلغاء بنفس العملية";
-}
-
-function uncertainMessage(action: PendingAttempt["action"]) {
-  if (action === "confirmation") return "انقطع الرد وقد يكون التأكيد حُفظ. أعد تحميل الصفحة ثم أعد محاولة التأكيد بنفس العملية.";
-  if (action === "agreement") return "انقطع الرد وقد يكون الاتفاق حُفظ. أعد المحاولة بنفس العملية قبل إجراء تعديل جديد.";
-  if (action === "contact") return "انقطع الرد وقد تكون محاولة التواصل حُفظت. أعد المحاولة بنفس العملية.";
-  return "انقطع الرد وقد يكون الإلغاء حُفظ. أعد المحاولة بنفس العملية.";
+function lifecycleLabel(type: OnlineOrderDto["lifecycle"][number]["type"]) {
+  switch (type) {
+    case "confirmed": return "تأكيد الطلب وحماية أصنافه";
+    case "shipped": return "تم الشحن";
+    case "delivered": return "استلام العميل للطلب";
+    case "delivery_failed": return "تعذر التوصيل";
+    case "cancelled_unreachable": return "إلغاء لتعذر الوصول";
+    case "cancelled_before_shipment": return "إلغاء قبل الشحن";
+    case "failed_return_inspection_drafted": return "حفظ مسودة فحص الشحنة";
+    case "failed_return_inspection_posted": return "ترحيل فحص الشحنة";
+    case "failed_return_inspection_abandoned": return "إلغاء مسودة فحص الشحنة";
+    case "cancelled_after_failed_delivery": return "إغلاق الطلب بعد رجوع الشحنة";
+    default: return assertNever(type);
+  }
 }
 
 function formatDate(value: string) {
@@ -875,24 +1366,46 @@ function readPendingAttempt(staffId: string, orderId: string): PendingAttempt | 
 }
 
 function validAttemptAction(value: unknown): value is PendingAttempt["action"] {
-  return value === "contact" || value === "agreement" || value === "confirmation" || value === "cancellation";
+  return typeof value === "string" && Object.hasOwn(ATTEMPT_COPY, value);
 }
 
 function validAttemptPayload(attempt: PendingAttempt) {
   if (typeof attempt.payload?.operationId !== "string" || typeof attempt.payload.expectedRevision !== "number") return false;
-  if (attempt.action === "contact") {
-    return (attempt.payload.outcome === "no_answer" || attempt.payload.outcome === "reached")
-      && (attempt.payload.note === undefined || typeof attempt.payload.note === "string");
+  switch (attempt.action) {
+    case "contact":
+      return (attempt.payload.outcome === "no_answer" || attempt.payload.outcome === "reached")
+        && (attempt.payload.note === undefined || typeof attempt.payload.note === "string");
+    case "agreement":
+      return typeof attempt.payload.quoteId === "string"
+        && typeof attempt.payload.reviewDigest === "string"
+        && attempt.payload.customerAgreed === true;
+    case "confirmation":
+      return typeof attempt.payload.agreedRevision === "number" && attempt.payload.itemsLocatedAndSetAside === true;
+    case "cancellation":
+    case "cancelBeforeShipment":
+    case "inspectionAbandon":
+    case "failedClose":
+      return typeof attempt.payload.reason === "string";
+    case "ship":
+      return true;
+    case "deliver":
+      return typeof attempt.payload.customerReceivedAt === "string";
+    case "deliveryFailure":
+      return attempt.payload.reason === undefined || typeof attempt.payload.reason === "string";
+    case "inspectionPost":
+      return typeof attempt.inspectionId === "string";
+    case "inspectionDraft":
+      return Array.isArray(attempt.payload.lines) && attempt.payload.lines.every((line) => (
+        typeof line.variantId === "string"
+        && Number.isSafeInteger(line.receivedQuantity)
+        && line.receivedQuantity > 0
+        && Number.isSafeInteger(line.sellableQuantity)
+        && line.sellableQuantity >= 0
+        && line.sellableQuantity <= line.receivedQuantity
+      ));
+    default:
+      return assertNever(attempt);
   }
-  if (attempt.action === "agreement") {
-    return typeof attempt.payload.quoteId === "string"
-      && typeof attempt.payload.reviewDigest === "string"
-      && attempt.payload.customerAgreed === true;
-  }
-  if (attempt.action === "confirmation") {
-    return typeof attempt.payload.agreedRevision === "number" && attempt.payload.itemsLocatedAndSetAside === true;
-  }
-  return typeof attempt.payload.reason === "string";
 }
 
 function saveAttempt(staffId: string, attempt: PendingAttempt) {
@@ -933,4 +1446,119 @@ function validateAgreementLines(lines: AgreementLineDraft[]): {
     if (quantity > 0) accepted.push({ variantId: line.variantId, quantity });
   }
   return { lines: accepted, error: null };
+}
+
+function remainingFailedReturnLines(order: OnlineOrderDto): RemainingFailedReturnLine[] {
+  const confirmed = order.confirmedQuote?.lines ?? [];
+  const received = new Map<string, number>();
+  for (const inspection of order.failedReturnInspections) {
+    if (inspection.status === "abandoned") continue;
+    for (const line of inspection.lines) {
+      received.set(line.variantId, (received.get(line.variantId) ?? 0) + line.receivedQuantity);
+    }
+  }
+  const aggregated = new Map<string, RemainingFailedReturnLine>();
+  for (const line of confirmed) {
+    const existing = aggregated.get(line.variantId);
+    if (existing) {
+      existing.confirmedQuantity += line.quantity;
+      continue;
+    }
+    aggregated.set(line.variantId, {
+      variantId: line.variantId,
+      productNameAr: line.productNameAr,
+      sizeNameAr: line.sizeNameAr,
+      colorNameAr: line.colorNameAr,
+      confirmedQuantity: line.quantity,
+      receivedQuantity: 0,
+      remainingQuantity: 0,
+    });
+  }
+  return [...aggregated.values()].map((line) => {
+    const receivedQuantity = received.get(line.variantId) ?? 0;
+    return {
+      ...line,
+      receivedQuantity,
+      remainingQuantity: Math.max(0, line.confirmedQuantity - receivedQuantity),
+    };
+  });
+}
+
+function validateInspectionDraft(
+  remainingLines: RemainingFailedReturnLine[],
+  draft: Record<string, InspectionLineDraft>,
+): {
+  lines: Array<{ variantId: string; receivedQuantity: number; sellableQuantity: number }>;
+  error: string | null;
+} {
+  const accepted: Array<{ variantId: string; receivedQuantity: number; sellableQuantity: number }> = [];
+  for (const line of remainingLines) {
+    const value = draft[line.variantId] ?? { receivedQuantity: "0", sellableQuantity: "0" };
+    const receivedQuantity = Number(value.receivedQuantity);
+    const sellableQuantity = Number(value.sellableQuantity);
+    if (!Number.isSafeInteger(receivedQuantity) || receivedQuantity < 0 || receivedQuantity > line.remainingQuantity) {
+      return { lines: [], error: `الكمية المستلمة من ${line.productNameAr} يجب أن تكون عدداً صحيحاً لا يتجاوز ${line.remainingQuantity}.` };
+    }
+    if (!Number.isSafeInteger(sellableQuantity) || sellableQuantity < 0 || sellableQuantity > receivedQuantity) {
+      return { lines: [], error: `الكمية القابلة للبيع من ${line.productNameAr} يجب ألا تتجاوز الكمية المستلمة.` };
+    }
+    if (receivedQuantity > 0) accepted.push({ variantId: line.variantId, receivedQuantity, sellableQuantity });
+  }
+  return accepted.length > 0
+    ? { lines: accepted, error: null }
+    : { lines: [], error: "سجّل كمية مستلمة واحدة على الأقل قبل حفظ مسودة الفحص." };
+}
+
+function cairoWallTimeToIso(value: string) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(value);
+  if (!match) return null;
+  const desired = {
+    year: Number(match[1]),
+    month: Number(match[2]),
+    day: Number(match[3]),
+    hour: Number(match[4]),
+    minute: Number(match[5]),
+    second: Number(match[6] ?? "0"),
+  };
+  const desiredParts = [desired.year, desired.month, desired.day, desired.hour, desired.minute, desired.second];
+  const wallClockAsUtc = Date.UTC(desired.year, desired.month - 1, desired.day, desired.hour, desired.minute, desired.second);
+  const offsets = new Set<number>();
+  for (const deltaHours of [-36, -24, -12, 0, 12, 24, 36]) {
+    const offset = cairoOffsetMinutes(new Date(wallClockAsUtc + deltaHours * 60 * 60 * 1000));
+    if (offset !== null) offsets.add(offset);
+  }
+  const matches = [...offsets]
+    .map((offset) => new Date(wallClockAsUtc - offset * 60_000))
+    .filter((candidate) => cairoParts(candidate).every((part, index) => part === desiredParts[index]));
+  return matches.length === 1 ? matches[0]!.toISOString() : null;
+}
+
+function cairoOffsetMinutes(instant: Date) {
+  const offsetPart = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Africa/Cairo",
+    timeZoneName: "longOffset",
+  }).formatToParts(instant).find((part) => part.type === "timeZoneName")?.value;
+  const match = /^GMT([+-])(\d{2}):(\d{2})$/.exec(offsetPart ?? "");
+  if (!match) return null;
+  const minutes = Number(match[2]) * 60 + Number(match[3]);
+  return match[1] === "+" ? minutes : -minutes;
+}
+
+function cairoParts(instant: Date) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Africa/Cairo",
+    hourCycle: "h23",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).formatToParts(instant);
+  const value = (type: "year" | "month" | "day" | "hour" | "minute" | "second") => Number(parts.find((part) => part.type === type)?.value);
+  return [value("year"), value("month"), value("day"), value("hour"), value("minute"), value("second")];
+}
+
+function assertNever(value: never): never {
+  throw new Error(`Unhandled online-order action: ${String(value)}`);
 }

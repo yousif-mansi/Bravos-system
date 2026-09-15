@@ -124,11 +124,12 @@ test("lost complete response retries the same sale without charging the customer
     variants: [{ sizeId: size.body.id, colorId: color.body.id, sellingPricePiastersOverride: null }],
   });
   expect(product.status).toBe(201);
-  await staffApi(page, "POST", "/api/internal/receiving/receipts", {
+  const receiving = await staffApi(page, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
     receiptDate: "2026-09-11",
     lines: [{ variantId: product.body.variants[0].id, quantity: 4, unitCostPiasters: 8000 }],
   });
+  expect(receiving.status, JSON.stringify(receiving.body)).toBe(201);
 
   await page.getByRole("button", { name: "تسجيل الخروج" }).click();
   await page.getByLabel("اسم الدخول").fill("cashier");
@@ -145,6 +146,7 @@ test("lost complete response retries the same sale without charging the customer
 
   const saleIds: string[] = [];
   const operationIds: string[] = [];
+  let lostResponseCompleted = false;
   await page.route("**/api/internal/sales", async (route) => {
     const url = new URL(route.request().url());
     if (route.request().method() !== "POST" || url.pathname !== "/api/internal/sales") {
@@ -157,6 +159,7 @@ test("lost complete response retries the same sale without charging the customer
     const response = await route.fetch();
     expect(response.status()).toBe(201);
     await route.abort("connectionreset");
+    lostResponseCompleted = true;
   });
 
   const checkout = page.getByRole("form", { name: "إتمام البيع النقدي" });
@@ -181,6 +184,7 @@ test("lost complete response retries the same sale without charging the customer
     return rows[0];
   })) as { id: string; operationId: string };
   expect(local.id).toBeTruthy();
+  await expect.poll(() => lostResponseCompleted, { timeout: 15_000 }).toBe(true);
   await page.unroute("**/api/internal/sales");
   const retryIds: string[] = [];
   const retryOps: string[] = [];
@@ -467,11 +471,12 @@ test("invalid employee discount stays editable then completes after correction",
     imageRefs: [],
     variants: [{ sizeId: size.body.id, colorId: color.body.id, sellingPricePiastersOverride: null }],
   });
-  await staffApi(page, "POST", "/api/internal/receiving/receipts", {
+  const receiving = await staffApi(page, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
     receiptDate: "2026-09-11",
     lines: [{ variantId: product.body.variants[0].id, quantity: 4, unitCostPiasters: 6000 }],
   });
+  expect(receiving.status, JSON.stringify(receiving.body)).toBe(201);
   await page.getByRole("button", { name: "تسجيل الخروج" }).click();
   await page.getByLabel("اسم الدخول").fill("cashier");
   await page.getByLabel("كلمة المرور").fill("e2e-cashier-pass");

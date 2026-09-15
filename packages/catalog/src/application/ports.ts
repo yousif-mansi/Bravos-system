@@ -82,6 +82,31 @@ export type CatalogStore = {
   updateProduct(id: string, input: ProductWrite): Promise<ManagerProductDto | null>;
 };
 
+export type OpeningCatalogPlan = {
+  categories: Array<{ id: string; key: string; nameAr: string; parentId: string | null; line: number }>;
+  sizes: Array<{ id: string; key: string; nameAr: string; line: number }>;
+  colors: Array<{ id: string; key: string; nameAr: string; line: number }>;
+  products: Array<{ id: string; key: string; code: string; nameAr: string; descriptionAr: string; categoryId: string; defaultSellingPricePiasters: number; publication: "available" | "coming_soon" | "hidden"; imageRefs: string[]; sizeGuideAr: string | null; line: number }>;
+  variants: Array<{ id: string; key: string; productId: string; sizeId: string; colorId: string; sellingPricePiastersOverride: number | null; line: number }>;
+  referencedVariants: OpeningCatalogReference[];
+  referencedProducts: OpeningCatalogReference[];
+  referencedCategories: OpeningCatalogReference[];
+  referencedSizes: OpeningCatalogReference[];
+  referencedColors: OpeningCatalogReference[];
+};
+
+export type OpeningCatalogReference = {
+  id: string;
+  file: "catalog.csv" | "opening-stock.csv" | "configuration.csv";
+  line: number;
+  column: string;
+};
+
+export type OpeningCatalogTransaction = {
+  inspect(plan: OpeningCatalogPlan): Promise<{ state: unknown; errors: Array<{ file: "catalog.csv" | "opening-stock.csv" | "configuration.csv"; line: number; column: string | null; code: string; messageAr: string }> }>;
+  insert(plan: OpeningCatalogPlan, actorStaffId: string, at: Date): Promise<void>;
+};
+
 export type ProductMediaStorage = {
   save(input: {
     bytes: Uint8Array;

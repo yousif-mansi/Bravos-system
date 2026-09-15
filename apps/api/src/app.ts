@@ -118,6 +118,22 @@ import {
   type OnlineOrderServices,
 } from "@bravos/online-orders";
 import { createPostgresOnlineOrderStore, createPostgresOnlineOrderUnitOfWork } from "@bravos/online-orders/node";
+import {
+  OPENING_IMPORT_TEMPLATES,
+  OpeningImportConflictError,
+  OpeningImportStaleError,
+  OpeningImportValidationError,
+  createOpeningImportServices,
+  type OpeningImportServices,
+  type OpeningImportTemplateName,
+} from "@bravos/opening-import";
+import { createPostgresOpeningImportStore } from "@bravos/opening-import/node";
+import { createPostgresOpeningCatalogTransaction } from "@bravos/catalog/node";
+import { createPostgresOpeningReceivingTransaction } from "@bravos/receiving/node";
+import { createPostgresOpeningExpenseTransaction } from "@bravos/expenses/node";
+import { createPostgresOpeningPricingTransaction } from "@bravos/pricing/node";
+import { createPostgresOpeningStorefrontConfigTransaction } from "@bravos/storefront-config/node";
+import { createPostgresOpeningOnlineOrderTransaction } from "@bravos/online-orders/node";
 import type { AppConfig } from "./config.ts";
 
 const ALLOWED_AUTH_ROUTES = new Set([
@@ -141,6 +157,7 @@ export type BuiltApp = {
   corrections: CorrectionServices;
   storefrontConfig: StorefrontConfigServices;
   onlineOrders: OnlineOrderServices;
+  openingImport: OpeningImportServices;
   auth: ReturnType<typeof createBetterAuth>;
   identity: IdentityGateway;
   close: () => Promise<void>;
@@ -316,10 +333,23 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
       })),
       clock: { now: config.businessClock ?? (() => new Date()) },
     });
+    const openingImport = createOpeningImportServices({
+      actors,
+      store: createPostgresOpeningImportStore(pool, (client) => ({
+        catalog: createPostgresOpeningCatalogTransaction(client),
+        inventory: createInventoryTransaction(client),
+        receiving: createPostgresOpeningReceivingTransaction(client),
+        expenses: createPostgresOpeningExpenseTransaction(client),
+        pricing: createPostgresOpeningPricingTransaction(client),
+        storefront: createPostgresOpeningStorefrontConfigTransaction(client),
+        orders: createPostgresOpeningOnlineOrderTransaction(client),
+      })),
+      clock: { now: config.businessClock ?? (() => new Date()) },
+    });
 
     const instance = Fastify({ logger: false });
     app = instance;
-    await registerRoutes(instance, config, auth, identity, services, catalog, inventory, receiving, pricing, sales, expenses, returns, corrections, storefrontConfig, onlineOrders);
+    await registerRoutes(instance, config, auth, identity, services, catalog, inventory, receiving, pricing, sales, expenses, returns, corrections, storefrontConfig, onlineOrders, openingImport);
 
     return {
       app: instance,
@@ -335,6 +365,7 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
       corrections,
       storefrontConfig,
       onlineOrders,
+      openingImport,
       auth,
       identity,
       async close() {
@@ -374,6 +405,7 @@ async function registerRoutes(
   corrections: CorrectionServices,
   storefrontConfig: StorefrontConfigServices,
   onlineOrders: OnlineOrderServices,
+  openingImport: OpeningImportServices,
 ) {
   app.addHook("onRequest", async (request, reply) => {
     if (isPrivilegedPath(request.url) && !isTrustedInternalOrigin(request, config)) {
@@ -464,6 +496,44 @@ async function registerRoutes(
     return handle(reply, async () => services.workspace(await verifiedAuth(identity, request)));
   });
 
+  app.get("/api/internal/opening-import/templates/:fileName", async (request, reply) => {
+    const params = request.params as { fileName: string };
+    reply.header("cache-control", "no-store");
+    return handle(reply, async () => {
+      await openingImport.authorizeTemplate(await verifiedAuth(identity, request));
+      if (!(params.fileName in OPENING_IMPORT_TEMPLATES)) throw new NotFoundError("قالب الاستيراد غير موجود.");
+      const fileName = params.fileName as OpeningImportTemplateName;
+      reply.header("content-type", "text/csv; charset=utf-8");
+      reply.header("content-disposition", `attachment; filename="${fileName}"`);
+      return `\uFEFF${OPENING_IMPORT_TEMPLATES[fileName]}`;
+    });
+  });
+
+  app.post("/api/internal/opening-import/previews", { bodyLimit: 3_300_000 }, async (request, reply) => {
+    reply.header("cache-control", "no-store");
+    return handle(reply, async () => {
+      const result = await openingImport.preview(await verifiedAuth(identity, request), request.body);
+      reply.status(result.created ? 201 : 200);
+      return result.value;
+    });
+  });
+
+  app.get("/api/internal/opening-import/previews/:previewId", async (request, reply) => {
+    const params = request.params as { previewId: string };
+    reply.header("cache-control", "no-store");
+    return handle(reply, async () => openingImport.get(await verifiedAuth(identity, request), params.previewId));
+  });
+
+  app.post("/api/internal/opening-import/previews/:previewId/accept", async (request, reply) => {
+    const params = request.params as { previewId: string };
+    reply.header("cache-control", "no-store");
+    return handle(reply, async () => {
+      const result = await openingImport.accept(await verifiedAuth(identity, request), params.previewId, request.body);
+      reply.status(result.created ? 201 : 200);
+      return result.value;
+    });
+  });
+
   app.get("/api/internal/storefront/contacts", async (request, reply) => {
     return handle(reply, async () => storefrontConfig.managerContacts(await verifiedAuth(identity, request)));
   });
@@ -491,6 +561,10 @@ async function registerRoutes(
 
   app.get("/api/internal/online-orders", async (request, reply) => {
     return handle(reply, async () => onlineOrders.listOrders(await verifiedAuth(identity, request)));
+  });
+
+  app.get("/api/internal/completed-online-orders", async (request, reply) => {
+    return handle(reply, async () => onlineOrders.listCompletedOrders(await verifiedAuth(identity, request)));
   });
 
   app.get("/api/internal/online-orders/:orderId", async (request, reply) => {
@@ -540,6 +614,82 @@ async function registerRoutes(
       const result = await onlineOrders.cancelUnreachable(await verifiedAuth(identity, request), params.orderId, request.body);
       reply.status(result.created ? 201 : 200);
       return result.result;
+    });
+  });
+
+  app.post("/api/internal/online-orders/:orderId/ship", async (request, reply) => {
+    const params = request.params as { orderId: string };
+    return handle(reply, async () => {
+      const result = await onlineOrders.ship(await verifiedAuth(identity, request), params.orderId, request.body);
+      reply.status(result.created ? 201 : 200);
+      return result;
+    });
+  });
+
+  app.post("/api/internal/online-orders/:orderId/deliver", async (request, reply) => {
+    const params = request.params as { orderId: string };
+    return handle(reply, async () => {
+      const result = await onlineOrders.deliver(await verifiedAuth(identity, request), params.orderId, request.body);
+      reply.status(result.created ? 201 : 200);
+      return result;
+    });
+  });
+
+  app.post("/api/internal/online-orders/:orderId/delivery-failure", async (request, reply) => {
+    const params = request.params as { orderId: string };
+    return handle(reply, async () => {
+      const result = await onlineOrders.markDeliveryFailed(await verifiedAuth(identity, request), params.orderId, request.body);
+      reply.status(result.created ? 201 : 200);
+      return result;
+    });
+  });
+
+  app.post("/api/internal/online-orders/:orderId/cancel-before-shipment", async (request, reply) => {
+    const params = request.params as { orderId: string };
+    return handle(reply, async () => {
+      const result = await onlineOrders.cancelBeforeShipment(await verifiedAuth(identity, request), params.orderId, request.body);
+      reply.status(result.created ? 201 : 200);
+      return result;
+    });
+  });
+
+  app.post("/api/internal/online-orders/:orderId/failed-return-inspections", async (request, reply) => {
+    const params = request.params as { orderId: string };
+    return handle(reply, async () => {
+      const result = await onlineOrders.draftFailedReturnInspection(await verifiedAuth(identity, request), params.orderId, request.body);
+      reply.status(result.created ? 201 : 200);
+      return result;
+    });
+  });
+
+  app.post("/api/internal/online-orders/:orderId/failed-return-inspections/:inspectionId/post", async (request, reply) => {
+    const params = request.params as { orderId: string; inspectionId: string };
+    return handle(reply, async () => {
+      const result = await onlineOrders.postFailedReturnInspection(
+        await verifiedAuth(identity, request), params.orderId, params.inspectionId, request.body,
+      );
+      reply.status(result.created ? 201 : 200);
+      return result;
+    });
+  });
+
+  app.post("/api/internal/online-orders/:orderId/failed-return-inspections/:inspectionId/abandon", async (request, reply) => {
+    const params = request.params as { orderId: string; inspectionId: string };
+    return handle(reply, async () => {
+      const result = await onlineOrders.abandonFailedReturnInspection(
+        await verifiedAuth(identity, request), params.orderId, params.inspectionId, request.body,
+      );
+      reply.status(result.created ? 201 : 200);
+      return result;
+    });
+  });
+
+  app.post("/api/internal/online-orders/:orderId/close-failed-delivery", async (request, reply) => {
+    const params = request.params as { orderId: string };
+    return handle(reply, async () => {
+      const result = await onlineOrders.closeFailedDelivery(await verifiedAuth(identity, request), params.orderId, request.body);
+      reply.status(result.created ? 201 : 200);
+      return result;
     });
   });
 
@@ -1290,6 +1440,12 @@ function sendError(reply: FastifyReply, error: unknown) {
   if (error instanceof UnsupportedDeliveryAreaError) {
     return reply.status(400).send(errorBody(error.code, error.message));
   }
+  if (error instanceof OpeningImportStaleError) {
+    return reply.status(409).send(errorBody("OPENING_IMPORT_STALE", error.message));
+  }
+  if (error instanceof OpeningImportConflictError) {
+    return reply.status(409).send(errorBody("OPERATION_CONFLICT", error.message));
+  }
   if (
     error instanceof IdentityValidationError ||
     error instanceof CatalogValidationError ||
@@ -1302,6 +1458,7 @@ function sendError(reply: FastifyReply, error: unknown) {
     error instanceof CorrectionsValidationError ||
     error instanceof StorefrontConfigValidationError
     || error instanceof OnlineOrderValidationError
+    || error instanceof OpeningImportValidationError
   ) {
     return reply.status(400).send(errorBody(error.code, error.message));
   }

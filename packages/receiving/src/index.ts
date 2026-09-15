@@ -3,6 +3,7 @@ export { ReceivingValidationError } from "./domain/errors.ts";
 export { createReceivingServices, type ReceivingServices } from "./application/receiving.ts";
 export type {
   FinalizeReceiptResult,
+  OpeningReceivingTransaction,
   CorrectReceiptResult,
   ReceiptCorrectionStore,
   ReceiptStore,

@@ -1,0 +1,6 @@
+record_type,key,name_ar,parent_key,product_code,description_ar,category_key,default_price_egp,publication,image_refs,size_guide_ar,product_key,size_key,color_key,price_override_egp
+category,shirts,قمصان,,,,,,,,,,,,
+size,l,كبير,,,,,,,,,,,,
+color,black,أسود,,,,,,,,,,,,
+product,shirt-1,قميص كلاسيك,,BR-001,قطن,shirts,500.00,available,,,,,,
+variant,shirt-1-l-black,,,,,,,,,,shirt-1,l,black,

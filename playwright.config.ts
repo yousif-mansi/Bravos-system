@@ -1,7 +1,11 @@
 import { defineConfig, devices } from "@playwright/test";
+import { randomBytes } from "node:crypto";
+import path from "node:path";
 import { pinnedProcessEnv } from "./scripts/pinned-env.ts";
 
-const env = pinnedProcessEnv();
+const controlFile = path.resolve(".local", `e2e-control-${process.pid}-${randomBytes(12).toString("hex")}.json`);
+process.env.BRAVOS_E2E_CONTROL_FILE = controlFile;
+const env = pinnedProcessEnv({ BRAVOS_E2E_CONTROL_FILE: controlFile });
 
 export default defineConfig({
   testDir: "tests/browser",
@@ -9,6 +13,7 @@ export default defineConfig({
   workers: 1,
   timeout: 120_000,
   expect: { timeout: 15_000 },
+  globalTeardown: "./scripts/e2e-teardown.ts",
   use: {
     ...devices["Desktop Chrome"],
     locale: "ar-EG",

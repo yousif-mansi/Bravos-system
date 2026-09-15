@@ -109,6 +109,21 @@ const forbidden = [
     message: "Deep online-orders imports are not part of the public interface.",
   },
   {
+    from: ["apps", "packages"],
+    pattern: /@bravos\/opening-import\/src\//,
+    message: "Deep opening-import imports are not part of the public interface.",
+  },
+  {
+    from: ["apps/internal", "apps/storefront", "packages/contracts"],
+    pattern: /@bravos\/opening-import(?:\/node)?/,
+    message: "Frontend/contracts cannot import the opening-import server package.",
+  },
+  {
+    from: ["packages/opening-import/src/domain", "packages/opening-import/src/application"],
+    pattern: /from ["'](better-auth|fastify|pg|react|next|vite|dexie)|\bHeaders\b/,
+    message: "Opening import inner layers cannot import infrastructure SDKs or HTTP Headers.",
+  },
+  {
     from: ["packages/online-orders/src/domain", "packages/online-orders/src/application"],
     pattern: /from ["'](better-auth|fastify|pg|react|next|vite|dexie)/,
     message: "Online-order inner layers cannot import infrastructure SDKs.",

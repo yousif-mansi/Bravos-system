@@ -126,12 +126,57 @@ export type ProtectOnlineOrderResult = {
   allocations: ProtectedOrderAllocation[];
 };
 
+export type OnlineOrderDispositionLine = {
+  sourceLineId: string;
+  variantId: string;
+  sellableQuantity: number;
+  nonsellableQuantity: number;
+};
+
+export type OnlineOrderDispositionResult = {
+  kind: "created" | "replay";
+  operationId: string;
+  orderId: string;
+  recordedAt: Date;
+  allocations: Array<{
+    allocationId: string;
+    sourceLineId: string;
+    variantId: string;
+    disposition: "sellable_restored" | "nonsellable_removed";
+    quantity: number;
+  }>;
+};
+
+export type ProtectedOrderAllocationProvenance = {
+  allocationId: string;
+  sourceLineId: string;
+  batchId: string;
+  variantId: string;
+  quantity: number;
+  unitCostPiasters: number;
+  effectiveUnitCostPiasters: number;
+  allocatedAt: Date;
+  sellableRestoredQuantity: number;
+  nonsellableRemovedQuantity: number;
+  undisposedQuantity: number;
+};
+
 /**
  * Public inventory transaction contract used by receiving and cash-sale
  * allocation. FIFO is recorded_at then batch id. releaseAllocation and
  * restoreToOriginalBatches remain for later tickets.
  */
 export type InventoryTransaction = {
+  openingImportState(variantIds: string[]): Promise<{
+    stockVersion: number;
+    defaultThreshold: number;
+    variantThresholds: Array<{ variantId: string; threshold: number | null }>;
+  }>;
+  claimOpeningImportOperation(input: {
+    operationId: string;
+    payloadFingerprint: string;
+    actorStaffId: string;
+  }): Promise<ClaimedOperation>;
   claimReceiveOperation(input: {
     operationId: string;
     payload: ReceivePayload;
@@ -165,6 +210,22 @@ export type InventoryTransaction = {
     recordedAt: Date;
     lines: ReceiveBatchLine[];
   }): Promise<ReceivedBatchRecord[]>;
+  importOpeningBatches(input: {
+    operationId: string;
+    receiptId: string;
+    lines: Array<ReceiveBatchLine & {
+      batchId: string;
+      movementId: string;
+      receiptDate: string;
+      recordedAt: Date;
+    }>;
+  }): Promise<ReceivedBatchRecord[]>;
+  applyOpeningSettings(input: {
+    actorStaffId: string;
+    at: Date;
+    defaultThreshold: number | null;
+    variantThresholds: Array<{ variantId: string; threshold: number }>;
+  }): Promise<void>;
   applyReceivingCorrection(input: {
     operationId: string;
     recordedAt: Date;
@@ -175,8 +236,18 @@ export type InventoryTransaction = {
     operationId: string;
     payloadFingerprint: string;
     actorStaffId: string;
-    lines: Array<{ variantId: string; quantity: number }>;
+    lines: Array<{ lineId: string; variantId: string; quantity: number }>;
   }): Promise<ProtectOnlineOrderResult>;
+  disposeProtectedOnlineOrder(input: {
+    orderId: string;
+    operationId: string;
+    payloadFingerprint: string;
+    actorStaffId: string;
+    dispositionType: "pre_shipment_cancellation" | "failed_delivery_inspection";
+    lines: OnlineOrderDispositionLine[];
+  }): Promise<OnlineOrderDispositionResult>;
+  /** Call only after lockStockClock("update") when a caller will mutate these source allocations. */
+  lockProtectedOrderAllocations(orderId: string): Promise<ProtectedOrderAllocationProvenance[]>;
   allocateFromOldestAvailable(input: {
     operationId: string;
     variantId: string;

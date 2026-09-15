@@ -64,6 +64,11 @@ export type CouponStore = {
   update(input: CouponWrite): Promise<CouponDto | null>;
 };
 
+export type OpeningPricingTransaction = {
+  inspectOpeningPricing(input: { offers: Array<{ key: string; nameAr: string; line: number }>; coupons: Array<{ normalizedCode: string; line: number }> }): Promise<{ state: unknown; errors: Array<{ file: "configuration.csv"; line: number; column: string; code: string; messageAr: string }> }>;
+  insertOpeningPricing(input: { offers: AutomaticOfferWrite[]; coupons: CouponWrite[] }): Promise<void>;
+};
+
 export type CouponUsageClaim = {
   couponId: string;
   sourceType: "physical_sale" | "online_order";
@@ -81,4 +86,11 @@ export type CouponUsageTransaction = {
     usageLimit: number;
     centralUsedCount: number;
   }>;
+  releaseOnlineOrder(input: {
+    sourceId: string;
+    operationId: string;
+    payloadFingerprint: string;
+    actorStaffId: string;
+    releasedAt: Date;
+  }): Promise<"released" | "replay" | "absent">;
 };

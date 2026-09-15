@@ -1,0 +1,3 @@
+batch_key,variant_key,quantity,unit_cost_egp,receipt_date,batch_order
+old-stock,shirt-1-l-black,2,200.00,2026-08-01,1
+new-stock,shirt-1-l-black,3,240.00,2026-09-01,2

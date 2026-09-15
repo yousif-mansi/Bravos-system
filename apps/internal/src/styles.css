@@ -202,6 +202,53 @@ button.danger { background: var(--danger); }
   margin-bottom: 1rem;
 }
 
+.opening-import-templates,
+.opening-import-form,
+.opening-import-preview {
+  margin-bottom: 1rem;
+}
+
+.opening-import-counts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.65rem;
+  margin: 1rem 0;
+}
+
+.opening-import-count {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.7rem;
+  background: #f8fafc;
+}
+
+.opening-import-section {
+  border-top: 1px dashed var(--line);
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+}
+
+.opening-import-row {
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.opening-import-row > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.opening-import-row p,
+.opening-import-error p {
+  margin-bottom: 0.25rem;
+}
+
+.opening-import-accept {
+  border-top: 1px dashed var(--line);
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+}
+
 .grant-editor {
   border: 1px solid var(--line);
   border-radius: 12px;
@@ -335,11 +382,23 @@ button, .button, input, select {
 .agreed-order { border-color: #86efac; }
 .confirmation-card { border-color: #93c5fd; }
 .cancellation-card { border-color: #fecaca; }
+.fulfillment-card { border-color: #93c5fd; }
+.failed-delivery-card, .failed-return-card { border-color: #fbbf24; }
 .uncertain-order-attempt { margin: 0; }
 .order-customer-details p { margin-bottom: 0.5rem; }
+.fulfillment-timeline, .inspection-history, .inspection-draft { display: grid; gap: 0.75rem; }
+.fulfillment-timeline { margin-top: 1rem; }
+.inspection-history, .inspection-draft { margin-top: 1rem; }
+.inspection-record, .inspection-line { border: 1px solid var(--line); border-radius: 12px; padding: 0.85rem; }
+.inspection-record p, .inspection-line p { margin-bottom: 0.5rem; }
+.inspection-heading { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.inspection-line legend { font-weight: 700; padding: 0 0.35rem; }
+.inspection-abandon { border-top: 1px solid var(--line); margin-top: 0.75rem; padding-top: 0.75rem; }
+.failed-return-remaining { font-size: 1.1rem; font-weight: 800; }
 
 @media (max-width: 700px) {
   .order-heading, .online-order-row, .agreement-line, .order-line { align-items: stretch; flex-direction: column; }
   .compact-field { width: 100%; }
   .replacement-variant { grid-template-columns: 1fr; }
+  .inspection-heading { align-items: stretch; flex-direction: column; }
 }
