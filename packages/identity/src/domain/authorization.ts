@@ -51,6 +51,7 @@ export function capabilitiesFor(staff: AuthenticatedStaff, branchId: string | nu
   const manageStaff = isManager(staff);
   const manageCatalog = isManager(staff);
   const manageInventory = isManager(staff);
+  const managePricing = isManager(staff);
   if (!branchId) {
     return {
       cashier: false,
@@ -58,6 +59,7 @@ export function capabilitiesFor(staff: AuthenticatedStaff, branchId: string | nu
       manageStaff,
       manageCatalog,
       manageInventory,
+      managePricing,
     };
   }
   if (isManager(staff) && canUseBranch(staff, branchId)) {
@@ -67,6 +69,7 @@ export function capabilitiesFor(staff: AuthenticatedStaff, branchId: string | nu
       manageStaff,
       manageCatalog,
       manageInventory,
+      managePricing,
     };
   }
   const grant = staff.grants.find((item) => item.branchId === branchId);
@@ -76,5 +79,6 @@ export function capabilitiesFor(staff: AuthenticatedStaff, branchId: string | nu
     manageStaff,
     manageCatalog,
     manageInventory,
+    managePricing,
   };
 }

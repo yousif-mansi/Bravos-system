@@ -439,7 +439,7 @@ test("check result completes a physically paid preparation instead of accepting 
   expect(lookupAfter.body.variants[0].availableQuantity).toBe(2);
   await page.reload();
   await expect(page.getByTestId("sale-details")).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "إعادة المحاولة" })).toHaveCount(0);
+  await expect(page.getByTestId("unsynced-count")).toContainText("مبيعات غير مزامنة: 0");
   const listedAgain = await staffApi(page, "GET", "/api/internal/sales");
   const savedAgain = listedAgain.body.filter((sale: { lines: Array<{ variant: { product: { code: string } } }> }) =>
     sale.lines.some((line) => line.variant.product.code === "CHECK-E2E"),

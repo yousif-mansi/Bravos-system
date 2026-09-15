@@ -32,7 +32,7 @@ export default defineConfig({
       },
       injectManifest: {
         globPatterns: ["**/*.{js,css,html,svg,ico,woff2,webmanifest}"],
-        globIgnores: ["**/staff-management-*.js", "**/catalog-maintenance-*.js", "**/receiving-stock-*.js", "**/expenses-online-*.js"],
+        globIgnores: ["**/staff-management-*.js", "**/catalog-maintenance-*.js", "**/receiving-stock-*.js", "**/expenses-online-*.js", "**/offer-management-*.js", "**/physical-returns-*.js", "**/storefront-settings-*.js"],
       },
       workbox: {
         skipWaiting: false,
@@ -73,6 +73,15 @@ export default defineConfig({
             }
             if (/ExpensesPage\.[cm]?[jt]sx?$/.test(chunk.facadeModuleId)) {
               return "assets/expenses-online-[hash].js";
+            }
+            if (/OffersPage\.[cm]?[jt]sx?$/.test(chunk.facadeModuleId)) {
+              return "assets/offer-management-[hash].js";
+            }
+            if (/ReturnsPage\.[cm]?[jt]sx?$/.test(chunk.facadeModuleId)) {
+              return "assets/physical-returns-[hash].js";
+            }
+            if (/StorefrontSettingsPage\.[cm]?[jt]sx?$/.test(chunk.facadeModuleId)) {
+              return "assets/storefront-settings-[hash].js";
             }
           }
           return "assets/[name]-[hash].js";

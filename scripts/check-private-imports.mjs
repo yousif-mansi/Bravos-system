@@ -5,8 +5,18 @@ const root = process.cwd();
 const forbidden = [
   {
     from: ["apps/internal", "apps/storefront", "packages/contracts"],
+    pattern: /@bravos\/pricing(?:\/node)?/,
+    message: "Frontend/contracts cannot import the pricing package.",
+  },
+  {
+    from: ["apps/internal", "apps/storefront", "packages/contracts"],
     pattern: /@bravos\/identity(?:\/node)?/,
     message: "Frontend/contracts cannot import the identity package.",
+  },
+  {
+    from: ["apps", "packages"],
+    pattern: /@bravos\/pricing\/src\//,
+    message: "Deep pricing imports are not part of the public interface.",
   },
   {
     from: ["apps/internal", "apps/storefront", "packages/contracts"],
@@ -30,8 +40,18 @@ const forbidden = [
   },
   {
     from: ["apps/internal", "apps/storefront", "packages/contracts"],
+    pattern: /@bravos\/storefront-config(?:\/node)?/,
+    message: "Frontend/contracts cannot import the storefront configuration package.",
+  },
+  {
+    from: ["apps/internal", "apps/storefront", "packages/contracts"],
     pattern: /@bravos\/sales(?!\/browser)/,
     message: "Frontend/contracts cannot import server sales adapters; use @bravos/sales/browser.",
+  },
+  {
+    from: ["apps/internal", "apps/storefront", "packages/contracts"],
+    pattern: /@bravos\/returns(?:\/node)?/,
+    message: "Frontend/contracts cannot import the returns server package.",
   },
   {
     from: ["apps", "packages"],
@@ -64,14 +84,29 @@ const forbidden = [
     message: "Deep expenses imports are not part of the public interface.",
   },
   {
-    from: ["packages/identity/src/domain", "packages/identity/src/application", "packages/catalog/src/domain", "packages/catalog/src/application", "packages/inventory/src/domain", "packages/inventory/src/application", "packages/receiving/src/domain", "packages/receiving/src/application", "packages/sales/src/domain", "packages/sales/src/application", "packages/expenses/src/domain", "packages/expenses/src/application"],
+    from: ["apps", "packages"],
+    pattern: /@bravos\/returns\/src\//,
+    message: "Deep returns imports are not part of the public interface.",
+  },
+  {
+    from: ["apps", "packages"],
+    pattern: /@bravos\/storefront-config\/src\//,
+    message: "Deep storefront configuration imports are not part of the public interface.",
+  },
+  {
+    from: ["packages/identity/src/domain", "packages/identity/src/application", "packages/catalog/src/domain", "packages/catalog/src/application", "packages/inventory/src/domain", "packages/inventory/src/application", "packages/receiving/src/domain", "packages/receiving/src/application", "packages/pricing/src/domain", "packages/pricing/src/application", "packages/sales/src/domain", "packages/sales/src/application", "packages/expenses/src/domain", "packages/expenses/src/application", "packages/returns/src/domain", "packages/returns/src/application", "packages/storefront-config/src/domain", "packages/storefront-config/src/application"],
     pattern: /from ["'](better-auth|fastify|pg|react|next|vite|dexie)/,
     message: "Inner feature layers cannot import infrastructure SDKs.",
   },
   {
-    from: ["packages/identity/src/domain", "packages/identity/src/application", "packages/catalog/src/domain", "packages/catalog/src/application", "packages/inventory/src/domain", "packages/inventory/src/application", "packages/receiving/src/domain", "packages/receiving/src/application", "packages/sales/src/domain", "packages/sales/src/application", "packages/expenses/src/domain", "packages/expenses/src/application"],
+    from: ["packages/identity/src/domain", "packages/identity/src/application", "packages/catalog/src/domain", "packages/catalog/src/application", "packages/inventory/src/domain", "packages/inventory/src/application", "packages/receiving/src/domain", "packages/receiving/src/application", "packages/pricing/src/domain", "packages/pricing/src/application", "packages/sales/src/domain", "packages/sales/src/application", "packages/expenses/src/domain", "packages/expenses/src/application", "packages/returns/src/domain", "packages/returns/src/application", "packages/storefront-config/src/domain", "packages/storefront-config/src/application"],
     pattern: /\bHeaders\b/,
     message: "Application/domain cannot depend on HTTP Headers.",
+  },
+  {
+    from: ["packages/pricing"],
+    pattern: /@bravos\/(catalog|inventory|receiving|sales)/,
+    message: "Pricing cannot import catalog, inventory, receiving or sales.",
   },
   {
     from: ["packages/catalog/src/domain"],
@@ -92,6 +127,11 @@ const forbidden = [
     from: ["packages/sales/src/domain"],
     pattern: /@bravos\/(identity|inventory|catalog|receiving)/,
     message: "Sales domain cannot import other feature packages.",
+  },
+  {
+    from: ["packages/returns/src/domain"],
+    pattern: /@bravos\/(identity|inventory|catalog|receiving|sales)/,
+    message: "Returns domain cannot import other feature packages.",
   },
   {
     from: ["packages/identity"],
@@ -122,6 +162,11 @@ const forbidden = [
     from: ["packages/expenses"],
     pattern: /@bravos\/(catalog|inventory|receiving|sales)/,
     message: "Expenses cannot import catalog, inventory, receiving or sales.",
+  },
+  {
+    from: ["packages/storefront-config"],
+    pattern: /@bravos\/(catalog|inventory|receiving|sales|expenses|persistence)/,
+    message: "Storefront configuration cannot import other business features.",
   },
 ];
 

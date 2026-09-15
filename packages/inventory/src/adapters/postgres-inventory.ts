@@ -144,6 +144,29 @@ export function createInventoryTransaction(client: PoolClient): InventoryTransac
       return { kind: "replay", operationId: row.id, recordedAt: row.recorded_at };
     },
 
+    async claimReturnOperation(input) {
+      const inserted = await client.query<OperationRow>(
+        `INSERT INTO inventory_operation (id, kind, payload_fingerprint, actor_staff_id, recorded_at)
+         VALUES ($1, 'return', $2, $3, now())
+         ON CONFLICT (id) DO NOTHING
+         RETURNING id, payload_fingerprint, recorded_at`,
+        [input.operationId, input.payloadFingerprint, input.actorStaffId],
+      );
+      const created = inserted.rows[0];
+      if (created) {
+        return { kind: "created", operationId: created.id, recordedAt: created.recorded_at };
+      }
+      const existing = await client.query<OperationRow>(
+        `SELECT id, payload_fingerprint, recorded_at FROM inventory_operation WHERE id = $1`,
+        [input.operationId],
+      );
+      const row = existing.rows[0];
+      if (!row || row.payload_fingerprint !== input.payloadFingerprint) {
+        throw new OperationConflictError();
+      }
+      return { kind: "replay", operationId: row.id, recordedAt: row.recorded_at };
+    },
+
     async receiveBatches(input) {
       const created: ReceivedBatchRecord[] = [];
       try {
@@ -187,6 +210,25 @@ export function createInventoryTransaction(client: PoolClient): InventoryTransac
 
     async allocateFromOldestAvailable(input) {
       return allocateFromOldestAvailable(client, input);
+    },
+    async restoreToOriginalBatch(input) {
+      const updated = await client.query<{ remaining_quantity: number }>(
+        `UPDATE inventory_batch
+         SET remaining_quantity = remaining_quantity + $3
+         WHERE id = $1 AND variant_id = $2
+           AND remaining_quantity + $3 <= received_quantity
+         RETURNING remaining_quantity`,
+        [input.batchId, input.variantId, input.quantity],
+      );
+      if (!updated.rows[0]) {
+        throw new InventoryValidationError("تعذر استعادة الصنف إلى دفعة التكلفة الأصلية.");
+      }
+      await client.query(
+        `INSERT INTO inventory_movement (
+           id, batch_id, variant_id, operation_id, kind, quantity, recorded_at
+         ) VALUES (gen_random_uuid(), $1, $2, $3, 'return', $4, $5)`,
+        [input.batchId, input.variantId, input.operationId, input.quantity, input.recordedAt],
+      );
     },
     async recordDiscrepancy(input) {
       const unallocatedQuantity = input.requestedQuantity - input.allocatedQuantity;

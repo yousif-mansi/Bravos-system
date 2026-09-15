@@ -11,6 +11,7 @@ export type AppConfig = {
   ownerRecoveryOutboxDir: string | undefined;
   productMediaDir?: string;
   databasePoolMax?: number;
+  businessClock?: () => Date;
 };
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {

@@ -32,7 +32,9 @@ import {
 import type {
   CashierCatalogReader,
   CompleteSaleResult,
+  AutomaticPricingPort,
   ListedPriceReader,
+  PricingQuoteReader,
   PrepareSaleResult,
   PriceSnapshotStore,
   SaleInsert,
@@ -142,6 +144,7 @@ export type SalesServices = ReturnType<typeof createSalesServices>;
 export function createSalesServices(ports: {
   actors: SalesActorPort;
   prices: ListedPriceReader;
+  pricingQuote: PricingQuoteReader;
   sales: SaleStore;
   snapshots: PriceSnapshotStore;
   cashierCatalog: CashierCatalogReader;
@@ -207,6 +210,8 @@ export function createSalesServices(ports: {
       customerName: record.customerName,
       customerPhone: record.customerPhone,
       originalTotalPiasters: record.originalTotalPiasters,
+      automaticOfferDiscountPiasters: record.automaticOfferDiscountPiasters,
+      appliedAutomaticOffer: record.appliedAutomaticOffer,
       employeeDiscountPiasters: record.employeeDiscountPiasters,
       discountReason: record.discountReason,
       discountedByStaffId: record.discountedByStaffId,
@@ -332,6 +337,7 @@ export function createSalesServices(ports: {
         })),
         input.command.employeeDiscountPiasters,
       );
+      const acceptedPricing = { ...priced, appliedAutomaticOffer: null };
       const sourceLines = priced.lines.map((line) => ({
         id: crypto.randomUUID(),
         variantId: line.variantId,
@@ -354,6 +360,8 @@ export function createSalesServices(ports: {
           originalPiasters: line.originalPiasters,
           discountPiasters: line.discountPiasters,
           paidPiasters: line.paidPiasters,
+          automaticOfferDiscountPiasters: line.automaticOfferDiscountPiasters,
+          employeeDiscountPiasters: line.employeeDiscountPiasters,
           allocatedQuantity: row?.allocatedQuantity ?? 0,
           unallocatedQuantity: row?.unallocatedQuantity ?? line.quantity,
           lineIndex: index,
@@ -375,7 +383,7 @@ export function createSalesServices(ports: {
             pendingOperationIds: [],
           },
           { staff: input.seller, branch: input.branch },
-          priced.lines,
+          acceptedPricing,
           input.fingerprint,
           {
             physicallyCompleted: true,
@@ -405,7 +413,13 @@ export function createSalesServices(ports: {
       const command = parseSaleWrite(input, false);
       const fingerprint = fingerprintSalePayload(toPayload(command));
       const quantities = mergeVariantQuantities(command.lines);
-      const listed = await ports.prices.getListedPrices(quantities.map((item) => item.variantId));
+      const preliminary =
+        (await ports.sales.getById(command.saleId)) ??
+        (await ports.sales.getByOperationId(command.operationId));
+      const priced = preliminary ? null : await ports.pricingQuote.run(async (quote) => {
+        const listed = await quote.prices.getListedPrices(quantities.map((item) => item.variantId));
+        return priceFromListed(quote.automaticPricing, listed, quantities, command.employeeDiscountPiasters);
+      });
       const outcome = await ports.uow.run(async (tx) => {
         await tx.inventory.lockStockClock("share");
         const existing = await loadLockedIdentity(tx.sales, command.saleId, command.operationId);
@@ -420,9 +434,9 @@ export function createSalesServices(ports: {
             throw new SalesValidationError("الكمية المتاحة غير كافية.");
           }
         }
-        const priced = priceFromListed(listed, quantities, command.employeeDiscountPiasters);
+        if (!priced) throw new SalesValidationError("تعذر تسعير البيع.");
         const inserted = await tx.sales.insert(
-          toInsert(command, current, priced.lines, fingerprint, {
+          toInsert(command, current, priced, fingerprint, {
             physicallyCompleted: false,
             recordedAt: null,
             costsIncomplete: false,
@@ -448,9 +462,15 @@ export function createSalesServices(ports: {
       const command = parseSaleWrite(input, true);
       const fingerprint = fingerprintSalePayload(toPayload(command));
       const quantities = mergeVariantQuantities(command.lines);
-      const listed = await ports.prices.getListedPrices(quantities.map((item) => item.variantId));
       const catalog = await ports.cashierCatalog.listCashierProducts(auth);
       const coverageVariantIds = catalog.flatMap((product) => product.variants.map((variant) => variant.id));
+      const preliminary =
+        (await ports.sales.getById(command.saleId)) ??
+        (await ports.sales.getByOperationId(command.operationId));
+      const directPricing = preliminary ? null : await ports.pricingQuote.run(async (quote) => {
+        const listed = await quote.prices.getListedPrices(quantities.map((item) => item.variantId));
+        return priceFromListed(quote.automaticPricing, listed, quantities, command.employeeDiscountPiasters);
+      });
       const outcome = await ports.uow.run(async (tx) => {
         await tx.inventory.lockStockClock("update");
         const finish = (record: SaleRecord, created: boolean) =>
@@ -497,12 +517,6 @@ export function createSalesServices(ports: {
           return finish(replayed, false);
         }
 
-        if (!prepared) {
-          const listedIds = new Set(listed.map((row) => row.variantId));
-          if (quantities.some((item) => !listedIds.has(item.variantId))) {
-            throw new SalesValidationError("المتغير المحدد غير موجود.");
-          }
-        }
         const sourceLines =
           prepared && existing
             ? existing.lines.map((line) => ({
@@ -534,16 +548,26 @@ export function createSalesServices(ports: {
                 originalPiasters: line.originalPiasters,
                 discountPiasters: line.discountPiasters,
                 paidPiasters: line.paidPiasters,
+                automaticOfferDiscountPiasters: line.automaticOfferDiscountPiasters,
+                employeeDiscountPiasters: line.employeeDiscountPiasters,
                 units: line.units.map((unit) => ({
                   unitIndex: unit.unitIndex,
                   quantity: unit.quantity,
                   listedPiasters: unit.listedPiasters,
                   discountPiasters: unit.discountPiasters,
                   paidPiasters: unit.paidPiasters,
+                  automaticOfferDiscountPiasters: unit.automaticOfferDiscountPiasters,
+                  employeeDiscountPiasters: unit.employeeDiscountPiasters,
                 })),
               })),
+              originalTotalPiasters: existing.originalTotalPiasters,
+              finalTotalPiasters: existing.finalTotalPiasters,
+              appliedAutomaticOffer: existing.appliedAutomaticOffer,
             }
-          : priceFromListed(listed, quantities, command.employeeDiscountPiasters);
+          : directPricing;
+        if (!priced) {
+          throw new SalesValidationError("تعذر تسعير البيع.");
+        }
         const completedLines: SaleLineWrite[] = priced.lines.map((line, index) => {
           const allocated = allocations[index];
           return {
@@ -554,6 +578,8 @@ export function createSalesServices(ports: {
             originalPiasters: line.originalPiasters,
             discountPiasters: line.discountPiasters,
             paidPiasters: line.paidPiasters,
+            automaticOfferDiscountPiasters: line.automaticOfferDiscountPiasters,
+            employeeDiscountPiasters: line.employeeDiscountPiasters,
             allocatedQuantity: allocated?.allocatedQuantity ?? 0,
             unallocatedQuantity: allocated?.unallocatedQuantity ?? line.quantity,
             lineIndex: index,
@@ -575,7 +601,7 @@ export function createSalesServices(ports: {
           toInsert(
             command,
             { staff: seller, branch: currentBranch },
-            priced.lines,
+            priced,
             fingerprint,
             {
               physicallyCompleted: true,
@@ -874,30 +900,47 @@ async function loadLockedIdentity(sales: SaleStore, saleId: string, operationId:
   return existing ?? byOperation;
 }
 
-function priceFromListed(
+async function priceFromListed(
+  automaticPricing: AutomaticPricingPort,
   listed: Awaited<ReturnType<ListedPriceReader["getListedPrices"]>>,
   quantities: Array<{ variantId: string; quantity: number }>,
   employeeDiscountPiasters: number,
 ) {
-  const byId = new Map(listed.map((row) => [row.variantId, row.listedUnitPricePiasters]));
+  const byId = new Map(listed.map((row) => [row.variantId, row]));
   const missing = quantities.filter((line) => !byId.has(line.variantId));
   if (missing.length > 0) {
     throw new SalesValidationError("المتغير المحدد غير موجود.");
   }
-  return priceSaleLines(
-    quantities.map((line) => ({
+  const lines = quantities.map((line) => {
+    const basis = byId.get(line.variantId);
+    if (!basis) throw new SalesValidationError("المتغير المحدد غير موجود.");
+    return {
       variantId: line.variantId,
+      productId: basis.productId,
+      categoryId: basis.categoryId,
       quantity: line.quantity,
-      listedUnitPricePiasters: byId.get(line.variantId) ?? 0,
-    })),
-    employeeDiscountPiasters,
-  );
+      listedUnitPricePiasters: basis.listedUnitPricePiasters,
+    };
+  });
+  const automatic = await automaticPricing.evaluate(lines);
+  return {
+    ...priceSaleLines(
+      lines,
+      employeeDiscountPiasters,
+      automatic.appliedAutomaticOffer ? automatic.unitRanges : undefined,
+    ),
+    appliedAutomaticOffer: automatic.appliedAutomaticOffer,
+  };
 }
+
+type PricedSale = ReturnType<typeof priceSaleLines> & {
+  appliedAutomaticOffer: SaleInsert["appliedAutomaticOffer"];
+};
 
 function toInsert(
   command: ParsedSale,
   actor: { staff: { id: string; displayName: string }; branch: { id: string } },
-  pricedLines: ReturnType<typeof priceSaleLines>["lines"],
+  priced: PricedSale,
   fingerprint: string,
   options: {
     physicallyCompleted: boolean;
@@ -909,7 +952,12 @@ function toInsert(
     recoveredAt?: Date | null;
   },
 ): SaleInsert {
-  const originalTotalPiasters = pricedLines.reduce((sum, line) => addMoney(sum, line.originalPiasters), 0);
+  const pricedLines = priced.lines;
+  const originalTotalPiasters = priced.originalTotalPiasters;
+  const automaticOfferDiscountPiasters = pricedLines.reduce(
+    (sum, line) => addMoney(sum, line.automaticOfferDiscountPiasters),
+    0,
+  );
   const lines =
     options.completedLines ??
     pricedLines.map((line, index) => ({
@@ -920,6 +968,8 @@ function toInsert(
       originalPiasters: line.originalPiasters,
       discountPiasters: line.discountPiasters,
       paidPiasters: line.paidPiasters,
+      automaticOfferDiscountPiasters: line.automaticOfferDiscountPiasters,
+      employeeDiscountPiasters: line.employeeDiscountPiasters,
       allocatedQuantity: 0,
       unallocatedQuantity: 0,
       lineIndex: index,
@@ -937,9 +987,14 @@ function toInsert(
     customerName: command.customerName,
     customerPhone: command.customerPhone,
     originalTotalPiasters,
+    automaticOfferDiscountPiasters,
+    appliedAutomaticOffer: priced.appliedAutomaticOffer,
     employeeDiscountPiasters: command.employeeDiscountPiasters,
     discountReason: command.discountReason,
-    finalTotalPiasters: subtractMoney(originalTotalPiasters, command.employeeDiscountPiasters),
+    finalTotalPiasters: subtractMoney(
+      subtractMoney(originalTotalPiasters, automaticOfferDiscountPiasters),
+      command.employeeDiscountPiasters,
+    ),
     payloadFingerprint: fingerprint,
     physicallyCompleted: options.physicallyCompleted,
     costsIncomplete: options.costsIncomplete,
@@ -964,6 +1019,12 @@ function toLineDto(line: SaleLineWrite, variant: SaleLineDto["variant"] | undefi
   if (!variant) {
     throw new SalesValidationError("المتغير المحدد غير موجود.");
   }
+  const offerEffects = line.automaticOfferDiscountPiasters > 0
+    ? {
+        automaticOfferDiscountPiasters: line.automaticOfferDiscountPiasters,
+        employeeDiscountPiasters: line.employeeDiscountPiasters,
+      }
+    : {};
   return {
     id: line.id,
     variantId: line.variantId,
@@ -972,6 +1033,7 @@ function toLineDto(line: SaleLineWrite, variant: SaleLineDto["variant"] | undefi
     originalPiasters: line.originalPiasters,
     discountPiasters: line.discountPiasters,
     paidPiasters: line.paidPiasters,
+    ...offerEffects,
     allocatedQuantity: line.allocatedQuantity,
     unallocatedQuantity: line.unallocatedQuantity,
     units: line.units.map((unit) => ({
@@ -980,6 +1042,12 @@ function toLineDto(line: SaleLineWrite, variant: SaleLineDto["variant"] | undefi
       listedPiasters: unit.listedPiasters,
       discountPiasters: unit.discountPiasters,
       paidPiasters: unit.paidPiasters,
+      ...(unit.automaticOfferDiscountPiasters > 0
+        ? {
+            automaticOfferDiscountPiasters: unit.automaticOfferDiscountPiasters,
+            employeeDiscountPiasters: unit.employeeDiscountPiasters,
+          }
+        : {}),
     })),
     variant,
   };
@@ -1144,6 +1212,8 @@ function toUnitWrites(
     listedPiasters: number;
     discountPiasters: number;
     paidPiasters: number;
+    automaticOfferDiscountPiasters?: number;
+    employeeDiscountPiasters?: number;
   }>,
 ): SaleLineWrite["units"] {
   return units.map((unit, index) => ({
@@ -1152,6 +1222,9 @@ function toUnitWrites(
     listedPiasters: unit.listedPiasters,
     discountPiasters: unit.discountPiasters,
     paidPiasters: unit.paidPiasters,
+    automaticOfferDiscountPiasters: unit.automaticOfferDiscountPiasters ?? 0,
+    employeeDiscountPiasters:
+      unit.employeeDiscountPiasters ?? unit.discountPiasters - (unit.automaticOfferDiscountPiasters ?? 0),
   }));
 }
 

@@ -48,6 +48,8 @@ export type OfflineCompletedSale = {
   customerName: string | null;
   customerPhone: string | null;
   originalTotalPiasters: number;
+  automaticOfferDiscountPiasters: number;
+  appliedAutomaticOffer: SaleDto["appliedAutomaticOffer"];
   employeeDiscountPiasters: number;
   discountReason: string | null;
   discountedByStaffId: string | null;
@@ -164,6 +166,8 @@ export type OfflinePosStore = {
     priced: {
       lines: OfflineCompletedSale["lines"];
       originalTotalPiasters: number;
+      automaticOfferDiscountPiasters: number;
+      appliedAutomaticOffer: SaleDto["appliedAutomaticOffer"];
       finalTotalPiasters: number;
       payloadFingerprint: string;
     },

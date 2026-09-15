@@ -86,7 +86,7 @@ test("manager creates a two-branch employee through the staff UI", async ({ page
 test("public entry has no staff screens or navigation", async ({ page }) => {
   await page.goto("http://127.0.0.1:3001/");
   await expect(page.getByRole("link", { name: "برافوس" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "اختر إطلالتك" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "كل المنتجات" })).toBeVisible();
   await expect(page.getByText("شاشات داخلية")).toHaveCount(0);
   await expect(page.getByRole("link", { name: "تسجيل الدخول" })).toHaveCount(0);
   await expect(page.getByRole("link", { name: "الموظفون" })).toHaveCount(0);

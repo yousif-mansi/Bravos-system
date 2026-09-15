@@ -250,32 +250,7 @@ export function createPostgresCatalogStore(pool: Pool): CatalogStore {
     },
 
     async getListedPrices(ids) {
-      if (ids.length === 0) {
-        return [];
-      }
-      const result = await pool.query<VariantIdentityRow & {
-        default_selling_price_piasters: number;
-        selling_price_piasters_override: number | null;
-      }>(
-        `SELECT v.id, p.id AS product_id, p.code AS product_code, p.name_ar AS product_name_ar,
-                s.id AS size_id, s.name_ar AS size_name_ar,
-                col.id AS color_id, col.name_ar AS color_name_ar,
-                p.default_selling_price_piasters, v.selling_price_piasters_override
-         FROM catalog_product_variant v
-         JOIN catalog_product p ON p.id = v.product_id
-         JOIN catalog_size s ON s.id = v.size_id
-         JOIN catalog_color col ON col.id = v.color_id
-         WHERE v.id = ANY($1::uuid[])`,
-        [ids],
-      );
-      return result.rows.map((row) => ({
-        variantId: row.id,
-        listedUnitPricePiasters: resolvedSellingPricePiasters(
-          row.default_selling_price_piasters,
-          row.selling_price_piasters_override,
-        ),
-        identity: toVariantIdentity(row),
-      }));
+      return loadListedPrices(pool, ids);
     },
 
     async listVariantIds() {
@@ -376,6 +351,40 @@ export function createPostgresCatalogStore(pool: Pool): CatalogStore {
       }
     },
   };
+}
+
+export function createPostgresListedPriceReader(queryable: Queryable): Pick<CatalogStore, "getListedPrices"> {
+  return { getListedPrices: (ids) => loadListedPrices(queryable, ids) };
+}
+
+async function loadListedPrices(queryable: Queryable, ids: string[]) {
+  if (ids.length === 0) return [];
+  const result = await queryable.query<VariantIdentityRow & {
+    category_id: string;
+    default_selling_price_piasters: number;
+    selling_price_piasters_override: number | null;
+  }>(
+    `SELECT v.id, p.id AS product_id, p.code AS product_code, p.name_ar AS product_name_ar,
+            s.id AS size_id, s.name_ar AS size_name_ar,
+            col.id AS color_id, col.name_ar AS color_name_ar,
+            p.category_id, p.default_selling_price_piasters, v.selling_price_piasters_override
+     FROM catalog_product_variant v
+     JOIN catalog_product p ON p.id = v.product_id
+     JOIN catalog_size s ON s.id = v.size_id
+     JOIN catalog_color col ON col.id = v.color_id
+     WHERE v.id = ANY($1::uuid[])`,
+    [ids],
+  );
+  return result.rows.map((row) => ({
+    variantId: row.id,
+    productId: row.product_id,
+    categoryId: row.category_id,
+    listedUnitPricePiasters: resolvedSellingPricePiasters(
+      row.default_selling_price_piasters,
+      row.selling_price_piasters_override,
+    ),
+    identity: toVariantIdentity(row),
+  }));
 }
 
 async function replaceVariants(

@@ -13,7 +13,22 @@ try {
   try {
     const first = await applyMigrations(pool);
     const afterApply = await listAppliedMigrations(pool);
-    if (first.length < 2 || afterApply.join(",") !== first.join(",")) {
+    const expectedMigrations = [
+      "001_identity.sql",
+      "002_catalog.sql",
+      "003_inventory.sql",
+      "004_receiving.sql",
+      "005_inventory_allocation.sql",
+      "006_sales.sql",
+      "007_sales_pos_snapshot.sql",
+      "008_sales_money_ranges.sql",
+      "009_sales_sync_ack.sql",
+      "010_expenses.sql",
+      "011_automatic_offers.sql",
+      "012_physical_returns.sql",
+      "013_storefront_contacts.sql",
+    ];
+    if (first.join(",") !== expectedMigrations.join(",") || afterApply.join(",") !== first.join(",")) {
       throw new Error(`Scratch apply did not record multiple migrations: ${first.join(",")}`);
     }
     const latest = first.at(-1);
@@ -49,6 +64,15 @@ try {
     }
     if (!tablesAfterApply.includes("expense_record") || !tablesAfterApply.includes("expense_change") || !tablesAfterApply.includes("expense_operation")) {
       throw new Error("Scratch apply did not create expense records, changes and operation receipts.");
+    }
+    if (!tablesAfterApply.includes("pricing_automatic_offer")) {
+      throw new Error("Scratch apply did not create automatic offers from migration 011.");
+    }
+    if (!tablesAfterApply.includes("returns_return") || !tablesAfterApply.includes("returns_return_line") || !tablesAfterApply.includes("returns_refund_event")) {
+      throw new Error("Scratch apply did not create physical return records from migration 012.");
+    }
+    if (!tablesAfterApply.includes("storefront_contacts")) {
+      throw new Error("Scratch apply did not create storefront contacts from migration 013.");
     }
 
     const reverted = await revertLastMigration(pool);
@@ -86,8 +110,11 @@ try {
     ) {
       throw new Error("Scratch expense down removed the stock clock or sale recovery schema from migration 009.");
     }
-    if (tablesAfterDown.includes("expense_record") || tablesAfterDown.includes("expense_change") || tablesAfterDown.includes("expense_operation")) {
-      throw new Error("Scratch expense down left expense tables behind.");
+    if (!tablesAfterDown.includes("expense_record") || !tablesAfterDown.includes("pricing_automatic_offer") || !tablesAfterDown.includes("returns_return")) {
+      throw new Error("Scratch storefront down removed an earlier feature table.");
+    }
+    if (tablesAfterDown.includes("storefront_contacts")) {
+      throw new Error("Scratch storefront down left the latest table behind.");
     }
 
     const reapplied = await applyMigrations(pool);
@@ -113,6 +140,9 @@ try {
     if (!tablesAfterReapply.includes("expense_record") || !tablesAfterReapply.includes("expense_change") || !tablesAfterReapply.includes("expense_operation")) {
       throw new Error("Scratch reapply did not restore expense tables.");
     }
+    if (!tablesAfterReapply.includes("pricing_automatic_offer") || !tablesAfterReapply.includes("returns_return") || !tablesAfterReapply.includes("storefront_contacts")) {
+      throw new Error("Scratch reapply did not restore migrations 011 through 013.");
+    }
 
     const fullyReverted: string[] = [];
     for (;;) {
@@ -126,7 +156,7 @@ try {
       throw new Error(`Scratch full down order was ${fullyReverted.join(",")}`);
     }
     const empty = await tableNames(pool);
-    if (empty.includes("user") || empty.includes("catalog_product") || empty.includes("inventory_batch") || empty.includes("receiving_receipt") || empty.includes("sales_sale") || empty.includes("sales_pos_snapshot") || empty.includes("expense_record")) {
+    if (empty.includes("user") || empty.includes("catalog_product") || empty.includes("inventory_batch") || empty.includes("receiving_receipt") || empty.includes("sales_sale") || empty.includes("sales_pos_snapshot") || empty.includes("expense_record") || empty.includes("pricing_automatic_offer") || empty.includes("returns_return") || empty.includes("storefront_contacts")) {
       throw new Error("Scratch full down left feature tables.");
     }
 

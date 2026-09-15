@@ -562,6 +562,8 @@ export default function LookupPage({
       customerName: payload.customerName,
       customerPhone: payload.customerPhone,
       originalTotalPiasters: priced.originalTotalPiasters,
+      automaticOfferDiscountPiasters: 0,
+      appliedAutomaticOffer: null,
       employeeDiscountPiasters: payload.employeeDiscountPiasters,
       discountReason: payload.discountReason,
       discountedByStaffId: payload.employeeDiscountPiasters > 0 ? workspace.staff.id : null,
@@ -1224,7 +1226,12 @@ export default function LookupPage({
           <section data-testid="accepted-prices">
             <h3>الأسعار المقبولة</h3>
             <p>الأصلي: {formatEgpFromPiasters(quote.originalTotalPiasters)}</p>
-            <p>الخصم: {formatEgpFromPiasters(quote.employeeDiscountPiasters)}</p>
+            {quote.appliedAutomaticOffer ? (
+              <p data-testid="automatic-offer-breakdown">
+                العرض التلقائي: {quote.appliedAutomaticOffer.nameAr} — {formatEgpFromPiasters(quote.automaticOfferDiscountPiasters)}
+              </p>
+            ) : <p className="muted">لا يوجد عرض تلقائي مطبق.</p>}
+            <p>خصم الموظف: {formatEgpFromPiasters(quote.employeeDiscountPiasters)}</p>
             <p>الإجمالي: {formatEgpFromPiasters(quote.finalTotalPiasters)}</p>
           </section>
         ) : null}

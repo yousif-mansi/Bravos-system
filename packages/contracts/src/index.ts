@@ -32,6 +32,7 @@ export type WorkspaceDto = {
     manageStaff: boolean;
     manageCatalog: boolean;
     manageInventory: boolean;
+    managePricing: boolean;
   };
 };
 
@@ -41,6 +42,47 @@ export type CategoryDto = {
   id: string;
   nameAr: string;
   parentId: string | null;
+};
+
+export type AutomaticOfferDiscountType = "percentage" | "fixed";
+
+export type AutomaticOfferDto = {
+  id: string;
+  nameAr: string;
+  discountType: AutomaticOfferDiscountType;
+  percentageBasisPoints: number | null;
+  fixedDiscountPiasters: number | null;
+  startsOn: string;
+  endsOn: string;
+  active: boolean;
+  allowCoupon: boolean;
+  productIds: string[];
+  categoryIds: string[];
+  createdByStaffId: string;
+  updatedByStaffId: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type AutomaticOfferWriteDto = Pick<
+  AutomaticOfferDto,
+  | "nameAr"
+  | "discountType"
+  | "percentageBasisPoints"
+  | "fixedDiscountPiasters"
+  | "startsOn"
+  | "endsOn"
+  | "active"
+  | "allowCoupon"
+  | "productIds"
+  | "categoryIds"
+>;
+
+export type AppliedAutomaticOfferDto = Pick<
+  AutomaticOfferDto,
+  "id" | "nameAr" | "discountType" | "percentageBasisPoints" | "fixedDiscountPiasters" | "allowCoupon"
+> & {
+  discountPiasters: number;
 };
 
 export type SizeDto = {
@@ -83,11 +125,19 @@ export type UploadedProductMediaDto = {
 };
 
 export type {
+  PublicCatalogBrowseDto,
   PublicProductAvailability,
   PublicProductDto,
   PublicProductPublication,
+  PublicProductSummaryDto,
   PublicProductVariantDto,
+  PublicStorefrontContactsDto,
 } from "./public.ts";
+
+export type StorefrontContactsDto = import("./public.ts").PublicStorefrontContactsDto & {
+  changedByStaffId: string | null;
+  changedAt: string | null;
+};
 
 export type CashierVariantDto = {
   id: string;
@@ -179,6 +229,8 @@ export type SaleUnitDto = {
   listedPiasters: number;
   discountPiasters: number;
   paidPiasters: number;
+  automaticOfferDiscountPiasters?: number;
+  employeeDiscountPiasters?: number;
 };
 
 export type SaleLineDto = {
@@ -189,6 +241,8 @@ export type SaleLineDto = {
   originalPiasters: number;
   discountPiasters: number;
   paidPiasters: number;
+  automaticOfferDiscountPiasters?: number;
+  employeeDiscountPiasters?: number;
   allocatedQuantity: number;
   unallocatedQuantity: number;
   units: SaleUnitDto[];
@@ -242,6 +296,8 @@ export type SaleDto = {
   customerName: string | null;
   customerPhone: string | null;
   originalTotalPiasters: number;
+  automaticOfferDiscountPiasters: number;
+  appliedAutomaticOffer: AppliedAutomaticOfferDto | null;
   employeeDiscountPiasters: number;
   discountReason: string | null;
   discountedByStaffId: string | null;
@@ -315,6 +371,105 @@ export type ExpenseTotalsDto = {
     totalPiasters: number;
     activeExpenseCount: number;
   }>;
+};
+
+export type ReturnSourceLineDto = {
+  saleLineId: string;
+  variantId: string;
+  variant: VariantIdentityDto;
+  purchasedQuantity: number;
+  returnedQuantity: number;
+  remainingQuantity: number;
+  paidPiasters: number;
+  remainingSuggestedPiasters: number;
+  availablePaidRanges: Array<{ quantity: number; paidUnitPiasters: number }>;
+};
+
+export type ReturnSourceDto = {
+  saleId: string;
+  reference: string;
+  channel: "physical";
+  originalBranch: BranchDto;
+  soldByStaffId: string;
+  soldByDisplayName: string;
+  receivedAt: string;
+  returnDeadlineAt: string;
+  finalTotalPiasters: number;
+  customerName: string | null;
+  customerPhone: string | null;
+  lines: ReturnSourceLineDto[];
+};
+
+export type ReturnLineDto = {
+  id: string;
+  sourceSaleLineId: string;
+  variantId: string;
+  variant: VariantIdentityDto;
+  quantity: number;
+  sellableQuantity: number;
+  unsellableQuantity: number;
+  suggestedRefundPiasters: number;
+};
+
+export type ReturnBatchRestorationDto = {
+  batchId: string;
+  variantId: string;
+  quantity: number;
+  unitCostPiasters: number;
+};
+
+export type ReturnRefundEventDto = {
+  operationId: string;
+  status: "paid";
+  amountPiasters: number;
+  actorStaffId: string;
+  recordedAt: string;
+};
+
+export type ReturnDto = {
+  id: string;
+  operationId: string;
+  status: "draft" | "posted";
+  revision: number;
+  source: ReturnSourceDto;
+  handlingBranch: BranchDto;
+  suggestedRefundPiasters: number;
+  authorizedRefundPiasters: number;
+  createdByStaffId: string;
+  createdAt: string;
+  updatedByStaffId: string;
+  updatedAt: string;
+  postedByStaffId: string | null;
+  postedAt: string | null;
+  lines: ReturnLineDto[];
+  restorations: ReturnBatchRestorationDto[];
+  refund: {
+    status: "none" | "owed" | "paid";
+    owedPiasters: number;
+    paidPiasters: number;
+    recordedByStaffId: string | null;
+    recordedAt: string | null;
+    events: ReturnRefundEventDto[];
+  };
+};
+
+export type ReturnListItemDto = {
+  id: string;
+  status: "draft" | "posted";
+  revision: number;
+  sourceSaleId: string;
+  sourceReference: string;
+  originalBranch: BranchDto;
+  handlingBranch: BranchDto;
+  authorizedRefundPiasters: number;
+  refundStatus: "none" | "owed" | "paid";
+  createdAt: string;
+  postedAt: string | null;
+};
+
+export type ReturnListPageDto = {
+  items: ReturnListItemDto[];
+  nextCursor: string | null;
 };
 
 export type StaffChangeDto = {

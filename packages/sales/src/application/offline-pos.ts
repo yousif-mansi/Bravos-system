@@ -98,6 +98,8 @@ export function createOfflinePosServices(store: OfflinePosStore) {
       });
       return store.completeSale(input, {
         originalTotalPiasters: priced.originalTotalPiasters,
+        automaticOfferDiscountPiasters: 0,
+        appliedAutomaticOffer: null,
         finalTotalPiasters: priced.finalTotalPiasters,
         payloadFingerprint,
         lines: priced.lines.map((line) => {

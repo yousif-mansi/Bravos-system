@@ -2,6 +2,7 @@ import type {
   CategoryDto,
   ColorDto,
   ManagerProductDto,
+  PublicCatalogBrowseDto,
   PublicProductDto,
   SizeDto,
   UploadedProductMediaDto,
@@ -27,6 +28,8 @@ export type VariantReferenceReader = {
 
 export type ListedPriceBasis = {
   variantId: string;
+  productId: string;
+  categoryId: string;
   listedUnitPricePiasters: number;
   identity: VariantIdentityDto;
 };
@@ -93,5 +96,6 @@ export type ProductMediaStorage = {
 
 export type PublicCatalogReader = {
   list(): Promise<PublicProductDto[]>;
+  browse(input: { query?: string; categoryId?: string }): Promise<PublicCatalogBrowseDto>;
   get(id: string): Promise<PublicProductDto | null>;
 };

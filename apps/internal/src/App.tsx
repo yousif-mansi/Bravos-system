@@ -22,6 +22,9 @@ const LookupPage = lazy(() => import("./pages/LookupPage.tsx"));
 const ReceivingPage = lazy(() => import("./pages/ReceivingPage.tsx"));
 const SalesPage = lazy(() => import("./pages/SalesPage.tsx"));
 const ExpensesPage = lazy(() => import("./pages/ExpensesPage.tsx"));
+const OffersPage = lazy(() => import("./pages/OffersPage.tsx"));
+const ReturnsPage = lazy(() => import("./pages/ReturnsPage.tsx"));
+const StorefrontSettingsPage = lazy(() => import("./pages/StorefrontSettingsPage.tsx"));
 
 export function App() {
   const location = useLocation();
@@ -387,6 +390,18 @@ export function App() {
           }
         />
         <Route
+          path="/storefront-settings"
+          element={
+            workspace?.capabilities.manageCatalog ? (
+              <Suspense fallback={<main className="shell">جارٍ التحميل…</main>}>
+                <StorefrontSettingsPage workspace={workspace} onChanged={replaceWorkspace} />
+              </Suspense>
+            ) : (
+              <Navigate to={workspace ? "/workspace" : "/login"} replace />
+            )
+          }
+        />
+        <Route
           path="/lookup"
           element={
             workspace?.capabilities.cashier ? (
@@ -404,6 +419,18 @@ export function App() {
             workspace?.capabilities.manageInventory ? (
               <Suspense fallback={<main className="shell">جارٍ التحميل…</main>}>
                 <ReceivingPage workspace={workspace} onChanged={replaceWorkspace} />
+              </Suspense>
+            ) : (
+              <Navigate to={workspace ? "/workspace" : "/login"} replace />
+            )
+          }
+        />
+        <Route
+          path="/offers"
+          element={
+            workspace?.capabilities.managePricing ? (
+              <Suspense fallback={<main className="shell">جارٍ التحميل…</main>}>
+                <OffersPage workspace={workspace} onChanged={replaceWorkspace} />
               </Suspense>
             ) : (
               <Navigate to={workspace ? "/workspace" : "/login"} replace />
@@ -431,6 +458,18 @@ export function App() {
               </Suspense>
             ) : (
               <Navigate to={workspace ? "/select-branch" : "/login"} replace />
+            )
+          }
+        />
+        <Route
+          path="/returns"
+          element={
+            workspace?.activeBranch && workspace.staff.role === "manager" && workspace.capabilities.manageInventory ? (
+              <Suspense fallback={<main className="shell">جارٍ التحميل…</main>}>
+                <ReturnsPage workspace={workspace} onChanged={replaceWorkspace} />
+              </Suspense>
+            ) : (
+              <Navigate to={workspace?.activeBranch ? "/workspace" : workspace ? "/select-branch" : "/login"} replace />
             )
           }
         />

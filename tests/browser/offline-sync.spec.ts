@@ -20,7 +20,7 @@ test("delayed web crypto still saves a local sale and acks two operations in one
   await expect.poll(async () =>
     salesForCode((await staffApi(page, "GET", "/api/internal/sales")).body, seed.code).length,
   ).toBe(1);
-  await addAndPrice(page, seed, { customerPhone: "01016500002" });
+  await addAndPrice(page, seed, { customerPhone: "01016500002", waitForLookupResponse: true });
   await page.getByRole("form", { name: "إتمام البيع النقدي" }).getByLabel("استلم الزبون البضاعة ودفع نقداً").check();
   await page.getByRole("form", { name: "إتمام البيع النقدي" }).getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع النقدي.");
@@ -751,11 +751,23 @@ async function attemptAcceptPrices(page: Page, seed: { code: string; nameAr?: st
 async function addAndPrice(
   page: Page,
   seed: { code: string; nameAr?: string; sizeName: string; colorName: string },
-  details?: { customerName?: string; customerPhone?: string; discountReason?: string },
+  details?: { customerName?: string; customerPhone?: string; discountReason?: string; waitForLookupResponse?: boolean },
 ) {
   const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
   await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill(seed.code);
-  await lookup.getByRole("button", { name: "بحث" }).click();
+  const searchButton = lookup.locator('button[type="submit"]');
+  const lookupResponse = details?.waitForLookupResponse
+    ? page.waitForResponse((response) => {
+        const url = new URL(response.url());
+        return url.pathname === "/api/internal/catalog/lookup" && url.searchParams.get("code") === seed.code;
+      })
+    : null;
+  await searchButton.click();
+  if (lookupResponse) {
+    await lookupResponse;
+    await expect(searchButton).toHaveText("بحث");
+    await expect(searchButton).toBeEnabled();
+  }
   await expect(page.getByTestId("lookup-result")).toContainText(seed.nameAr ?? seed.code);
   const color = page.getByLabel("اللون");
   await page.getByLabel("المقاس").selectOption({ index: 0 });

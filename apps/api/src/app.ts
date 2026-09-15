@@ -15,7 +15,7 @@ import {
   createCatalogServices,
   type CatalogServices,
 } from "@bravos/catalog";
-import { createLocalProductMediaStorage, createPostgresCatalogStore } from "@bravos/catalog/node";
+import { createLocalProductMediaStorage, createPostgresCatalogStore, createPostgresListedPriceReader } from "@bravos/catalog/node";
 import {
   InventoryValidationError,
   OperationConflictError,
@@ -37,9 +37,22 @@ import {
 } from "@bravos/sales";
 import {
   createPostgresPriceSnapshotStore,
+  createPostgresPricingQuoteReader,
   createPostgresSaleStore,
   createPostgresSalesUnitOfWork,
 } from "@bravos/sales/node";
+import {
+  ReturnsValidationError,
+  createReturnServices,
+  type ReturnServices,
+} from "@bravos/returns";
+import { createPostgresReturnsStore, createPostgresReturnsUnitOfWork } from "@bravos/returns/node";
+import {
+  StorefrontConfigValidationError,
+  createStorefrontConfigServices,
+  type StorefrontConfigServices,
+} from "@bravos/storefront-config";
+import { createPostgresStorefrontContactsStore } from "@bravos/storefront-config/node";
 import {
   BranchNotAuthorizedError,
   DuplicateLoginNameError,
@@ -60,6 +73,11 @@ import {
 } from "@bravos/identity/node";
 import type { VerifiedAuth } from "@bravos/identity";
 import { applyMigrations } from "@bravos/persistence";
+import { PricingValidationError, createPricingServices, type PricingServices } from "@bravos/pricing";
+import {
+  createPostgresAutomaticOfferStore,
+  createPostgresAutomaticPricingReader,
+} from "@bravos/pricing/node";
 import type { AppConfig } from "./config.ts";
 
 const ALLOWED_AUTH_ROUTES = new Set([
@@ -76,8 +94,11 @@ export type BuiltApp = {
   catalog: CatalogServices;
   inventory: InventoryServices;
   receiving: ReceivingServices;
+  pricing: PricingServices;
   sales: SalesServices;
   expenses: ExpenseServices;
+  returns: ReturnServices;
+  storefrontConfig: StorefrontConfigServices;
   auth: ReturnType<typeof createBetterAuth>;
   identity: IdentityGateway;
   close: () => Promise<void>;
@@ -152,6 +173,10 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
       receipts: createPostgresReceiptStore(pool),
       uow: createPostgresReceivingUnitOfWork(pool, createInventoryTransaction),
     });
+    const pricing = createPricingServices({
+      actors: { getStaff: (staffId) => directory.getStaff(staffId) },
+      offers: createPostgresAutomaticOfferStore(pool),
+    });
     const saleStore = createPostgresSaleStore(pool);
     const sales = createSalesServices({
       actors: {
@@ -163,6 +188,10 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
         },
       },
       prices: { getListedPrices: (ids) => catalogStore.getListedPrices(ids) },
+      pricingQuote: createPostgresPricingQuoteReader(pool, (client) => ({
+        prices: createPostgresListedPriceReader(client),
+        automaticPricing: createPostgresAutomaticPricingReader(client),
+      })),
       sales: saleStore,
       snapshots: createPostgresPriceSnapshotStore(pool),
       cashierCatalog: {
@@ -175,10 +204,27 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
       actors,
       expenses: createPostgresExpenseRepository(pool),
     });
+    const returns = createReturnServices({
+      actors: {
+        getStaff: (staffId) => directory.getStaff(staffId),
+        listBranches: async () => {
+          const rows = await directory.listBranches();
+          return rows.map((row) => ({ id: row.id, code: row.code, nameAr: row.nameAr }));
+        },
+      },
+      variants: { getVariants: (ids) => catalogStore.getVariants(ids) },
+      returns: createPostgresReturnsStore(pool),
+      uow: createPostgresReturnsUnitOfWork(pool, createInventoryTransaction),
+      clock: { now: config.businessClock ?? (() => new Date()) },
+    });
+    const storefrontConfig = createStorefrontConfigServices({
+      actors,
+      contacts: createPostgresStorefrontContactsStore(pool),
+    });
 
     const instance = Fastify({ logger: false });
     app = instance;
-    await registerRoutes(instance, config, auth, identity, services, catalog, inventory, receiving, sales, expenses);
+    await registerRoutes(instance, config, auth, identity, services, catalog, inventory, receiving, pricing, sales, expenses, returns, storefrontConfig);
 
     return {
       app: instance,
@@ -187,8 +233,11 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
       catalog,
       inventory,
       receiving,
+      pricing,
       sales,
       expenses,
+      returns,
+      storefrontConfig,
       auth,
       identity,
       async close() {
@@ -221,8 +270,11 @@ async function registerRoutes(
   catalog: CatalogServices,
   inventory: InventoryServices,
   receiving: ReceivingServices,
+  pricing: PricingServices,
   sales: SalesServices,
   expenses: ExpenseServices,
+  returns: ReturnServices,
+  storefrontConfig: StorefrontConfigServices,
 ) {
   app.addHook("onRequest", async (request, reply) => {
     if (isPrivilegedPath(request.url) && !isTrustedInternalOrigin(request, config)) {
@@ -258,6 +310,20 @@ async function registerRoutes(
     return handle(reply, async () => catalog.listPublicProducts());
   });
 
+  app.get("/api/public/storefront/catalog", async (request, reply) => {
+    const query = request.query as { q?: string | string[]; categoryId?: string | string[] };
+    reply.header("cache-control", "no-store");
+    return handle(reply, async () => catalog.browsePublicProducts({
+      query: Array.isArray(query.q) ? query.q[0] : query.q,
+      categoryId: Array.isArray(query.categoryId) ? query.categoryId[0] : query.categoryId,
+    }));
+  });
+
+  app.get("/api/public/storefront/contacts", async (_request, reply) => {
+    reply.header("cache-control", "no-store");
+    return handle(reply, async () => storefrontConfig.publicContacts());
+  });
+
   app.get("/api/public/catalog/products/:productId", async (request, reply) => {
     const params = request.params as { productId: string };
     reply.header("cache-control", "no-store");
@@ -278,6 +344,14 @@ async function registerRoutes(
 
   app.get("/api/internal/workspace", async (request, reply) => {
     return handle(reply, async () => services.workspace(await verifiedAuth(identity, request)));
+  });
+
+  app.get("/api/internal/storefront/contacts", async (request, reply) => {
+    return handle(reply, async () => storefrontConfig.managerContacts(await verifiedAuth(identity, request)));
+  });
+
+  app.patch("/api/internal/storefront/contacts", async (request, reply) => {
+    return handle(reply, async () => storefrontConfig.updateContacts(await verifiedAuth(identity, request), request.body));
   });
 
   app.get("/api/internal/branches", async (request, reply) => {
@@ -484,6 +558,28 @@ async function registerRoutes(
     return handle(reply, async () => catalog.listCashierCatalog(await verifiedAuth(identity, request)));
   });
 
+  app.get("/api/internal/pricing/offers", async (request, reply) => {
+    return handle(reply, async () => pricing.list(await verifiedAuth(identity, request)));
+  });
+
+  app.post("/api/internal/pricing/offers", async (request, reply) => {
+    return handle(reply, async () => {
+      const offer = await pricing.create(await verifiedAuth(identity, request), request.body);
+      reply.status(201);
+      return offer;
+    });
+  });
+
+  app.get("/api/internal/pricing/offers/:offerId", async (request, reply) => {
+    const params = request.params as { offerId: string };
+    return handle(reply, async () => pricing.get(await verifiedAuth(identity, request), params.offerId));
+  });
+
+  app.put("/api/internal/pricing/offers/:offerId", async (request, reply) => {
+    const params = request.params as { offerId: string };
+    return handle(reply, async () => pricing.update(await verifiedAuth(identity, request), params.offerId, request.body));
+  });
+
   app.post("/api/internal/receiving/receipts", async (request, reply) => {
     return handle(reply, async () => {
       const result = await receiving.finalize(await verifiedAuth(identity, request), request.body);
@@ -644,6 +740,52 @@ async function registerRoutes(
     const params = request.params as { expenseId: string };
     return handle(reply, async () => expenses.get(await verifiedAuth(identity, request), params.expenseId));
   });
+
+  app.get("/api/internal/returns/sources", async (request, reply) => {
+    return handle(reply, async () => returns.listSources(await verifiedAuth(identity, request), request.query));
+  });
+
+  app.post("/api/internal/returns", async (request, reply) => {
+    return handle(reply, async () => {
+      const result = await returns.createDraft(await verifiedAuth(identity, request), request.body);
+      reply.status(result.created ? 201 : 200);
+      return result.value;
+    });
+  });
+
+  app.patch("/api/internal/returns/:returnId", async (request, reply) => {
+    const params = request.params as { returnId: string };
+    return handle(reply, async () =>
+      returns.updateDraft(await verifiedAuth(identity, request), params.returnId, request.body),
+    );
+  });
+
+  app.get("/api/internal/returns", async (request, reply) => {
+    return handle(reply, async () => returns.list(await verifiedAuth(identity, request), request.query));
+  });
+
+  app.post("/api/internal/returns/:returnId/post", async (request, reply) => {
+    const params = request.params as { returnId: string };
+    return handle(reply, async () => {
+      const result = await returns.post(await verifiedAuth(identity, request), params.returnId, request.body);
+      reply.status(result.created ? 201 : 200);
+      return result.value;
+    });
+  });
+
+  app.post("/api/internal/returns/:returnId/refund", async (request, reply) => {
+    const params = request.params as { returnId: string };
+    return handle(reply, async () => {
+      const result = await returns.markPaid(await verifiedAuth(identity, request), params.returnId, request.body);
+      reply.status(result.created ? 201 : 200);
+      return result.value;
+    });
+  });
+
+  app.get("/api/internal/returns/:returnId", async (request, reply) => {
+    const params = request.params as { returnId: string };
+    return handle(reply, async () => returns.get(await verifiedAuth(identity, request), params.returnId));
+  });
 }
 
 function isPrivilegedPath(url: string): boolean {
@@ -802,8 +944,11 @@ function sendError(reply: FastifyReply, error: unknown) {
     error instanceof CatalogValidationError ||
     error instanceof InventoryValidationError ||
     error instanceof ReceivingValidationError ||
-    error instanceof SalesValidationError
-    || error instanceof ExpensesValidationError
+    error instanceof PricingValidationError ||
+    error instanceof SalesValidationError ||
+    error instanceof ExpensesValidationError ||
+    error instanceof ReturnsValidationError ||
+    error instanceof StorefrontConfigValidationError
   ) {
     return reply.status(400).send(errorBody(error.code, error.message));
   }

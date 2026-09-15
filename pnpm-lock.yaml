@@ -68,12 +68,21 @@ importers:
       '@bravos/persistence':
         specifier: workspace:*
         version: link:../../packages/persistence
+      '@bravos/pricing':
+        specifier: workspace:*
+        version: link:../../packages/pricing
       '@bravos/receiving':
         specifier: workspace:*
         version: link:../../packages/receiving
+      '@bravos/returns':
+        specifier: workspace:*
+        version: link:../../packages/returns
       '@bravos/sales':
         specifier: workspace:*
         version: link:../../packages/sales
+      '@bravos/storefront-config':
+        specifier: workspace:*
+        version: link:../../packages/storefront-config
       better-auth:
         specifier: 1.7.3
         version: 1.7.3(next@16.3.4(@playwright/test@1.55.1)(@types/node@22.18.6)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(pg@8.16.3)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(vitest@4.1.11(@types/node@22.18.6)(terser@5.51.2)(tsx@4.20.5))
@@ -286,7 +295,54 @@ importers:
         specifier: 5.9.2
         version: 5.9.2
 
+  packages/pricing:
+    dependencies:
+      '@bravos/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@bravos/identity':
+        specifier: workspace:*
+        version: link:../identity
+      pg:
+        specifier: 8.16.3
+        version: 8.16.3
+    devDependencies:
+      '@types/node':
+        specifier: 22.18.6
+        version: 22.18.6
+      '@types/pg':
+        specifier: 8.15.5
+        version: 8.15.5
+      typescript:
+        specifier: 5.9.2
+        version: 5.9.2
+
   packages/receiving:
+    dependencies:
+      '@bravos/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@bravos/identity':
+        specifier: workspace:*
+        version: link:../identity
+      '@bravos/inventory':
+        specifier: workspace:*
+        version: link:../inventory
+      pg:
+        specifier: 8.16.3
+        version: 8.16.3
+    devDependencies:
+      '@types/node':
+        specifier: 22.18.6
+        version: 22.18.6
+      '@types/pg':
+        specifier: 8.15.5
+        version: 8.15.5
+      typescript:
+        specifier: 5.9.2
+        version: 5.9.2
+
+  packages/returns:
     dependencies:
       '@bravos/contracts':
         specifier: workspace:*
@@ -332,6 +388,25 @@ importers:
       '@types/node':
         specifier: 22.18.6
         version: 22.18.6
+      '@types/pg':
+        specifier: 8.15.5
+        version: 8.15.5
+      typescript:
+        specifier: 5.9.2
+        version: 5.9.2
+
+  packages/storefront-config:
+    dependencies:
+      '@bravos/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@bravos/identity':
+        specifier: workspace:*
+        version: link:../identity
+      pg:
+        specifier: 8.16.3
+        version: 8.16.3
+    devDependencies:
       '@types/pg':
         specifier: 8.15.5
         version: 8.15.5
@@ -4383,8 +4458,7 @@ snapshots:
       '@fastify/forwarded': 3.0.2
       ipaddr.js: 2.5.0
 
-  '@img/colour@1.1.0':
-    optional: true
+  '@img/colour@1.1.0': {}
 
   '@img/sharp-darwin-arm64@0.35.4':
     optionalDependencies:
@@ -5074,8 +5148,7 @@ snapshots:
 
   dequal@2.0.3: {}
 
-  detect-libc@2.1.2:
-    optional: true
+  detect-libc@2.1.2: {}
 
   dexie@4.4.5: {}
 
@@ -6061,7 +6134,6 @@ snapshots:
       '@img/sharp-win32-ia32': 0.35.4
       '@img/sharp-win32-x64': 0.35.4
       '@types/node': 22.18.6
-    optional: true
 
   shebang-command@2.0.0:
     dependencies:

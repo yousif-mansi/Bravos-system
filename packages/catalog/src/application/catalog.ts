@@ -3,6 +3,7 @@ import type {
   CategoryDto,
   ColorDto,
   ManagerProductDto,
+  PublicCatalogBrowseDto,
   PublicProductDto,
   SizeDto,
   UploadedProductMediaDto,
@@ -287,6 +288,42 @@ export function createCatalogServices(ports: {
       return products.map((product) => toPublicProduct(product, quantities));
     },
 
+    async browsePublicProducts(input: { query?: unknown; categoryId?: unknown }): Promise<PublicCatalogBrowseDto> {
+      const query = optionalBrowseQuery(input.query);
+      const categoryId = optionalBrowseCategory(input.categoryId);
+      const products = await ports.store.listPublishedProducts();
+      const ids = products.flatMap((product) => product.variants.map((variant) => variant.id));
+      const quantities = await availability.quantitiesFor(ids);
+      const categories = [...new Map(products.map((product) => [product.category.id, {
+        id: product.category.id,
+        nameAr: product.category.nameAr,
+      }])).values()].sort((left, right) => left.nameAr.localeCompare(right.nameAr, "ar"));
+      const normalizedQuery = query.toLocaleLowerCase("ar");
+      return {
+        categories,
+        products: products
+          .filter((product) => !categoryId || product.category.id === categoryId)
+          .filter((product) => {
+            if (!normalizedQuery) return true;
+            return `${product.nameAr} ${product.descriptionAr} ${product.category.nameAr}`
+              .toLocaleLowerCase("ar")
+              .includes(normalizedQuery);
+          })
+          .map((product) => {
+            const detail = toPublicProduct(product, quantities);
+            const prices = detail.variants.map((variant) => variant.sellingPricePiasters);
+            return {
+              id: detail.id,
+              nameAr: detail.nameAr,
+              category: detail.category,
+              availability: detail.availability,
+              previewImageRef: detail.imageRefs[0] ?? null,
+              lowestSellingPricePiasters: prices.length > 0 ? Math.min(...prices) : null,
+            };
+          }),
+      };
+    },
+
     async getPublicProduct(id: unknown): Promise<PublicProductDto> {
       const productId = assertUuid(id, "المنتج غير موجود.");
       const product = await ports.store.getPublishedProduct(productId);
@@ -319,6 +356,19 @@ export function createCatalogServices(ports: {
       return media;
     },
   };
+}
+
+function optionalBrowseQuery(value: unknown): string {
+  if (value === undefined || value === null || value === "") return "";
+  if (typeof value !== "string" || value.trim().length > 80) {
+    throw new CatalogValidationError("عبارة البحث غير صالحة.");
+  }
+  return value.trim();
+}
+
+function optionalBrowseCategory(value: unknown): string | null {
+  if (value === undefined || value === null || value === "") return null;
+  return assertUuid(value, "التصنيف المحدد غير صالح.");
 }
 
 function toPublicProduct(

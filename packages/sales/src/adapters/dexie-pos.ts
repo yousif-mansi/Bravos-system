@@ -123,6 +123,8 @@ function tryNormalizeLineUnits(
 function normalizeCompletedSale(sale: OfflineCompletedSale): OfflineCompletedSale {
   return {
     ...sale,
+    automaticOfferDiscountPiasters: sale.automaticOfferDiscountPiasters ?? 0,
+    appliedAutomaticOffer: sale.appliedAutomaticOffer ?? null,
     payloadFingerprint:
       typeof sale.payloadFingerprint === "string" && /^[0-9a-f]{64}$/i.test(sale.payloadFingerprint)
         ? sale.payloadFingerprint.toLowerCase()
@@ -664,6 +666,7 @@ export function createDexiePosStore(options?: { databaseName?: string }): Offlin
                   manageStaff: false,
                   manageCatalog: false,
                   manageInventory: false,
+                  managePricing: false,
                 },
               },
               signedOut: true,
@@ -849,6 +852,8 @@ export function createDexiePosStore(options?: { databaseName?: string }): Offlin
             customerName: input.customerName,
             customerPhone: input.customerPhone,
             originalTotalPiasters: priced.originalTotalPiasters,
+            automaticOfferDiscountPiasters: priced.automaticOfferDiscountPiasters,
+            appliedAutomaticOffer: priced.appliedAutomaticOffer,
             employeeDiscountPiasters: input.employeeDiscountPiasters,
             discountReason: input.discountReason,
             discountedByStaffId: input.employeeDiscountPiasters > 0 ? input.staffId : null,

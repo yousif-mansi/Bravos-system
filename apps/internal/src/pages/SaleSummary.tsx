@@ -11,7 +11,12 @@ export function SaleSummary({ sale }: { sale: SaleDto }) {
       <p>وقت التسجيل: {sale.recordedAt ? formatTime(sale.recordedAt) : "غير مسجّل بعد"}</p>
       {sale.customerName ? <p>الزبون: {sale.customerName}</p> : <p className="muted">بدون اسم زبون</p>}
       <p>الأصلي: {formatEgpFromPiasters(sale.originalTotalPiasters)}</p>
-      <p>الخصم: {formatEgpFromPiasters(sale.employeeDiscountPiasters)}</p>
+      {sale.appliedAutomaticOffer ? (
+        <p data-testid="sale-automatic-offer">
+          العرض التلقائي: {sale.appliedAutomaticOffer.nameAr} — {formatEgpFromPiasters(sale.automaticOfferDiscountPiasters)}
+        </p>
+      ) : null}
+      <p>خصم الموظف: {formatEgpFromPiasters(sale.employeeDiscountPiasters)}</p>
       <p>الإجمالي: {formatEgpFromPiasters(sale.finalTotalPiasters)}</p>
       {sale.discountReason ? <p>سبب الخصم: {sale.discountReason}</p> : null}
       {sale.discrepancy ? <p role="alert">{sale.discrepancy.messageAr}</p> : null}

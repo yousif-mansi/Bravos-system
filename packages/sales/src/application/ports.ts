@@ -1,5 +1,6 @@
 import type {
   BranchDto,
+  AppliedAutomaticOfferDto,
   CashierProductLookupDto,
   CompletedOperationProofDto,
   ManagerSaleDto,
@@ -22,12 +23,44 @@ export type SalesActorPort = {
 
 export type ListedPriceBasis = {
   variantId: string;
+  productId: string;
+  categoryId: string;
   listedUnitPricePiasters: number;
   identity: VariantIdentityDto;
 };
 
+export type AutomaticPricingPort = {
+  evaluate(
+    lines: Array<{
+      variantId: string;
+      productId: string;
+      categoryId: string;
+      quantity: number;
+      listedUnitPricePiasters: number;
+    }>,
+    at?: Date,
+  ): Promise<{
+    appliedAutomaticOffer: AppliedAutomaticOfferDto | null;
+    automaticOfferDiscountPiasters: number;
+    unitRanges: Array<{
+      variantId: string;
+      unitIndex: number;
+      quantity: number;
+      listedPiasters: number;
+      automaticOfferDiscountPiasters: number;
+    }>;
+  }>;
+};
+
 export type ListedPriceReader = {
   getListedPrices(ids: string[]): Promise<ListedPriceBasis[]>;
+};
+
+export type PricingQuoteReader = {
+  run<T>(work: (quote: {
+    prices: ListedPriceReader;
+    automaticPricing: AutomaticPricingPort;
+  }) => Promise<T>): Promise<T>;
 };
 
 export type CashierCatalogReader = {
@@ -59,6 +92,8 @@ export type SaleUnitWrite = {
   listedPiasters: number;
   discountPiasters: number;
   paidPiasters: number;
+  automaticOfferDiscountPiasters: number;
+  employeeDiscountPiasters: number;
 };
 
 export type SaleLineWrite = {
@@ -69,6 +104,8 @@ export type SaleLineWrite = {
   originalPiasters: number;
   discountPiasters: number;
   paidPiasters: number;
+  automaticOfferDiscountPiasters: number;
+  employeeDiscountPiasters: number;
   allocatedQuantity: number;
   unallocatedQuantity: number;
   lineIndex: number;
@@ -87,6 +124,8 @@ export type SaleRecord = {
   customerName: string | null;
   customerPhone: string | null;
   originalTotalPiasters: number;
+  automaticOfferDiscountPiasters: number;
+  appliedAutomaticOffer: AppliedAutomaticOfferDto | null;
   employeeDiscountPiasters: number;
   discountReason: string | null;
   finalTotalPiasters: number;
@@ -110,6 +149,8 @@ export type SaleInsert = {
   customerName: string | null;
   customerPhone: string | null;
   originalTotalPiasters: number;
+  automaticOfferDiscountPiasters: number;
+  appliedAutomaticOffer: AppliedAutomaticOfferDto | null;
   employeeDiscountPiasters: number;
   discountReason: string | null;
   finalTotalPiasters: number;

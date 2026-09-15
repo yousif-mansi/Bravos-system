@@ -282,8 +282,17 @@ export function WorkspacePage({
           {online && workspace.capabilities.manageCatalog ? (
             <Link className="button secondary" to="/catalog">المنتجات</Link>
           ) : null}
+          {online && workspace.capabilities.manageCatalog ? (
+            <Link className="button secondary" to="/storefront-settings">روابط المتجر</Link>
+          ) : null}
           {online && workspace.capabilities.manageInventory ? (
             <Link className="button secondary" to="/receiving">استلام المخزون</Link>
+          ) : null}
+          {online && workspace.capabilities.managePricing ? (
+            <Link className="button secondary" to="/offers">العروض</Link>
+          ) : null}
+          {online && workspace.staff.role === "manager" && workspace.capabilities.manageInventory ? (
+            <Link className="button secondary" to="/returns">المرتجعات</Link>
           ) : null}
           {workspace.capabilities.cashier ? (
             <Link className="button secondary" to="/lookup">البحث عن منتج</Link>

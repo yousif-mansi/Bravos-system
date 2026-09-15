@@ -14,7 +14,7 @@ module.exports = {
       severity: "error",
       from: { path: "^packages/identity/src/domain" },
       to: {
-        path: "(packages/identity/src/(application|adapters)|packages/catalog|apps/|better-auth|fastify|react|next|vite|pg)",
+        path: "(packages/identity/src/(application|adapters)|packages/catalog|packages/returns|apps/|better-auth|fastify|react|next|vite|pg)",
       },
     },
     {
@@ -23,7 +23,7 @@ module.exports = {
       severity: "error",
       from: { path: "^packages/catalog/src/domain" },
       to: {
-        path: "(packages/catalog/src/(application|adapters)|packages/identity|packages/inventory|packages/receiving|packages/sales|apps/|better-auth|fastify|react|next|vite|pg)",
+        path: "(packages/catalog/src/(application|adapters)|packages/identity|packages/inventory|packages/receiving|packages/sales|packages/returns|apps/|better-auth|fastify|react|next|vite|pg)",
       },
     },
     {
@@ -32,7 +32,7 @@ module.exports = {
       severity: "error",
       from: { path: "^packages/inventory/src/domain" },
       to: {
-        path: "(packages/inventory/src/(application|adapters)|packages/identity|packages/catalog|packages/receiving|packages/sales|apps/|better-auth|fastify|react|next|vite|pg)",
+        path: "(packages/inventory/src/(application|adapters)|packages/identity|packages/catalog|packages/receiving|packages/sales|packages/returns|apps/|better-auth|fastify|react|next|vite|pg)",
       },
     },
     {
@@ -41,7 +41,16 @@ module.exports = {
       severity: "error",
       from: { path: "^packages/receiving/src/domain" },
       to: {
-        path: "(packages/receiving/src/(application|adapters)|packages/identity|packages/catalog|packages/inventory|packages/sales|apps/|better-auth|fastify|react|next|vite|pg)",
+        path: "(packages/receiving/src/(application|adapters)|packages/identity|packages/catalog|packages/inventory|packages/sales|packages/returns|apps/|better-auth|fastify|react|next|vite|pg)",
+      },
+    },
+    {
+      name: "pricing-domain-inward-only",
+      comment: "Pricing domain must not import application, adapters, identity, UI or infrastructure.",
+      severity: "error",
+      from: { path: "^packages/pricing/src/domain" },
+      to: {
+        path: "(packages/pricing/src/(application|adapters)|packages/identity|packages/catalog|packages/inventory|packages/receiving|packages/sales|apps/|better-auth|fastify|react|next|vite|pg|dexie)",
       },
     },
     {
@@ -50,7 +59,16 @@ module.exports = {
       severity: "error",
       from: { path: "^packages/sales/src/domain" },
       to: {
-        path: "(packages/sales/src/(application|adapters)|packages/identity|packages/catalog|packages/inventory|packages/receiving|apps/|better-auth|fastify|react|next|vite|pg|dexie)",
+        path: "(packages/sales/src/(application|adapters)|packages/identity|packages/catalog|packages/inventory|packages/receiving|packages/returns|apps/|better-auth|fastify|react|next|vite|pg|dexie)",
+      },
+    },
+    {
+      name: "returns-domain-inward-only",
+      comment: "Returns domain must not import application, adapters, UI or infrastructure.",
+      severity: "error",
+      from: { path: "^packages/returns/src/domain" },
+      to: {
+        path: "(packages/returns/src/(application|adapters)|apps/|better-auth|fastify|react|next|vite|pg)",
       },
     },
     {
@@ -66,9 +84,9 @@ module.exports = {
       name: "application-inward-only",
       comment: "Application use cases depend inward, not on Fastify, pg, React or Better Auth.",
       severity: "error",
-      from: { path: "^packages/(identity|catalog|inventory|receiving|sales|expenses)/src/application" },
+      from: { path: "^packages/(identity|catalog|inventory|receiving|pricing|sales|expenses|returns|storefront-config)/src/application" },
       to: {
-        path: "(packages/(identity|catalog|inventory|receiving|sales|expenses)/src/adapters|apps/|better-auth|fastify|react|next|vite|\\bpg\\b|dexie)",
+        path: "(packages/(identity|catalog|inventory|receiving|pricing|sales|expenses|returns|storefront-config)/src/adapters|apps/|better-auth|fastify|react|next|vite|\\bpg\\b|dexie)",
       },
     },
     {
@@ -77,7 +95,7 @@ module.exports = {
       severity: "error",
       from: { path: "^packages/contracts" },
       to: {
-        path: "(packages/identity|packages/catalog|packages/inventory|packages/receiving|packages/sales|packages/expenses|apps/|better-auth|fastify|pg|react|next)",
+        path: "(packages/identity|packages/catalog|packages/inventory|packages/receiving|packages/pricing|packages/sales|packages/expenses|packages/returns|packages/storefront-config|apps/|better-auth|fastify|pg|react|next)",
       },
     },
     {
@@ -95,7 +113,7 @@ module.exports = {
       severity: "error",
       from: { path: "^apps/storefront" },
       to: {
-        path: "(apps/internal|packages/identity|packages/catalog|packages/inventory|packages/receiving|packages/sales|packages/persistence|apps/api|better-auth)",
+        path: "(apps/internal|packages/identity|packages/catalog|packages/inventory|packages/receiving|packages/pricing|packages/sales|packages/expenses|packages/returns|packages/storefront-config|packages/persistence|apps/api|better-auth)",
       },
     },
     {
@@ -127,6 +145,13 @@ module.exports = {
       to: { path: "^packages/receiving/src/(domain|application|adapters)/" },
     },
     {
+      name: "no-private-pricing-imports",
+      comment: "Cross-package imports must use the pricing public interface.",
+      severity: "error",
+      from: { pathNot: "^packages/pricing/src" },
+      to: { path: "^packages/pricing/src/(domain|application|adapters)/" },
+    },
+    {
       name: "no-private-sales-imports",
       comment: "Cross-package imports must use the sales public interface.",
       severity: "error",
@@ -141,46 +166,67 @@ module.exports = {
       to: { path: "^packages/expenses/src/(domain|application|adapters)/" },
     },
     {
+      name: "no-private-returns-imports",
+      comment: "Cross-package imports must use the returns public interface.",
+      severity: "error",
+      from: { pathNot: "^packages/returns/src" },
+      to: { path: "^packages/returns/src/(domain|application|adapters)/" },
+    },
+    {
+      name: "no-private-storefront-config-imports",
+      comment: "Cross-package imports must use the storefront configuration public interface.",
+      severity: "error",
+      from: { pathNot: "^packages/storefront-config/src" },
+      to: { path: "^packages/storefront-config/src/(domain|application|adapters)/" },
+    },
+    {
       name: "identity-does-not-import-catalog",
       comment: "Identity must not depend on catalog.",
       severity: "error",
       from: { path: "^packages/identity" },
-      to: { path: "^packages/catalog" },
+      to: { path: "^packages/(catalog|returns)" },
     },
     {
       name: "identity-does-not-import-inventory-or-receiving",
       comment: "Identity must not depend on inventory, receiving or sales.",
       severity: "error",
       from: { path: "^packages/identity" },
-      to: { path: "^packages/(inventory|receiving|sales|expenses)" },
+      to: { path: "^packages/(inventory|receiving|sales|expenses|returns)" },
     },
     {
       name: "catalog-does-not-import-inventory-or-receiving",
       comment: "Catalog depends on availability/reference ports, not inventory or receiving packages.",
       severity: "error",
       from: { path: "^packages/catalog" },
-      to: { path: "^packages/(inventory|receiving|sales|expenses)" },
+      to: { path: "^packages/(inventory|receiving|sales|expenses|returns)" },
     },
     {
       name: "inventory-does-not-import-receiving-or-catalog",
       comment: "Inventory must not depend on receiving or catalog packages.",
       severity: "error",
       from: { path: "^packages/inventory" },
-      to: { path: "^packages/(receiving|catalog|sales|expenses)" },
+      to: { path: "^packages/(receiving|catalog|sales|expenses|returns)" },
     },
     {
       name: "receiving-does-not-import-catalog",
       comment: "Receiving uses a catalog identity port at composition, not the catalog package.",
       severity: "error",
       from: { path: "^packages/receiving" },
-      to: { path: "^packages/(catalog|sales|expenses)" },
+      to: { path: "^packages/(catalog|sales|expenses|returns)" },
+    },
+    {
+      name: "pricing-does-not-import-owned-features",
+      comment: "Pricing uses declared basket identities and does not reach into catalog, inventory or sales.",
+      severity: "error",
+      from: { path: "^packages/pricing" },
+      to: { path: "^packages/(catalog|inventory|receiving|sales)" },
     },
     {
       name: "sales-does-not-import-catalog",
       comment: "Sales uses a listed-price port at composition, not the catalog package.",
       severity: "error",
       from: { path: "^packages/sales" },
-      to: { path: "^packages/(catalog|receiving|expenses)" },
+      to: { path: "^packages/(catalog|receiving|expenses|returns)" },
     },
     {
       name: "expenses-does-not-import-other-business-features",
@@ -188,6 +234,13 @@ module.exports = {
       severity: "error",
       from: { path: "^packages/expenses" },
       to: { path: "^packages/(catalog|inventory|receiving|sales)" },
+    },
+    {
+      name: "storefront-config-is-isolated",
+      comment: "Storefront contact configuration depends only on safe contracts and identity authorization.",
+      severity: "error",
+      from: { path: "^packages/storefront-config" },
+      to: { path: "^packages/(catalog|inventory|receiving|sales|expenses|persistence)" },
     },
   ],
   options: {

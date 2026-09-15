@@ -28,3 +28,24 @@ export type PublicProductDto = {
   sizeGuideAr: string | null;
   variants: PublicProductVariantDto[];
 };
+
+export type PublicProductSummaryDto = {
+  id: string;
+  nameAr: string;
+  category: PublicCatalogOptionDto;
+  availability: PublicProductAvailability;
+  previewImageRef: string | null;
+  lowestSellingPricePiasters: number | null;
+};
+
+export type PublicCatalogBrowseDto = {
+  categories: PublicCatalogOptionDto[];
+  products: PublicProductSummaryDto[];
+};
+
+export type PublicStorefrontContactsDto = {
+  whatsappUrl: string | null;
+  facebookUrl: string | null;
+  instagramUrl: string | null;
+  tiktokUrl: string | null;
+};

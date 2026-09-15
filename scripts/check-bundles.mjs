@@ -32,6 +32,18 @@ const expensesChunk = internalFiles.find((file) => path.basename(file).includes(
 if (!expensesChunk) {
   throw new Error("Expenses was not split into its own chunk.");
 }
+const offersChunk = internalFiles.find((file) => path.basename(file).includes("offer-management"));
+if (!offersChunk) {
+  throw new Error("Offer management was not split into its own chunk.");
+}
+const returnsChunk = internalFiles.find((file) => path.basename(file).includes("physical-returns"));
+if (!returnsChunk) {
+  throw new Error("Returns was not split into its own chunk.");
+}
+const storefrontSettingsChunk = internalFiles.find((file) => path.basename(file).includes("storefront-settings"));
+if (!storefrontSettingsChunk) {
+  throw new Error("Storefront settings were not split into their own chunk.");
+}
 
 const loginHtml = await readFile(path.join(internalDist, "index.html"), "utf8");
 const referenced = [...loginHtml.matchAll(/assets\/[^\s"]+\.js/g)].map((match) => match[0]);
@@ -49,13 +61,13 @@ for (const file of staticGraph) {
   if (source.includes("إنشاء حساب موظف") || source.includes("StaffPage")) {
     throw new Error(`${path.relative(internalDist, file)} should not include staff management for the initial login route.`);
   }
-  if (source.includes("إنشاء منتج") || source.includes("CatalogPage") || source.includes("LookupPage") || source.includes("البحث برمز المنتج") || source.includes("إذن استلام جديد") || source.includes("دفعات التكلفة") || source.includes("سلة البيع") || source.includes("SalesPage") || source.includes("ExpensePage") || source.includes("مصروف جديد")) {
-    throw new Error(`${path.relative(internalDist, file)} should not include catalog, lookup, receiving or sales screens for the initial login route.`);
+  if (source.includes("إنشاء منتج") || source.includes("CatalogPage") || source.includes("LookupPage") || source.includes("البحث برمز المنتج") || source.includes("إذن استلام جديد") || source.includes("دفعات التكلفة") || source.includes("سلة البيع") || source.includes("SalesPage") || source.includes("ExpensePage") || source.includes("مصروف جديد") || source.includes("OffersPage") || source.includes("عرض جديد") || source.includes("ReturnsPage") || source.includes("اختيار البيع الأصلي") || source.includes("StorefrontSettingsPage") || source.includes("إعداد روابط التواصل في المتجر")) {
+    throw new Error(`${path.relative(internalDist, file)} should not include catalog, lookup, receiving, sales or returns screens for the initial login route.`);
   }
   if (path.basename(file).includes("staff-management")) {
     throw new Error("Login entry statically imports the staff-management chunk.");
   }
-  if (path.basename(file).includes("catalog-maintenance") || path.basename(file).includes("cashier-lookup") || path.basename(file).includes("receiving-stock") || path.basename(file).includes("cashier-sales") || path.basename(file).includes("expenses-online")) {
+  if (path.basename(file).includes("catalog-maintenance") || path.basename(file).includes("cashier-lookup") || path.basename(file).includes("receiving-stock") || path.basename(file).includes("cashier-sales") || path.basename(file).includes("expenses-online") || path.basename(file).includes("offer-management") || path.basename(file).includes("physical-returns") || path.basename(file).includes("storefront-settings")) {
     throw new Error("Login entry statically imports a catalog, lookup, receiving or sales chunk.");
   }
 }
@@ -66,6 +78,9 @@ const dynamicLookup = [];
 const dynamicReceiving = [];
 const dynamicSales = [];
 const dynamicExpenses = [];
+const dynamicOffers = [];
+const dynamicReturns = [];
+const dynamicStorefrontSettings = [];
 for (const file of staticGraph) {
   const source = await readFile(file, "utf8");
   const specifiers = dynamicImportSpecifiers(source);
@@ -75,6 +90,9 @@ for (const file of staticGraph) {
   dynamicReceiving.push(...specifiers.filter((specifier) => specifier.includes("receiving-stock")));
   dynamicSales.push(...specifiers.filter((specifier) => specifier.includes("cashier-sales")));
   dynamicExpenses.push(...specifiers.filter((specifier) => specifier.includes("expenses-online")));
+  dynamicOffers.push(...specifiers.filter((specifier) => specifier.includes("offer-management")));
+  dynamicReturns.push(...specifiers.filter((specifier) => specifier.includes("physical-returns")));
+  dynamicStorefrontSettings.push(...specifiers.filter((specifier) => specifier.includes("storefront-settings")));
 }
 if (dynamicStaff.length === 0) {
   throw new Error("Staff management chunk is not loaded through a dynamic import from the login graph.");
@@ -94,6 +112,15 @@ if (dynamicSales.length === 0) {
 if (dynamicExpenses.length === 0) {
   throw new Error("Expenses chunk is not loaded through a dynamic import from the login graph.");
 }
+if (dynamicOffers.length === 0) {
+  throw new Error("Offer management chunk is not loaded through a dynamic import from the login graph.");
+}
+if (dynamicReturns.length === 0) {
+  throw new Error("Returns chunk is not loaded through a dynamic import from the login graph.");
+}
+if (dynamicStorefrontSettings.length === 0) {
+  throw new Error("Storefront settings chunk is not loaded through a dynamic import from the login graph.");
+}
 
 const swFile = internalFiles.find((file) => /(^|\/)sw\.js$/.test(file.replaceAll("\\", "/")));
 if (!swFile) {
@@ -109,8 +136,8 @@ if (!swSource.includes("cashier-sales")) {
 if (!swSource.includes("POS_SW_SCHEMA_VERSION") && !swSource.includes("schemaVersion")) {
   throw new Error("Service worker does not publish POS schema version to waiting clients.");
 }
-if (swSource.includes("staff-management") || swSource.includes("catalog-maintenance") || swSource.includes("receiving-stock") || swSource.includes("expenses-online")) {
-  throw new Error("Service worker precaches optional manager/receiving chunks.");
+if (swSource.includes("staff-management") || swSource.includes("catalog-maintenance") || swSource.includes("receiving-stock") || swSource.includes("expenses-online") || swSource.includes("offer-management") || swSource.includes("physical-returns") || swSource.includes("storefront-settings")) {
+  throw new Error("Service worker precaches optional manager/receiving/returns chunks.");
 }
 if (/\/api\/(?:auth|internal)/.test(swSource) && swSource.includes("CacheFirst")) {
   throw new Error("Service worker must not cache auth or privileged APIs with CacheFirst.");

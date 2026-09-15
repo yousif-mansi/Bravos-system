@@ -94,6 +94,11 @@ export type InventoryTransaction = {
     payloadFingerprint: string;
     actorStaffId: string;
   }): Promise<ClaimedOperation>;
+  claimReturnOperation(input: {
+    operationId: string;
+    payloadFingerprint: string;
+    actorStaffId: string;
+  }): Promise<ClaimedOperation>;
   receiveBatches(input: {
     operationId: string;
     receiptId: string;
@@ -108,6 +113,13 @@ export type InventoryTransaction = {
     recordedAt: Date;
     allowPartial: boolean;
   }): Promise<AllocateResult>;
+  restoreToOriginalBatch(input: {
+    operationId: string;
+    batchId: string;
+    variantId: string;
+    quantity: number;
+    recordedAt: Date;
+  }): Promise<void>;
   recordDiscrepancy(input: {
     operationId: string;
     variantId: string;

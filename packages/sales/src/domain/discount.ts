@@ -21,12 +21,16 @@ export type VariantLineAllocation = {
   originalPiasters: number;
   discountPiasters: number;
   paidPiasters: number;
+  automaticOfferDiscountPiasters: number;
+  employeeDiscountPiasters: number;
   units: Array<{
     unitIndex: number;
     quantity: number;
     listedPiasters: number;
     discountPiasters: number;
     paidPiasters: number;
+    automaticOfferDiscountPiasters: number;
+    employeeDiscountPiasters: number;
   }>;
 };
 
@@ -162,12 +166,16 @@ export function foldAllocatedUnits(units: AllocatedUnit[]): VariantLineAllocatio
       originalPiasters,
       discountPiasters,
       paidPiasters: subtractMoney(originalPiasters, discountPiasters),
+      automaticOfferDiscountPiasters: 0,
+      employeeDiscountPiasters: discountPiasters,
       units: group.map((unit, unitIndex) => ({
         unitIndex,
         quantity: 1,
         listedPiasters: unit.listedPiasters,
         discountPiasters: unit.discountPiasters,
         paidPiasters: unit.paidPiasters,
+        automaticOfferDiscountPiasters: 0,
+        employeeDiscountPiasters: unit.discountPiasters,
       })),
     };
   });
@@ -309,6 +317,8 @@ function foldDiscountGroups(groups: DiscountGroup[]): VariantLineAllocation[] {
         listedPiasters: group.listedPiasters,
         discountPiasters: group.discountPiasters,
         paidPiasters: subtractMoney(group.listedPiasters, group.discountPiasters),
+        automaticOfferDiscountPiasters: 0,
+        employeeDiscountPiasters: group.discountPiasters,
       });
       ordinal += group.quantity;
     }
@@ -319,6 +329,8 @@ function foldDiscountGroups(groups: DiscountGroup[]): VariantLineAllocation[] {
       originalPiasters,
       discountPiasters,
       paidPiasters: subtractMoney(originalPiasters, discountPiasters),
+      automaticOfferDiscountPiasters: 0,
+      employeeDiscountPiasters: discountPiasters,
       units,
     };
   });
@@ -327,12 +339,194 @@ function foldDiscountGroups(groups: DiscountGroup[]): VariantLineAllocation[] {
 export function priceSaleLines(
   lines: Array<{ variantId: string; quantity: number; listedUnitPricePiasters: number }>,
   employeeDiscountPiasters: number,
+  automaticRanges?: Array<{
+    variantId: string;
+    unitIndex: number;
+    quantity: number;
+    listedPiasters: number;
+    automaticOfferDiscountPiasters: number;
+  }>,
 ): { lines: VariantLineAllocation[]; originalTotalPiasters: number; finalTotalPiasters: number } {
-  const folded = foldDiscountGroups(allocateDiscountGroups(lines, employeeDiscountPiasters));
+  const folded = automaticRanges
+    ? priceWithAutomaticEffects(lines, automaticRanges, employeeDiscountPiasters)
+    : foldDiscountGroups(allocateDiscountGroups(lines, employeeDiscountPiasters));
   const originalTotalPiasters = folded.reduce((sum, line) => addMoney(sum, line.originalPiasters), 0);
+  const automaticOfferDiscountPiasters = folded.reduce(
+    (sum, line) => addMoney(sum, line.automaticOfferDiscountPiasters),
+    0,
+  );
   return {
     lines: folded,
     originalTotalPiasters,
-    finalTotalPiasters: subtractMoney(originalTotalPiasters, employeeDiscountPiasters),
+    finalTotalPiasters: subtractMoney(
+      subtractMoney(originalTotalPiasters, automaticOfferDiscountPiasters),
+      employeeDiscountPiasters,
+    ),
   };
+}
+
+type EffectRange = {
+  variantId: string;
+  unitIndex: number;
+  quantity: number;
+  listedPiasters: number;
+  automaticOfferDiscountPiasters: number;
+  employeeDiscountPiasters: number;
+};
+
+function priceWithAutomaticEffects(
+  lines: Array<{ variantId: string; quantity: number; listedUnitPricePiasters: number }>,
+  automaticRanges: Array<{
+    variantId: string;
+    unitIndex: number;
+    quantity: number;
+    listedPiasters: number;
+    automaticOfferDiscountPiasters: number;
+  }>,
+  employeeDiscountPiasters: number,
+): VariantLineAllocation[] {
+  const expected = new Map<string, { quantity: number; listedPiasters: number }>();
+  for (const line of lines) {
+    const current = expected.get(line.variantId);
+    if (current && current.listedPiasters !== line.listedUnitPricePiasters) {
+      throw new SalesValidationError("تفاصيل العرض التلقائي غير متطابقة.");
+    }
+    expected.set(line.variantId, {
+      quantity: (current?.quantity ?? 0) + line.quantity,
+      listedPiasters: line.listedUnitPricePiasters,
+    });
+  }
+  assertMergedSaleQuantities(lines);
+
+  const nextIndex = new Map<string, number>();
+  const effects: EffectRange[] = automaticRanges.map((automatic) => {
+    const source = expected.get(automatic.variantId);
+    const expectedIndex = nextIndex.get(automatic.variantId) ?? 0;
+    if (!source || automatic.unitIndex !== expectedIndex || automatic.listedPiasters !== source.listedPiasters
+      || !Number.isSafeInteger(automatic.quantity) || automatic.quantity < 1
+      || automatic.quantity > source.quantity - expectedIndex) {
+      throw new SalesValidationError("تفاصيل العرض التلقائي غير متطابقة.");
+    }
+    nextIndex.set(automatic.variantId, expectedIndex + automatic.quantity);
+    const discount = assertSafeMoney(automatic.automaticOfferDiscountPiasters);
+    if (discount > automatic.listedPiasters) {
+      throw new SalesValidationError("تفاصيل العرض التلقائي غير صالحة.");
+    }
+    return { ...automatic, automaticOfferDiscountPiasters: discount, employeeDiscountPiasters: 0 };
+  });
+  for (const [variantId, source] of expected) {
+    if ((nextIndex.get(variantId) ?? 0) !== source.quantity) {
+      throw new SalesValidationError("تفاصيل العرض التلقائي غير متطابقة.");
+    }
+  }
+  if (nextIndex.size !== expected.size) {
+    throw new SalesValidationError("تفاصيل العرض التلقائي غير متطابقة.");
+  }
+
+  return foldEffectRanges(allocateEmployeeEffectRanges(effects, employeeDiscountPiasters));
+}
+
+function allocateEmployeeEffectRanges(input: EffectRange[], discountPiasters: number): EffectRange[] {
+  if (discountPiasters < 0) throw new SalesValidationError("قيمة الخصم غير صالحة.");
+  assertSafeMoney(discountPiasters);
+  const available = input.reduce((sum, range) => addMoney(
+    sum,
+    multiplyMoney(subtractMoney(range.listedPiasters, range.automaticOfferDiscountPiasters), range.quantity),
+  ), 0);
+  if (discountPiasters > available) throw new SalesValidationError("لا يمكن أن يكون إجمالي البيع سالباً.");
+
+  let ranges = input.map((range) => ({ ...range }));
+  let remaining = discountPiasters;
+  while (remaining > 0) {
+    const eligibleQuantity = ranges.reduce((sum, range) =>
+      range.listedPiasters - range.automaticOfferDiscountPiasters - range.employeeDiscountPiasters > 0
+        ? addMoney(sum, range.quantity)
+        : sum, 0);
+    if (eligibleQuantity === 0) throw new SalesValidationError("لا يمكن أن يكون إجمالي البيع سالباً.");
+    const share = Math.floor(remaining / eligibleQuantity);
+    if (share === 0) {
+      let need = remaining;
+      const split: EffectRange[] = [];
+      for (const range of ranges) {
+        const capacity = range.listedPiasters - range.automaticOfferDiscountPiasters - range.employeeDiscountPiasters;
+        if (need <= 0 || capacity <= 0) {
+          split.push(range);
+          continue;
+        }
+        const quantity = Math.min(need, range.quantity);
+        split.push({ ...range, quantity, employeeDiscountPiasters: range.employeeDiscountPiasters + 1 });
+        if (quantity < range.quantity) {
+          split.push({ ...range, unitIndex: range.unitIndex + quantity, quantity: range.quantity - quantity });
+        }
+        need -= quantity;
+      }
+      ranges = split;
+      remaining = need;
+      continue;
+    }
+    let applied = 0;
+    ranges = ranges.map((range) => {
+      const capacity = range.listedPiasters - range.automaticOfferDiscountPiasters - range.employeeDiscountPiasters;
+      if (capacity <= 0) return range;
+      const increment = Math.min(share, capacity);
+      applied = addMoney(applied, multiplyMoney(increment, range.quantity));
+      return { ...range, employeeDiscountPiasters: range.employeeDiscountPiasters + increment };
+    });
+    remaining -= applied;
+  }
+  return ranges;
+}
+
+function foldEffectRanges(ranges: EffectRange[]): VariantLineAllocation[] {
+  const grouped = new Map<string, EffectRange[]>();
+  for (const range of ranges) {
+    const list = grouped.get(range.variantId) ?? [];
+    list.push(range);
+    grouped.set(range.variantId, list);
+  }
+  return [...grouped.keys()].sort().map((variantId) => {
+    const source = grouped.get(variantId) ?? [];
+    const automaticOfferDiscountPiasters = source.reduce((sum, range) =>
+      addMoney(sum, multiplyMoney(range.automaticOfferDiscountPiasters, range.quantity)), 0);
+    const employeeDiscountPiasters = source.reduce((sum, range) =>
+      addMoney(sum, multiplyMoney(range.employeeDiscountPiasters, range.quantity)), 0);
+    const originalPiasters = source.reduce((sum, range) =>
+      addMoney(sum, multiplyMoney(range.listedPiasters, range.quantity)), 0);
+    const compact: VariantLineAllocation["units"] = [];
+    for (const range of source) {
+      const last = compact.at(-1);
+      const discountPiasters = addMoney(range.automaticOfferDiscountPiasters, range.employeeDiscountPiasters);
+      const paidPiasters = subtractMoney(range.listedPiasters, discountPiasters);
+      if (
+        last && last.unitIndex + last.quantity === range.unitIndex
+        && last.listedPiasters === range.listedPiasters
+        && last.automaticOfferDiscountPiasters === range.automaticOfferDiscountPiasters
+        && last.employeeDiscountPiasters === range.employeeDiscountPiasters
+      ) {
+        last.quantity += range.quantity;
+      } else {
+        compact.push({
+          unitIndex: range.unitIndex,
+          quantity: range.quantity,
+          listedPiasters: range.listedPiasters,
+          automaticOfferDiscountPiasters: range.automaticOfferDiscountPiasters,
+          employeeDiscountPiasters: range.employeeDiscountPiasters,
+          discountPiasters,
+          paidPiasters,
+        });
+      }
+    }
+    const discountPiasters = addMoney(automaticOfferDiscountPiasters, employeeDiscountPiasters);
+    return {
+      variantId,
+      quantity: source.reduce((sum, range) => sum + range.quantity, 0),
+      listedUnitPricePiasters: source[0]?.listedPiasters ?? 0,
+      originalPiasters,
+      automaticOfferDiscountPiasters,
+      employeeDiscountPiasters,
+      discountPiasters,
+      paidPiasters: subtractMoney(originalPiasters, discountPiasters),
+      units: compact,
+    };
+  });
 }

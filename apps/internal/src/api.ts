@@ -1,5 +1,7 @@
 import type {
   CashierProductLookupDto,
+  AutomaticOfferDto,
+  AutomaticOfferWriteDto,
   CategoryDto,
   ColorDto,
   ExpenseCategoryDto,
@@ -11,10 +13,14 @@ import type {
   ManagerProductDto,
   PosPriceSnapshotDto,
   ReceiptDto,
+  ReturnDto,
+  ReturnListPageDto,
+  ReturnSourceDto,
   SaleAcknowledgementDto,
   SaleDto,
   SizeDto,
   StaffAccountDto,
+  StorefrontContactsDto,
   UploadedProductMediaDto,
   VariantLowStockDto,
   WorkspaceDto,
@@ -233,6 +239,22 @@ export function updateProduct(
   });
 }
 
+export function getStorefrontContacts() {
+  return request<StorefrontContactsDto>("/api/internal/storefront/contacts");
+}
+
+export function updateStorefrontContacts(input: {
+  whatsappUrl: string | null;
+  facebookUrl: string | null;
+  instagramUrl: string | null;
+  tiktokUrl: string | null;
+}) {
+  return request<StorefrontContactsDto>("/api/internal/storefront/contacts", {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
 export async function uploadProductImage(file: File) {
   if (file.size > MAX_PRODUCT_IMAGE_BYTES) {
     throw new ApiError(400, "VALIDATION", "حجم الصورة غير صالح. الحد الأقصى 5 ميجابايت.");
@@ -261,6 +283,24 @@ function fileToBase64(file: File): Promise<string> {
       resolve(value.slice(value.indexOf(",") + 1));
     };
     reader.readAsDataURL(file);
+  });
+}
+
+export function listAutomaticOffers() {
+  return request<AutomaticOfferDto[]>("/api/internal/pricing/offers");
+}
+
+export function createAutomaticOffer(input: AutomaticOfferWriteDto) {
+  return request<AutomaticOfferDto>("/api/internal/pricing/offers", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateAutomaticOffer(offerId: string, input: AutomaticOfferWriteDto) {
+  return request<AutomaticOfferDto>(`/api/internal/pricing/offers/${offerId}`, {
+    method: "PUT",
+    body: JSON.stringify(input),
   });
 }
 
@@ -468,4 +508,72 @@ export async function lookupExpenseOperation(operationId: string): Promise<Expen
     if (caught instanceof ApiError && caught.status === 404) return null;
     throw caught;
   }
+}
+
+export type ReturnSourceSearch = {
+  reference?: string;
+  date?: string;
+  branchId?: string;
+  item?: string;
+  amountPiasters?: number;
+};
+
+export function listReturnSources(search: ReturnSourceSearch = {}) {
+  const query = new URLSearchParams();
+  if (search.reference) query.set("reference", search.reference);
+  if (search.date) query.set("date", search.date);
+  if (search.branchId) query.set("branchId", search.branchId);
+  if (search.item) query.set("item", search.item);
+  if (search.amountPiasters !== undefined) query.set("amountPiasters", String(search.amountPiasters));
+  const suffix = query.size ? `?${query.toString()}` : "";
+  return request<ReturnSourceDto[]>(`/api/internal/returns/sources${suffix}`);
+}
+
+export function createReturnDraft(input: {
+  returnId: string;
+  operationId: string;
+  sourceSaleId: string;
+  handlingBranchId: string;
+  authorizedRefundPiasters: number;
+  lines: Array<{ sourceSaleLineId: string; quantity: number; sellableQuantity: number }>;
+}) {
+  return request<ReturnDto>("/api/internal/returns", { method: "POST", body: JSON.stringify(input) });
+}
+
+export function updateReturnDraft(returnId: string, input: {
+  expectedRevision: number;
+  handlingBranchId: string;
+  authorizedRefundPiasters: number;
+  lines: Array<{ sourceSaleLineId: string; quantity: number; sellableQuantity: number }>;
+}) {
+  return request<ReturnDto>(`/api/internal/returns/${returnId}`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
+export function postReturn(returnId: string, expectedRevision: number) {
+  return request<ReturnDto>(`/api/internal/returns/${returnId}/post`, {
+    method: "POST",
+    body: JSON.stringify({ receivedAndInspected: true, expectedRevision }),
+  });
+}
+
+export function payReturnRefund(returnId: string, amountPiasters: number, operationId: string) {
+  return request<ReturnDto>(`/api/internal/returns/${returnId}/refund`, {
+    method: "POST",
+    body: JSON.stringify({ operationId, status: "paid", amountPiasters }),
+  });
+}
+
+export function listReturns(input: { limit?: number; cursor?: string } = {}) {
+  const query = new URLSearchParams();
+  if (input.limit !== undefined) query.set("limit", String(input.limit));
+  if (input.cursor) query.set("cursor", input.cursor);
+  const suffix = query.size ? `?${query.toString()}` : "";
+  return request<ReturnListPageDto>(`/api/internal/returns${suffix}`);
+}
+
+export function getReturn(returnId: string) {
+  return request<ReturnDto>(`/api/internal/returns/${returnId}`);
 }
