@@ -15,7 +15,7 @@ import {
   createCatalogServices,
   type CatalogServices,
 } from "@bravos/catalog";
-import { createPostgresCatalogStore } from "@bravos/catalog/node";
+import { createLocalProductMediaStorage, createPostgresCatalogStore } from "@bravos/catalog/node";
 import {
   InventoryValidationError,
   OperationConflictError,
@@ -117,6 +117,7 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
       recoveryOutbox,
     });
     const catalogStore = createPostgresCatalogStore(pool);
+    const productMedia = createLocalProductMediaStorage(config.productMediaDir ?? ".local/product-media");
     const inventoryStore = createPostgresInventoryStore(pool);
     const actors = {
       getStaff: (staffId: string) => directory.getStaff(staffId),
@@ -135,6 +136,7 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
           return [...new Set([...stocked, ...sold])];
         },
       },
+      media: productMedia,
     });
     const inventory = createInventoryServices({
       store: inventoryStore,
@@ -250,6 +252,29 @@ async function registerRoutes(
     ok: true,
     application: "bravos-public",
   }));
+
+  app.get("/api/public/catalog/products", async (_request, reply) => {
+    reply.header("cache-control", "no-store");
+    return handle(reply, async () => catalog.listPublicProducts());
+  });
+
+  app.get("/api/public/catalog/products/:productId", async (request, reply) => {
+    const params = request.params as { productId: string };
+    reply.header("cache-control", "no-store");
+    return handle(reply, async () => catalog.getPublicProduct(params.productId));
+  });
+
+  app.get("/api/public/catalog/media/*", async (request, reply) => {
+    const params = request.params as { "*": string };
+    reply.header("cache-control", "no-store");
+    reply.header("x-content-type-options", "nosniff");
+    reply.header("content-security-policy", "default-src 'none'; sandbox");
+    return handle(reply, async () => {
+      const media = await catalog.getPublicMedia(params["*"]);
+      reply.header("content-type", media.contentType);
+      return reply.send(Buffer.from(media.bytes));
+    });
+  });
 
   app.get("/api/internal/workspace", async (request, reply) => {
     return handle(reply, async () => services.workspace(await verifiedAuth(identity, request)));
@@ -403,6 +428,35 @@ async function registerRoutes(
       const created = await catalog.createProduct(await verifiedAuth(identity, request), request.body);
       reply.status(201);
       return created;
+    });
+  });
+
+  app.post(
+    "/api/internal/catalog/media",
+    { bodyLimit: 7_100_000 },
+    async (request, reply) => {
+      return handle(reply, async () => {
+        const body = asObject(request.body);
+        const uploaded = await catalog.uploadProductImage(await verifiedAuth(identity, request), {
+          fileName: body.fileName,
+          contentType: body.contentType,
+          bytes: decodeBase64(body.base64),
+        });
+        reply.status(201);
+        return uploaded;
+      });
+    },
+  );
+
+  app.get("/api/internal/catalog/media/*", async (request, reply) => {
+    const params = request.params as { "*": string };
+    reply.header("cache-control", "no-store");
+    reply.header("x-content-type-options", "nosniff");
+    reply.header("content-security-policy", "default-src 'none'; sandbox");
+    return handle(reply, async () => {
+      const media = await catalog.getManagerMedia(await verifiedAuth(identity, request), params["*"]);
+      reply.header("content-type", media.contentType);
+      return reply.send(Buffer.from(media.bytes));
     });
   });
 
@@ -691,6 +745,23 @@ function requestHeaders(request: FastifyRequest): Headers {
 
 function asObject(body: unknown): Record<string, unknown> {
   return body && typeof body === "object" ? (body as Record<string, unknown>) : {};
+}
+
+function decodeBase64(value: unknown): Uint8Array {
+  if (
+    typeof value !== "string" ||
+    value.length < 4 ||
+    value.length % 4 !== 0 ||
+    !/^[A-Za-z0-9+/]+={0,2}$/.test(value)
+  ) {
+    throw new CatalogValidationError("بيانات الصورة غير صالحة.");
+  }
+  const bytes = Buffer.from(value, "base64");
+  const canonical = bytes.toString("base64").replace(/=+$/, "");
+  if (canonical !== value.replace(/=+$/, "")) {
+    throw new CatalogValidationError("بيانات الصورة غير صالحة.");
+  }
+  return bytes;
 }
 
 async function handle(reply: FastifyReply, run: () => Promise<unknown>) {

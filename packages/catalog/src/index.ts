@@ -7,8 +7,13 @@ export type {
   ColorDto,
   ManagerProductDto,
   ManagerVariantDto,
+  PublicProductAvailability,
+  PublicProductDto,
+  PublicProductPublication,
+  PublicProductVariantDto,
   PublicationStatus,
   SizeDto,
+  UploadedProductMediaDto,
 } from "@bravos/contracts";
 export { CatalogValidationError, DuplicateProductCodeError, ReferencedVariantError } from "./domain/errors.ts";
 export { assertPiasters, resolvedSellingPricePiasters } from "./domain/money.ts";
@@ -24,6 +29,7 @@ export type {
   CatalogStore,
   ListedPriceBasis,
   ProductWrite,
+  ProductMediaStorage,
   VariantReferenceReader,
   VariantWrite,
   VerifiedAuth,

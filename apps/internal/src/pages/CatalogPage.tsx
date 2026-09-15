@@ -1,4 +1,4 @@
-import { type FormEvent, useEffect, useState } from "react";
+import { type ChangeEvent, type FormEvent, useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import type {
   CategoryDto,
@@ -22,6 +22,7 @@ import {
   updateColor,
   updateProduct,
   updateSize,
+  uploadProductImage,
 } from "../api.ts";
 import { egpInputToPiasters, formatEgpFromPiasters, piastersToEgpInput } from "../money.ts";
 import { signOutPreservingSales } from "../session.ts";
@@ -41,6 +42,7 @@ type ProductDraft = {
   defaultEgp: string;
   publication: PublicationStatus;
   imageRefs: string[];
+  sizeGuideAr: string;
   variants: VariantDraft[];
 };
 
@@ -57,6 +59,7 @@ function emptyProduct(): ProductDraft {
     defaultEgp: "",
     publication: "hidden",
     imageRefs: [],
+    sizeGuideAr: "",
     variants: [emptyVariant()],
   };
 }
@@ -82,6 +85,13 @@ export default function CatalogPage({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [product, setProduct] = useState<ProductDraft>(emptyProduct);
   const [pending, setPending] = useState("");
+  const [productPending, setProductPending] = useState<"" | "media" | "product">("");
+  const productDraftVersion = useRef(0);
+
+  function replaceProductDraft(next: ProductDraft) {
+    productDraftVersion.current += 1;
+    setProduct(next);
+  }
 
   async function refresh() {
     const [nextCategories, nextSizes, nextColors, nextProducts] = await Promise.all([
@@ -213,6 +223,9 @@ export default function CatalogPage({
 
   async function onSaveProduct(event: FormEvent) {
     event.preventDefault();
+    if (productPending) {
+      return;
+    }
     setError("");
     setNotice("");
     const defaultSellingPricePiasters = egpInputToPiasters(product.defaultEgp);
@@ -244,7 +257,7 @@ export default function CatalogPage({
         sellingPricePiastersOverride: override,
       });
     }
-    setPending("product");
+    setProductPending("product");
     try {
       const payload = {
         code: product.code,
@@ -254,6 +267,7 @@ export default function CatalogPage({
         defaultSellingPricePiasters,
         publication: product.publication,
         imageRefs: product.imageRefs,
+        sizeGuideAr: product.sizeGuideAr.trim() || null,
         variants,
       };
       if (editingId) {
@@ -264,12 +278,12 @@ export default function CatalogPage({
         setNotice("تم إنشاء المنتج.");
       }
       setEditingId(null);
-      setProduct(emptyProduct());
+      replaceProductDraft(emptyProduct());
       await refresh();
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.messageAr : "تعذر حفظ المنتج.");
     } finally {
-      setPending("");
+      setProductPending("");
     }
   }
 
@@ -277,7 +291,7 @@ export default function CatalogPage({
     setError("");
     setNotice("");
     setEditingId(item.id);
-    setProduct({
+    replaceProductDraft({
       code: item.code,
       nameAr: item.nameAr,
       descriptionAr: item.descriptionAr,
@@ -285,6 +299,7 @@ export default function CatalogPage({
       defaultEgp: piastersToEgpInput(item.defaultSellingPricePiasters),
       publication: item.publication,
       imageRefs: item.imageRefs,
+      sizeGuideAr: item.sizeGuideAr ?? "",
       variants: item.variants.map((variant) => ({
         key: variant.id,
         sizeId: variant.size.id,
@@ -307,6 +322,57 @@ export default function CatalogPage({
       ...product,
       variants: product.variants.filter((_, itemIndex) => itemIndex !== index),
     });
+  }
+
+  async function onUploadImages(event: ChangeEvent<HTMLInputElement>) {
+    const input = event.currentTarget;
+    const files = Array.from(input.files ?? []);
+    input.value = "";
+    if (files.length === 0) {
+      return;
+    }
+    if (productPending) {
+      return;
+    }
+    if (product.imageRefs.length + files.length > 20) {
+      setError("يمكن إضافة 20 صورة كحد أقصى للمنتج.");
+      return;
+    }
+    setError("");
+    setNotice("");
+    setProductPending("media");
+    const version = productDraftVersion.current;
+    let uploadedCount = 0;
+    try {
+      for (const file of files) {
+        try {
+          const uploaded = await uploadProductImage(file);
+          if (productDraftVersion.current !== version) {
+            return;
+          }
+          uploadedCount += 1;
+          setProduct((current) => (
+            productDraftVersion.current === version
+              ? { ...current, imageRefs: [...current.imageRefs, uploaded.ref] }
+              : current
+          ));
+        } catch (caught) {
+          if (productDraftVersion.current !== version) {
+            return;
+          }
+          setError(caught instanceof ApiError ? caught.messageAr : "تعذر رفع الصورة.");
+          if (uploadedCount > 0) {
+            setNotice(`تم رفع ${uploadedCount} من ${files.length} صورة وإضافتها إلى المسودة. احفظ المنتج للاحتفاظ بما تم رفعه.`);
+          }
+          return;
+        }
+      }
+      if (productDraftVersion.current === version) {
+        setNotice(uploadedCount === 1 ? "تم رفع الصورة. احفظ المنتج لتثبيتها." : `تم رفع ${uploadedCount} صور. احفظ المنتج لتثبيتها.`);
+      }
+    } finally {
+      setProductPending("");
+    }
   }
 
   const roots = categories.filter((item) => item.parentId === null);
@@ -420,7 +486,12 @@ export default function CatalogPage({
             </div>
           ) : null}
         </section>
-        <form className="card" aria-label={editingId ? "تعديل منتج" : "إنشاء منتج"} onSubmit={(event) => void onSaveProduct(event)}>
+        <form
+          className="card"
+          aria-busy={Boolean(productPending)}
+          aria-label={editingId ? "تعديل منتج" : "إنشاء منتج"}
+          onSubmit={(event) => void onSaveProduct(event)}
+        >
           <h2>{editingId ? "تعديل منتج" : "إنشاء منتج"}</h2>
           <div className="field">
             <label htmlFor="productCode">رمز المنتج</label>
@@ -461,6 +532,52 @@ export default function CatalogPage({
               <option value="available">متاح</option>
             </select>
           </div>
+          <div className="field">
+            <label htmlFor="productSizeGuide">دليل المقاسات (اختياري)</label>
+            <textarea
+              id="productSizeGuide"
+              value={product.sizeGuideAr}
+              onChange={(event) => setProduct({ ...product, sizeGuideAr: event.target.value })}
+              rows={5}
+              maxLength={4000}
+              placeholder="مثال: المقاس L — عرض الصدر 52 سم"
+            />
+          </div>
+          <fieldset className="grant-editor">
+            <legend>صور المنتج</legend>
+            <div className="field">
+              <label htmlFor="productImages">رفع صور JPG أو PNG أو WebP (5 ميجابايت للصورة)</label>
+              <input
+                id="productImages"
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                multiple
+                disabled={Boolean(productPending) || product.imageRefs.length >= 20}
+                onChange={(event) => void onUploadImages(event)}
+              />
+            </div>
+            {productPending === "media" ? <p role="status">جارٍ رفع الصور…</p> : null}
+            {product.imageRefs.length > 0 ? (
+              <div className="media-grid" aria-label="صور المنتج الحالية">
+                {product.imageRefs.map((ref, index) => (
+                  <figure className="media-item" key={ref}>
+                    <img src={`/api/internal/catalog/media/${ref}`} alt={`صورة المنتج ${index + 1}`} />
+                    <button
+                      type="button"
+                      className="secondary"
+                      disabled={Boolean(productPending)}
+                      onClick={() => setProduct((current) => ({
+                        ...current,
+                        imageRefs: current.imageRefs.filter((item) => item !== ref),
+                      }))}
+                    >
+                      إزالة الصورة
+                    </button>
+                  </figure>
+                ))}
+              </div>
+            ) : <p className="muted">لا توجد صور مضافة.</p>}
+          </fieldset>
           <fieldset className="grant-editor">
             <legend>المتغيرات</legend>
             {product.variants.map((variant, index) => (
@@ -521,16 +638,17 @@ export default function CatalogPage({
             </button>
           </fieldset>
           <div className="actions">
-            <button type="submit" disabled={pending === "product"}>
-              {pending === "product" ? "جارٍ الحفظ…" : editingId ? "حفظ التعديل" : "حفظ المنتج"}
+            <button type="submit" disabled={Boolean(productPending)}>
+              {productPending === "product" ? "جارٍ الحفظ…" : editingId ? "حفظ التعديل" : "حفظ المنتج"}
             </button>
             {editingId ? (
               <button
                 type="button"
                 className="secondary"
+                disabled={Boolean(productPending)}
                 onClick={() => {
                   setEditingId(null);
-                  setProduct(emptyProduct());
+                  replaceProductDraft(emptyProduct());
                 }}
               >
                 إلغاء التعديل
@@ -549,11 +667,17 @@ export default function CatalogPage({
               <article className="staff-item" key={item.id}>
                 <strong>{item.nameAr}</strong>
                 <p className="muted">رمز المنتج: {item.code} — {item.category.nameAr}</p>
+                <p>حالة الموقع: {publicationLabel(item.publication)}</p>
                 <p>السعر الافتراضي: {formatEgpFromPiasters(item.defaultSellingPricePiasters)}</p>
                 <p>
                   المتغيرات: {item.variants.map((variant) => `${variant.size.nameAr} / ${variant.color.nameAr} (${formatEgpFromPiasters(variant.sellingPricePiasters)})`).join("، ")}
                 </p>
-                <button type="button" className="secondary" onClick={() => startEdit(item)}>
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={Boolean(productPending)}
+                  onClick={() => startEdit(item)}
+                >
                   تعديل
                 </button>
               </article>
@@ -570,6 +694,12 @@ export default function CatalogPage({
       variants: product.variants.map((item, itemIndex) => (itemIndex === index ? next : item)),
     });
   }
+}
+
+function publicationLabel(publication: PublicationStatus): string {
+  if (publication === "available") return "متاح";
+  if (publication === "coming_soon") return "قريباً";
+  return "مخفي";
 }
 
 function RenameForm({

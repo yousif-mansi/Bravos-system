@@ -1,0 +1,117 @@
+:root {
+  color-scheme: light;
+  --paper: #f7f5f1;
+  --surface: #ffffff;
+  --ink: #171512;
+  --muted: #6c675f;
+  --line: #ded9d0;
+  --accent: #251f1a;
+  --soft: #ede8df;
+  font-family: "Segoe UI", Tahoma, Arial, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--paper);
+  color: var(--ink);
+  line-height: 1.6;
+}
+
+a { color: inherit; }
+
+.store-shell {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 1.25rem;
+}
+
+.store-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: end;
+  gap: 1rem;
+  padding: 1.5rem 0 2rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.store-header h1, .store-header p, .product-copy h1, .product-copy p { margin-top: 0; }
+.eyebrow { color: var(--muted); margin-bottom: 0.2rem; }
+.muted { color: var(--muted); }
+
+.product-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 1.25rem;
+  padding: 2rem 0;
+}
+
+.product-card {
+  display: grid;
+  gap: 0.85rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 0.9rem;
+  text-decoration: none;
+}
+
+.photo-frame {
+  position: relative;
+  overflow: hidden;
+  aspect-ratio: 4 / 5;
+  border-radius: 12px;
+  background: var(--soft);
+}
+
+.photo-frame img { object-fit: cover; }
+.photo-placeholder { display: grid; place-items: center; height: 100%; color: var(--muted); }
+
+.badge {
+  display: inline-flex;
+  width: fit-content;
+  padding: 0.25rem 0.65rem;
+  border-radius: 999px;
+  background: var(--soft);
+  font-weight: 700;
+}
+
+.product-page {
+  display: grid;
+  gap: 2rem;
+  padding: 2rem 0;
+}
+
+.gallery { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.75rem; }
+.gallery .photo-frame:first-child { grid-column: 1 / -1; }
+
+.variant-picker {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 1rem;
+  display: grid;
+  gap: 0.7rem;
+}
+
+.variant-option {
+  display: flex;
+  gap: 0.55rem;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.7rem;
+}
+
+.variant-option:has(input:disabled) { color: var(--muted); background: var(--soft); }
+.size-guide { white-space: pre-wrap; padding: 1rem; border-inline-start: 3px solid var(--accent); background: var(--surface); }
+
+@media (min-width: 800px) {
+  .product-page { grid-template-columns: minmax(0, 1.1fr) minmax(320px, 0.9fr); }
+}
+
+@media (max-width: 600px) {
+  .store-header { align-items: start; flex-direction: column; }
+  .store-shell { padding: 0.9rem; }
+}

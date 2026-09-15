@@ -15,6 +15,7 @@ import type {
   SaleDto,
   SizeDto,
   StaffAccountDto,
+  UploadedProductMediaDto,
   VariantLowStockDto,
   WorkspaceDto,
 } from "@bravos/contracts";
@@ -29,6 +30,8 @@ export class ApiError extends Error {
     this.name = "ApiError";
   }
 }
+
+const MAX_PRODUCT_IMAGE_BYTES = 5 * 1024 * 1024;
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -193,6 +196,7 @@ export function createProduct(input: {
   defaultSellingPricePiasters: number;
   publication: "available" | "coming_soon" | "hidden";
   imageRefs: string[];
+  sizeGuideAr: string | null;
   variants: Array<{
     sizeId: string;
     colorId: string;
@@ -215,6 +219,7 @@ export function updateProduct(
     defaultSellingPricePiasters: number;
     publication: "available" | "coming_soon" | "hidden";
     imageRefs: string[];
+    sizeGuideAr: string | null;
     variants: Array<{
       sizeId: string;
       colorId: string;
@@ -225,6 +230,37 @@ export function updateProduct(
   return request<ManagerProductDto>(`/api/internal/catalog/products/${productId}`, {
     method: "PATCH",
     body: JSON.stringify(input),
+  });
+}
+
+export async function uploadProductImage(file: File) {
+  if (file.size > MAX_PRODUCT_IMAGE_BYTES) {
+    throw new ApiError(400, "VALIDATION", "حجم الصورة غير صالح. الحد الأقصى 5 ميجابايت.");
+  }
+  const base64 = await fileToBase64(file);
+  return request<UploadedProductMediaDto>("/api/internal/catalog/media", {
+    method: "POST",
+    body: JSON.stringify({
+      fileName: file.name,
+      contentType: file.type,
+      base64,
+    }),
+  });
+}
+
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("تعذر قراءة ملف الصورة."));
+    reader.onload = () => {
+      const value = reader.result;
+      if (typeof value !== "string") {
+        reject(new Error("تعذر قراءة ملف الصورة."));
+        return;
+      }
+      resolve(value.slice(value.indexOf(",") + 1));
+    };
+    reader.readAsDataURL(file);
   });
 }
 

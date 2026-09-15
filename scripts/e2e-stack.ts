@@ -6,6 +6,7 @@ import { buildApp } from "../apps/api/src/app.ts";
 import { ensureOwner } from "../apps/api/src/bootstrap.ts";
 
 const outboxDir = path.resolve(".local/e2e-outbox");
+const productMediaDir = path.resolve(".local/e2e-product-media");
 await mkdir(outboxDir, { recursive: true });
 console.log("e2e: starting postgres");
 const cluster = await startPostgresCluster({ port: 55433 });
@@ -22,6 +23,7 @@ const built = await buildApp({
   secureCookies: false,
   ownerRecoveryAdapter: "local-outbox",
   ownerRecoveryOutboxDir: outboxDir,
+  productMediaDir,
 });
 try {
   await ensureOwner(built.services, {

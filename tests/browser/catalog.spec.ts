@@ -32,7 +32,7 @@ test("manager maintains a product and cashier looks it up by code", async ({ pag
   await productForm.getByLabel("التصنيف").selectOption({ label: "تيشيرتات" });
   await productForm.getByLabel("سعر البيع الافتراضي بالجنيه").fill("250");
   await productForm.getByLabel("حالة الموقع").selectOption("hidden");
-  await productForm.getByLabel("المقاس").selectOption({ label: "L" });
+  await productForm.getByLabel("المقاس", { exact: true }).selectOption({ label: "L" });
   await productForm.getByLabel("اللون").selectOption({ label: "أسود" });
   await productForm.getByRole("button", { name: "حفظ المنتج" }).click();
   await expect(page.getByRole("heading", { name: "المنتجات" }).locator("..").getByText("تيشيرت تجريبي", { exact: true })).toBeVisible();
@@ -89,16 +89,16 @@ test("manager renames taxonomy, removes a draft variant, and keeps existing imag
 
   const createForm = page.getByRole("form", { name: "إنشاء منتج" });
   await createForm.getByRole("button", { name: "إضافة متغير" }).click();
-  await expect(createForm.getByLabel("المقاس")).toHaveCount(2);
+  await expect(createForm.getByLabel("المقاس", { exact: true })).toHaveCount(2);
   await createForm.getByRole("button", { name: "حذف المتغير" }).nth(1).click();
-  await expect(createForm.getByLabel("المقاس")).toHaveCount(1);
+  await expect(createForm.getByLabel("المقاس", { exact: true })).toHaveCount(1);
   await expect(createForm.getByRole("button", { name: "حذف المتغير" })).toBeDisabled();
   await createForm.getByLabel("رمز المنتج").fill("JK-E2E");
   await createForm.getByLabel("اسم المنتج").fill("جاكيت تجريبي");
   await createForm.getByLabel("الوصف").fill("صوف");
   await createForm.getByLabel("التصنيف").selectOption({ label: "جاكيتات" });
   await createForm.getByLabel("سعر البيع الافتراضي بالجنيه").fill("400");
-  await createForm.getByLabel("المقاس").selectOption({ label: "S" });
+  await createForm.getByLabel("المقاس", { exact: true }).selectOption({ label: "S" });
   await createForm.getByLabel("اللون").selectOption({ label: "أحمر" });
   await createForm.getByRole("button", { name: "حفظ المنتج" }).click();
   await expect(page.getByRole("heading", { name: "المنتجات" }).locator("..").getByText("جاكيت تجريبي", { exact: true })).toBeVisible();
@@ -125,12 +125,12 @@ test("manager renames taxonomy, removes a draft variant, and keeps existing imag
   await productCard.getByRole("button", { name: "تعديل" }).click();
   const editForm = page.getByRole("form", { name: "تعديل منتج" });
   await expect(editForm.getByLabel("التصنيف").locator("option:checked")).toHaveText("معاطف");
-  await expect(editForm.getByLabel("المقاس").locator("option:checked")).toHaveText("XS");
+  await expect(editForm.getByLabel("المقاس", { exact: true }).locator("option:checked")).toHaveText("XS");
   await expect(editForm.getByLabel("اللون").locator("option:checked")).toHaveText("نبيتي");
   await editForm.getByRole("button", { name: "إضافة متغير" }).click();
-  await expect(editForm.getByLabel("المقاس")).toHaveCount(2);
+  await expect(editForm.getByLabel("المقاس", { exact: true })).toHaveCount(2);
   await editForm.getByRole("button", { name: "حذف المتغير" }).nth(1).click();
-  await expect(editForm.getByLabel("المقاس")).toHaveCount(1);
+  await expect(editForm.getByLabel("المقاس", { exact: true })).toHaveCount(1);
 
   const listed = await staffApi(page, "GET", "/api/internal/catalog/products");
   expect(listed.status).toBe(200);

@@ -15,6 +15,7 @@ if (process.env.NODE_ENV === "production") {
 const setupRoot = path.resolve(process.env.BRAVOS_SETUP_ROOT ?? ".local");
 const dataDir = path.join(setupRoot, "postgres");
 const outboxDir = path.join(setupRoot, "owner-recovery-outbox");
+const productMediaDir = path.join(setupRoot, "product-media");
 const credentialsPath = path.join(setupRoot, "demo-credentials.txt");
 const envPath = path.join(setupRoot, "dev.env");
 
@@ -50,6 +51,7 @@ try {
     secureCookies: false,
     ownerRecoveryAdapter: "local-outbox",
     ownerRecoveryOutboxDir: outboxDir,
+    productMediaDir,
   };
 
   built = await buildApp(config);
@@ -152,6 +154,7 @@ try {
     `BRAVOS_PUBLIC_ORIGIN=${config.publicOrigin}`,
     "BRAVOS_OWNER_RECOVERY_ADAPTER=local-outbox",
     `BRAVOS_OWNER_RECOVERY_OUTBOX_DIR=${outboxDir.replaceAll("\\", "/")}`,
+    `BRAVOS_PRODUCT_MEDIA_DIR=${productMediaDir.replaceAll("\\", "/")}`,
     "BRAVOS_SECURE_COOKIES=false",
     "",
   ].join("\n");

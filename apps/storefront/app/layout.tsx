@@ -1,4 +1,6 @@
 import type { ReactNode } from "react";
+import Link from "next/link";
+import "./globals.css";
 
 export const metadata = {
   title: "برافوس",
@@ -8,15 +10,17 @@ export const metadata = {
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="ar" dir="rtl">
-      <body
-        style={{
-          margin: 0,
-          fontFamily: "Segoe UI, Tahoma, Arial, sans-serif",
-          background: "#f8f5f1",
-          color: "#1f1a16",
-        }}
-      >
-        {children}
+      <body>
+        <div className="store-shell">
+          <header className="store-header">
+            <div>
+              <p className="eyebrow">ملابس رجالي في الفيوم</p>
+              <Link href="/" style={{ textDecoration: "none" }}><strong>برافوس</strong></Link>
+            </div>
+            <p className="muted">المخزون موحّد بين فرعي أبشواي والفيوم</p>
+          </header>
+          {children}
+        </div>
       </body>
     </html>
   );

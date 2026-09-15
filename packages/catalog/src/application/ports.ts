@@ -2,7 +2,9 @@ import type {
   CategoryDto,
   ColorDto,
   ManagerProductDto,
+  PublicProductDto,
   SizeDto,
+  UploadedProductMediaDto,
   VariantIdentityDto,
 } from "@bravos/contracts";
 import type { AuthenticatedStaff, VerifiedAuth } from "@bravos/identity";
@@ -43,6 +45,7 @@ export type ProductWrite = {
   defaultSellingPricePiasters: number;
   publication: PublicationStatus;
   imageRefs: string[];
+  sizeGuideAr: string | null;
   variants: VariantWrite[];
   actorStaffId: string;
 };
@@ -64,11 +67,31 @@ export type CatalogStore = {
   getColor(id: string): Promise<ColorDto | null>;
 
   listProducts(): Promise<ManagerProductDto[]>;
+  listPublishedProducts(): Promise<ManagerProductDto[]>;
   getProduct(id: string): Promise<ManagerProductDto | null>;
+  getPublishedProduct(id: string): Promise<ManagerProductDto | null>;
   findProductByCodeKey(codeKey: string): Promise<ManagerProductDto | null>;
+  isMediaPublic(ref: string): Promise<boolean>;
   getVariants(ids: string[]): Promise<VariantIdentityDto[]>;
   getListedPrices(ids: string[]): Promise<ListedPriceBasis[]>;
   listVariantIds(): Promise<string[]>;
   createProduct(input: ProductWrite): Promise<ManagerProductDto>;
   updateProduct(id: string, input: ProductWrite): Promise<ManagerProductDto | null>;
+};
+
+export type ProductMediaStorage = {
+  save(input: {
+    bytes: Uint8Array;
+    extension: "jpg" | "png" | "webp";
+    contentType: UploadedProductMediaDto["contentType"];
+  }): Promise<UploadedProductMediaDto>;
+  read(ref: string): Promise<{
+    bytes: Uint8Array;
+    contentType: UploadedProductMediaDto["contentType"];
+  } | null>;
+};
+
+export type PublicCatalogReader = {
+  list(): Promise<PublicProductDto[]>;
+  get(id: string): Promise<PublicProductDto | null>;
 };

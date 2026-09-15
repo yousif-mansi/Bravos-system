@@ -9,6 +9,7 @@ export type AppConfig = {
   secureCookies: boolean;
   ownerRecoveryAdapter: string | undefined;
   ownerRecoveryOutboxDir: string | undefined;
+  productMediaDir?: string;
   databasePoolMax?: number;
 };
 
@@ -32,6 +33,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     secureCookies: env.BRAVOS_SECURE_COOKIES === "true" || nodeEnv === "production",
     ownerRecoveryAdapter: env.BRAVOS_OWNER_RECOVERY_ADAPTER,
     ownerRecoveryOutboxDir: env.BRAVOS_OWNER_RECOVERY_OUTBOX_DIR,
+    productMediaDir: env.BRAVOS_PRODUCT_MEDIA_DIR ?? ".local/product-media",
   };
 }
 

@@ -1,0 +1,222 @@
+import { expect, test, type Page } from "@playwright/test";
+import type { ManagerProductDto } from "@bravos/contracts";
+
+const PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+  "base64",
+);
+const BROKEN_PNG = Buffer.concat([PNG.subarray(0, 12), Buffer.alloc(12)]);
+
+test("manager publishes product media and customers see only selectable stocked variants", async ({ page }) => {
+  await signInManager(page);
+  await createTaxonomy(page);
+
+  const form = page.getByRole("form", { name: "إنشاء منتج" });
+  await form.getByLabel("رمز المنتج").fill("MEDIA-E2E-17");
+  await form.getByLabel("اسم المنتج").fill("قميص برافوس المصور");
+  await form.getByLabel("الوصف").fill("قميص قطني بصورة حقيقية");
+  await form.getByLabel("التصنيف").selectOption({ label: "قمصان 17" });
+  await form.getByLabel("سعر البيع الافتراضي بالجنيه").fill("320");
+  await form.getByLabel("حالة الموقع").selectOption("available");
+  await form.getByLabel("دليل المقاسات (اختياري)").fill("XL17 — عرض الصدر 54 سم");
+  const uploadInput = form.getByLabel(/رفع صور JPG/);
+  let uploadRequests = 0;
+  page.on("request", (request) => {
+    if (request.method() === "POST" && request.url().endsWith("/api/internal/catalog/media")) {
+      uploadRequests += 1;
+    }
+  });
+  await uploadInput.setInputFiles({
+    name: "too-large.png",
+    mimeType: "image/png",
+    buffer: Buffer.alloc(5 * 1024 * 1024 + 1),
+  });
+  await expect(page.getByRole("alert")).toContainText("الحد الأقصى 5 ميجابايت");
+  expect(uploadRequests).toBe(0);
+
+  let releaseUpload = () => {};
+  let markUploadObserved = () => {};
+  const uploadGate = new Promise<void>((resolve) => { releaseUpload = resolve; });
+  const uploadObserved = new Promise<void>((resolve) => { markUploadObserved = resolve; });
+  await page.route("**/api/internal/catalog/media", async (route) => {
+    markUploadObserved();
+    await uploadGate;
+    await route.continue();
+  }, { times: 1 });
+  await uploadInput.setInputFiles([
+    { name: "shirt-17.png", mimeType: "image/png", buffer: PNG },
+    { name: "broken-17.png", mimeType: "image/png", buffer: BROKEN_PNG },
+  ]);
+  await uploadObserved;
+  await expect(form.getByRole("button", { name: "حفظ المنتج" })).toBeDisabled();
+  const categoryDuringUpload = page.getByRole("form", { name: "إضافة تصنيف" });
+  await categoryDuringUpload.getByLabel("اسم التصنيف").fill("تصنيف أثناء الرفع 17");
+  await categoryDuringUpload.getByRole("button", { name: "حفظ التصنيف" }).click();
+  await expect(page.getByText("تم حفظ التصنيف.", { exact: true })).toBeVisible();
+  await expect(form.getByRole("button", { name: "حفظ المنتج" })).toBeDisabled();
+  releaseUpload();
+  await expect(page.getByRole("alert")).toContainText("ملف الصورة تالف أو غير قابل للقراءة");
+  await expect(page.getByRole("status")).toContainText("تم رفع 1 من 2 صورة");
+  await expect(form.getByRole("button", { name: "حفظ المنتج" })).toBeEnabled();
+  await expect.poll(() => uploadRequests).toBe(2);
+  await expect(form.getByRole("img", { name: "صورة المنتج 1" })).toBeVisible();
+
+  await form.getByLabel("المقاس", { exact: true }).selectOption({ label: "XL17" });
+  await form.getByLabel("اللون", { exact: true }).selectOption({ label: "أخضر 17" });
+  await form.getByRole("button", { name: "إضافة متغير" }).click();
+  await form.getByLabel("المقاس", { exact: true }).nth(1).selectOption({ label: "XL17" });
+  await form.getByLabel("اللون", { exact: true }).nth(1).selectOption({ label: "رملي 17" });
+  await form.getByLabel("سعر مختلف للمتغير (اختياري)").nth(1).fill("340");
+  await form.getByRole("button", { name: "حفظ المنتج" }).click();
+  await expect(page.getByRole("status")).toContainText("تم إنشاء المنتج");
+
+  const products = await staffApi(page, "GET", "/api/internal/catalog/products");
+  const product = (products.body as ManagerProductDto[]).find((item) => item.code === "MEDIA-E2E-17");
+  expect(product).toBeTruthy();
+  if (!product) throw new Error("Expected the media test product.");
+  const stocked = product.variants.find((variant) => variant.color.nameAr === "أخضر 17");
+  if (!stocked) throw new Error("Expected the stocked media test variant.");
+
+  await page.goto("http://127.0.0.1:3001");
+  const outOfStockCard = page.getByRole("link", { name: /قميص برافوس المصور/ });
+  await expect(outOfStockCard).toContainText("غير متوفر");
+  await outOfStockCard.click();
+  await expect(page.getByRole("heading", { name: "قميص برافوس المصور" })).toBeVisible();
+  await expect(page.getByText("المنتج غير متوفر حالياً، ويمكنك تصفح تفاصيله.")).toBeVisible();
+  await expect(page.getByRole("radio")).toHaveCount(2);
+  await expect(page.getByRole("radio").first()).toBeDisabled();
+  await expect(page.getByRole("radio").nth(1)).toBeDisabled();
+
+  const receipt = await staffApi(page, "POST", "/api/internal/receiving/receipts", {
+    operationId: crypto.randomUUID(),
+    receiptDate: "2026-09-14",
+    lines: [{ variantId: stocked.id, quantity: 2, unitCostPiasters: 18000 }],
+  });
+  expect(receipt.status).toBe(201);
+
+  await page.goto("http://127.0.0.1:3001");
+  const card = page.getByRole("link", { name: /قميص برافوس المصور/ });
+  await expect(card).toContainText("متوفر");
+  await card.click();
+  await expect(page.getByRole("heading", { name: "قميص برافوس المصور" })).toBeVisible();
+  await expect(page.getByText("XL17 — عرض الصدر 54 سم")).toBeVisible();
+  const productImage = page.getByRole("img", { name: /قميص برافوس المصور — صورة 1/ });
+  await expect(productImage).toBeVisible();
+  const renderedImageUrl = await productImage.getAttribute("src");
+  expect(renderedImageUrl).toBe(`/api/public/catalog/media/${product.imageRefs[0]}`);
+  const publicImage = await page.request.get(`http://127.0.0.1:3001${renderedImageUrl}`);
+  expect(publicImage.status()).toBe(200);
+  const optimizerAttempt = await page.request.get(
+    `http://127.0.0.1:3001/_next/image?url=${encodeURIComponent(renderedImageUrl ?? "")}&w=640&q=75`,
+  );
+  expect(optimizerAttempt.status()).toBe(404);
+  const stockedChoice = page.locator("label.variant-option").filter({ hasText: "أخضر 17" }).getByRole("radio");
+  const emptyChoice = page.locator("label.variant-option").filter({ hasText: "رملي 17" }).getByRole("radio");
+  await expect(stockedChoice).toBeEnabled();
+  await expect(emptyChoice).toBeDisabled();
+  await expect(page.getByText(/تكلفة|ربح|شراء|موظف/)).toHaveCount(0);
+
+  const withoutMedia = await staffApi(
+    page,
+    "PATCH",
+    `/api/internal/catalog/products/${product.id}`,
+    productWrite(product, "available", []),
+  );
+  expect(withoutMedia.status).toBe(200);
+  const removedMedia = await page.request.get(`http://127.0.0.1:3001${renderedImageUrl}`);
+  expect(removedMedia.status()).toBe(404);
+  await page.reload();
+  await expect(page.getByRole("img", { name: /قميص برافوس المصور/ })).toHaveCount(0);
+
+  const reattached = await staffApi(
+    page,
+    "PATCH",
+    `/api/internal/catalog/products/${product.id}`,
+    productWrite(withoutMedia.body as ManagerProductDto, "available", product.imageRefs),
+  );
+  expect(reattached.status).toBe(200);
+  await page.reload();
+  await expect(page.getByRole("img", { name: /قميص برافوس المصور — صورة 1/ })).toBeVisible();
+
+  const comingSoon = await staffApi(page, "PATCH", `/api/internal/catalog/products/${product.id}`, productWrite(reattached.body as ManagerProductDto, "coming_soon"));
+  expect(comingSoon.status).toBe(200);
+  await page.reload();
+  await expect(page.getByText("قريباً", { exact: true })).toBeVisible();
+  await expect(page.getByRole("radio")).toHaveCount(2);
+  await expect(page.getByRole("radio").first()).toBeDisabled();
+  await expect(page.getByRole("radio").nth(1)).toBeDisabled();
+
+  const hidden = await staffApi(page, "PATCH", `/api/internal/catalog/products/${product.id}`, productWrite(comingSoon.body as ManagerProductDto, "hidden"));
+  expect(hidden.status).toBe(200);
+  const mediaRef = product.imageRefs[0];
+  if (!mediaRef) throw new Error("Expected the uploaded product image reference.");
+  await page.goto("http://127.0.0.1:3001");
+  await expect(page.getByText("قميص برافوس المصور", { exact: true })).toHaveCount(0);
+  await page.goto(`http://127.0.0.1:3001/products/${product.id}`);
+  await expect(page.getByRole("heading", { name: "المنتج غير موجود" })).toBeVisible();
+  const hiddenMedia = await page.request.get(`http://127.0.0.1:3001${renderedImageUrl}`);
+  expect(hiddenMedia.status()).toBe(404);
+});
+
+async function signInManager(page: Page) {
+  await page.goto("http://127.0.0.1:5174/login");
+  await page.getByLabel("اسم الدخول").fill("owner");
+  await page.getByLabel("كلمة المرور").fill("e2e-owner-pass");
+  await page.getByRole("button", { name: "دخول" }).click();
+  await expect(page.getByRole("heading", { name: "اختيار الفرع النشط" })).toBeVisible();
+  await page.getByRole("button", { name: "أبشواي" }).click();
+  await page.getByRole("link", { name: "المنتجات" }).click();
+  await expect(page.getByRole("heading", { name: "إدارة المنتجات" })).toBeVisible();
+}
+
+async function createTaxonomy(page: Page) {
+  const category = page.getByRole("form", { name: "إضافة تصنيف" });
+  await category.getByLabel("اسم التصنيف").fill("قمصان 17");
+  await category.getByRole("button", { name: "حفظ التصنيف" }).click();
+  await expect(page.getByRole("status")).toContainText("تم حفظ التصنيف");
+  const size = page.getByRole("form", { name: "إضافة مقاس" });
+  await size.getByLabel("اسم المقاس").fill("XL17");
+  await size.getByRole("button", { name: "حفظ المقاس" }).click();
+  await expect(page.getByText("تم حفظ المقاس.", { exact: true })).toBeVisible();
+  const color = page.getByRole("form", { name: "إضافة لون" });
+  await color.getByLabel("اسم اللون").fill("أخضر 17");
+  await color.getByRole("button", { name: "حفظ اللون" }).click();
+  await expect(page.getByText("تم حفظ اللون.", { exact: true })).toBeVisible();
+  await color.getByLabel("اسم اللون").fill("رملي 17");
+  await color.getByRole("button", { name: "حفظ اللون" }).click();
+  await expect(page.getByText("تم حفظ اللون.", { exact: true })).toBeVisible();
+}
+
+function productWrite(
+  product: ManagerProductDto,
+  publication: "available" | "coming_soon" | "hidden",
+  imageRefs = product.imageRefs,
+) {
+  return {
+    code: product.code,
+    nameAr: product.nameAr,
+    descriptionAr: product.descriptionAr,
+    categoryId: product.category.id,
+    defaultSellingPricePiasters: product.defaultSellingPricePiasters,
+    publication,
+    imageRefs,
+    sizeGuideAr: product.sizeGuideAr,
+    variants: product.variants.map((variant) => ({
+      sizeId: variant.size.id,
+      colorId: variant.color.id,
+      sellingPricePiastersOverride: variant.sellingPricePiastersOverride,
+    })),
+  };
+}
+
+async function staffApi(page: Page, method: "GET" | "POST" | "PATCH", url: string, payload?: unknown) {
+  const response = await page.request.fetch(`http://127.0.0.1:5174${url}`, {
+    method,
+    headers: {
+      origin: "http://127.0.0.1:5174",
+      ...(payload ? { "content-type": "application/json" } : {}),
+    },
+    data: payload,
+  });
+  return { status: response.status(), body: await response.json() };
+}

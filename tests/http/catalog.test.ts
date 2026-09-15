@@ -1,6 +1,7 @@
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { deflateSync } from "node:zlib";
 import { afterAll, beforeAll, beforeEach, expect, test } from "vitest";
 import { buildApp, type BuiltApp } from "../../apps/api/src/app.ts";
 import { ensureOwner } from "../../apps/api/src/bootstrap.ts";
@@ -13,6 +14,7 @@ const PUBLIC_ORIGIN = "http://127.0.0.1:3000";
 let cluster: PostgresCluster;
 let databaseName = "bravos_catalog_1";
 let outboxDir: string;
+let mediaDir: string;
 let built: BuiltApp;
 let abshwayId = "";
 let fayoumId = "";
@@ -493,6 +495,250 @@ test("unauthorized catalog writes and cashier-only lookup are denied at the HTTP
   expect(lookupWithoutBranch.status).toBe(403);
 });
 
+test("manager uploads validated local media while active content and employee uploads are rejected", async () => {
+  const manager = await signIn("owner", "owner-pass-1");
+  await api(manager, "POST", "/api/internal/staff", {
+    loginName: "cashier.media",
+    displayName: "موظف الصور",
+    password: "staff-pass-media-1",
+    grants: [{ branchId: abshwayId, cashier: true, orderRepresentative: false }],
+  });
+  const cashier = await signIn("cashier.media", "staff-pass-media-1");
+
+  const denied = await api(cashier, "POST", "/api/internal/catalog/media", {
+    fileName: "shirt.png",
+    contentType: "image/png",
+    base64: PNG_BASE64,
+  });
+  expect(denied.status).toBe(403);
+  expect(denied.body.error.code).toBe("FORBIDDEN");
+
+  const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>').toString("base64");
+  const activeContent = await api(manager, "POST", "/api/internal/catalog/media", {
+    fileName: "unsafe.svg",
+    contentType: "image/svg+xml",
+    base64: svg,
+  });
+  expect(activeContent.status).toBe(400);
+  expect(activeContent.body).toEqual({
+    error: {
+      code: "VALIDATION",
+      messageAr: "نوع الصورة غير مدعوم. استخدم JPG أو PNG أو WebP.",
+    },
+  });
+
+  const oversizedBytes = Buffer.alloc(5 * 1024 * 1024 + 1);
+  Buffer.from(PNG_BASE64, "base64").copy(oversizedBytes, 0, 0, 12);
+  const oversized = await api(manager, "POST", "/api/internal/catalog/media", {
+    fileName: "too-large.png",
+    contentType: "image/png",
+    base64: oversizedBytes.toString("base64"),
+  });
+  expect(oversized.status).toBe(400);
+  expect(oversized.body.error).toEqual({
+    code: "VALIDATION",
+    messageAr: "حجم الصورة غير صالح. الحد الأقصى 5 ميجابايت.",
+  });
+
+  const broken = await api(manager, "POST", "/api/internal/catalog/media", {
+    fileName: "broken.png",
+    contentType: "image/png",
+    base64: Buffer.concat([Buffer.from(PNG_BASE64, "base64").subarray(0, 12), Buffer.alloc(12)]).toString("base64"),
+  });
+  expect(broken.status).toBe(400);
+  expect(broken.body.error).toEqual({
+    code: "VALIDATION",
+    messageAr: "ملف الصورة تالف أو غير قابل للقراءة.",
+  });
+
+  const excessiveDimensions = await api(manager, "POST", "/api/internal/catalog/media", {
+    fileName: "too-wide.png",
+    contentType: "image/png",
+    base64: makePng(8_001, 1).toString("base64"),
+  });
+  expect(excessiveDimensions.status).toBe(400);
+  expect(excessiveDimensions.body.error).toEqual({
+    code: "VALIDATION",
+    messageAr: "أبعاد الصورة غير صالحة. الحد الأقصى 8000 بكسل للعرض أو الارتفاع و20 مليون بكسل إجمالاً.",
+  });
+
+  const uploaded = await api(manager, "POST", "/api/internal/catalog/media", {
+    fileName: "shirt.png",
+    contentType: "image/png",
+    base64: PNG_BASE64,
+  });
+  expect(uploaded.status).toBe(201);
+  expect(uploaded.body).toMatchObject({ contentType: "image/png", byteLength: 68 });
+  expect(uploaded.body.ref).toMatch(/^products\/[0-9a-f-]+\.png$/);
+
+  const beforeAttachment = await publicRaw("GET", `/api/public/catalog/media/${uploaded.body.ref}`);
+  expect(beforeAttachment.statusCode).toBe(404);
+  const managerRead = await internalRaw(manager, `/api/internal/catalog/media/${uploaded.body.ref}`);
+  expect(managerRead.statusCode).toBe(200);
+  expect(managerRead.headers["content-type"]).toBe("image/png");
+  expect(managerRead.headers["x-content-type-options"]).toBe("nosniff");
+  expect(managerRead.rawPayload).toEqual(Buffer.from(PNG_BASE64, "base64"));
+  const cashierRead = await internalRaw(cashier, `/api/internal/catalog/media/${uploaded.body.ref}`);
+  expect(cashierRead.statusCode).toBe(403);
+  expect(cashierRead.json().error.code).toBe("FORBIDDEN");
+});
+
+test("public catalog exposes safe live variant availability across restocking and publication changes", async () => {
+  const manager = await signIn("owner", "owner-pass-1");
+  const seed = await seedTaxonomy(manager);
+  const white = await api(manager, "POST", "/api/internal/catalog/colors", { nameAr: "أبيض" });
+  const uploaded = await api(manager, "POST", "/api/internal/catalog/media", {
+    fileName: "public-shirt.png",
+    contentType: "image/png",
+    base64: PNG_BASE64,
+  });
+  const created = await api(manager, "POST", "/api/internal/catalog/products", {
+    code: "PUBLIC-17",
+    nameAr: "قميص صيفي",
+    descriptionAr: "قماش قطني خفيف",
+    categoryId: seed.categoryId,
+    defaultSellingPricePiasters: 32000,
+    publication: "available",
+    imageRefs: [uploaded.body.ref],
+    sizeGuideAr: "L — عرض الصدر 52 سم",
+    variants: [
+      { sizeId: seed.sizeId, colorId: seed.colorId, sellingPricePiastersOverride: null },
+      { sizeId: seed.sizeId, colorId: white.body.id, sellingPricePiastersOverride: 34000 },
+    ],
+  });
+  expect(created.status).toBe(201);
+
+  const initial = await api(undefined, "GET", `/api/public/catalog/products/${created.body.id}`);
+  expect(initial.status).toBe(200);
+  expect(initial.body).toMatchObject({
+    id: created.body.id,
+    nameAr: "قميص صيفي",
+    publication: "available",
+    availability: "out_of_stock",
+    orderable: false,
+    imageRefs: [uploaded.body.ref],
+    sizeGuideAr: "L — عرض الصدر 52 سم",
+  });
+  expect(Object.keys(initial.body).sort()).toEqual([
+    "availability", "category", "descriptionAr", "id", "imageRefs", "nameAr",
+    "orderable", "publication", "sizeGuideAr", "variants",
+  ]);
+  expect(Object.keys(initial.body.variants[0]).sort()).toEqual([
+    "availableQuantity", "color", "id", "orderable", "sellingPricePiasters", "size",
+  ]);
+  expect(Object.keys(initial.body.category).sort()).toEqual(["id", "nameAr"]);
+  expect(initial.body).not.toHaveProperty("code");
+  expect(initial.body).not.toHaveProperty("changedByStaffId");
+  expect(initial.body.variants[0]).not.toHaveProperty("sellingPricePiastersOverride");
+  expect(JSON.stringify(initial.body)).not.toMatch(/unitCostPiasters|profit|staffId|session|batch|receipt|sale/i);
+  const initialList = await api(undefined, "GET", "/api/public/catalog/products");
+  expect(initialList.status).toBe(200);
+  expect(initialList.body.find((product: { id: string }) => product.id === created.body.id)).toMatchObject({
+    availability: "out_of_stock",
+    orderable: false,
+  });
+
+  const stockedVariant = created.body.variants.find(
+    (variant: { color: { nameAr: string } }) => variant.color.nameAr === "أسود",
+  );
+  const emptyVariant = created.body.variants.find(
+    (variant: { color: { nameAr: string } }) => variant.color.nameAr === "أبيض",
+  );
+  if (!stockedVariant || !emptyVariant) {
+    throw new Error("Expected the two public catalog variants.");
+  }
+  const receipt = await api(manager, "POST", "/api/internal/receiving/receipts", {
+    operationId: crypto.randomUUID(),
+    receiptDate: "2026-09-14",
+    lines: [{ variantId: stockedVariant.id, quantity: 3, unitCostPiasters: 17000 }],
+  });
+  expect(receipt.status).toBe(201);
+
+  const restocked = await api(undefined, "GET", `/api/public/catalog/products/${created.body.id}`);
+  expect(restocked.body).toMatchObject({ availability: "in_stock", orderable: true });
+  expect(restocked.body.variants.find((item: { id: string }) => item.id === stockedVariant.id)).toMatchObject({
+    availableQuantity: 3,
+    orderable: true,
+    sellingPricePiasters: 32000,
+  });
+  expect(restocked.body.variants.find((item: { id: string }) => item.id === emptyVariant.id)).toMatchObject({
+    availableQuantity: 0,
+    orderable: false,
+    sellingPricePiasters: 34000,
+  });
+  const publicImage = await publicRaw("GET", `/api/public/catalog/media/${uploaded.body.ref}`);
+  expect(publicImage.statusCode).toBe(200);
+  expect(publicImage.headers["content-type"]).toBe("image/png");
+  expect(publicImage.headers["cache-control"]).toBe("no-store");
+
+  const comingSoon = await api(manager, "PATCH", `/api/internal/catalog/products/${created.body.id}`, {
+    code: created.body.code,
+    nameAr: created.body.nameAr,
+    descriptionAr: created.body.descriptionAr,
+    categoryId: created.body.category.id,
+    defaultSellingPricePiasters: created.body.defaultSellingPricePiasters,
+    publication: "coming_soon",
+    imageRefs: created.body.imageRefs,
+    sizeGuideAr: created.body.sizeGuideAr,
+    variants: created.body.variants.map((variant: { size: { id: string }; color: { id: string }; sellingPricePiastersOverride: number | null }) => ({
+      sizeId: variant.size.id,
+      colorId: variant.color.id,
+      sellingPricePiastersOverride: variant.sellingPricePiastersOverride,
+    })),
+  });
+  expect(comingSoon.status).toBe(200);
+  const preview = await api(undefined, "GET", `/api/public/catalog/products/${created.body.id}`);
+  expect(preview.body).toMatchObject({ availability: "coming_soon", orderable: false });
+  expect(preview.body.variants.every((variant: { orderable: boolean }) => !variant.orderable)).toBe(true);
+
+  const hidden = await api(manager, "PATCH", `/api/internal/catalog/products/${created.body.id}`, {
+    ...comingSoon.body,
+    categoryId: comingSoon.body.category.id,
+    publication: "hidden",
+    variants: comingSoon.body.variants.map((variant: { size: { id: string }; color: { id: string }; sellingPricePiastersOverride: number | null }) => ({
+      sizeId: variant.size.id,
+      colorId: variant.color.id,
+      sellingPricePiastersOverride: variant.sellingPricePiastersOverride,
+    })),
+  });
+  expect(hidden.status).toBe(400);
+  // Manager responses contain derived/read-only fields, so submit only the accepted write shape.
+  const hiddenWrite = await api(manager, "PATCH", `/api/internal/catalog/products/${created.body.id}`, {
+    code: comingSoon.body.code,
+    nameAr: comingSoon.body.nameAr,
+    descriptionAr: comingSoon.body.descriptionAr,
+    categoryId: comingSoon.body.category.id,
+    defaultSellingPricePiasters: comingSoon.body.defaultSellingPricePiasters,
+    publication: "hidden",
+    imageRefs: comingSoon.body.imageRefs,
+    sizeGuideAr: comingSoon.body.sizeGuideAr,
+    variants: comingSoon.body.variants.map((variant: { size: { id: string }; color: { id: string }; sellingPricePiastersOverride: number | null }) => ({
+      sizeId: variant.size.id,
+      colorId: variant.color.id,
+      sellingPricePiastersOverride: variant.sellingPricePiastersOverride,
+    })),
+  });
+  expect(hiddenWrite.status).toBe(200);
+  expect((await api(undefined, "GET", `/api/public/catalog/products/${created.body.id}`)).status).toBe(404);
+  const hiddenList = await api(undefined, "GET", "/api/public/catalog/products");
+  expect(hiddenList.status).toBe(200);
+  expect(hiddenList.body.find((product: { id: string }) => product.id === created.body.id)).toBeUndefined();
+  expect((await publicRaw("GET", `/api/public/catalog/media/${uploaded.body.ref}`)).statusCode).toBe(404);
+
+  await api(manager, "POST", "/api/internal/staff", {
+    loginName: "cashier.publication",
+    displayName: "كاشير النشر",
+    password: "staff-pass-publication-1",
+    grants: [{ branchId: abshwayId, cashier: true, orderRepresentative: false }],
+  });
+  const cashier = await signIn("cashier.publication", "staff-pass-publication-1");
+  await api(cashier, "POST", "/api/internal/active-branch", { branchId: abshwayId });
+  const pos = await api(cashier, "GET", "/api/internal/catalog/lookup?code=PUBLIC-17");
+  expect(pos.status).toBe(200);
+  expect(pos.body.variants.find((variant: { id: string }) => variant.id === stockedVariant.id).availableQuantity).toBe(3);
+  expect(pos.body).not.toHaveProperty("publication");
+});
+
 async function startApp(overrides: { databasePoolMax?: number } = {}) {
   if (built) {
     await built.close();
@@ -500,6 +746,7 @@ async function startApp(overrides: { databasePoolMax?: number } = {}) {
   databaseName = `bravos_catalog_${crypto.randomUUID().replaceAll("-", "")}`;
   await cluster.createDatabase(databaseName);
   outboxDir = await mkdtemp(path.join(tmpdir(), "bravos-catalog-outbox-"));
+  mediaDir = await mkdtemp(path.join(tmpdir(), "bravos-catalog-media-"));
   built = await buildApp({
     nodeEnv: "test",
     databaseUrl: cluster.connectionString(databaseName),
@@ -511,6 +758,7 @@ async function startApp(overrides: { databasePoolMax?: number } = {}) {
     secureCookies: false,
     ownerRecoveryAdapter: "local-outbox",
     ownerRecoveryOutboxDir: outboxDir,
+    productMediaDir: mediaDir,
     ...overrides,
   });
   await applyMigrations(built.pool);
@@ -524,6 +772,56 @@ async function startApp(overrides: { databasePoolMax?: number } = {}) {
     displayName: "مالك برافوس",
     password: "owner-pass-1",
   });
+}
+
+async function publicRaw(method: "GET", url: string) {
+  return built.app.inject({ method, url, headers: { origin: PUBLIC_ORIGIN } });
+}
+
+async function internalRaw(session: CookieSession, url: string) {
+  return built.app.inject({
+    method: "GET",
+    url,
+    headers: { origin: INTERNAL_ORIGIN, cookie: session.cookie },
+  });
+}
+
+const PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+
+function makePng(width: number, height: number): Buffer {
+  const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header[8] = 8;
+  header[9] = 6;
+  const scanlines = Buffer.alloc((width * 4 + 1) * height);
+  return Buffer.concat([
+    signature,
+    pngChunk("IHDR", header),
+    pngChunk("IDAT", deflateSync(scanlines)),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
+function pngChunk(type: string, data: Buffer): Buffer {
+  const name = Buffer.from(type, "ascii");
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(data.length, 0);
+  const checksum = Buffer.alloc(4);
+  checksum.writeUInt32BE(crc32(Buffer.concat([name, data])), 0);
+  return Buffer.concat([length, name, data, checksum]);
+}
+
+function crc32(value: Buffer): number {
+  let crc = 0xffff_ffff;
+  for (const byte of value) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = (crc >>> 1) ^ ((crc & 1) === 1 ? 0xedb8_8320 : 0);
+    }
+  }
+  return (crc ^ 0xffff_ffff) >>> 0;
 }
 
 async function seedTaxonomy(

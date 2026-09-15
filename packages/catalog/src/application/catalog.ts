@@ -3,7 +3,9 @@ import type {
   CategoryDto,
   ColorDto,
   ManagerProductDto,
+  PublicProductDto,
   SizeDto,
+  UploadedProductMediaDto,
 } from "@bravos/contracts";
 import {
   capabilitiesFor,
@@ -14,6 +16,7 @@ import {
 } from "@bravos/identity";
 import { CatalogValidationError, DuplicateProductCodeError, ReferencedVariantError } from "../domain/errors.ts";
 import { assertPiasters, resolvedSellingPricePiasters } from "../domain/money.ts";
+import { validateProductImage } from "../domain/media.ts";
 import {
   assertDescription,
   assertImageRefs,
@@ -21,6 +24,8 @@ import {
   assertProductCode,
   assertProductName,
   assertPublication,
+  assertProductMediaRef,
+  assertSizeGuide,
   assertTaxonomyName,
   assertUuid,
   normalizedProductCodeKey,
@@ -29,6 +34,7 @@ import type {
   AvailabilityReader,
   CatalogActorPort,
   CatalogStore,
+  ProductMediaStorage,
   ProductWrite,
   VariantReferenceReader,
   VariantWrite,
@@ -48,6 +54,7 @@ const PRODUCT_KEYS = new Set([
   "defaultSellingPricePiasters",
   "publication",
   "imageRefs",
+  "sizeGuideAr",
   "variants",
 ]);
 const VARIANT_KEYS = new Set(["sizeId", "colorId", "sellingPricePiastersOverride"]);
@@ -73,6 +80,7 @@ export function createCatalogServices(ports: {
   actors: CatalogActorPort;
   availability?: AvailabilityReader;
   references?: VariantReferenceReader;
+  media: ProductMediaStorage;
 }) {
   const availability = ports.availability ?? unstockedAvailability();
   const references = ports.references ?? unreferencedVariants();
@@ -191,6 +199,15 @@ export function createCatalogServices(ports: {
       return ports.store.listProducts();
     },
 
+    async uploadProductImage(
+      auth: VerifiedAuth | null,
+      input: { fileName: unknown; contentType: unknown; bytes: unknown },
+    ): Promise<UploadedProductMediaDto> {
+      await requireManager(auth);
+      const image = validateProductImage(input);
+      return ports.media.save(image);
+    },
+
     async getProduct(auth: VerifiedAuth | null, id: string): Promise<ManagerProductDto> {
       await requireManager(auth);
       const productId = assertUuid(id, "المنتج غير موجود.");
@@ -262,6 +279,79 @@ export function createCatalogServices(ports: {
       const quantities = await availability.quantitiesFor(ids);
       return products.map((product) => toCashierLookup(product, quantities));
     },
+
+    async listPublicProducts(): Promise<PublicProductDto[]> {
+      const products = await ports.store.listPublishedProducts();
+      const ids = products.flatMap((product) => product.variants.map((variant) => variant.id));
+      const quantities = await availability.quantitiesFor(ids);
+      return products.map((product) => toPublicProduct(product, quantities));
+    },
+
+    async getPublicProduct(id: unknown): Promise<PublicProductDto> {
+      const productId = assertUuid(id, "المنتج غير موجود.");
+      const product = await ports.store.getPublishedProduct(productId);
+      if (!product) {
+        throw new NotFoundError("المنتج غير موجود.");
+      }
+      const quantities = await availability.quantitiesFor(product.variants.map((variant) => variant.id));
+      return toPublicProduct(product, quantities);
+    },
+
+    async getPublicMedia(refValue: unknown) {
+      const ref = assertProductMediaRef(refValue);
+      if (!(await ports.store.isMediaPublic(ref))) {
+        throw new NotFoundError("الصورة غير موجودة.");
+      }
+      const media = await ports.media.read(ref);
+      if (!media) {
+        throw new NotFoundError("الصورة غير موجودة.");
+      }
+      return media;
+    },
+
+    async getManagerMedia(auth: VerifiedAuth | null, refValue: unknown) {
+      await requireManager(auth);
+      const ref = assertProductMediaRef(refValue);
+      const media = await ports.media.read(ref);
+      if (!media) {
+        throw new NotFoundError("الصورة غير موجودة.");
+      }
+      return media;
+    },
+  };
+}
+
+function toPublicProduct(
+  product: ManagerProductDto,
+  quantities: Map<string, number>,
+): PublicProductDto {
+  const comingSoon = product.publication === "coming_soon";
+  const variants = product.variants.map((variant) => {
+    const availableQuantity = Math.max(0, quantities.get(variant.id) ?? 0);
+    return {
+      id: variant.id,
+      size: variant.size,
+      color: variant.color,
+      sellingPricePiasters: resolvedSellingPricePiasters(
+        product.defaultSellingPricePiasters,
+        variant.sellingPricePiastersOverride,
+      ),
+      availableQuantity,
+      orderable: !comingSoon && availableQuantity > 0,
+    };
+  });
+  const hasStock = variants.some((variant) => variant.availableQuantity > 0);
+  return {
+    id: product.id,
+    nameAr: product.nameAr,
+    descriptionAr: product.descriptionAr,
+    category: { id: product.category.id, nameAr: product.category.nameAr },
+    publication: product.publication === "coming_soon" ? "coming_soon" : "available",
+    availability: comingSoon ? "coming_soon" : hasStock ? "in_stock" : "out_of_stock",
+    orderable: !comingSoon && hasStock,
+    imageRefs: [...product.imageRefs],
+    sizeGuideAr: product.sizeGuideAr,
+    variants,
   };
 }
 
@@ -314,6 +404,7 @@ async function parseProductWrite(
     defaultSellingPricePiasters: assertPiasters(body.defaultSellingPricePiasters, "سعر البيع غير صالح."),
     publication: assertPublication(body.publication),
     imageRefs: assertImageRefs(body.imageRefs),
+    sizeGuideAr: assertSizeGuide(body.sizeGuideAr),
     variants,
     actorStaffId,
   };

@@ -36,6 +36,7 @@ type ProductRow = {
   default_selling_price_piasters: number;
   publication: PublicationStatus;
   image_refs: unknown;
+  size_guide_ar: string | null;
   last_changed_by_staff_id: string | null;
   last_changed_at: Date;
 };
@@ -194,14 +195,40 @@ export function createPostgresCatalogStore(pool: Pool): CatalogStore {
       return loadProducts(pool, "TRUE");
     },
 
+    async listPublishedProducts() {
+      return loadProducts(pool, "p.publication IN ('available', 'coming_soon')");
+    },
+
     async getProduct(id) {
       const products = await loadProducts(pool, "p.id = $1", [id]);
+      return products[0] ?? null;
+    },
+
+    async getPublishedProduct(id) {
+      const products = await loadProducts(
+        pool,
+        "p.id = $1 AND p.publication IN ('available', 'coming_soon')",
+        [id],
+      );
       return products[0] ?? null;
     },
 
     async findProductByCodeKey(codeKey) {
       const products = await loadProducts(pool, "lower(btrim(p.code)) = $1", [codeKey]);
       return products[0] ?? null;
+    },
+
+    async isMediaPublic(ref) {
+      const result = await pool.query<{ found: boolean }>(
+        `SELECT EXISTS (
+           SELECT 1
+           FROM catalog_product
+           WHERE publication IN ('available', 'coming_soon')
+             AND image_refs ? $1
+         ) AS found`,
+        [ref],
+      );
+      return result.rows[0]?.found === true;
     },
 
     async getVariants(ids) {
@@ -265,10 +292,10 @@ export function createPostgresCatalogStore(pool: Pool): CatalogStore {
         const inserted = await client.query<{ id: string }>(
           `INSERT INTO catalog_product (
              id, code, name_ar, description_ar, category_id,
-             default_selling_price_piasters, publication, image_refs,
+             default_selling_price_piasters, publication, image_refs, size_guide_ar,
              created_by_staff_id, last_changed_by_staff_id, last_changed_at
            ) VALUES (
-             gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7::jsonb, $8, $8, now()
+             gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $9, now()
            ) RETURNING id`,
           [
             input.code,
@@ -278,6 +305,7 @@ export function createPostgresCatalogStore(pool: Pool): CatalogStore {
             input.defaultSellingPricePiasters,
             input.publication,
             JSON.stringify(input.imageRefs),
+            input.sizeGuideAr,
             input.actorStaffId,
           ],
         );
@@ -310,7 +338,8 @@ export function createPostgresCatalogStore(pool: Pool): CatalogStore {
                default_selling_price_piasters = $6,
                publication = $7,
                image_refs = $8::jsonb,
-               last_changed_by_staff_id = $9,
+               size_guide_ar = $9,
+               last_changed_by_staff_id = $10,
                last_changed_at = now(),
                updated_at = now()
            WHERE id = $1
@@ -324,6 +353,7 @@ export function createPostgresCatalogStore(pool: Pool): CatalogStore {
             input.defaultSellingPricePiasters,
             input.publication,
             JSON.stringify(input.imageRefs),
+            input.sizeGuideAr,
             input.actorStaffId,
           ],
         );
@@ -452,6 +482,7 @@ function productJoinSelect(): string {
      p.default_selling_price_piasters,
      p.publication,
      p.image_refs,
+     p.size_guide_ar,
      p.last_changed_by_staff_id,
      p.last_changed_at,
      v.id AS variant_id,
@@ -506,6 +537,7 @@ function toProduct(row: ProductRow, variants: ManagerVariantDto[]): ManagerProdu
     defaultSellingPricePiasters: row.default_selling_price_piasters,
     publication: row.publication,
     imageRefs: Array.isArray(row.image_refs) ? row.image_refs.map((item) => String(item)) : [],
+    sizeGuideAr: row.size_guide_ar,
     variants,
     changedByStaffId: row.last_changed_by_staff_id,
     changedAt: row.last_changed_at.toISOString(),

@@ -70,10 +70,24 @@ export type ManagerProductDto = {
   defaultSellingPricePiasters: number;
   publication: PublicationStatus;
   imageRefs: string[];
+  sizeGuideAr: string | null;
   variants: ManagerVariantDto[];
   changedByStaffId: string | null;
   changedAt: string;
 };
+
+export type UploadedProductMediaDto = {
+  ref: string;
+  contentType: "image/jpeg" | "image/png" | "image/webp";
+  byteLength: number;
+};
+
+export type {
+  PublicProductAvailability,
+  PublicProductDto,
+  PublicProductPublication,
+  PublicProductVariantDto,
+} from "./public.ts";
 
 export type CashierVariantDto = {
   id: string;

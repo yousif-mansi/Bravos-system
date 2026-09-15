@@ -15,7 +15,7 @@ await esbuild.build({
   format: "esm",
   outfile,
   packages: "bundle",
-  external: ["pg", "better-auth", "better-auth/*", "fastify", "embedded-postgres"],
+  external: ["pg", "better-auth", "better-auth/*", "fastify", "embedded-postgres", "sharp"],
   sourcemap: true,
   logLevel: "info",
 });

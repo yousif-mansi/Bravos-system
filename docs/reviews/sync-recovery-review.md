@@ -34,6 +34,8 @@ Independent root verification passed typecheck, 90 HTTP tests in 7 files, produc
 
 The full browser run passed 64 of 66 tests, including all 9 synchronization cases and production offline restart/reconnect. Two older sales assertions assumed a single retry and immediate upload completion. Sol corrected only those assertions to tolerate valid asynchronous retries while asserting one accepted sale, unchanged operation identity and exact stock effects. Root then independently reran the complete sales browser file: 11/11 passed in 46.1 seconds. This is combined full-suite and targeted repair evidence, not a claim that a second complete 66-test run occurred. Typecheck was repeated after the test edits and passed.
 
+Subsequent integrated verification on 2026-09-15, after adding expenses (07) and catalog/media (17), passed the complete expanded browser suite: 68/68 in 3.1 minutes. Evidence: `.scratch/sol-implementation/root-17-browser-all.log`.
+
 Evidence: `.scratch/grok-implementation/root-sync-recovery-final-results.json`, `.scratch/sol-implementation/root-sync-final-test-browser.log`, and `.scratch/sol-implementation/root-sync-final-sales-browser.log`. The protected user review retains SHA256 `3361DE3CDE70382A9AEDB602407CDA2384482ADDA395E48EAF26A561BA13345A`. Startup/cleanup failures from temporary test PostgreSQL workers remain in the logs; successful reruns completed the required checks.
 
 ## Historical review and repair log
