@@ -38,6 +38,8 @@ export function saleFromOffline(record: OfflineCompletedSale): SaleDto {
     discountReason: record.discountReason,
     discountedByStaffId: record.discountedByStaffId,
     finalTotalPiasters: record.finalTotalPiasters,
+    exchangeCreditAppliedPiasters: 0,
+    cashReceivedPiasters: record.finalTotalPiasters,
     physicallyCompleted: true,
     discrepancy: discrepancyFromLines(record.lines),
     lines: record.lines,
@@ -57,7 +59,9 @@ export function offlineFromQuote(input: {
   deviceId: string;
   quote: SaleDto;
   occurredAt: string;
+  pricingOccurredAt?: string | null;
   snapshotId?: string | null;
+  pricingVersion?: 1 | null;
   kind?: OfflineSaleKind;
 }): OfflineCompletedSale {
   return {
@@ -66,12 +70,14 @@ export function offlineFromQuote(input: {
     operationId: input.quote.operationId,
     deviceId: input.deviceId,
     snapshotId: input.snapshotId ?? null,
+    pricingVersion: input.pricingVersion === 1 ? 1 : null,
     kind: input.kind ?? "connected",
     syncStatus: "pending",
     branch: input.quote.branch,
     soldByStaffId: input.quote.soldByStaffId,
     soldByDisplayName: input.quote.soldByDisplayName,
     occurredAt: input.occurredAt,
+    pricingOccurredAt: input.pricingOccurredAt ?? null,
     recordedAt: null,
     customerName: input.quote.customerName,
     customerPhone: input.quote.customerPhone,
@@ -276,9 +282,12 @@ export async function acceptedPayload(sale: OfflineCompletedSale) {
     operationId: sale.operationId,
     deviceId: sale.deviceId,
     snapshotId: sale.snapshotId ?? "",
+    ...(sale.pricingVersion === 1 ? { pricingVersion: 1 as const } : {}),
+    ...(sale.pricingVersion === 1 ? { pricingOccurredAt: sale.pricingOccurredAt ?? "" } : {}),
     occurredAt: sale.occurredAt,
     customerName: sale.customerName,
     customerPhone: sale.customerPhone,
+    couponCode: sale.couponCode,
     employeeDiscountPiasters: sale.employeeDiscountPiasters,
     discountReason: sale.discountReason,
     pendingOperationIds: await pendingOperationIds(),

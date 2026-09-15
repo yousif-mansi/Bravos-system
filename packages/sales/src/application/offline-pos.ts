@@ -1,4 +1,5 @@
 import type { SaleAcknowledgementDto, SaleDto } from "@bravos/contracts";
+import { evaluateAutomaticOffers, evaluateCoupon, normalizeCouponCode, PricingValidationError } from "@bravos/pricing";
 import { assertMergedSaleQuantities, priceSaleLines } from "../domain/discount.ts";
 import { SalesValidationError } from "../domain/errors.ts";
 import { digestOfflineSale } from "../domain/offline-digest.ts";
@@ -65,8 +66,12 @@ export function createOfflinePosServices(store: OfflinePosStore) {
     requestPersistentStorage: () => store.requestPersistentStorage(),
     readSchemaVersion: () => store.readSchemaVersion(),
 
-    priceCart(input: CompleteOfflineSaleInput) {
-      return priceOfflineCart(input);
+    async priceCart(input: CompleteOfflineSaleInput) {
+      const coupon = input.couponCode
+        ? input.snapshot.coupons?.find((item) => normalizeCouponCode(item.code) === normalizeCouponCode(input.couponCode!))
+        : null;
+      const localUses = coupon ? await store.countUnaccountedCouponUses(coupon.id, input.snapshot.issuedAt) : 0;
+      return priceOfflineCart(input, localUses);
     },
 
     async recordCompleted(sale: OfflineCompletedSale, cachedByVariant: Map<string, number>) {
@@ -74,6 +79,9 @@ export function createOfflinePosServices(store: OfflinePosStore) {
         id: sale.id,
         kind: sale.kind,
         snapshotId: sale.snapshotId,
+        pricingVersion: sale.pricingVersion ?? null,
+        occurredAt: sale.occurredAt,
+        ...(sale.pricingOccurredAt ? { pricingOccurredAt: sale.pricingOccurredAt } : {}),
         customerName: sale.customerName,
         customerPhone: sale.customerPhone,
         couponCode: sale.couponCode,
@@ -86,24 +94,37 @@ export function createOfflinePosServices(store: OfflinePosStore) {
     },
 
     async completeSale(input: CompleteOfflineSaleInput): Promise<OfflineCompletedSale> {
-      const priced = priceOfflineCart(input);
+      const coupon = input.couponCode
+        ? input.snapshot.coupons?.find((item) => normalizeCouponCode(item.code) === normalizeCouponCode(input.couponCode!))
+        : null;
+      const localUses = coupon ? await store.countUnaccountedCouponUses(coupon.id, input.snapshot.issuedAt) : 0;
+      const priced = priceOfflineCart(input, localUses);
       const payloadFingerprint = await digestOfflineSale({
         id: input.saleId,
         kind: input.kind,
         snapshotId: input.kind === "accepted" ? input.snapshot.snapshotId : null,
+        pricingVersion: input.kind === "accepted" && input.snapshot.pricingVersion === 1 ? 1 : null,
+        occurredAt: input.occurredAt,
+        ...(input.pricingOccurredAt ? { pricingOccurredAt: input.pricingOccurredAt } : {}),
         customerName: input.customerName,
         customerPhone: input.customerPhone,
         couponCode: input.couponCode,
         employeeDiscountPiasters: input.employeeDiscountPiasters,
         discountReason: input.discountReason,
-        lines: input.lines,
+        lines: input.lines.map((line) => ({
+          variantId: line.variantId,
+          quantity: line.quantity,
+          ...(input.kind === "accepted" && input.snapshot.pricingVersion === 1
+            ? { listedUnitPricePiasters: line.variant.sellingPricePiasters }
+            : {}),
+        })),
       });
       return store.completeSale(input, {
         originalTotalPiasters: priced.originalTotalPiasters,
-        automaticOfferDiscountPiasters: 0,
-        appliedAutomaticOffer: null,
-        couponDiscountPiasters: 0,
-        appliedCoupon: null,
+        automaticOfferDiscountPiasters: priced.automaticOfferDiscountPiasters,
+        appliedAutomaticOffer: priced.appliedAutomaticOffer,
+        couponDiscountPiasters: priced.couponDiscountPiasters,
+        appliedCoupon: priced.appliedCoupon,
         finalTotalPiasters: priced.finalTotalPiasters,
         payloadFingerprint,
         lines: priced.lines.map((line) => {
@@ -119,6 +140,9 @@ export function createOfflinePosServices(store: OfflinePosStore) {
             originalPiasters: line.originalPiasters,
             discountPiasters: line.discountPiasters,
             paidPiasters: line.paidPiasters,
+            automaticOfferDiscountPiasters: line.automaticOfferDiscountPiasters,
+            couponDiscountPiasters: line.couponDiscountPiasters,
+            employeeDiscountPiasters: line.employeeDiscountPiasters,
             allocatedQuantity: 0,
             unallocatedQuantity: 0,
             units: line.units,
@@ -139,30 +163,71 @@ export function createOfflinePosServices(store: OfflinePosStore) {
   };
 }
 
-export function priceOfflineCart(input: CompleteOfflineSaleInput) {
+export function priceOfflineCart(input: CompleteOfflineSaleInput, unaccountedLocalCouponUses = 0) {
   if (input.lines.length === 0) {
     throw new SalesValidationError("يجب تحديد صنف واحد على الأقل.");
   }
   assertMergedSaleQuantities(input.lines);
   const snapshotPrices = new Map(
     input.snapshot.products.flatMap((product) =>
-      product.variants.map((variant) => [variant.id, variant.sellingPricePiasters] as const),
+      product.variants.map((variant) => [variant.id, {
+        listedUnitPricePiasters: variant.sellingPricePiasters,
+        productId: product.id,
+        categoryId: product.categoryId ?? "",
+      }] as const),
     ),
   );
-  return priceSaleLines(
-    input.lines.map((line) => {
-      const listed = snapshotPrices.get(line.variantId);
-      if (listed === undefined) {
+  const basketLines = input.lines.map((line) => {
+      const basis = snapshotPrices.get(line.variantId);
+      if (!basis) {
         throw new SalesValidationError("المتغير المحدد غير موجود.");
       }
       return {
         variantId: line.variantId,
+        productId: basis.productId,
+        categoryId: basis.categoryId,
         quantity: line.quantity,
-        listedUnitPricePiasters: listed,
+        listedUnitPricePiasters: basis.listedUnitPricePiasters,
       };
-    }),
-    input.employeeDiscountPiasters,
-  );
+    });
+  try {
+    const automatic = evaluateAutomaticOffers({
+      offers: input.snapshot.automaticOffers ?? [],
+      lines: basketLines,
+      at: new Date(input.pricingOccurredAt ?? input.occurredAt),
+    });
+    const coupons = (input.snapshot.coupons ?? []).map((coupon) => ({
+      ...coupon,
+      usedCount: coupon.usedCount + (input.couponCode && normalizeCouponCode(coupon.code) === normalizeCouponCode(input.couponCode)
+        ? unaccountedLocalCouponUses
+        : 0),
+    }));
+    const coupon = evaluateCoupon({
+      coupons,
+      code: input.couponCode,
+      lines: basketLines,
+      automaticOffer: automatic.appliedAutomaticOffer,
+      automaticRanges: automatic.unitRanges,
+      at: new Date(input.pricingOccurredAt ?? input.occurredAt),
+    });
+    return {
+      ...priceSaleLines(
+        basketLines,
+        input.employeeDiscountPiasters,
+        automatic.appliedAutomaticOffer ? automatic.unitRanges : undefined,
+        coupon.appliedCoupon ? coupon.unitRanges : undefined,
+      ),
+      automaticOfferDiscountPiasters: automatic.automaticOfferDiscountPiasters,
+      appliedAutomaticOffer: automatic.appliedAutomaticOffer,
+      couponDiscountPiasters: coupon.couponDiscountPiasters,
+      appliedCoupon: coupon.appliedCoupon,
+    };
+  } catch (error) {
+    if (error instanceof PricingValidationError) {
+      throw new SalesValidationError(error.message);
+    }
+    throw error;
+  }
 }
 
 export type OfflinePosServices = ReturnType<typeof createOfflinePosServices>;

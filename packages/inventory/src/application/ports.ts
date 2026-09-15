@@ -34,8 +34,10 @@ export type ReceivedBatchRecord = {
   id: string;
   variantId: string;
   receivedQuantity: number;
+  effectiveReceivedQuantity: number;
   remainingQuantity: number;
   unitCostPiasters: number;
+  effectiveUnitCostPiasters: number;
   recordedAt: Date;
   receiptId: string;
   receiptDate: string;
@@ -46,8 +48,10 @@ export type BatchRecord = {
   id: string;
   variantId: string;
   receivedQuantity: number;
+  effectiveReceivedQuantity: number;
   remainingQuantity: number;
   unitCostPiasters: number;
+  effectiveUnitCostPiasters: number;
   recordedAt: Date;
   receiptId: string;
   receiptDate: string;
@@ -62,7 +66,30 @@ export type AllocationRecord = {
   variantId: string;
   quantity: number;
   unitCostPiasters: number;
+  effectiveUnitCostPiasters: number;
   recordedAt: Date;
+};
+
+export type ReceivingBatchCorrection = {
+  batchId: string;
+  variantId: string;
+  effectiveQuantity: number;
+  effectiveUnitCostPiasters: number;
+};
+
+export type ReceivingBatchCorrectionResult = {
+  batchId: string;
+  variantId: string;
+  originalQuantity: number;
+  originalUnitCostPiasters: number;
+  previousQuantity: number;
+  previousUnitCostPiasters: number;
+  effectiveQuantity: number;
+  effectiveUnitCostPiasters: number;
+  remainingQuantity: number;
+  allocatedQuantity: number;
+  quantityDelta: number;
+  unitCostDeltaPiasters: number;
 };
 
 export type DiscrepancyRecord = {
@@ -111,6 +138,11 @@ export type InventoryTransaction = {
     recordedAt: Date;
     lines: ReceiveBatchLine[];
   }): Promise<ReceivedBatchRecord[]>;
+  applyReceivingCorrection(input: {
+    operationId: string;
+    recordedAt: Date;
+    lines: ReceivingBatchCorrection[];
+  }): Promise<ReceivingBatchCorrectionResult[]>;
   allocateFromOldestAvailable(input: {
     operationId: string;
     variantId: string;
@@ -138,7 +170,7 @@ export type InventoryTransaction = {
     direction: "restore" | "deduct";
     quantity: number;
     recordedAt: Date;
-  }): Promise<{ unitCostPiasters: number }>;
+  }): Promise<{ unitCostPiasters: number; effectiveUnitCostPiasters: number }>;
   recordDiscrepancy(input: {
     operationId: string;
     variantId: string;
@@ -151,6 +183,7 @@ export type InventoryTransaction = {
   quantitiesFor(variantIds: string[]): Promise<Map<string, number>>;
   referencedVariantIds(variantIds: string[]): Promise<string[]>;
   listAvailableBatchesFifo(variantId: string): Promise<ReceivedBatchRecord[]>;
+  getBatchStates(batchIds: string[]): Promise<BatchRecord[]>;
   lockStockClock(mode: "share" | "update"): Promise<void>;
   bumpStockVersion(): Promise<number>;
   currentStockVersion(): Promise<number>;
@@ -161,6 +194,7 @@ export type InventoryReadStore = {
   currentStockVersion(): Promise<number>;
   referencedVariantIds(variantIds: string[]): Promise<string[]>;
   listBatches(): Promise<BatchRecord[]>;
+  getBatchStates(batchIds: string[]): Promise<BatchRecord[]>;
   listAllocations(operationId: string): Promise<AllocationRecord[]>;
   listDiscrepancies(operationId: string): Promise<DiscrepancyRecord[]>;
   getSettings(): Promise<SettingsRecord>;

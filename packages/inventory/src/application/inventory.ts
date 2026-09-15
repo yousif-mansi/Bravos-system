@@ -152,8 +152,10 @@ function toBatchDto(
     id: string;
     variantId: string;
     receivedQuantity: number;
+    effectiveReceivedQuantity: number;
     remainingQuantity: number;
     unitCostPiasters: number;
+    effectiveUnitCostPiasters: number;
     recordedAt: Date;
     receiptId: string;
     receiptDate: string;
@@ -167,8 +169,10 @@ function toBatchDto(
     id: row.id,
     variantId: row.variantId,
     receivedQuantity: row.receivedQuantity,
+    effectiveReceivedQuantity: row.effectiveReceivedQuantity,
     remainingQuantity: row.remainingQuantity,
     unitCostPiasters: row.unitCostPiasters,
+    effectiveUnitCostPiasters: row.effectiveUnitCostPiasters,
     recordedAt: row.recordedAt.toISOString(),
     receiptId: row.receiptId,
     receiptDate: row.receiptDate,

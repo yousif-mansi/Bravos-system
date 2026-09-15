@@ -11,11 +11,15 @@ export type SalePayload = {
 export type AcceptedSalePayload = {
   saleId: string;
   snapshotId: string;
+  pricingVersion?: 1;
+  occurredAt?: string;
+  pricingOccurredAt?: string;
   customerName: string | null;
   customerPhone: string | null;
+  couponCode?: string | null;
   employeeDiscountPiasters: number;
   discountReason: string | null;
-  lines: Array<{ variantId: string; quantity: number }>;
+  lines: Array<{ variantId: string; quantity: number; listedUnitPricePiasters?: number | null }>;
 };
 
 function sortedLines(lines: Array<{ variantId: string; quantity: number }>) {
@@ -26,6 +30,26 @@ function sortedLines(lines: Array<{ variantId: string; quantity: number }>) {
         return left.variantId < right.variantId ? -1 : 1;
       }
       return left.quantity - right.quantity;
+    });
+}
+
+function sortedAcceptedLines(
+  lines: Array<{ variantId: string; quantity: number; listedUnitPricePiasters?: number | null }>,
+) {
+  return [...lines]
+    .map((line) => ({
+      variantId: line.variantId,
+      quantity: line.quantity,
+      listedUnitPricePiasters: line.listedUnitPricePiasters ?? null,
+    }))
+    .sort((left, right) => {
+      if (left.variantId !== right.variantId) {
+        return left.variantId < right.variantId ? -1 : 1;
+      }
+      if (left.quantity !== right.quantity) {
+        return left.quantity - right.quantity;
+      }
+      return (left.listedUnitPricePiasters ?? -1) - (right.listedUnitPricePiasters ?? -1);
     });
 }
 
@@ -43,14 +67,22 @@ export function normalizeSalePayload(input: SalePayload): SalePayload {
 }
 
 export function normalizeAcceptedSalePayload(input: AcceptedSalePayload): AcceptedSalePayload {
+  const couponCode = input.couponCode?.normalize("NFC").trim().toLocaleUpperCase("en-US") || null;
+  const versionedPricing = input.pricingVersion === 1;
+  const occurredAt = versionedPricing ? new Date(input.occurredAt ?? "").toISOString() : null;
+  const pricingOccurredAt = versionedPricing ? new Date(input.pricingOccurredAt ?? "").toISOString() : null;
   return {
     saleId: input.saleId,
     snapshotId: input.snapshotId,
+    ...(versionedPricing
+      ? { pricingVersion: 1 as const, occurredAt: occurredAt!, pricingOccurredAt: pricingOccurredAt! }
+      : {}),
     customerName: input.customerName,
     customerPhone: input.customerPhone,
+    ...(couponCode ? { couponCode } : {}),
     employeeDiscountPiasters: input.employeeDiscountPiasters,
     discountReason: input.discountReason,
-    lines: sortedLines(input.lines),
+    lines: versionedPricing ? sortedAcceptedLines(input.lines) : sortedLines(input.lines),
   };
 }
 
@@ -66,19 +98,30 @@ export function canonicalOfflineSaleFactsJson(input: {
   id: string;
   kind: "accepted" | "connected";
   snapshotId: string | null;
+  pricingVersion?: 1 | null;
+  occurredAt?: string;
+  pricingOccurredAt?: string;
   customerName: string | null;
   customerPhone: string | null;
   couponCode?: string | null;
   employeeDiscountPiasters: number;
   discountReason: string | null;
-  lines: Array<{ variantId: string; quantity: number }>;
+  lines: Array<{ variantId: string; quantity: number; listedUnitPricePiasters?: number | null }>;
 }): string {
   if (input.kind === "accepted" && input.snapshotId) {
     return canonicalAcceptedSalePayloadJson({
       saleId: input.id,
       snapshotId: input.snapshotId,
+      ...(input.pricingVersion === 1
+        ? {
+            pricingVersion: 1 as const,
+            occurredAt: input.occurredAt ?? "",
+            pricingOccurredAt: input.pricingOccurredAt ?? "",
+          }
+        : {}),
       customerName: input.customerName,
       customerPhone: input.customerPhone,
+      ...(input.couponCode ? { couponCode: input.couponCode } : {}),
       employeeDiscountPiasters: input.employeeDiscountPiasters,
       discountReason: input.discountReason,
       lines: input.lines,

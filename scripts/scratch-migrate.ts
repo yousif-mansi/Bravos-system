@@ -30,6 +30,9 @@ try {
       "014_bundles.sql",
       "015_coupons.sql",
       "016_recording_corrections.sql",
+      "017_offline_promotions.sql",
+      "018_exchanges.sql",
+      "019_receiving_corrections.sql",
     ];
     if (first.join(",") !== expectedMigrations.join(",") || afterApply.join(",") !== first.join(",")) {
       throw new Error(`Scratch apply did not record multiple migrations: ${first.join(",")}`);
@@ -91,6 +94,7 @@ try {
       || !(await columnExists(pool, "returns_return_unit", "source_recording_sale_unit_id"))) {
       throw new Error("Scratch apply did not create recording correction storage from migration 016.");
     }
+    await assertCurrentBatchStorage(pool, true);
     for (const expected of [...currentBatch].reverse()) {
       const reverted = await revertLastMigration(pool);
       if (reverted !== expected) throw new Error(`Scratch down expected ${expected}, got ${reverted}`);
@@ -100,6 +104,7 @@ try {
       throw new Error("Scratch down did not leave earlier migrations applied.");
     }
     const tablesAfterDown = await tableNames(pool);
+    await assertCurrentBatchStorage(pool, false);
     if (!tablesAfterDown.includes("user") || !tablesAfterDown.includes("staff_profile")) {
       throw new Error("Scratch down removed identity tables while reverting a later migration.");
     }
@@ -152,6 +157,7 @@ try {
       throw new Error("Scratch reapply did not restore the latest migration.");
     }
     const tablesAfterReapply = await tableNames(pool);
+    await assertCurrentBatchStorage(pool, true);
     if (!tablesAfterReapply.includes("sales_pos_snapshot") || !tablesAfterReapply.includes("sales_sale")) {
       throw new Error("Scratch reapply did not restore snapshot and sales tables.");
     }
@@ -266,6 +272,26 @@ async function columnExists(pool: Pool, tableName: string, columnName: string): 
     [tableName, columnName],
   );
   return result.rows[0]?.exists === true;
+}
+
+async function assertCurrentBatchStorage(pool: Pool, present: boolean): Promise<void> {
+  const tables = await tableNames(pool);
+  for (const table of ["returns_exchange", "returns_exchange_quote", "receiving_correction", "receiving_correction_line"]) {
+    if (tables.includes(table) !== present) throw new Error(`Expected ${table} presence=${present}.`);
+  }
+  for (const [table, column] of [
+    ["sales_pos_snapshot", "pricing_version"],
+    ["sales_pos_snapshot", "coupon_accounted_operations"],
+    ["sales_sale", "coupon_usage_actual_count"],
+    ["sales_sale", "cash_received_piasters"],
+    ["sales_sale", "exchange_credit_applied_piasters"],
+    ["inventory_batch", "effective_received_quantity"],
+    ["inventory_batch", "effective_unit_cost_piasters"],
+  ] as const) {
+    if (await columnExists(pool, table, column) !== present) {
+      throw new Error(`Expected ${table}.${column} presence=${present}.`);
+    }
+  }
 }
 
 async function constraintExists(pool: Pool, constraintName: string): Promise<boolean> {

@@ -1,6 +1,13 @@
 import type { AutomaticOfferBundleItemDto, AutomaticOfferDiscountType, AutomaticOfferDto, CouponDto } from "@bravos/contracts";
 import type { Pool, PoolClient } from "pg";
-import type { AutomaticOfferStore, AutomaticOfferWrite, CouponStore, CouponUsageTransaction, CouponWrite } from "../application/ports.ts";
+import type {
+  AutomaticOfferStore,
+  AutomaticOfferWrite,
+  CouponStore,
+  CouponUsageClaim,
+  CouponUsageTransaction,
+  CouponWrite,
+} from "../application/ports.ts";
 import { evaluateAutomaticOffers, type PricingBasketLine } from "../domain/automatic-offers.ts";
 import { evaluateCoupon } from "../domain/coupons.ts";
 import { CouponUsageConflictError, PricingValidationError } from "../domain/errors.ts";
@@ -94,6 +101,46 @@ export function createPostgresAutomaticOfferStore(pool: Pool): AutomaticOfferSto
 
 export function createPostgresAutomaticPricingReader(queryable: Queryable) {
   return {
+    async snapshotRules(operationIds: string[] = []) {
+      const [automaticOffers, coupons, accounted] = await Promise.all([
+        loadOffers(queryable),
+        loadCoupons(queryable),
+        operationIds.length === 0
+          ? Promise.resolve({ rows: [] as Array<{
+              coupon_id: string;
+              source_type: "physical_sale";
+              source_id: string;
+              operation_id: string;
+              payload_fingerprint: string;
+            }> })
+          : queryable.query<{
+              coupon_id: string;
+              source_type: "physical_sale";
+              source_id: string;
+              operation_id: string;
+              payload_fingerprint: string;
+            }>(
+              `SELECT coupon_id, source_type, source_id, operation_id, payload_fingerprint
+               FROM pricing_coupon_usage
+               WHERE operation_id = ANY($1::uuid[])
+                 AND source_type = 'physical_sale'
+                 AND released_at IS NULL
+               ORDER BY operation_id`,
+              [operationIds],
+            ),
+      ]);
+      return {
+        automaticOffers,
+        coupons,
+        couponAccountedOperations: accounted.rows.map((row) => ({
+          couponId: row.coupon_id,
+          sourceType: row.source_type,
+          sourceId: row.source_id,
+          operationId: row.operation_id,
+          payloadFingerprint: row.payload_fingerprint,
+        })),
+      };
+    },
     async evaluate(lines: PricingBasketLine[], at: Date = new Date(), couponCode: string | null = null) {
       const automatic = evaluateAutomaticOffers({ offers: await loadOffers(queryable), lines, at });
       const coupon = evaluateCoupon({
@@ -168,7 +215,71 @@ export function createPostgresCouponUsageTransaction(queryable: Queryable): Coup
       );
       return "claimed";
     },
+    async claimCompletedOffline(input) {
+      const existing = await usageReplayRecord(queryable, input);
+      if (existing) {
+        const coupon = await queryable.query<{ usage_limit: number }>(
+          "SELECT usage_limit FROM pricing_coupon WHERE id=$1",
+          [input.couponId],
+        );
+        const usageLimit = coupon.rows[0]?.usage_limit;
+        if (!usageLimit) throw new CouponUsageConflictError("الكوبون المقبول لم يعد موجوداً.");
+        const used = await activeCouponUsageCount(queryable, input.couponId);
+        return { kind: "replay", overLimit: used > usageLimit, usageLimit, centralUsedCount: used };
+      }
+      const coupon = await queryable.query<{ usage_limit: number }>(
+        "SELECT usage_limit FROM pricing_coupon WHERE id=$1 FOR UPDATE",
+        [input.couponId],
+      );
+      const row = coupon.rows[0];
+      if (!row) throw new CouponUsageConflictError("الكوبون المقبول لم يعد موجوداً.");
+      if (await usageWasReplayed(queryable, input)) {
+        const used = await activeCouponUsageCount(queryable, input.couponId);
+        return { kind: "replay", overLimit: used > row.usage_limit, usageLimit: row.usage_limit, centralUsedCount: used };
+      }
+      const usedBefore = await activeCouponUsageCount(queryable, input.couponId);
+      await queryable.query(
+        `INSERT INTO pricing_coupon_usage
+           (id, coupon_id, source_type, source_id, operation_id, payload_fingerprint, claimed_at)
+         VALUES (gen_random_uuid(),$1,$2,$3,$4,$5,$6)`,
+        [input.couponId, input.sourceType, input.sourceId, input.operationId, input.payloadFingerprint, input.claimedAt],
+      );
+      return {
+        kind: "claimed",
+        overLimit: usedBefore >= row.usage_limit,
+        usageLimit: row.usage_limit,
+        centralUsedCount: usedBefore + 1,
+      };
+    },
   };
+}
+
+async function activeCouponUsageCount(queryable: Queryable, couponId: string): Promise<number> {
+  const result = await queryable.query<{ count: number | string }>(
+    "SELECT count(*) AS count FROM pricing_coupon_usage WHERE coupon_id=$1 AND released_at IS NULL",
+    [couponId],
+  );
+  return safeInteger(result.rows[0]?.count ?? 0);
+}
+
+async function usageReplayRecord(
+  queryable: Queryable,
+  input: CouponUsageClaim,
+): Promise<CouponUsageIdentity | null> {
+  const result = await queryable.query<CouponUsageIdentity>(
+    `SELECT coupon_id, source_type, source_id, operation_id, payload_fingerprint
+     FROM pricing_coupon_usage
+     WHERE operation_id=$1 OR (source_type=$2 AND source_id=$3)`,
+    [input.operationId, input.sourceType, input.sourceId],
+  );
+  if (result.rows.length === 0) return null;
+  if (result.rows.length === 1) {
+    const existing = result.rows[0];
+    if (existing && existing.coupon_id === input.couponId && existing.source_type === input.sourceType
+      && existing.source_id === input.sourceId && existing.operation_id === input.operationId
+      && existing.payload_fingerprint === input.payloadFingerprint) return existing;
+  }
+  throw new CouponUsageConflictError("أُعيد استخدام معرّف الكوبون ببيانات مختلفة.");
 }
 
 type CouponUsageIdentity = {
@@ -183,20 +294,7 @@ async function usageWasReplayed(
   queryable: Queryable,
   input: Parameters<CouponUsageTransaction["claim"]>[0],
 ): Promise<boolean> {
-  const result = await queryable.query<CouponUsageIdentity>(
-    `SELECT coupon_id, source_type, source_id, operation_id, payload_fingerprint
-     FROM pricing_coupon_usage
-     WHERE operation_id=$1 OR (source_type=$2 AND source_id=$3)`,
-    [input.operationId, input.sourceType, input.sourceId],
-  );
-  if (result.rows.length === 0) return false;
-  if (result.rows.length === 1) {
-    const existing = result.rows[0];
-    if (existing && existing.coupon_id === input.couponId && existing.source_type === input.sourceType
-      && existing.source_id === input.sourceId && existing.operation_id === input.operationId
-      && existing.payload_fingerprint === input.payloadFingerprint) return true;
-  }
-  throw new CouponUsageConflictError("أُعيد استخدام معرّف الكوبون ببيانات مختلفة.");
+  return Boolean(await usageReplayRecord(queryable, input));
 }
 
 async function runWrite<T>(pool: Pool, work: (client: PoolClient) => Promise<T>): Promise<T> {

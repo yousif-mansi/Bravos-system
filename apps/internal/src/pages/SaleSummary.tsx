@@ -23,8 +23,25 @@ export function SaleSummary({ sale }: { sale: SaleDto }) {
       ) : null}
       <p>خصم الموظف: {formatEgpFromPiasters(sale.employeeDiscountPiasters)}</p>
       <p>الإجمالي: {formatEgpFromPiasters(sale.finalTotalPiasters)}</p>
+      {sale.exchangeCreditAppliedPiasters > 0 ? (
+        <p data-testid="sale-exchange-settlement">
+          رصيد إرجاع مستخدم: {formatEgpFromPiasters(sale.exchangeCreditAppliedPiasters)} · نقد محصل فعلياً: {formatEgpFromPiasters(sale.cashReceivedPiasters)}
+        </p>
+      ) : null}
       {sale.discountReason ? <p>سبب الخصم: {sale.discountReason}</p> : null}
       {sale.discrepancy ? <p role="alert">{sale.discrepancy.messageAr}</p> : null}
+      {sale.couponUsageDiscrepancy ? (
+        <div className="error" data-testid="coupon-usage-discrepancy" role="alert">
+          <p>{sale.couponUsageDiscrepancy.messageAr}</p>
+          <p>
+            الكوبون: {sale.couponUsageDiscrepancy.couponCode} — خصم {formatEgpFromPiasters(sale.couponUsageDiscrepancy.couponDiscountPiasters)}
+          </p>
+          <p>
+            الاستخدام الفعلي: {sale.couponUsageDiscrepancy.centralUsedCount} من حد {sale.couponUsageDiscrepancy.usageLimit}
+          </p>
+          <p>وقت اكتشاف التعارض: {formatTime(sale.couponUsageDiscrepancy.detectedAt)}</p>
+        </div>
+      ) : null}
       <ul>
         {sale.lines.map((line) => (
           <li key={line.id}>

@@ -345,6 +345,18 @@ export function getReceipt(receiptId: string) {
   return request<ReceiptDto>(`/api/internal/receiving/receipts/${receiptId}`);
 }
 
+export function correctReceipt(receiptId: string, input: {
+  operationId: string;
+  expectedRevision: number;
+  reason: string;
+  lines: Array<{ lineId: string; quantity: number; unitCostPiasters: number }>;
+}) {
+  return request<ReceiptDto>(`/api/internal/receiving/receipts/${receiptId}/corrections`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
 export async function lookupReceivingOperation(operationId: string): Promise<ReceiptDto | null> {
   try {
     return await request<ReceiptDto>(`/api/internal/receiving/operations/${operationId}`);
@@ -580,6 +592,37 @@ export function payReturnRefund(returnId: string, amountPiasters: number, operat
   return request<ReturnDto>(`/api/internal/returns/${returnId}/refund`, {
     method: "POST",
     body: JSON.stringify({ operationId, status: "paid", amountPiasters }),
+  });
+}
+
+export function quoteReturnExchange(returnId: string, input: {
+  quoteId: string;
+  exchangeId: string;
+  operationId: string;
+  replacementSaleId: string;
+  replacementSaleOperationId: string;
+  expectedRevision: number;
+  replacementLines: Array<{ variantId: string; quantity: number }>;
+}) {
+  return request<import("@bravos/contracts").ReturnExchangeQuoteDto>(`/api/internal/returns/${returnId}/exchange-quote`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function completeReturnExchange(returnId: string, input: {
+  exchangeId: string;
+  operationId: string;
+  replacementSaleId: string;
+  replacementSaleOperationId: string;
+  receivedAndInspected: true;
+  expectedRevision: number;
+  cashRefundStatus: "owed" | "paid";
+  quoteId: string;
+}) {
+  return request<ReturnDto>(`/api/internal/returns/${returnId}/exchange`, {
+    method: "POST",
+    body: JSON.stringify(input),
   });
 }
 

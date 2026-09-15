@@ -168,6 +168,7 @@ export default function LookupPage({
           physicallyCompleted: extras[0].physicallyCompleted,
           payload: extras[0].payload,
           occurredAt: extras[0].occurredAt,
+          pricingOccurredAt: extras[0].pricingOccurredAt ?? null,
         };
         foreignRecoveryRef.current = blocked;
         setForeignRecovery(blocked);
@@ -181,6 +182,7 @@ export default function LookupPage({
         physicallyCompleted: stored.physicallyCompleted,
         payload: stored.payload,
         occurredAt: stored.occurredAt,
+        pricingOccurredAt: stored.pricingOccurredAt ?? null,
       };
       pendingSaleRef.current = pending;
       setPendingSale(pending);
@@ -253,6 +255,7 @@ export default function LookupPage({
               physicallyCompleted: stored.physicallyCompleted,
               payload: stored.payload,
               occurredAt: stored.occurredAt,
+              pricingOccurredAt: stored.pricingOccurredAt ?? null,
             };
             pendingSaleRef.current = prepared;
             setPendingSale(prepared);
@@ -415,10 +418,6 @@ export default function LookupPage({
       setError("قيمة الخصم غير صالحة.");
       return null;
     }
-    if (couponCode.trim() && typeof navigator !== "undefined" && !navigator.onLine) {
-      setError("تطبيق كوبون جديد يتطلب اتصالاً بالخادم.");
-      return null;
-    }
     return {
       customerName: customerName.trim() || null,
       customerPhone: customerPhone.trim() || null,
@@ -532,7 +531,6 @@ export default function LookupPage({
   }
 
   async function quoteFromSnapshot(pending: PendingSale, payload: SalePayload): Promise<SaleDto> {
-    if (payload.couponCode) throw new ApiError(503, "VALIDATION", "تطبيق الكوبون يتطلب اتصالاً بالخادم.");
     const snapshot = quoteSnapshotRef.current ?? (await pos.loadSnapshot(workspace.staff.id));
     if (!snapshot || !workspace.activeBranch) {
       throw new ApiError(503, "VALIDATION", "لم تكتمل جاهزية نقطة البيع دون اتصال بعد.");
@@ -540,7 +538,8 @@ export default function LookupPage({
     await assertLocalCartStock(cart);
     quoteSnapshotRef.current = snapshot;
     quoteCachedRef.current = cachedQuantitiesFromSnapshot(snapshot);
-    const priced = pos.priceCart({
+    const pricingOccurredAt = pending.pricingOccurredAt ?? new Date().toISOString();
+    const priced = await pos.priceCart({
       staffId: workspace.staff.id,
       saleId: pending.saleId,
       operationId: pending.operationId,
@@ -549,10 +548,11 @@ export default function LookupPage({
       kind: "accepted",
       branch: snapshot.branch,
       soldByDisplayName: workspace.staff.displayName,
-      occurredAt: pending.occurredAt ?? new Date().toISOString(),
+      occurredAt: pending.occurredAt ?? pricingOccurredAt,
+      pricingOccurredAt,
       customerName: payload.customerName,
       customerPhone: payload.customerPhone,
-      couponCode: null,
+      couponCode: payload.couponCode ?? null,
       employeeDiscountPiasters: payload.employeeDiscountPiasters,
       discountReason: payload.discountReason,
       lines: cart.map((line) => ({
@@ -569,19 +569,21 @@ export default function LookupPage({
       branch: snapshot.branch,
       soldByStaffId: workspace.staff.id,
       soldByDisplayName: workspace.staff.displayName,
-      occurredAt: pending.occurredAt ?? new Date().toISOString(),
+      occurredAt: pricingOccurredAt,
       recordedAt: null,
       customerName: payload.customerName,
       customerPhone: payload.customerPhone,
       originalTotalPiasters: priced.originalTotalPiasters,
-      automaticOfferDiscountPiasters: 0,
-      appliedAutomaticOffer: null,
-      couponDiscountPiasters: 0,
-      appliedCoupon: null,
+      automaticOfferDiscountPiasters: priced.automaticOfferDiscountPiasters,
+      appliedAutomaticOffer: priced.appliedAutomaticOffer,
+      couponDiscountPiasters: priced.couponDiscountPiasters,
+      appliedCoupon: priced.appliedCoupon,
       employeeDiscountPiasters: payload.employeeDiscountPiasters,
       discountReason: payload.discountReason,
       discountedByStaffId: payload.employeeDiscountPiasters > 0 ? workspace.staff.id : null,
       finalTotalPiasters: priced.finalTotalPiasters,
+      exchangeCreditAppliedPiasters: 0,
+      cashReceivedPiasters: priced.finalTotalPiasters,
       physicallyCompleted: false,
       discrepancy: null,
       lines: priced.lines.map((line) => {
@@ -597,6 +599,9 @@ export default function LookupPage({
           originalPiasters: line.originalPiasters,
           discountPiasters: line.discountPiasters,
           paidPiasters: line.paidPiasters,
+          automaticOfferDiscountPiasters: line.automaticOfferDiscountPiasters,
+          couponDiscountPiasters: line.couponDiscountPiasters,
+          employeeDiscountPiasters: line.employeeDiscountPiasters,
           allocatedQuantity: 0,
           unallocatedQuantity: 0,
           units: line.units,
@@ -639,6 +644,8 @@ export default function LookupPage({
           occurredAt,
           kind: "accepted",
           snapshotId: pinnedSnapshot.snapshotId,
+          pricingVersion: pinnedSnapshot.pricingVersion === 1 ? 1 : null,
+          pricingOccurredAt: pending.pricingOccurredAt ?? pinnedQuote.occurredAt,
         }),
         quoteCachedRef.current ?? cachedQuantitiesFromSnapshot(pinnedSnapshot),
       );
@@ -813,6 +820,7 @@ export default function LookupPage({
         physicallyCompleted: physical || local.physicallyCompleted,
         payload,
         occurredAt: local.occurredAt,
+        pricingOccurredAt: local.pricingOccurredAt ?? null,
         quote,
         snapshot: quoteSnapshotRef.current,
         quoteOrigin: quoteOriginRef.current,
@@ -838,6 +846,7 @@ export default function LookupPage({
             physicallyCompleted: stored.physicallyCompleted,
             payload: stored.payload,
             occurredAt: stored.occurredAt,
+            pricingOccurredAt: stored.pricingOccurredAt ?? null,
           };
           foreignRecoveryRef.current = blocked;
           setForeignRecovery(blocked);
@@ -897,7 +906,12 @@ export default function LookupPage({
         await acceptSale(result, "تم العثور على البيع المحفوظ.");
         return;
       }
-      const prepared: PendingSale = { ...nextPending, phase: "prepared", payload };
+      const prepared: PendingSale = {
+        ...nextPending,
+        phase: "prepared",
+        payload,
+        pricingOccurredAt: quoteOriginRef.current === "snapshot" ? result.occurredAt : null,
+      };
       pendingSaleRef.current = prepared;
       await withPendingSaleLock(workspace.staff.id, () =>
         pos.savePending({
@@ -909,6 +923,7 @@ export default function LookupPage({
           physicallyCompleted: false,
           payload,
           occurredAt: prepared.occurredAt,
+          pricingOccurredAt: prepared.pricingOccurredAt ?? null,
           quote: result,
           snapshot: quoteSnapshotRef.current,
           quoteOrigin: quoteOriginRef.current,
@@ -969,6 +984,7 @@ export default function LookupPage({
             physicallyCompleted: false,
             payload: rejected.payload,
             occurredAt: rejected.occurredAt,
+            pricingOccurredAt: rejected.pricingOccurredAt ?? null,
             quote: null,
             snapshot: null,
             quoteOrigin: null,
@@ -1001,6 +1017,7 @@ export default function LookupPage({
             physicallyCompleted: uncertain.physicallyCompleted,
             payload,
             occurredAt: uncertain.occurredAt,
+            pricingOccurredAt: uncertain.pricingOccurredAt ?? null,
             quote,
             snapshot: quoteSnapshotRef.current,
             quoteOrigin: quoteOriginRef.current,
@@ -1229,7 +1246,7 @@ export default function LookupPage({
           <input id="customerPhone" value={customerPhone} disabled={formLocked} onChange={(event) => { if (beginCartRevision()) setCustomerPhone(event.target.value); }} />
         </div>
         <div className="field">
-          <label htmlFor="couponCode">كود الكوبون (يتطلب اتصالاً)</label>
+          <label htmlFor="couponCode">كود الكوبون</label>
           <input id="couponCode" value={couponCode} disabled={formLocked} onChange={(event) => { if (beginCartRevision()) setCouponCode(event.target.value); }} />
         </div>
         <div className="field">

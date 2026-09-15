@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import type { WorkspaceDto } from "@bravos/contracts";
-import { acceptOfflineSale, ApiError, completeSale, getWorkspace } from "./api.ts";
+import { acceptOfflineSale, ApiError, completeSale, getWorkspace, issuePosSnapshot } from "./api.ts";
 import { LoginPage } from "./pages/LoginPage.tsx";
 import { RecoveryPage } from "./pages/RecoveryPage.tsx";
 import { BranchPage } from "./pages/BranchPage.tsx";
@@ -9,6 +9,7 @@ import { WorkspacePage } from "./pages/WorkspacePage.tsx";
 import { accountGeneration, publishAccount, subscribeAccount } from "./account-session.ts";
 import {
   acceptedPayload,
+  cacheIssuedSnapshot,
   completedPayload,
   pos,
   prepareOfflineWorkspace,
@@ -239,6 +240,11 @@ export function App() {
           const result = await retryUnsyncedSales(staffId, sync, stillCurrent);
           if (stillCurrent() && result.error) {
             setError(`${result.error} البيع المكتمل محفوظ محلياً وسيظل ضمن المبيعات غير المرسلة.`);
+          } else if (stillCurrent()) {
+            const snapshot = await issuePosSnapshot(await pos.deviceId(), await pos.listPendingOperationIds());
+            if (stillCurrent()) {
+              await cacheIssuedSnapshot(staffId, snapshot);
+            }
           }
         } catch (caught: unknown) {
           if (!stillCurrent()) {

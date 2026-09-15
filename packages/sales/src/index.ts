@@ -21,8 +21,13 @@ export {
   normalizeSalePayload,
 } from "./domain/fingerprint.ts";
 export { createSalesServices, type SalesServices } from "./application/sales.ts";
+export { createExchangeReplacementPricing, createExchangeReplacementSaleWriter } from "./application/exchange-replacement.ts";
 export type {
+  AutomaticPricingPort,
   CompleteSaleResult,
+  ExchangeReplacementAcceptedQuote,
+  ExchangeReplacementPricing,
+  ExchangeReplacementSaleWriter,
   ListedPriceReader,
   PrepareSaleResult,
   SaleStore,

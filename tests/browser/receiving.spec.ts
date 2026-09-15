@@ -1,5 +1,80 @@
 import { expect, test, type Page } from "@playwright/test";
 
+test("manager corrects a receipt and sees original and effective Arabic details", async ({ page }) => {
+  await page.goto("http://127.0.0.1:5174/login");
+  await page.getByLabel("اسم الدخول").fill("owner");
+  await page.getByLabel("كلمة المرور").fill("e2e-owner-pass");
+  await page.getByRole("button", { name: "دخول" }).click();
+  await expect(page.getByRole("heading", { name: "اختيار الفرع النشط" })).toBeVisible();
+  await page.getByRole("button", { name: "أبشواي" }).click();
+
+  const category = await staffApi(page, "POST", "/api/internal/catalog/categories", { nameAr: "تصحيح الاستلام" });
+  const size = await staffApi(page, "POST", "/api/internal/catalog/sizes", { nameAr: "مقاس تصحيح" });
+  const color = await staffApi(page, "POST", "/api/internal/catalog/colors", { nameAr: "لون تصحيح" });
+  const product = await staffApi(page, "POST", "/api/internal/catalog/products", {
+    code: "RC-E2E",
+    nameAr: "منتج تصحيح الاستلام",
+    descriptionAr: "اختبار واجهة التصحيح",
+    categoryId: category.body.id,
+    defaultSellingPricePiasters: 30000,
+    publication: "hidden",
+    imageRefs: [],
+    variants: [{ sizeId: size.body.id, colorId: color.body.id, sellingPricePiastersOverride: null }],
+  });
+  const receipt = await staffApi(page, "POST", "/api/internal/receiving/receipts", {
+    operationId: crypto.randomUUID(),
+    receiptDate: "2026-09-15",
+    lines: [{ variantId: product.body.variants[0].id, quantity: 2, unitCostPiasters: 10000 }],
+  });
+  expect(receipt.status).toBe(201);
+
+  await page.getByRole("link", { name: "استلام المخزون" }).click();
+  const receiptCard = page.getByTestId("receipt-list").getByText("RC-E2E").locator("..");
+  await receiptCard.getByRole("button", { name: "عرض التفاصيل" }).click();
+  const details = page.getByTestId("receipt-details");
+  await expect(details).toContainText("الأصل: 2 × 100 ج.م.");
+  await expect(details).toContainText("الفعلي: 2 × 100 ج.م.");
+  await details.getByRole("button", { name: "تصحيح الإذن" }).click();
+
+  const correction = page.getByRole("form", { name: "تصحيح إذن الاستلام" });
+  await correction.getByLabel("سبب التصحيح").fill("تصحيح فاتورة المورد");
+  await correction.getByLabel("الكمية الفعالة").fill("2");
+  await correction.getByLabel("تكلفة الشراء الفعالة بالجنيه").fill("140");
+  const correctionOperationIds: string[] = [];
+  let dropFirstCorrectionResponse = true;
+  await page.route("**/api/internal/receiving/receipts/*/corrections", async (route) => {
+    if (route.request().method() !== "POST") {
+      await route.continue();
+      return;
+    }
+    const payload = route.request().postDataJSON() as { operationId: string };
+    correctionOperationIds.push(payload.operationId);
+    if (dropFirstCorrectionResponse) {
+      dropFirstCorrectionResponse = false;
+      const response = await route.fetch();
+      expect(response.status()).toBe(201);
+      await route.abort("connectionreset");
+      return;
+    }
+    await route.continue();
+  });
+  await correction.getByRole("button", { name: "حفظ التصحيح" }).click();
+  await expect(page.getByRole("alert")).toContainText("تعذر حفظ تصحيح إذن الاستلام.");
+  await correction.getByRole("button", { name: "إعادة محاولة التصحيح" }).click();
+
+  await expect(page.getByRole("status")).toContainText("تم حفظ تصحيح إذن الاستلام.");
+  expect(correctionOperationIds).toHaveLength(2);
+  expect(new Set(correctionOperationIds).size).toBe(1);
+  await expect(details).toContainText("الأصل: 2 × 100 ج.م.");
+  await expect(details).toContainText("الفعلي: 2 × 140 ج.م.");
+  await expect(details).toContainText("تصحيح فاتورة المورد");
+  await expect(details.getByText("التصحيح 1: تصحيح فاتورة المورد")).toHaveCount(1);
+  await expect(details).toContainText("مالك برافوس");
+  const batch = page.getByTestId("batch-list").getByText("RC-E2E").locator("..");
+  await expect(batch).toContainText("تكلفة الشراء الأصلية: 100 ج.م.");
+  await expect(batch).toContainText("التكلفة الفعالة: 140 ج.م.");
+});
+
 test("manager receives separate cost batches and cashier sees central quantity without costs", async ({
   page,
 }) => {
@@ -51,8 +126,8 @@ test("manager receives separate cost batches and cashier sees central quantity w
   await expect(page.getByRole("status")).toContainText("تم حفظ إذن الاستلام.");
   await expect(page.getByTestId("receipt-details")).toContainText("10 × 100 ج.م.");
   await expect(page.getByTestId("receipt-details")).toContainText("10 × 140 ج.م.");
-  await expect(page.getByTestId("batch-list")).toContainText("تكلفة الشراء: 100 ج.م.");
-  await expect(page.getByTestId("batch-list")).toContainText("تكلفة الشراء: 140 ج.م.");
+  await expect(page.getByTestId("batch-list")).toContainText("تكلفة الشراء الأصلية: 100 ج.م.");
+  await expect(page.getByTestId("batch-list")).toContainText("تكلفة الشراء الأصلية: 140 ج.م.");
   await expect(page.getByTestId("low-stock-list").getByText("PT-E2E")).toHaveCount(0);
 
   const batches = await staffApi(page, "GET", "/api/internal/inventory/batches");

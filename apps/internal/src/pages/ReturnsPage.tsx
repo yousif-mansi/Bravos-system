@@ -1,14 +1,17 @@
 import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import type { ReturnDto, ReturnListItemDto, ReturnSourceDto, WorkspaceDto } from "@bravos/contracts";
+import type { CashierProductLookupDto, ReturnDto, ReturnExchangeQuoteDto, ReturnListItemDto, ReturnSourceDto, WorkspaceDto } from "@bravos/contracts";
 import {
   ApiError,
+  completeReturnExchange,
   createReturnDraft,
   getReturn,
   listReturnSources,
   listReturns,
+  listCashierCatalog,
   payReturnRefund,
   postReturn,
+  quoteReturnExchange,
   updateReturnDraft,
 } from "../api.ts";
 import { egpInputToPiasters, formatEgpFromPiasters, piastersToEgpInput } from "../money.ts";
@@ -30,10 +33,23 @@ export default function ReturnsPage({ workspace }: { workspace: WorkspaceDto; on
   const [amount, setAmount] = useState("");
   const [authorized, setAuthorized] = useState("0");
   const [authorizedEdited, setAuthorizedEdited] = useState(false);
+  const [exchangeCatalog, setExchangeCatalog] = useState<CashierProductLookupDto[]>([]);
+  const [replacementVariantId, setReplacementVariantId] = useState("");
+  const [replacementQuantity, setReplacementQuantity] = useState(1);
+  const [replacementBasket, setReplacementBasket] = useState<Array<{ variantId: string; quantity: number }>>([]);
+  const [exchangeQuote, setExchangeQuote] = useState<ReturnExchangeQuoteDto | null>(null);
+  const [cashRefundStatus, setCashRefundStatus] = useState<"owed" | "paid">("owed");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const paymentOperationRef = useRef<string | null>(null);
+  const exchangeIdentityRef = useRef<{
+    exchangeId: string;
+    operationId: string;
+    replacementSaleId: string;
+    replacementSaleOperationId: string;
+  } | null>(null);
+  const exchangeQuoteIdRef = useRef<string | null>(null);
 
   async function refresh() {
     const [nextSources, page, refreshedSelection] = await Promise.all([
@@ -48,8 +64,27 @@ export default function ReturnsPage({ workspace }: { workspace: WorkspaceDto; on
   }
 
   useEffect(() => {
-    void refresh().catch(showError);
+    void Promise.all([refresh(), listCashierCatalog().then(setExchangeCatalog)]).catch(showError);
   }, []);
+
+  const replacementOptions = useMemo(() => exchangeCatalog.flatMap((product) =>
+    product.variants.map((variant) => ({ product, variant }))), [exchangeCatalog]);
+
+  useEffect(() => {
+    if (!replacementVariantId && replacementOptions[0]) {
+      setReplacementVariantId(replacementOptions[0].variant.id);
+    }
+  }, [replacementOptions, replacementVariantId]);
+
+  useEffect(() => {
+    if (exchangeQuote && selectedReturn
+      && (exchangeQuote.returnRevision !== selectedReturn.revision
+        || exchangeQuote.correctionRevision !== selectedReturn.correctionRevision
+        || exchangeQuote.creditAvailablePiasters !== selectedReturn.authorizedRefundPiasters
+        || selectedReturn.refund.paidPiasters > 0)) {
+      resetExchangeQuote();
+    }
+  }, [exchangeQuote, selectedReturn]);
 
   const suggestion = useMemo(() => {
     if (!selectedSource) return 0;
@@ -72,6 +107,10 @@ export default function ReturnsPage({ workspace }: { workspace: WorkspaceDto; on
 
   function selectSource(source: ReturnSourceDto) {
     paymentOperationRef.current = null;
+    exchangeIdentityRef.current = null;
+    exchangeQuoteIdRef.current = null;
+    setExchangeQuote(null);
+    setReplacementBasket([]);
     setSelectedSource(source);
     setSelectedReturn(null);
     setEditingReturn(null);
@@ -182,12 +221,103 @@ export default function ReturnsPage({ workspace }: { workspace: WorkspaceDto; on
     }
   }
 
+  function resetExchangeQuote() {
+    exchangeQuoteIdRef.current = null;
+    exchangeIdentityRef.current = null;
+    setExchangeQuote(null);
+  }
+
+  function addReplacementLine() {
+    if (!replacementVariantId) return;
+    setReplacementBasket((current) => {
+      const existing = current.find((line) => line.variantId === replacementVariantId);
+      return existing
+        ? current.map((line) => line.variantId === replacementVariantId
+          ? { ...line, quantity: line.quantity + replacementQuantity }
+          : line)
+        : [...current, { variantId: replacementVariantId, quantity: replacementQuantity }];
+    });
+    resetExchangeQuote();
+  }
+
+  function removeReplacementLine(variantId: string) {
+    setReplacementBasket((current) => current.filter((line) => line.variantId !== variantId));
+    resetExchangeQuote();
+  }
+
+  async function previewExchange() {
+    if (!selectedReturn || replacementBasket.length === 0) return;
+    const quoteId = exchangeQuoteIdRef.current ?? crypto.randomUUID();
+    const identity = exchangeIdentityRef.current ?? {
+      exchangeId: crypto.randomUUID(),
+      operationId: crypto.randomUUID(),
+      replacementSaleId: crypto.randomUUID(),
+      replacementSaleOperationId: crypto.randomUUID(),
+    };
+    exchangeQuoteIdRef.current = quoteId;
+    exchangeIdentityRef.current = identity;
+    setBusy(true);
+    setError("");
+    try {
+      const value = await quoteReturnExchange(selectedReturn.id, {
+        quoteId,
+        ...identity,
+        expectedRevision: selectedReturn.revision,
+        replacementLines: replacementBasket,
+      });
+      setExchangeQuote(value);
+      setNotice("راجع سعر البضاعة ورصيد الإرجاع وفرق النقد قبل التأكيد.");
+    } catch (caught) {
+      showError(caught);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function exchange(event: FormEvent) {
+    event.preventDefault();
+    if (!selectedReturn || !exchangeQuote) return;
+    const identity = exchangeIdentityRef.current ?? {
+      exchangeId: crypto.randomUUID(),
+      operationId: crypto.randomUUID(),
+      replacementSaleId: crypto.randomUUID(),
+      replacementSaleOperationId: crypto.randomUUID(),
+    };
+    exchangeIdentityRef.current = identity;
+    setBusy(true);
+    setError("");
+    try {
+      const value = await completeReturnExchange(selectedReturn.id, {
+        ...identity,
+        receivedAndInspected: true,
+        expectedRevision: selectedReturn.revision,
+        cashRefundStatus,
+        quoteId: exchangeQuote.id,
+      });
+      exchangeIdentityRef.current = null;
+      exchangeQuoteIdRef.current = null;
+      setExchangeQuote(null);
+      setReplacementBasket([]);
+      setSelectedReturn(value);
+      setNotice("تم إتمام الاستبدال وتسجيل فرق النقد الفعلي.");
+      await refresh();
+    } catch (caught) {
+      showError(caught);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function openReturn(id: string) {
     setBusy(true);
     setError("");
     try {
       const value = await getReturn(id);
       paymentOperationRef.current = null;
+      exchangeIdentityRef.current = null;
+      exchangeQuoteIdRef.current = null;
+      setExchangeQuote(null);
+      setReplacementBasket([]);
       setSelectedReturn(value);
       setSelectedSource(null);
       setEditingReturn(null);
@@ -295,6 +425,58 @@ export default function ReturnsPage({ workspace }: { workspace: WorkspaceDto; on
           {selectedReturn.correctionRevision > 0 ? <p className="muted">المعتمد الأصلي المحفوظ: {formatEgpFromPiasters(selectedReturn.originalAuthorizedRefundPiasters)} · توجد تصحيحات إدارية مرتبطة بهذا الأصل.</p> : null}
           <ul>{selectedReturn.lines.map((line) => <li key={line.id}>{line.variant.product.nameAr}: {line.quantity} مستلم، {line.sellableQuantity} قابل للبيع، {line.unsellableQuantity} غير قابل للبيع</li>)}</ul>
           {selectedReturn.status === "draft" ? <div className="actions"><button type="button" className="secondary" disabled={busy} onClick={editSelectedDraft}>تعديل المسودة</button><button type="button" disabled={busy} onClick={() => void post()}>تأكيد الاستلام والفحص وترحيل الإرجاع</button></div> : null}
+          {!selectedReturn.exchange && selectedReturn.effectiveStatus === "active" && selectedReturn.refund.paidPiasters === 0 ? (
+            <form aria-label="إتمام استبدال" className="return-line" onSubmit={(event) => void exchange(event)}>
+              <h3>سلة الاستبدال</h3>
+              <div className="field">
+                <label htmlFor="replacement-variant">صنف الاستبدال</label>
+                <select id="replacement-variant" value={replacementVariantId} onChange={(event) => setReplacementVariantId(event.target.value)} required>
+                  {replacementOptions.map(({ product, variant }) => (
+                    <option key={variant.id} value={variant.id}>
+                      {product.nameAr} — {variant.size.nameAr} / {variant.color.nameAr} — {formatEgpFromPiasters(variant.sellingPricePiasters)} — متاح {variant.availableQuantity}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="grid two">
+                <div className="field"><label htmlFor="replacement-quantity">كمية الاستبدال</label><input id="replacement-quantity" type="number" min="1" value={replacementQuantity} onChange={(event) => setReplacementQuantity(Math.max(1, Number(event.target.value)))} /></div>
+                <div className="field"><label htmlFor="cash-refund-status">إذا كان هناك فرق مسترد</label><select id="cash-refund-status" value={cashRefundStatus} onChange={(event) => setCashRefundStatus(event.target.value as "owed" | "paid")}><option value="owed">يظل مستحقاً</option><option value="paid">دُفع الآن</option></select></div>
+              </div>
+              <button type="button" className="secondary" disabled={busy || !replacementVariantId} onClick={addReplacementLine}>إضافة إلى سلة الاستبدال</button>
+              {replacementBasket.length > 0 ? (
+                <ul aria-label="أصناف سلة الاستبدال">
+                  {replacementBasket.map((line) => {
+                    const option = replacementOptions.find(({ variant }) => variant.id === line.variantId);
+                    return <li key={line.variantId}>
+                      {option?.product.nameAr ?? line.variantId} — {option?.variant.size.nameAr} / {option?.variant.color.nameAr} × {line.quantity}
+                      <button type="button" className="secondary" onClick={() => removeReplacementLine(line.variantId)}>حذف</button>
+                    </li>;
+                  })}
+                </ul>
+              ) : <p className="muted">أضف صنفاً واحداً أو أكثر ثم اعرض السعر النهائي.</p>}
+              <button type="button" disabled={busy || replacementBasket.length === 0} onClick={() => void previewExchange()}>عرض السعر والفرق</button>
+              {exchangeQuote ? (
+                <div className="notice" data-testid="exchange-quote">
+                  <p>قيمة البضاعة بعد العروض: {formatEgpFromPiasters(exchangeQuote.replacementMerchandisePiasters)}</p>
+                  <p>رصيد الإرجاع المستخدم: {formatEgpFromPiasters(exchangeQuote.creditAppliedPiasters)}</p>
+                  <p>النقد المطلوب تحصيله: {formatEgpFromPiasters(exchangeQuote.cashCollectedPiasters)}</p>
+                  <p>فرق نقدي للعميل: {formatEgpFromPiasters(exchangeQuote.cashRefundPiasters)}</p>
+                  {exchangeQuote.appliedAutomaticOffer ? <p>العرض المطبق: {exchangeQuote.appliedAutomaticOffer.nameAr}</p> : null}
+                </div>
+              ) : null}
+              <p className="muted">السعر المعروض أعلاه هو السعر المقبول للبيع البديل. أي تعديل لاحق في الإرجاع يتطلب عرضاً جديداً. لا يُنشأ رصيد دائم للعميل.</p>
+              {exchangeQuote ? <button type="button" className="secondary" disabled={busy} onClick={resetExchangeQuote}>إلغاء العرض وإعادة التسعير</button> : null}
+              <button type="submit" disabled={busy || !exchangeQuote}>تأكيد الاستبدال بعد مراجعة فرق النقد</button>
+            </form>
+          ) : null}
+          {selectedReturn.exchange ? (
+            <div className="notice" data-testid="exchange-details">
+              <p>بيع الاستبدال: {selectedReturn.exchange.replacementSaleId}</p>
+              <p>قيمة البضاعة: {formatEgpFromPiasters(selectedReturn.exchange.replacementMerchandisePiasters)} · الرصيد المستخدم: {formatEgpFromPiasters(selectedReturn.exchange.creditAppliedPiasters)}</p>
+              <p>النقد المحصل: {formatEgpFromPiasters(selectedReturn.exchange.cashCollectedPiasters)}</p>
+              <p>فرق الاسترداد المقبول: {formatEgpFromPiasters(selectedReturn.exchange.cashRefund.acceptedAmountPiasters)} · الحالة الحالية: {selectedReturn.exchange.cashRefund.status === "paid" ? "مدفوع" : selectedReturn.exchange.cashRefund.status === "owed" ? "مستحق" : selectedReturn.exchange.cashRefund.status === "cancelled" ? "ملغى بتصحيح إداري" : "لا يوجد"} · المدفوع نقداً فعلياً: {formatEgpFromPiasters(selectedReturn.exchange.cashRefund.paidPiasters)} · المتبقي: {formatEgpFromPiasters(selectedReturn.exchange.cashRefund.owedPiasters)}</p>
+            </div>
+          ) : null}
           {selectedReturn.status === "posted" && selectedReturn.refund.status === "owed" ? <button type="button" disabled={busy} onClick={() => void pay()}>تسجيل دفع {formatEgpFromPiasters(selectedReturn.refund.owedPiasters)}</button> : null}
           {selectedReturn.refund.status === "paid" ? <p className="notice">دُفع {formatEgpFromPiasters(selectedReturn.refund.paidPiasters)} فعلياً بواسطة المدير في {selectedReturn.refund.recordedAt ? new Date(selectedReturn.refund.recordedAt).toLocaleString("ar-EG") : "—"}</p> : selectedReturn.refund.status === "owed" ? <p className="notice">الاسترداد النقدي مستحق. المتبقي للدفع: {formatEgpFromPiasters(selectedReturn.refund.owedPiasters)}.</p> : selectedReturn.refund.status === "overpaid" ? <p className="notice">المدفوع الفعلي يزيد عن المعتمد حالياً بمقدار {formatEgpFromPiasters(selectedReturn.refund.overpaidPiasters)}. لا يُسجل استرداد نقد تلقائياً.</p> : selectedReturn.refund.status === "cancelled" ? <p className="notice">أُلغي أثر تسجيل الإرجاع مع بقاء الأصل وحركات النقد الفعلية محفوظة.</p> : <p className="notice">المسودة لا تنشئ التزاماً نقدياً قبل ترحيل الاستلام والفحص.</p>}
           {selectedReturn.status === "posted" ? <Link className="button secondary" to={`/corrections?target=return&id=${selectedReturn.id}`}>تصحيح تسجيل هذا الإرجاع</Link> : null}

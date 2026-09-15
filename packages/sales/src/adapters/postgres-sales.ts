@@ -47,9 +47,15 @@ type SaleRow = {
   applied_coupon_percentage_basis_points: number | null;
   applied_coupon_fixed_discount_piasters: number | string | null;
   applied_coupon_allow_automatic_offer: boolean | null;
+  coupon_usage_discrepancy_detected_at: Date | null;
+  coupon_usage_limit: number | null;
+  coupon_usage_count_before: number | null;
+  coupon_usage_actual_count: number | null;
   employee_discount_piasters: number | string;
   discount_reason: string | null;
   final_total_piasters: number | string;
+  exchange_credit_applied_piasters: number | string;
+  cash_received_piasters: number | string;
   payload_fingerprint: string;
   physically_completed: boolean;
   costs_incomplete: boolean;
@@ -111,10 +117,14 @@ export function createPostgresSaleStore(queryable: Queryable): SaleStore {
              coupon_discount_piasters, applied_coupon_id, applied_coupon_code, applied_coupon_type,
              applied_coupon_percentage_basis_points, applied_coupon_fixed_discount_piasters,
              applied_coupon_allow_automatic_offer, employee_discount_piasters, discount_reason, final_total_piasters, payload_fingerprint,
-             physically_completed, costs_incomplete, recovered_by_staff_id, recovered_at
+             physically_completed, costs_incomplete, recovered_by_staff_id, recovered_at,
+             exchange_credit_applied_piasters, cash_received_piasters,
+             coupon_usage_discrepancy_detected_at, coupon_usage_limit, coupon_usage_count_before,
+             coupon_usage_actual_count
            ) VALUES (
              $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
-             $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34
+             $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34,
+             $35, $36, $37, $38, $39, $40
            ) ON CONFLICT (id) DO NOTHING
            RETURNING id`,
           [
@@ -152,6 +162,12 @@ export function createPostgresSaleStore(queryable: Queryable): SaleStore {
             input.costsIncomplete,
             input.recoveredByStaffId ?? null,
             input.recoveredAt ?? null,
+            input.exchangeCreditAppliedPiasters ?? 0,
+            input.cashReceivedPiasters ?? input.finalTotalPiasters,
+            input.couponUsageDiscrepancy?.detectedAt ?? null,
+            input.couponUsageDiscrepancy?.usageLimit ?? null,
+            input.couponUsageDiscrepancy?.countBefore ?? null,
+            input.couponUsageDiscrepancy?.actualCount ?? null,
           ],
         );
         if (!inserted.rows[0]) {
@@ -183,7 +199,11 @@ export function createPostgresSaleStore(queryable: Queryable): SaleStore {
         `UPDATE sales_sale
          SET occurred_at = $2, recorded_at = $3, physically_completed = true, costs_incomplete = $4,
              recovered_by_staff_id = COALESCE($5, recovered_by_staff_id),
-             recovered_at = COALESCE($6, recovered_at)
+             recovered_at = COALESCE($6, recovered_at),
+             coupon_usage_discrepancy_detected_at = COALESCE($7, coupon_usage_discrepancy_detected_at),
+             coupon_usage_limit = COALESCE($8, coupon_usage_limit),
+             coupon_usage_count_before = COALESCE($9, coupon_usage_count_before),
+             coupon_usage_actual_count = COALESCE($10, coupon_usage_actual_count)
          WHERE id = $1`,
         [
           input.id,
@@ -192,6 +212,10 @@ export function createPostgresSaleStore(queryable: Queryable): SaleStore {
           input.costsIncomplete,
           input.recoveredByStaffId ?? null,
           input.recoveredAt ?? null,
+          input.couponUsageDiscrepancy?.detectedAt ?? null,
+          input.couponUsageDiscrepancy?.usageLimit ?? null,
+          input.couponUsageDiscrepancy?.countBefore ?? null,
+          input.couponUsageDiscrepancy?.actualCount ?? null,
         ],
       );
       for (const line of input.lines) {
@@ -489,9 +513,23 @@ function toSale(row: SaleRow, lines: SaleLineWrite[]): SaleRecord {
           discountPiasters: asSafeInteger(row.coupon_discount_piasters),
         }
       : null,
+    couponUsageDiscrepancy:
+      row.coupon_usage_discrepancy_detected_at !== null
+      && row.coupon_usage_limit !== null
+      && row.coupon_usage_count_before !== null
+      && row.coupon_usage_actual_count !== null
+        ? {
+            detectedAt: row.coupon_usage_discrepancy_detected_at,
+            usageLimit: row.coupon_usage_limit,
+            countBefore: row.coupon_usage_count_before,
+            actualCount: row.coupon_usage_actual_count,
+          }
+        : null,
     employeeDiscountPiasters: asSafeInteger(row.employee_discount_piasters),
     discountReason: row.discount_reason,
     finalTotalPiasters: asSafeInteger(row.final_total_piasters),
+    exchangeCreditAppliedPiasters: asSafeInteger(row.exchange_credit_applied_piasters),
+    cashReceivedPiasters: asSafeInteger(row.cash_received_piasters),
     payloadFingerprint: row.payload_fingerprint,
     physicallyCompleted: row.physically_completed,
     costsIncomplete: row.costs_incomplete,
@@ -582,11 +620,15 @@ function asSafeInteger(value: number | string): number {
 
 type SnapshotRow = {
   id: string;
+  pricing_version: 1 | null;
   staff_id: string;
   branch_id: string;
   device_id: string;
   issued_at: Date;
   price_fingerprint: string;
+  automatic_offers: PriceSnapshotRecord["automaticOffers"];
+  coupons: PriceSnapshotRecord["coupons"];
+  coupon_accounted_operations: PriceSnapshotRecord["couponAccountedOperations"];
 };
 
 export function createPostgresPriceSnapshotStore(queryable: Queryable): PriceSnapshotStore {
@@ -597,15 +639,29 @@ export function createPostgresPriceSnapshotStore(queryable: Queryable): PriceSna
         .sort()
         .join("|");
       await queryable.query(
-        `INSERT INTO sales_pos_snapshot (id, staff_id, branch_id, device_id, issued_at, price_fingerprint)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
-        [input.id, input.staffId, input.branchId, input.deviceId, input.issuedAt, fingerprint],
+        `INSERT INTO sales_pos_snapshot (
+           id, pricing_version, staff_id, branch_id, device_id, issued_at, price_fingerprint, automatic_offers, coupons,
+           coupon_accounted_operations
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10::jsonb)`,
+        [
+          input.id,
+          input.pricingVersion,
+          input.staffId,
+          input.branchId,
+          input.deviceId,
+          input.issuedAt,
+          fingerprint,
+          JSON.stringify(input.automaticOffers),
+          JSON.stringify(input.coupons),
+          JSON.stringify(input.couponAccountedOperations),
+        ],
       );
       for (const price of input.prices) {
         await queryable.query(
-          `INSERT INTO sales_pos_snapshot_price (snapshot_id, variant_id, listed_unit_price_piasters)
-           VALUES ($1, $2, $3)`,
-          [input.id, price.variantId, price.listedUnitPricePiasters],
+          `INSERT INTO sales_pos_snapshot_price (
+             snapshot_id, variant_id, product_id, category_id, listed_unit_price_piasters
+           ) VALUES ($1, $2, $3, $4, $5)`,
+          [input.id, price.variantId, price.productId, price.categoryId, price.listedUnitPricePiasters],
         );
       }
       return input;
@@ -617,18 +673,30 @@ export function createPostgresPriceSnapshotStore(queryable: Queryable): PriceSna
       if (!row) {
         return null;
       }
-      const prices = await queryable.query<{ variant_id: string; listed_unit_price_piasters: number }>(
-        `SELECT variant_id, listed_unit_price_piasters FROM sales_pos_snapshot_price WHERE snapshot_id = $1`,
+      const prices = await queryable.query<{
+        variant_id: string;
+        product_id: string;
+        category_id: string;
+        listed_unit_price_piasters: number;
+      }>(
+        `SELECT variant_id, product_id, category_id, listed_unit_price_piasters
+         FROM sales_pos_snapshot_price WHERE snapshot_id = $1`,
         [id],
       );
       return {
         id: row.id,
+        pricingVersion: row.pricing_version,
         staffId: row.staff_id,
         branchId: row.branch_id,
         deviceId: row.device_id,
         issuedAt: row.issued_at,
+        automaticOffers: row.automatic_offers,
+        coupons: row.coupons,
+        couponAccountedOperations: row.coupon_accounted_operations,
         prices: prices.rows.map((item) => ({
           variantId: item.variant_id,
+          productId: item.product_id,
+          categoryId: item.category_id,
           listedUnitPricePiasters: item.listed_unit_price_piasters,
         })),
       };

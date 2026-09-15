@@ -18,7 +18,7 @@ let abshwayId = "";
 let fayoumId = "";
 
 beforeAll(async () => {
-  cluster = await startPostgresCluster({ port: 55440 });
+  cluster = await startPostgresCluster({ port: 55454 });
 }, 120_000);
 
 afterAll(async () => {
@@ -88,6 +88,490 @@ test("manager receiving of 10 at 100 EGP then 10 at 140 EGP keeps two central ba
   expect(byOperation.status).toBe(200);
   expect(byOperation.body.id).toBe(first.body.id);
   expect(byOperation.body.operationId).toBe(operationId);
+});
+
+test("manager links a 100-to-140 cost correction while a new 140 receipt stays separate", async () => {
+  const manager = await signIn("owner", "owner-pass-1");
+  const seed = await seedShirt(manager);
+  const original = await api(manager, "POST", "/api/internal/receiving/receipts", {
+    operationId: crypto.randomUUID(),
+    receiptDate: "2026-09-11",
+    lines: [{ variantId: seed.variantId, quantity: 2, unitCostPiasters: 10000 }],
+  });
+  expect(original.status).toBe(201);
+
+  const correctionOperationId = crypto.randomUUID();
+  const corrected = await api(
+    manager,
+    "POST",
+    `/api/internal/receiving/receipts/${original.body.id}/corrections`,
+    {
+      operationId: correctionOperationId,
+      expectedRevision: 0,
+      reason: "تصحيح تكلفة المورد",
+      lines: [{
+        lineId: original.body.lines[0].id,
+        quantity: 2,
+        unitCostPiasters: 14000,
+      }],
+    },
+  );
+  expect(corrected.status).toBe(201);
+  expect(corrected.body).toMatchObject({
+    id: original.body.id,
+    correctionRevision: 1,
+    lines: [{
+      id: original.body.lines[0].id,
+      quantity: 2,
+      unitCostPiasters: 10000,
+      effectiveQuantity: 2,
+      effectiveUnitCostPiasters: 14000,
+      remainingQuantity: 2,
+      allocatedQuantity: 0,
+    }],
+    corrections: [{
+      operationId: correctionOperationId,
+      revision: 1,
+      reason: "تصحيح تكلفة المورد",
+      changedByStaffId: expect.any(String),
+      changedAt: expect.any(String),
+      lines: [{
+        lineId: original.body.lines[0].id,
+        originalQuantity: 2,
+        originalUnitCostPiasters: 10000,
+        previousQuantity: 2,
+        previousUnitCostPiasters: 10000,
+        effectiveQuantity: 2,
+        effectiveUnitCostPiasters: 14000,
+        quantityDelta: 0,
+        unitCostDeltaPiasters: 4000,
+      }],
+    }],
+  });
+
+  const newReceipt = await api(manager, "POST", "/api/internal/receiving/receipts", {
+    operationId: crypto.randomUUID(),
+    receiptDate: "2026-09-12",
+    lines: [{ variantId: seed.variantId, quantity: 1, unitCostPiasters: 14000 }],
+  });
+  expect(newReceipt.status).toBe(201);
+  expect(newReceipt.body.lines[0].batchId).not.toBe(original.body.lines[0].batchId);
+
+  const batches = await api(manager, "GET", "/api/internal/inventory/batches");
+  expect(batches.status).toBe(200);
+  expect(batches.body).toEqual([
+    expect.objectContaining({
+      id: original.body.lines[0].batchId,
+      receivedQuantity: 2,
+      unitCostPiasters: 10000,
+      effectiveReceivedQuantity: 2,
+      effectiveUnitCostPiasters: 14000,
+      remainingQuantity: 2,
+    }),
+    expect.objectContaining({
+      id: newReceipt.body.lines[0].batchId,
+      receivedQuantity: 1,
+      unitCostPiasters: 14000,
+      effectiveReceivedQuantity: 1,
+      effectiveUnitCostPiasters: 14000,
+      remainingQuantity: 1,
+    }),
+  ]);
+});
+
+test("accepted receipt and correction responses replay their original state after later allocation and correction", async () => {
+  const manager = await signIn("owner", "owner-pass-1");
+  await api(manager, "POST", "/api/internal/active-branch", { branchId: abshwayId });
+  const seed = await seedShirt(manager);
+  const receiptCommand = {
+    operationId: crypto.randomUUID(),
+    receiptDate: "2026-09-11",
+    lines: [{ variantId: seed.variantId, quantity: 2, unitCostPiasters: 10000 }],
+  };
+  const original = await api(manager, "POST", "/api/internal/receiving/receipts", receiptCommand);
+  expect(original.status).toBe(201);
+  const firstCorrection = {
+    operationId: crypto.randomUUID(),
+    expectedRevision: 0,
+    reason: "تصحيح أول إلى مائة وأربعين",
+    lines: [{ lineId: original.body.lines[0].id, quantity: 2, unitCostPiasters: 14000 }],
+  };
+  const acceptedFirst = await api(
+    manager,
+    "POST",
+    `/api/internal/receiving/receipts/${original.body.id}/corrections`,
+    firstCorrection,
+  );
+  expect(acceptedFirst.status).toBe(201);
+  expect(acceptedFirst.body.lines[0]).toMatchObject({
+    effectiveUnitCostPiasters: 14000,
+    remainingQuantity: 2,
+    allocatedQuantity: 0,
+  });
+
+  const sale = await api(manager, "POST", "/api/internal/sales", {
+    saleId: crypto.randomUUID(),
+    operationId: crypto.randomUUID(),
+    physicallyCompleted: true,
+    occurredAt: "2026-09-12T12:00:00.000Z",
+    employeeDiscountPiasters: 0,
+    lines: [{ variantId: seed.variantId, quantity: 1 }],
+  });
+  expect(sale.status).toBe(201);
+  const acceptedSecond = await api(
+    manager,
+    "POST",
+    `/api/internal/receiving/receipts/${original.body.id}/corrections`,
+    {
+      operationId: crypto.randomUUID(),
+      expectedRevision: 1,
+      reason: "تصحيح ثان إلى مائة وخمسين",
+      lines: [{ lineId: original.body.lines[0].id, quantity: 2, unitCostPiasters: 15000 }],
+    },
+  );
+  expect(acceptedSecond.status).toBe(201);
+  expect(acceptedSecond.body).toMatchObject({
+    correctionRevision: 2,
+    lines: [{ effectiveUnitCostPiasters: 15000, remainingQuantity: 1, allocatedQuantity: 1 }],
+  });
+
+  const replayFirst = await api(
+    manager,
+    "POST",
+    `/api/internal/receiving/receipts/${original.body.id}/corrections`,
+    firstCorrection,
+  );
+  expect(replayFirst.status).toBe(200);
+  expect(replayFirst.body).toEqual(acceptedFirst.body);
+  const replayReceipt = await api(manager, "POST", "/api/internal/receiving/receipts", receiptCommand);
+  expect(replayReceipt.status).toBe(200);
+  expect(replayReceipt.body).toEqual(original.body);
+  const current = await api(manager, "GET", `/api/internal/receiving/receipts/${original.body.id}`);
+  expect(current.body).toEqual(acceptedSecond.body);
+});
+
+test("a cost correction flows through an existing allocation and its later sellable return", async () => {
+  const manager = await signIn("owner", "owner-pass-1");
+  await api(manager, "POST", "/api/internal/active-branch", { branchId: abshwayId });
+  const seed = await seedShirt(manager);
+  const original = await api(manager, "POST", "/api/internal/receiving/receipts", {
+    operationId: crypto.randomUUID(),
+    receiptDate: "2026-09-10",
+    lines: [{ variantId: seed.variantId, quantity: 1, unitCostPiasters: 10000 }],
+  });
+  expect(original.status).toBe(201);
+
+  const sale = await api(manager, "POST", "/api/internal/sales", {
+    saleId: crypto.randomUUID(),
+    operationId: crypto.randomUUID(),
+    occurredAt: "2026-09-10T12:00:00.000Z",
+    physicallyCompleted: true,
+    employeeDiscountPiasters: 0,
+    lines: [{ variantId: seed.variantId, quantity: 1 }],
+  });
+  expect(sale.status).toBe(201);
+
+  const corrected = await api(
+    manager,
+    "POST",
+    `/api/internal/receiving/receipts/${original.body.id}/corrections`,
+    {
+      operationId: crypto.randomUUID(),
+      expectedRevision: 0,
+      reason: "فاتورة المورد الصحيحة",
+      lines: [{ lineId: original.body.lines[0].id, quantity: 1, unitCostPiasters: 14000 }],
+    },
+  );
+  expect(corrected.status).toBe(201);
+  expect(corrected.body.lines[0]).toMatchObject({
+    quantity: 1,
+    unitCostPiasters: 10000,
+    effectiveQuantity: 1,
+    effectiveUnitCostPiasters: 14000,
+    remainingQuantity: 0,
+    allocatedQuantity: 1,
+  });
+  const saleDetail = await api(manager, "GET", `/api/internal/sales/${sale.body.id}`);
+  expect(saleDetail.status).toBe(200);
+  expect(saleDetail.body.allocations).toEqual([
+    expect.objectContaining({
+      batchId: original.body.lines[0].batchId,
+      unitCostPiasters: 10000,
+      effectiveUnitCostPiasters: 14000,
+    }),
+  ]);
+
+  const sources = await api(manager, "GET", `/api/internal/returns/sources?reference=${sale.body.id}`);
+  expect(sources.status).toBe(200);
+  const returnId = crypto.randomUUID();
+  const draft = await api(manager, "POST", "/api/internal/returns", {
+    returnId,
+    operationId: crypto.randomUUID(),
+    sourceSaleId: sale.body.id,
+    handlingBranchId: abshwayId,
+    authorizedRefundPiasters: sale.body.finalTotalPiasters,
+    lines: [{
+      sourceSaleLineId: sources.body[0].lines[0].saleLineId,
+      quantity: 1,
+      sellableQuantity: 1,
+    }],
+  });
+  expect(draft.status).toBe(201);
+  const posted = await api(manager, "POST", `/api/internal/returns/${returnId}/post`, {
+    receivedAndInspected: true,
+    expectedRevision: draft.body.revision,
+  });
+  expect(posted.status).toBe(201);
+  expect(posted.body.restorations).toEqual([
+    expect.objectContaining({
+      batchId: original.body.lines[0].batchId,
+      quantity: 1,
+      unitCostPiasters: 10000,
+      effectiveUnitCostPiasters: 14000,
+    }),
+  ]);
+
+  const laterCorrection = await api(
+    manager,
+    "POST",
+    `/api/internal/receiving/receipts/${original.body.id}/corrections`,
+    {
+      operationId: crypto.randomUUID(),
+      expectedRevision: 1,
+      reason: "تصحيح تكلفة لاحق",
+      lines: [{ lineId: original.body.lines[0].id, quantity: 1, unitCostPiasters: 15000 }],
+    },
+  );
+  expect(laterCorrection.status).toBe(201);
+  const refreshedReturn = await api(manager, "GET", `/api/internal/returns/${returnId}`);
+  expect(refreshedReturn.status).toBe(200);
+  expect(refreshedReturn.body.restorations).toEqual([
+    expect.objectContaining({
+      batchId: original.body.lines[0].batchId,
+      quantity: 1,
+      unitCostPiasters: 10000,
+      effectiveUnitCostPiasters: 15000,
+    }),
+  ]);
+
+  const afterReturn = await api(manager, "GET", `/api/internal/receiving/receipts/${original.body.id}`);
+  expect(afterReturn.status).toBe(200);
+  expect(afterReturn.body.lines[0]).toMatchObject({
+    quantity: 1,
+    unitCostPiasters: 10000,
+    effectiveQuantity: 1,
+    effectiveUnitCostPiasters: 15000,
+    remainingQuantity: 1,
+    allocatedQuantity: 0,
+  });
+});
+
+test("quantity correction rolls back every line and the same identity retries after an intervening return", async () => {
+  const manager = await signIn("owner", "owner-pass-1");
+  await api(manager, "POST", "/api/internal/active-branch", { branchId: abshwayId });
+  const seed = await seedShirt(manager, { extraColor: true });
+  const receipt = await api(manager, "POST", "/api/internal/receiving/receipts", {
+    operationId: crypto.randomUUID(),
+    receiptDate: "2026-09-10",
+    lines: [seed.variantId, seed.secondVariantId].map((variantId) => ({
+      variantId,
+      quantity: 3,
+      unitCostPiasters: 10000,
+    })),
+  });
+  expect(receipt.status).toBe(201);
+  const ordered = [...receipt.body.lines].sort((left: { batchId: string }, right: { batchId: string }) =>
+    left.batchId.localeCompare(right.batchId));
+  const validLine = ordered[0];
+  const consumedLine = ordered[1];
+
+  const sale = await api(manager, "POST", "/api/internal/sales", {
+    saleId: crypto.randomUUID(),
+    operationId: crypto.randomUUID(),
+    occurredAt: "2026-09-10T13:00:00.000Z",
+    physicallyCompleted: true,
+    employeeDiscountPiasters: 0,
+    lines: [{ variantId: consumedLine.variantId, quantity: 2 }],
+  });
+  expect(sale.status).toBe(201);
+  const operationId = crypto.randomUUID();
+  const payload = {
+    operationId,
+    expectedRevision: 0,
+    reason: "تصحيح العد الفعلي",
+    lines: receipt.body.lines.map((line: { id: string }) => ({
+      lineId: line.id,
+      quantity: line.id === validLine.id ? 5 : 1,
+      unitCostPiasters: 10000,
+    })),
+  };
+
+  const rejected = await api(
+    manager,
+    "POST",
+    `/api/internal/receiving/receipts/${receipt.body.id}/corrections`,
+    payload,
+  );
+  expect(rejected.status).toBe(400);
+  expect(rejected.body.error.messageAr).toBe("لا يمكن تقليل كمية الاستلام عن الوحدات المستهلكة حالياً.");
+  const unchanged = await api(manager, "GET", `/api/internal/receiving/receipts/${receipt.body.id}`);
+  expect(unchanged.body).toMatchObject({ correctionRevision: 0, corrections: [] });
+  expect(unchanged.body.lines.find((line: { id: string }) => line.id === validLine.id)).toMatchObject({
+    effectiveQuantity: 3,
+    remainingQuantity: 3,
+  });
+
+  const sources = await api(manager, "GET", `/api/internal/returns/sources?reference=${sale.body.id}`);
+  const draft = await api(manager, "POST", "/api/internal/returns", {
+    returnId: crypto.randomUUID(),
+    operationId: crypto.randomUUID(),
+    sourceSaleId: sale.body.id,
+    handlingBranchId: abshwayId,
+    authorizedRefundPiasters: Math.floor(sale.body.finalTotalPiasters / 2),
+    lines: [{
+      sourceSaleLineId: sources.body[0].lines[0].saleLineId,
+      quantity: 1,
+      sellableQuantity: 1,
+    }],
+  });
+  expect(draft.status).toBe(201);
+  const returned = await api(manager, "POST", `/api/internal/returns/${draft.body.id}/post`, {
+    receivedAndInspected: true,
+    expectedRevision: draft.body.revision,
+  });
+  expect(returned.status).toBe(201);
+
+  const corrected = await api(
+    manager,
+    "POST",
+    `/api/internal/receiving/receipts/${receipt.body.id}/corrections`,
+    payload,
+  );
+  expect(corrected.status).toBe(201);
+  expect(corrected.body).toMatchObject({ correctionRevision: 1 });
+  expect(corrected.body.lines.find((line: { id: string }) => line.id === validLine.id)).toMatchObject({
+    quantity: 3,
+    effectiveQuantity: 5,
+    remainingQuantity: 5,
+    allocatedQuantity: 0,
+  });
+  expect(corrected.body.lines.find((line: { id: string }) => line.id === consumedLine.id)).toMatchObject({
+    quantity: 3,
+    effectiveQuantity: 1,
+    remainingQuantity: 0,
+    allocatedQuantity: 1,
+  });
+
+  const replay = await api(
+    manager,
+    "POST",
+    `/api/internal/receiving/receipts/${receipt.body.id}/corrections`,
+    payload,
+  );
+  expect(replay.status).toBe(200);
+  expect(replay.body).toEqual(corrected.body);
+  const changedReplay = await api(
+    manager,
+    "POST",
+    `/api/internal/receiving/receipts/${receipt.body.id}/corrections`,
+    { ...payload, reason: "بيانات مختلفة" },
+  );
+  expect(changedReplay.status).toBe(409);
+});
+
+test("receiving correction is manager-only and retains each effective revision with its Arabic actor", async () => {
+  const manager = await signIn("owner", "owner-pass-1");
+  const seed = await seedShirt(manager);
+  const receipt = await api(manager, "POST", "/api/internal/receiving/receipts", {
+    operationId: crypto.randomUUID(),
+    receiptDate: "2026-09-11",
+    lines: [{ variantId: seed.variantId, quantity: 2, unitCostPiasters: 10000 }],
+  });
+  await api(manager, "POST", "/api/internal/staff", {
+    loginName: "cashier.receiving.correction",
+    displayName: "كاشير بلا تصحيح",
+    password: "staff-pass-91",
+    grants: [{ branchId: abshwayId, cashier: true, orderRepresentative: false }],
+  });
+  const cashier = await signIn("cashier.receiving.correction", "staff-pass-91");
+  const firstPayload = {
+    operationId: crypto.randomUUID(),
+    expectedRevision: 0,
+    reason: "تصحيح أول",
+    lines: [{ lineId: receipt.body.lines[0].id, quantity: 2, unitCostPiasters: 14000 }],
+  };
+  const denied = await api(
+    cashier,
+    "POST",
+    `/api/internal/receiving/receipts/${receipt.body.id}/corrections`,
+    firstPayload,
+  );
+  expect(denied.status).toBe(403);
+
+  const first = await api(
+    manager,
+    "POST",
+    `/api/internal/receiving/receipts/${receipt.body.id}/corrections`,
+    firstPayload,
+  );
+  expect(first.status).toBe(201);
+  expect(first.body.corrections[0]).toMatchObject({
+    revision: 1,
+    changedByDisplayName: "مالك برافوس",
+  });
+  const stale = await api(
+    manager,
+    "POST",
+    `/api/internal/receiving/receipts/${receipt.body.id}/corrections`,
+    {
+      operationId: crypto.randomUUID(),
+      expectedRevision: 0,
+      reason: "نسخة قديمة",
+      lines: [{ lineId: receipt.body.lines[0].id, quantity: 3, unitCostPiasters: 15000 }],
+    },
+  );
+  expect(stale.status).toBe(409);
+  expect(stale.body.error.messageAr).toBe("تم تعديل إذن الاستلام. حدّث البيانات ثم أعد المحاولة.");
+
+  const second = await api(
+    manager,
+    "POST",
+    `/api/internal/receiving/receipts/${receipt.body.id}/corrections`,
+    {
+      operationId: crypto.randomUUID(),
+      expectedRevision: 1,
+      reason: "تصحيح نهائي",
+      lines: [{ lineId: receipt.body.lines[0].id, quantity: 3, unitCostPiasters: 15000 }],
+    },
+  );
+  expect(second.status).toBe(201);
+  expect(second.body).toMatchObject({
+    correctionRevision: 2,
+    lines: [{
+      quantity: 2,
+      unitCostPiasters: 10000,
+      effectiveQuantity: 3,
+      effectiveUnitCostPiasters: 15000,
+    }],
+    corrections: [
+      { revision: 1, reason: "تصحيح أول", changedByDisplayName: "مالك برافوس" },
+      {
+        revision: 2,
+        reason: "تصحيح نهائي",
+        changedByDisplayName: "مالك برافوس",
+        lines: [{
+          originalQuantity: 2,
+          originalUnitCostPiasters: 10000,
+          previousQuantity: 2,
+          previousUnitCostPiasters: 14000,
+          effectiveQuantity: 3,
+          effectiveUnitCostPiasters: 15000,
+          quantityDelta: 1,
+          unitCostDeltaPiasters: 1000,
+        }],
+      },
+    ],
+  });
 });
 
 test("identical receiving operation identity returns the original result and changed payload fails", async () => {
@@ -308,7 +792,8 @@ test("cashier lookup uses central availability and selling prices without cost d
     availableQuantity: 12,
   });
   expect(JSON.stringify(found.body)).not.toMatch(/cost|profit|purchase|batch|inventoryValue|6500/i);
-  expect(Object.keys(found.body).sort()).toEqual(["code", "descriptionAr", "id", "nameAr", "variants"]);
+  expect(Object.keys(found.body).sort()).toEqual(["categoryId", "code", "descriptionAr", "id", "nameAr", "variants"]);
+  expect(found.body.categoryId).toBe(seed.categoryId);
 
   const receipts = await api(cashier, "GET", "/api/internal/receiving/receipts");
   expect(receipts.status).toBe(403);

@@ -20,6 +20,7 @@ export type PendingSale = {
   physicallyCompleted: boolean;
   payload: SalePayload | null;
   occurredAt: string | null;
+  pricingOccurredAt?: string | null;
 };
 
 function storageKey(staffId: string): string {
@@ -48,6 +49,7 @@ export function loadPendingSale(staffId: string): PendingSale | null {
       physicallyCompleted: parsed.physicallyCompleted === true,
       payload: isPayload(parsed.payload) ? parsed.payload : null,
       occurredAt: typeof parsed.occurredAt === "string" ? parsed.occurredAt : null,
+      pricingOccurredAt: typeof parsed.pricingOccurredAt === "string" ? parsed.pricingOccurredAt : null,
     };
   } catch {
     return null;
@@ -95,6 +97,7 @@ export function createPendingSale(input: {
   physicallyCompleted: boolean;
   payload: SalePayload | null;
   occurredAt: string | null;
+  pricingOccurredAt?: string | null;
 }): PendingSale {
   return {
     saleId: crypto.randomUUID(),
@@ -105,6 +108,7 @@ export function createPendingSale(input: {
     physicallyCompleted: input.physicallyCompleted,
     payload: input.payload,
     occurredAt: input.occurredAt,
+    pricingOccurredAt: input.pricingOccurredAt ?? null,
   };
 }
 
@@ -116,6 +120,7 @@ export function assignPendingSale(input: {
   physicallyCompleted: boolean;
   payload: SalePayload;
   occurredAt: string | null;
+  pricingOccurredAt?: string | null;
 }): SaleMarkerAssignment {
   const stored = loadPendingSale(input.staffId);
   if (stored && stored.saleId !== input.localSaleId && (stored.physicallyCompleted || stored.phase === "uncertain")) {
@@ -130,6 +135,7 @@ export function assignPendingSale(input: {
     physicallyCompleted: input.physicallyCompleted || stored?.physicallyCompleted === true,
     payload: input.payload,
     occurredAt: input.occurredAt ?? stored?.occurredAt ?? null,
+    pricingOccurredAt: input.pricingOccurredAt ?? stored?.pricingOccurredAt ?? null,
   };
   savePendingSale(pending);
   return { kind: "assigned", pending };

@@ -411,6 +411,7 @@ function toCashierLookup(
 ): CashierProductLookupDto {
   return {
     id: product.id,
+    categoryId: product.category.id,
     code: product.code,
     nameAr: product.nameAr,
     descriptionAr: product.descriptionAr,

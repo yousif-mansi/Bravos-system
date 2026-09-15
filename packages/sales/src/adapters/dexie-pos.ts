@@ -1,4 +1,4 @@
-import type { CompletedOperationProofDto, PosPriceSnapshotDto, WorkspaceDto } from "@bravos/contracts";
+import type { CompletedOperationProofDto, CouponUsageProofDto, PosPriceSnapshotDto, WorkspaceDto } from "@bravos/contracts";
 import { Dexie, type EntityTable, type Transaction } from "dexie";
 import { isDeclaredSafeMigration, POS_SCHEMA_VERSION } from "../domain/pos-update.ts";
 import { mergeVariantQuantities } from "../domain/discount.ts";
@@ -123,11 +123,18 @@ function tryNormalizeLineUnits(
 function normalizeCompletedSale(sale: OfflineCompletedSale): OfflineCompletedSale {
   return {
     ...sale,
+    pricingVersion: sale.pricingVersion === 1 ? 1 : null,
+    pricingOccurredAt:
+      typeof sale.pricingOccurredAt === "string" ? sale.pricingOccurredAt : null,
     automaticOfferDiscountPiasters: sale.automaticOfferDiscountPiasters ?? 0,
     appliedAutomaticOffer: sale.appliedAutomaticOffer ?? null,
     couponCode: sale.couponCode ?? sale.appliedCoupon?.code ?? null,
     couponDiscountPiasters: sale.couponDiscountPiasters ?? 0,
     appliedCoupon: sale.appliedCoupon ?? null,
+    couponUsageAccountedSnapshotIssuedAt:
+      typeof sale.couponUsageAccountedSnapshotIssuedAt === "string"
+        ? sale.couponUsageAccountedSnapshotIssuedAt
+        : null,
     payloadFingerprint:
       typeof sale.payloadFingerprint === "string" && /^[0-9a-f]{64}$/i.test(sale.payloadFingerprint)
         ? sale.payloadFingerprint.toLowerCase()
@@ -338,6 +345,9 @@ function saleFacts(local: OfflineCompletedSale) {
     id: local.id,
     kind: local.kind,
     snapshotId: local.snapshotId,
+    pricingVersion: local.pricingVersion ?? null,
+    occurredAt: local.occurredAt,
+    ...(local.pricingOccurredAt ? { pricingOccurredAt: local.pricingOccurredAt } : {}),
     customerName: local.customerName,
     customerPhone: local.customerPhone,
     couponCode: local.couponCode,
@@ -349,7 +359,7 @@ function saleFacts(local: OfflineCompletedSale) {
 
 async function prepareLocalDigests(
   db: BravosPosDatabase,
-  proofs: CompletedOperationProofDto[],
+  proofs: Array<{ operationId: string }>,
 ): Promise<Map<string, PreparedLocalDigest>> {
   const prepared = new Map<string, PreparedLocalDigest>();
   const operationIds = [
@@ -508,6 +518,19 @@ function sameCompletedReplay(existing: OfflineCompletedSale, input: CompleteOffl
   if ((existing.snapshotId ?? null) !== expectedSnapshotId) {
     return false;
   }
+  const expectedPricingVersion = input.kind === "accepted" && input.snapshot.pricingVersion === 1 ? 1 : null;
+  if ((existing.pricingVersion ?? null) !== expectedPricingVersion) {
+    return false;
+  }
+  if (expectedPricingVersion === 1 && existing.occurredAt !== input.occurredAt) {
+    return false;
+  }
+  if (
+    expectedPricingVersion === 1 &&
+    (existing.pricingOccurredAt ?? null) !== (input.pricingOccurredAt ?? null)
+  ) {
+    return false;
+  }
   if (existing.branch.id !== input.branch.id) {
     return false;
   }
@@ -536,10 +559,30 @@ function sameRecordedReplay(existing: OfflineCompletedSale, incoming: OfflineCom
   if (existing.kind !== incoming.kind || (existing.snapshotId ?? null) !== (incoming.snapshotId ?? null)) {
     return false;
   }
+  if ((existing.pricingVersion ?? null) !== (incoming.pricingVersion ?? null)) {
+    return false;
+  }
+  if (incoming.pricingVersion === 1 && existing.occurredAt !== incoming.occurredAt) {
+    return false;
+  }
+  if (
+    incoming.pricingVersion === 1 &&
+    (existing.pricingOccurredAt ?? null) !== (incoming.pricingOccurredAt ?? null)
+  ) {
+    return false;
+  }
   if (existing.branch.id !== incoming.branch.id) {
     return false;
   }
   if (existing.originalTotalPiasters !== incoming.originalTotalPiasters) {
+    return false;
+  }
+  if (
+    existing.automaticOfferDiscountPiasters !== incoming.automaticOfferDiscountPiasters ||
+    existing.couponDiscountPiasters !== incoming.couponDiscountPiasters ||
+    (existing.appliedAutomaticOffer?.id ?? null) !== (incoming.appliedAutomaticOffer?.id ?? null) ||
+    (existing.appliedCoupon?.id ?? null) !== (incoming.appliedCoupon?.id ?? null)
+  ) {
     return false;
   }
   if (existing.employeeDiscountPiasters !== incoming.employeeDiscountPiasters) {
@@ -602,6 +645,7 @@ function toPendingRecord(parsed: OfflinePendingSale): OfflinePendingSale {
     digest: typeof parsed.digest === "string" ? parsed.digest : null,
     payload,
     occurredAt: typeof parsed.occurredAt === "string" ? parsed.occurredAt : null,
+    pricingOccurredAt: typeof parsed.pricingOccurredAt === "string" ? parsed.pricingOccurredAt : null,
     quote,
     snapshot: parsed.snapshot ?? null,
     quoteOrigin: parsed.quoteOrigin === "server" || parsed.quoteOrigin === "snapshot" ? parsed.quoteOrigin : null,
@@ -736,8 +780,36 @@ export function createDexiePosStore(options?: { databaseName?: string }): Offlin
       }
       try {
         const incomingProofs = Array.isArray(snapshot.includedOperations) ? snapshot.includedOperations : [];
+        const couponProofs: CouponUsageProofDto[] = Array.isArray(snapshot.couponAccountedOperations)
+          ? snapshot.couponAccountedOperations
+          : [];
         const prepared = await prepareLocalDigests(db, incomingProofs);
+        const couponPrepared = await prepareLocalDigests(db, couponProofs);
         await db.transaction("rw", db.snapshots, db.meta, db.sales, db.effects, async () => {
+          const priorSnapshot = await db.snapshots.get(staffId);
+          for (const proof of couponProofs) {
+            if (proof.sourceType !== "physical_sale") continue;
+            const localRows = await db.sales.where("operationId").equals(proof.operationId).toArray();
+            for (const local of localRows) {
+              const known = couponPrepared.get(local.id);
+              if (
+                !known ||
+                canonicalOfflineSaleFactsJson(saleFacts(local)) !== known.canonical ||
+                local.id !== proof.sourceId ||
+                local.operationId !== proof.operationId ||
+                local.appliedCoupon?.id !== proof.couponId ||
+                !/^[0-9a-f]{64}$/i.test(proof.payloadFingerprint) ||
+                known.digest.toLowerCase() !== proof.payloadFingerprint.toLowerCase()
+              ) {
+                continue;
+              }
+              const priorProofAt = Date.parse(local.couponUsageAccountedSnapshotIssuedAt ?? "");
+              const incomingProofAt = Date.parse(snapshot.issuedAt);
+              if (!Number.isFinite(priorProofAt) || incomingProofAt >= priorProofAt) {
+                await db.sales.put({ ...local, couponUsageAccountedSnapshotIssuedAt: snapshot.issuedAt });
+              }
+            }
+          }
           const cache = await readStockCacheRecord(db);
           const incomingVersion =
             typeof snapshot.stockVersion === "number" && Number.isSafeInteger(snapshot.stockVersion)
@@ -774,10 +846,14 @@ export function createDexiePosStore(options?: { databaseName?: string }): Offlin
             };
             await writeStockCacheRecord(db, next);
           }
-          await db.snapshots.put({
-            staffId,
-            snapshot: overlaySnapshot(snapshot, next),
-          });
+          const priorIssuedAt = Date.parse(priorSnapshot?.snapshot.issuedAt ?? "");
+          const incomingIssuedAt = Date.parse(snapshot.issuedAt);
+          if (!priorSnapshot || !Number.isFinite(priorIssuedAt) || incomingIssuedAt >= priorIssuedAt) {
+            await db.snapshots.put({
+              staffId,
+              snapshot: overlaySnapshot(snapshot, next),
+            });
+          }
         });
       } catch (error) {
         if (error instanceof PosStorageError || error instanceof SalesValidationError) {
@@ -817,6 +893,17 @@ export function createDexiePosStore(options?: { databaseName?: string }): Offlin
       return base - used;
     },
 
+    async countUnaccountedCouponUses(couponId, snapshotIssuedAt) {
+      await ensureOpen();
+      const snapshotTime = Date.parse(snapshotIssuedAt);
+      const rows = await db.sales.toArray();
+      return rows.filter((sale) => {
+        if (sale.appliedCoupon?.id !== couponId) return false;
+        const proofTime = Date.parse(sale.couponUsageAccountedSnapshotIssuedAt ?? "");
+        return !Number.isFinite(proofTime) || !Number.isFinite(snapshotTime) || proofTime > snapshotTime;
+      }).length;
+    },
+
     async completeSale(input: CompleteOfflineSaleInput, priced) {
       await ensureOpen();
       try {
@@ -827,12 +914,25 @@ export function createDexiePosStore(options?: { databaseName?: string }): Offlin
           id: input.saleId,
           kind: input.kind,
           snapshotId: input.kind === "accepted" ? input.snapshot.snapshotId : null,
+          ...(input.kind === "accepted" && input.snapshot.pricingVersion === 1
+            ? {
+                pricingVersion: 1 as const,
+                occurredAt: input.occurredAt,
+                pricingOccurredAt: input.pricingOccurredAt ?? "",
+              }
+            : {}),
           customerName: input.customerName,
           customerPhone: input.customerPhone,
           couponCode: input.couponCode,
           employeeDiscountPiasters: input.employeeDiscountPiasters,
           discountReason: input.discountReason,
-          lines: input.lines,
+          lines: input.lines.map((line) => ({
+            variantId: line.variantId,
+            quantity: line.quantity,
+            ...(input.kind === "accepted" && input.snapshot.pricingVersion === 1
+              ? { listedUnitPricePiasters: line.variant.sellingPricePiasters }
+              : {}),
+          })),
         });
         return await db.transaction("rw", db.sales, db.effects, db.pending, db.sessions, db.meta, async () => {
           await assertCurrentActor(db, input.staffId);
@@ -858,6 +958,8 @@ export function createDexiePosStore(options?: { databaseName?: string }): Offlin
             operationId: input.operationId,
             deviceId: input.deviceId,
             snapshotId: input.kind === "accepted" ? input.snapshot.snapshotId : null,
+            pricingVersion: input.kind === "accepted" && input.snapshot.pricingVersion === 1 ? 1 : null,
+            pricingOccurredAt: input.pricingOccurredAt ?? null,
             kind: input.kind,
             syncStatus: "pending",
             branch: input.branch,
@@ -879,6 +981,7 @@ export function createDexiePosStore(options?: { databaseName?: string }): Offlin
             finalTotalPiasters: priced.finalTotalPiasters,
             physicallyCompleted: true,
             payloadFingerprint: priced.payloadFingerprint.toLowerCase(),
+            couponUsageAccountedSnapshotIssuedAt: null,
             lines: priced.lines,
           };
           if (canonicalOfflineSaleFactsJson(saleFacts(sale)) !== expectedCanonical) {
@@ -1054,7 +1157,14 @@ export function createDexiePosStore(options?: { databaseName?: string }): Offlin
       await ensureOpen();
       const rows = await db.sales.toArray();
       return [
-        ...new Set(rows.filter((row) => row.syncStatus === "pending").map((row) => row.operationId)),
+        ...new Set(
+          rows
+            .filter(
+              (row) =>
+                row.syncStatus === "pending" || (row.appliedCoupon && !row.couponUsageAccountedSnapshotIssuedAt),
+            )
+            .map((row) => row.operationId),
+        ),
       ];
     },
 

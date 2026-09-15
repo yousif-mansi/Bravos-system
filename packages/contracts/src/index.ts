@@ -226,6 +226,7 @@ export type CashierVariantDto = {
 
 export type CashierProductLookupDto = {
   id: string;
+  categoryId?: string;
   code: string;
   nameAr: string;
   descriptionAr: string;
@@ -248,8 +249,35 @@ export type ReceiptLineDto = {
   variantId: string;
   quantity: number;
   unitCostPiasters: number;
+  effectiveQuantity: number;
+  effectiveUnitCostPiasters: number;
+  remainingQuantity: number;
+  allocatedQuantity: number;
   batchId: string;
   variant: VariantIdentityDto;
+};
+
+export type ReceiptCorrectionLineDto = {
+  lineId: string;
+  originalQuantity: number;
+  originalUnitCostPiasters: number;
+  previousQuantity: number;
+  previousUnitCostPiasters: number;
+  effectiveQuantity: number;
+  effectiveUnitCostPiasters: number;
+  quantityDelta: number;
+  unitCostDeltaPiasters: number;
+};
+
+export type ReceiptCorrectionDto = {
+  id: string;
+  operationId: string;
+  revision: number;
+  reason: string;
+  changedByStaffId: string;
+  changedByDisplayName: string;
+  changedAt: string;
+  lines: ReceiptCorrectionLineDto[];
 };
 
 export type ReceiptDto = {
@@ -258,6 +286,8 @@ export type ReceiptDto = {
   receiptDate: string;
   receivedByStaffId: string;
   recordedAt: string;
+  correctionRevision: number;
+  corrections: ReceiptCorrectionDto[];
   lines: ReceiptLineDto[];
 };
 
@@ -265,8 +295,10 @@ export type InventoryBatchDto = {
   id: string;
   variantId: string;
   receivedQuantity: number;
+  effectiveReceivedQuantity: number;
   remainingQuantity: number;
   unitCostPiasters: number;
+  effectiveUnitCostPiasters: number;
   recordedAt: string;
   receiptId: string;
   receiptDate: string;
@@ -333,8 +365,19 @@ export type SaleDiscrepancyDto = {
   messageAr: string;
 };
 
+export type CouponUsageDiscrepancyDto = {
+  couponId: string;
+  couponCode: string;
+  couponDiscountPiasters: number;
+  usageLimit: number;
+  centralUsedCount: number;
+  detectedAt: string;
+  messageAr: string;
+};
+
 export type PosPriceSnapshotDto = {
   snapshotId: string;
+  pricingVersion?: 1;
   staffId: string;
   branch: BranchDto;
   deviceId: string;
@@ -342,7 +385,18 @@ export type PosPriceSnapshotDto = {
   stockVersion: number;
   includedOperationIds: string[];
   includedOperations: CompletedOperationProofDto[];
+  couponAccountedOperations: CouponUsageProofDto[];
   products: CashierProductLookupDto[];
+  automaticOffers: AutomaticOfferDto[];
+  coupons: CouponDto[];
+};
+
+export type CouponUsageProofDto = {
+  couponId: string;
+  sourceType: "physical_sale";
+  sourceId: string;
+  operationId: string;
+  payloadFingerprint: string;
 };
 
 export type StockAvailabilityDto = {
@@ -383,8 +437,11 @@ export type SaleDto = {
   discountReason: string | null;
   discountedByStaffId: string | null;
   finalTotalPiasters: number;
+  exchangeCreditAppliedPiasters: number;
+  cashReceivedPiasters: number;
   physicallyCompleted: boolean;
   discrepancy: SaleDiscrepancyDto | null;
+  couponUsageDiscrepancy?: CouponUsageDiscrepancyDto | null;
   lines: SaleLineDto[];
 };
 
@@ -393,6 +450,7 @@ export type ManagerSaleAllocationDto = {
   variantId: string;
   quantity: number;
   unitCostPiasters: number;
+  effectiveUnitCostPiasters: number;
 };
 
 export type ManagerSaleDto = SaleDto & {
@@ -497,6 +555,7 @@ export type ReturnBatchRestorationDto = {
   variantId: string;
   quantity: number;
   unitCostPiasters: number;
+  effectiveUnitCostPiasters: number;
 };
 
 export type ReturnRefundEventDto = {
@@ -505,6 +564,51 @@ export type ReturnRefundEventDto = {
   amountPiasters: number;
   actorStaffId: string;
   recordedAt: string;
+};
+
+export type ReturnExchangeDto = {
+  id: string;
+  operationId: string;
+  replacementSaleId: string;
+  replacementMerchandisePiasters: number;
+  creditAppliedPiasters: number;
+  cashCollectedPiasters: number;
+  cashRefund: {
+    acceptedStatus: "none" | "owed" | "paid";
+    acceptedAmountPiasters: number;
+    status: "none" | "owed" | "paid" | "cancelled";
+    owedPiasters: number;
+    paidPiasters: number;
+  };
+  allocations: ManagerSaleAllocationDto[];
+  completedByStaffId: string;
+  completedAt: string;
+};
+
+export type ReturnExchangeQuoteDto = {
+  id: string;
+  returnId: string;
+  returnRevision: number;
+  correctionRevision: number;
+  settlement: {
+    exchangeId: string;
+    operationId: string;
+    replacementSaleId: string;
+    replacementSaleOperationId: string;
+  };
+  replacementMerchandisePiasters: number;
+  creditAvailablePiasters: number;
+  creditAppliedPiasters: number;
+  cashCollectedPiasters: number;
+  cashRefundPiasters: number;
+  appliedAutomaticOffer: AppliedAutomaticOfferDto | null;
+  lines: Array<{
+    variantId: string;
+    quantity: number;
+    listedUnitPricePiasters: number;
+    paidPiasters: number;
+  }>;
+  quotedAt: string;
 };
 
 export type ReturnDto = {
@@ -527,6 +631,7 @@ export type ReturnDto = {
   postedAt: string | null;
   lines: ReturnLineDto[];
   restorations: ReturnBatchRestorationDto[];
+  exchange: ReturnExchangeDto | null;
   refund: {
     status: "none" | "owed" | "paid" | "overpaid" | "cancelled";
     owedPiasters: number;
@@ -570,7 +675,12 @@ export type CorrectionMerchandiseFactDto = {
   variantId: string;
   direction: "restore" | "deduct";
   quantity: number;
-  batches: Array<{ batchId: string; quantity: number; unitCostPiasters: number }>;
+  batches: Array<{
+    batchId: string;
+    quantity: number;
+    unitCostPiasters: number;
+    effectiveUnitCostPiasters: number;
+  }>;
 };
 
 export type SaleCorrectionLineDto = {
@@ -638,6 +748,7 @@ export type ReturnCorrectionDetailDto = {
   effective: { authorizedRefundPiasters: number; paidPiasters: number; lines: ReturnCorrectionLineDto[] } | null;
   actual: {
     originalRefundPaidPiasters: number;
+    exchangeCreditAppliedPiasters: number;
     correctionCashPaidOutPiasters: number;
     correctionCashRecoveredPiasters: number;
     netRefundPaidPiasters: number;

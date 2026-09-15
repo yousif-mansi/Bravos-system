@@ -75,4 +75,10 @@ export type CouponUsageClaim = {
 
 export type CouponUsageTransaction = {
   claim(input: CouponUsageClaim): Promise<"claimed" | "replay">;
+  claimCompletedOffline(input: CouponUsageClaim): Promise<{
+    kind: "claimed" | "replay";
+    overLimit: boolean;
+    usageLimit: number;
+    centralUsedCount: number;
+  }>;
 };

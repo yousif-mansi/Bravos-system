@@ -291,7 +291,8 @@ test("cashier lookup selects an explicit variant, ignores website visibility, an
   expect(found.body).not.toHaveProperty("cost");
   expect(JSON.stringify(found.body)).not.toMatch(/cost|profit|purchase|batch|inventoryValue/i);
   const keys = Object.keys(found.body).sort();
-  expect(keys).toEqual(["code", "descriptionAr", "id", "nameAr", "variants"]);
+  expect(keys).toEqual(["categoryId", "code", "descriptionAr", "id", "nameAr", "variants"]);
+  expect(found.body.categoryId).toBe(seed.categoryId);
 });
 
 test("cashier POS snapshot lists selling prices and availability without cost data", async () => {

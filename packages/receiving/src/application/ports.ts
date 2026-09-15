@@ -1,6 +1,6 @@
 import type { ReceiptDto, VariantIdentityDto } from "@bravos/contracts";
 import type { AuthenticatedStaff, VerifiedAuth } from "@bravos/identity";
-import type { InventoryTransaction } from "@bravos/inventory";
+import type { BatchRecord, InventoryTransaction } from "@bravos/inventory";
 
 export type { VerifiedAuth };
 
@@ -29,6 +29,39 @@ export type ReceiptRecord = {
   lines: ReceiptLineWrite[];
 };
 
+export type ReceiptCorrectionLineRecord = {
+  lineId: string;
+  previousQuantity: number;
+  previousUnitCostPiasters: number;
+  effectiveQuantity: number;
+  effectiveUnitCostPiasters: number;
+  remainingQuantity: number;
+  allocatedQuantity: number;
+  quantityDelta: number;
+  unitCostDeltaPiasters: number;
+};
+
+export type ReceiptCorrectionRecord = {
+  id: string;
+  operationId: string;
+  receiptId: string;
+  revision: number;
+  reason: string;
+  changedByStaffId: string;
+  changedAt: Date;
+  lines: ReceiptCorrectionLineRecord[];
+};
+
+export type ReceiptCorrectionStore = {
+  insert(input: ReceiptCorrectionRecord): Promise<ReceiptCorrectionRecord>;
+  getByOperationId(operationId: string): Promise<ReceiptCorrectionRecord | null>;
+  listForReceipt(receiptId: string): Promise<ReceiptCorrectionRecord[]>;
+};
+
+export type ReceivingBatchReader = {
+  getBatchStates(batchIds: string[]): Promise<BatchRecord[]>;
+};
+
 export type ReceiptStore = {
   insert(input: {
     id: string;
@@ -39,15 +72,24 @@ export type ReceiptStore = {
     lines: ReceiptLineWrite[];
   }): Promise<ReceiptRecord>;
   getByOperationId(operationId: string): Promise<ReceiptRecord | null>;
-  getById(id: string): Promise<ReceiptRecord | null>;
+  getById(id: string, lock?: boolean): Promise<ReceiptRecord | null>;
   list(): Promise<ReceiptRecord[]>;
 };
 
 export type ReceivingUnitOfWork = {
-  run<T>(work: (tx: { receipts: ReceiptStore; inventory: InventoryTransaction }) => Promise<T>): Promise<T>;
+  run<T>(work: (tx: {
+    receipts: ReceiptStore;
+    corrections: ReceiptCorrectionStore;
+    inventory: InventoryTransaction;
+  }) => Promise<T>): Promise<T>;
 };
 
 export type FinalizeReceiptResult = {
+  receipt: ReceiptDto;
+  created: boolean;
+};
+
+export type CorrectReceiptResult = {
   receipt: ReceiptDto;
   created: boolean;
 };

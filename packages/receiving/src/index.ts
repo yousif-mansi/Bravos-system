@@ -3,8 +3,11 @@ export { ReceivingValidationError } from "./domain/errors.ts";
 export { createReceivingServices, type ReceivingServices } from "./application/receiving.ts";
 export type {
   FinalizeReceiptResult,
+  CorrectReceiptResult,
+  ReceiptCorrectionStore,
   ReceiptStore,
   ReceivingActorPort,
+  ReceivingBatchReader,
   ReceivingUnitOfWork,
   VariantIdentityReader,
   VerifiedAuth,

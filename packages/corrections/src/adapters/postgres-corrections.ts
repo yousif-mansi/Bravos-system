@@ -14,8 +14,14 @@ import type {
 type Queryable = Pick<Pool, "query"> | PoolClient;
 type Target = "sale" | "return";
 
-type SaleRow = { id: string; operation_id: string; final_total_piasters: number | string; physically_completed: boolean };
-type ReturnRow = { id: string; source_sale_id: string; status: "draft" | "posted"; authorized_refund_piasters: number | string; refund_paid_piasters: number | string };
+type SaleRow = {
+  id: string;
+  operation_id: string;
+  final_total_piasters: number | string;
+  cash_received_piasters: number | string;
+  physically_completed: boolean;
+};
+type ReturnRow = { id: string; source_sale_id: string; status: "draft" | "posted"; authorized_refund_piasters: number | string; refund_paid_piasters: number | string; exchange_credit_applied_piasters: number | string };
 type LineRow = {
   id: string; source_sale_line_id?: string; variant_id: string; quantity: number;
   paid_piasters?: number | string;
@@ -32,6 +38,7 @@ type CorrectionRow = {
 type FactRow = {
   correction_id: string; line_id: string; variant_id: string; batch_id: string;
   direction: "restore" | "deduct"; quantity: number; unit_cost_piasters: number | string;
+  effective_unit_cost_piasters: number | string;
 };
 type BatchBalance = { batch_id: string; variant_id: string; unit_cost_piasters: number | string; balance: number | string; recorded_at: Date };
 
@@ -69,7 +76,7 @@ export function createPostgresReturnCorrectionStateReader(queryable: Queryable) 
 
 async function changeSale(client: PoolClient, inventory: InventoryTransaction, input: SaleCorrectionWrite): Promise<ChangeResult<SaleCorrectionDetailDto>> {
   await inventory.lockStockClock("update");
-  const locked = await client.query<SaleRow>(`SELECT id, operation_id, final_total_piasters, physically_completed FROM sales_sale WHERE id = $1 FOR UPDATE`, [input.saleId]);
+  const locked = await client.query<SaleRow>(`SELECT id, operation_id, final_total_piasters, cash_received_piasters, physically_completed FROM sales_sale WHERE id = $1 FOR UPDATE`, [input.saleId]);
   if (!locked.rows[0]?.physically_completed) return { kind: "not-found" };
   const existingOperation = await correctionByOperation(client, input.operationId);
   if (existingOperation) return replaySale(client, input, existingOperation);
@@ -146,7 +153,7 @@ async function changeReturn(client: PoolClient, inventory: InventoryTransaction,
   if (!sourceSaleId) return { kind: "not-found" };
   await inventory.lockStockClock("update");
   await client.query(`SELECT id FROM sales_sale WHERE id = $1 FOR UPDATE`, [sourceSaleId]);
-  const locked = await client.query<ReturnRow>(`SELECT id, source_sale_id, status, authorized_refund_piasters, refund_paid_piasters FROM returns_return WHERE id = $1 FOR UPDATE`, [input.returnId]);
+  const locked = await client.query<ReturnRow>(`SELECT id, source_sale_id, status, authorized_refund_piasters, refund_paid_piasters, exchange_credit_applied_piasters FROM returns_return WHERE id = $1 FOR UPDATE`, [input.returnId]);
   if (locked.rows[0]?.status !== "posted") return { kind: "not-found" };
   const existingOperation = await correctionByOperation(client, input.operationId);
   if (existingOperation) return replayReturn(client, input, existingOperation);
@@ -464,7 +471,7 @@ async function insertFacts(client: Queryable, correctionId: string, target: Targ
 }
 
 async function loadSale(queryable: Queryable, saleId: string, upToRevision = 2_147_483_647): Promise<SaleCorrectionDetailDto | null> {
-  const saleResult = await queryable.query<SaleRow>(`SELECT id, operation_id, final_total_piasters, physically_completed FROM sales_sale WHERE id = $1`, [saleId]);
+  const saleResult = await queryable.query<SaleRow>(`SELECT id, operation_id, final_total_piasters, cash_received_piasters, physically_completed FROM sales_sale WHERE id = $1`, [saleId]);
   const sale = saleResult.rows[0];
   if (!sale?.physically_completed) return null;
   const original = await saleLines(queryable, saleId);
@@ -510,9 +517,9 @@ async function loadSale(queryable: Queryable, saleId: string, upToRevision = 2_1
     status: effective ? "active" : "cancelled", original: { finalTotalPiasters: number(sale.final_total_piasters), lines: original }, effective,
     relationships: { returns: linked.rows.map((row) => ({ id: row.id, status: row.status, effectiveStatus: row.change_type === "cancellation" ? "cancelled" : "active", refundPaidPiasters: number(row.actual_refund_paid_piasters) })) },
     actual: {
-      originalCashReceivedPiasters: number(sale.final_total_piasters), correctionCashPaidOutPiasters: correctionPaid + refundCash.paidOut,
+      originalCashReceivedPiasters: number(sale.cash_received_piasters), correctionCashPaidOutPiasters: correctionPaid + refundCash.paidOut,
       correctionCashRecoveredPiasters: correctionRecovered + refundCash.recovered,
-      netCashReceivedPiasters: number(sale.final_total_piasters) - correctionPaid - refundCash.paidOut + correctionRecovered + refundCash.recovered,
+      netCashReceivedPiasters: number(sale.cash_received_piasters) - correctionPaid - refundCash.paidOut + correctionRecovered + refundCash.recovered,
       merchandiseRestoredQuantity: merchandise.filter((fact) => fact.direction === "restore").reduce((sum, fact) => sum + fact.quantity, 0),
       merchandiseDeductedQuantity: merchandise.filter((fact) => fact.direction === "deduct").reduce((sum, fact) => sum + fact.quantity, 0),
     }, changes,
@@ -520,7 +527,7 @@ async function loadSale(queryable: Queryable, saleId: string, upToRevision = 2_1
 }
 
 async function loadReturn(queryable: Queryable, returnId: string, upToRevision = 2_147_483_647): Promise<ReturnCorrectionDetailDto | null> {
-  const result = await queryable.query<ReturnRow>(`SELECT id, source_sale_id, status, authorized_refund_piasters, refund_paid_piasters FROM returns_return WHERE id = $1`, [returnId]);
+  const result = await queryable.query<ReturnRow>(`SELECT id, source_sale_id, status, authorized_refund_piasters, refund_paid_piasters, exchange_credit_applied_piasters FROM returns_return WHERE id = $1`, [returnId]);
   const row = result.rows[0];
   if (!row || row.status !== "posted") return null;
   const original = await returnLines(queryable, returnId);
@@ -541,7 +548,8 @@ async function loadReturn(queryable: Queryable, returnId: string, upToRevision =
     targetType: "return", id: row.id, reference: row.id, sourceSaleId: row.source_sale_id, revision: latest?.revision ?? 0,
     status: effective ? "active" : "cancelled", original: { authorizedRefundPiasters: number(row.authorized_refund_piasters), paidPiasters: number(row.refund_paid_piasters), lines: original }, effective,
     actual: {
-      originalRefundPaidPiasters: number(row.refund_paid_piasters), correctionCashPaidOutPiasters: paidOut,
+      originalRefundPaidPiasters: number(row.refund_paid_piasters),
+      exchangeCreditAppliedPiasters: number(row.exchange_credit_applied_piasters), correctionCashPaidOutPiasters: paidOut,
       correctionCashRecoveredPiasters: recovered, netRefundPaidPiasters: number(row.refund_paid_piasters) + paidOut - recovered,
       merchandiseRestoredQuantity: merchandise.filter((fact) => fact.direction === "restore").reduce((sum, fact) => sum + fact.quantity, 0),
       merchandiseDeductedQuantity: merchandise.filter((fact) => fact.direction === "deduct").reduce((sum, fact) => sum + fact.quantity, 0),
@@ -606,13 +614,23 @@ async function correctionByOperation(queryable: Queryable, operationId: string) 
 async function changeDtos(queryable: Queryable, rows: CorrectionRow[]): Promise<CorrectionChangeDto[]> {
   if (rows.length === 0) return [];
   const facts = await queryable.query<FactRow>(
-    `SELECT f.correction_id, COALESCE(f.sale_line_id, f.return_line_id) AS line_id, f.variant_id, f.batch_id, f.direction, f.quantity, f.unit_cost_piasters
-     FROM recording_merchandise_fact f WHERE f.correction_id = ANY($1::uuid[]) ORDER BY f.correction_id, f.id`, [rows.map((row) => row.id)]);
+    `SELECT f.correction_id, COALESCE(f.sale_line_id, f.return_line_id) AS line_id,
+            f.variant_id, f.batch_id, f.direction, f.quantity, f.unit_cost_piasters,
+            b.effective_unit_cost_piasters
+     FROM recording_merchandise_fact f
+     JOIN inventory_batch b ON b.id = f.batch_id
+     WHERE f.correction_id = ANY($1::uuid[])
+     ORDER BY f.correction_id, f.id`, [rows.map((row) => row.id)]);
   const byCorrection = new Map<string, CorrectionMerchandiseFactDto[]>();
   for (const fact of facts.rows) {
     const list = byCorrection.get(fact.correction_id) ?? [];
     const existing = list.find((item) => item.lineId === fact.line_id && item.direction === fact.direction);
-    const batch = { batchId: fact.batch_id, quantity: fact.quantity, unitCostPiasters: number(fact.unit_cost_piasters) };
+    const batch = {
+      batchId: fact.batch_id,
+      quantity: fact.quantity,
+      unitCostPiasters: number(fact.unit_cost_piasters),
+      effectiveUnitCostPiasters: number(fact.effective_unit_cost_piasters),
+    };
     if (existing) { existing.quantity += fact.quantity; existing.batches.push(batch); }
     else list.push({ lineId: fact.line_id, variantId: fact.variant_id, direction: fact.direction, quantity: fact.quantity, batches: [batch] });
     byCorrection.set(fact.correction_id, list);

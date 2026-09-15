@@ -30,7 +30,9 @@ export async function startPostgresCluster(options?: {
     user,
     password,
     port,
-    persistent: Boolean(options?.persistentDir),
+    // Own temporary cleanup here: Windows child processes may still be closing
+    // handles when the dependency observes the parent process exit.
+    persistent: true,
     initdbFlags: ["--encoding=UTF8", "--locale=C"],
     onLog: (message) => {
       if (process.env.BRAVOS_PG_LOG === "1") {
@@ -82,11 +84,20 @@ export async function createMigratedPool(connectionString: string): Promise<Pool
 async function removeOwnedScratch(databaseDir: string): Promise<void> {
   const resolved = path.resolve(databaseDir);
   const tmpRoot = path.resolve(tmpdir());
+  const relative = path.relative(tmpRoot, resolved);
   const owned =
-    resolved.startsWith(tmpRoot) &&
-    (resolved.includes(`${path.sep}bravos-pg-`) || resolved.includes("/bravos-pg-"));
+    relative.length > 0 &&
+    !relative.startsWith("..") &&
+    !path.isAbsolute(relative) &&
+    path.dirname(relative) === "." &&
+    path.basename(relative).startsWith("bravos-pg-");
   if (!owned) {
     throw new Error(`Refusing to delete unmanaged postgres directory: ${resolved}`);
   }
-  await rm(resolved, { recursive: true, force: true });
+  await rm(resolved, {
+    recursive: true,
+    force: true,
+    maxRetries: 20,
+    retryDelay: 100,
+  });
 }

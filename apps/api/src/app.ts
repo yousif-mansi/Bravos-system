@@ -34,9 +34,15 @@ import {
   createReceivingServices,
   type ReceivingServices,
 } from "@bravos/receiving";
-import { createPostgresReceiptStore, createPostgresReceivingUnitOfWork } from "@bravos/receiving/node";
+import {
+  createPostgresReceiptCorrectionStore,
+  createPostgresReceiptStore,
+  createPostgresReceivingUnitOfWork,
+} from "@bravos/receiving/node";
 import {
   SalesValidationError,
+  createExchangeReplacementPricing,
+  createExchangeReplacementSaleWriter,
   createSalesServices,
   type SalesServices,
 } from "@bravos/sales";
@@ -178,7 +184,9 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
     const receiving = createReceivingServices({
       actors,
       variants: { getVariants: (ids) => catalogStore.getVariants(ids) },
+      inventory: inventoryStore,
       receipts: createPostgresReceiptStore(pool),
+      corrections: createPostgresReceiptCorrectionStore(pool),
       uow: createPostgresReceivingUnitOfWork(pool, createInventoryTransaction),
     });
     const pricing = createPricingServices({
@@ -224,10 +232,22 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
       variants: { getVariants: (ids) => catalogStore.getVariants(ids) },
       returns: createPostgresReturnsStore(pool),
       corrections: createPostgresReturnCorrectionStateReader(pool),
+      replacementSales: {
+        getById: (id) => saleStore.getById(id),
+        listAllocations: (operationId) => inventoryStore.listAllocations(operationId),
+      },
+      replacementPricing: createExchangeReplacementPricing(createPostgresPricingQuoteReader(pool, (client) => ({
+        prices: createPostgresListedPriceReader(client),
+        automaticPricing: createPostgresAutomaticPricingReader(client),
+      }))),
       uow: createPostgresReturnsUnitOfWork(
         pool,
         createInventoryTransaction,
         createPostgresReturnCorrectionStateReader,
+        (client, inventoryTransaction) => createExchangeReplacementSaleWriter({
+          sales: createPostgresSaleStore(client),
+          inventory: inventoryTransaction,
+        }),
       ),
       clock: { now: config.businessClock ?? (() => new Date()) },
     });
@@ -640,6 +660,19 @@ async function registerRoutes(
     return handle(reply, async () => receiving.get(await verifiedAuth(identity, request), params.receiptId));
   });
 
+  app.post("/api/internal/receiving/receipts/:receiptId/corrections", async (request, reply) => {
+    const params = request.params as { receiptId: string };
+    return handle(reply, async () => {
+      const result = await receiving.correct(
+        await verifiedAuth(identity, request),
+        params.receiptId,
+        request.body,
+      );
+      reply.status(result.created ? 201 : 200);
+      return result.receipt;
+    });
+  });
+
   app.get("/api/internal/receiving/operations/:operationId", async (request, reply) => {
     const params = request.params as { operationId: string };
     return handle(reply, async () =>
@@ -820,6 +853,24 @@ async function registerRoutes(
     const params = request.params as { returnId: string };
     return handle(reply, async () => {
       const result = await returns.markPaid(await verifiedAuth(identity, request), params.returnId, request.body);
+      reply.status(result.created ? 201 : 200);
+      return result.value;
+    });
+  });
+
+  app.post("/api/internal/returns/:returnId/exchange", async (request, reply) => {
+    const params = request.params as { returnId: string };
+    return handle(reply, async () => {
+      const result = await returns.exchange(await verifiedAuth(identity, request), params.returnId, request.body);
+      reply.status(result.created ? 201 : 200);
+      return result.value;
+    });
+  });
+
+  app.post("/api/internal/returns/:returnId/exchange-quote", async (request, reply) => {
+    const params = request.params as { returnId: string };
+    return handle(reply, async () => {
+      const result = await returns.quoteExchange(await verifiedAuth(identity, request), params.returnId, request.body);
       reply.status(result.created ? 201 : 200);
       return result.value;
     });

@@ -247,21 +247,29 @@ test("competing last uses consume once and a failed sale rolls coupon, stock, an
     employeeDiscountPiasters: 0,
     lines: [{ variantId: catalog.variantIds[0], quantity: 1 }],
   }));
-  for (const attempt of attempts) {
-    expect((await api(manager, "POST", "/api/internal/sales/prepare", attempt)).status).toBe(201);
-  }
   const results = await Promise.all(attempts.map((attempt) => api(manager, "POST", "/api/internal/sales", {
     ...attempt,
     physicallyCompleted: true,
   })));
-  expect(results.map((result) => result.status).sort()).toEqual([201, 409]);
+  expect(results.filter((result) => result.status === 201)).toHaveLength(1);
   const winner = results.findIndex((result) => result.status === 201);
   const loser = winner === 0 ? 1 : 0;
+  expect([400, 409]).toContain(results[loser]?.status);
   expect(results[loser]?.body.error.messageAr).toBe("بلغ الكوبون الحد الأقصى للاستخدام.");
+  expect(results[winner]?.body).toMatchObject({
+    finalTotalPiasters: 11_000,
+    couponDiscountPiasters: 1_000,
+    appliedCoupon: { id: coupon.body.id, code: "LAST-USE", discountPiasters: 1_000 },
+  });
   expect(await couponUsedCount(manager, coupon.body.id)).toBe(1);
-  expect((await api(manager, "GET", `/api/internal/sales/operations/${attempts[loser]!.operationId}`)).body.physicallyCompleted).toBe(false);
+  expect((await api(manager, "GET", `/api/internal/sales/operations/${attempts[loser]!.operationId}`)).status).toBe(404);
+  expect((await api(manager, "GET", `/api/internal/sales/${attempts[loser]!.saleId}`)).status).toBe(404);
+  const afterRace = await api(manager, "GET", `/api/internal/catalog/lookup?code=${catalog.code}`);
+  expect(afterRace.body.variants[0].availableQuantity).toBe(2);
   expect((await api(manager, "POST", "/api/internal/sales", { ...attempts[winner]!, physicallyCompleted: true })).status).toBe(200);
   expect(await couponUsedCount(manager, coupon.body.id)).toBe(1);
+  const afterReplay = await api(manager, "GET", `/api/internal/catalog/lookup?code=${catalog.code}`);
+  expect(afterReplay.body.variants[0].availableQuantity).toBe(2);
   const exhausted = await api(manager, "POST", "/api/internal/sales/prepare", {
     saleId: crypto.randomUUID(), operationId: crypto.randomUUID(), couponCode: "LAST-USE",
     employeeDiscountPiasters: 0, lines: [{ variantId: catalog.variantIds[0], quantity: 1 }],

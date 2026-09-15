@@ -4,9 +4,12 @@ import { OperationConflictError } from "@bravos/inventory";
 import type {
   RefundEventRecord,
   ReturnLineWrite,
+  ReturnExchangeRecord,
+  ReturnExchangeQuoteRecord,
   ReturnListRecord,
   ReturnRecord,
   ReturnRestorationWrite,
+  ReturnReplacementSaleWriter,
   ReturnCorrectionStateReader,
   ReturnsStore,
   ReturnsUnitOfWork,
@@ -14,6 +17,7 @@ import type {
   ReturnSourceRecord,
   ReturnSourceUnit,
   SourceSearch,
+  ReturnReplacementAcceptedQuote,
 } from "../application/ports.ts";
 
 type Queryable = Pick<Pool, "query"> | PoolClient;
@@ -55,6 +59,7 @@ type AllocationRow = {
   variant_id: string;
   quantity: number;
   unit_cost_piasters: number | string;
+  effective_unit_cost_piasters: number | string;
   recorded_at: Date;
 };
 
@@ -77,6 +82,7 @@ type ReturnRow = {
   posted_at: Date | null;
   refund_status: "none" | "owed" | "paid";
   refund_paid_piasters: number | string;
+  exchange_credit_applied_piasters: number | string;
   refund_recorded_by_staff_id: string | null;
   refund_recorded_at: Date | null;
 };
@@ -117,6 +123,7 @@ type RestorationRow = {
   variant_id: string;
   quantity: number;
   unit_cost_piasters: number | string;
+  effective_unit_cost_piasters: number | string;
 };
 
 type EventRow = {
@@ -127,6 +134,35 @@ type EventRow = {
   payload_fingerprint: string;
   actor_staff_id: string;
   recorded_at: Date;
+};
+
+type ExchangeRow = {
+  id: string;
+  operation_id: string;
+  return_id: string;
+  replacement_sale_id: string;
+  payload_fingerprint: string;
+  credit_available_piasters: number | string;
+  credit_applied_piasters: number | string;
+  cash_collected_piasters: number | string;
+  cash_refund_status: "none" | "owed" | "paid";
+  cash_refund_piasters: number | string;
+  cash_refund_paid_piasters: number | string;
+  completed_by_staff_id: string;
+  completed_at: Date;
+};
+
+type ExchangeQuoteRow = {
+  id: string;
+  return_id: string;
+  return_revision: number;
+  correction_revision: number;
+  credit_available_piasters: number | string;
+  settlement_identity: ReturnExchangeQuoteRecord["settlement"];
+  payload_fingerprint: string;
+  accepted_quote: ReturnReplacementAcceptedQuote;
+  quoted_by_staff_id: string;
+  quoted_at: Date;
 };
 
 export function createPostgresReturnsStore(queryable: Queryable): ReturnsStore {
@@ -239,6 +275,66 @@ export function createPostgresReturnsStore(queryable: Queryable): ReturnsStore {
       };
     },
     getRefundEventByOperation: (operationId) => loadEventByOperation(queryable, operationId),
+    getExchangeByReturnId: (returnId, lock = false) => loadExchange(
+      queryable,
+      "return_id",
+      returnId,
+      lock,
+    ),
+    getExchangeById: (id) => loadExchange(queryable, "id", id, false),
+    getExchangeByOperationId: (operationId) => loadExchange(queryable, "operation_id", operationId, false),
+    async getExchangeQuoteById(id) {
+      const result = await queryable.query<ExchangeQuoteRow>(
+        "SELECT * FROM returns_exchange_quote WHERE id = $1",
+        [id],
+      );
+      return result.rows[0] ? toExchangeQuote(result.rows[0]) : null;
+    },
+    async insertExchangeQuote(input) {
+      const inserted = await queryable.query<ExchangeQuoteRow>(
+        `INSERT INTO returns_exchange_quote (
+           id, return_id, return_revision, correction_revision, credit_available_piasters,
+           settlement_identity, payload_fingerprint, accepted_quote, quoted_by_staff_id, quoted_at
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+         ON CONFLICT (id) DO NOTHING RETURNING *`,
+        [input.id, input.returnId, input.returnRevision, input.correctionRevision,
+          input.creditAvailablePiasters, JSON.stringify(input.settlement), input.payloadFingerprint, JSON.stringify(input.acceptedQuote),
+          input.quotedByStaffId, input.quotedAt],
+      );
+      if (inserted.rows[0]) return { kind: "created", record: toExchangeQuote(inserted.rows[0]) };
+      const existing = await queryable.query<ExchangeQuoteRow>(
+        "SELECT * FROM returns_exchange_quote WHERE id = $1",
+        [input.id],
+      );
+      if (!existing.rows[0]) throw new OperationConflictError();
+      return { kind: "existing", record: toExchangeQuote(existing.rows[0]) };
+    },
+    async insertExchange(input) {
+      const inserted = await queryable.query<ExchangeRow>(
+        `INSERT INTO returns_exchange (
+           id, operation_id, return_id, replacement_sale_id, payload_fingerprint,
+           credit_available_piasters, credit_applied_piasters, cash_collected_piasters, cash_refund_status,
+           cash_refund_piasters, cash_refund_paid_piasters, completed_by_staff_id, completed_at
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+         RETURNING *`,
+        [input.id, input.operationId, input.returnId, input.replacementSaleId, input.payloadFingerprint, input.creditAvailablePiasters,
+          input.creditAppliedPiasters, input.cashCollectedPiasters, input.cashRefundStatus,
+          input.cashRefundPiasters, input.cashRefundPaidPiasters, input.completedByStaffId, input.completedAt],
+      );
+      const refundActor = input.cashRefundStatus === "none" ? null : input.completedByStaffId;
+      const refundAt = input.cashRefundStatus === "none" ? null : input.completedAt;
+      const updated = await queryable.query(
+        `UPDATE returns_return
+         SET exchange_credit_applied_piasters = $2, refund_status = $3,
+             refund_paid_piasters = $4, refund_recorded_by_staff_id = $5,
+             refund_recorded_at = $6, updated_by_staff_id = $7, updated_at = $8
+         WHERE id = $1 AND status = 'posted'`,
+        [input.returnId, input.creditAppliedPiasters, input.cashRefundStatus,
+          input.cashRefundPaidPiasters, refundActor, refundAt, input.completedByStaffId, input.completedAt],
+      );
+      if (updated.rowCount !== 1) throw new OperationConflictError("تم تسجيل استبدال لهذا الإرجاع بالفعل.");
+      return toExchange(inserted.rows[0]!);
+    },
     async post(input) {
       for (const unit of input.units) {
         await queryable.query(
@@ -310,22 +406,34 @@ export function createPostgresReturnsUnitOfWork(
   pool: Pool,
   inventoryFor: (client: PoolClient) => InventoryTransaction,
   correctionsFor: (client: PoolClient) => ReturnCorrectionStateReader,
+  replacementSalesFor: (client: PoolClient, inventory: InventoryTransaction) => ReturnReplacementSaleWriter,
 ): ReturnsUnitOfWork {
   return {
     async run(work) {
       const client = await pool.connect();
       try {
-        await client.query("BEGIN");
-        const value = await work({
-          returns: createPostgresReturnsStore(client),
-          inventory: inventoryFor(client),
-          corrections: correctionsFor(client),
-        });
-        await client.query("COMMIT");
-        return value;
-      } catch (error) {
-        await client.query("ROLLBACK");
-        throw error;
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          try {
+            await client.query("BEGIN");
+            const inventory = inventoryFor(client);
+            const value = await work({
+              returns: createPostgresReturnsStore(client),
+              inventory,
+              corrections: correctionsFor(client),
+              replacementSales: replacementSalesFor(client, inventory),
+            });
+            await client.query("COMMIT");
+            return value;
+          } catch (error) {
+            await client.query("ROLLBACK");
+            const code = typeof error === "object" && error !== null && "code" in error
+              ? String(error.code)
+              : "";
+            if (attempt < 2 && (code === "40001" || code === "40P01")) continue;
+            throw error;
+          }
+        }
+        throw new Error("Returns transaction retry limit exceeded.");
       } finally {
         client.release();
       }
@@ -400,9 +508,10 @@ async function loadSource(queryable: Queryable, saleId: string, lock: boolean): 
          JOIN recording_correction c ON c.id = f.correction_id WHERE c.sale_id = $2
        )
        SELECT e.batch_id, e.variant_id, SUM(e.amount)::int AS quantity,
-              e.unit_cost_piasters, b.recorded_at
+              e.unit_cost_piasters, b.effective_unit_cost_piasters, b.recorded_at
        FROM effects e JOIN inventory_batch b ON b.id = e.batch_id
-       GROUP BY e.batch_id, e.variant_id, e.unit_cost_piasters, b.recorded_at
+       GROUP BY e.batch_id, e.variant_id, e.unit_cost_piasters,
+                b.effective_unit_cost_piasters, b.recorded_at
        HAVING SUM(e.amount) > 0
        ORDER BY e.variant_id, b.recorded_at, e.batch_id`, [row.operation_id, saleId]),
   ]);
@@ -449,6 +558,7 @@ async function loadSource(queryable: Queryable, saleId: string, lock: boolean): 
       variantId: item.variant_id,
       quantity: item.quantity,
       unitCostPiasters: asSafeInteger(item.unit_cost_piasters),
+      effectiveUnitCostPiasters: asSafeInteger(item.effective_unit_cost_piasters),
       recordedAt: item.recorded_at,
     })),
   };
@@ -478,8 +588,11 @@ async function toReturn(queryable: Queryable, row: ReturnRow): Promise<ReturnRec
       [row.id],
     ),
     queryable.query<RestorationRow>(
-      `SELECT id, return_id, batch_id, variant_id, quantity, unit_cost_piasters
-       FROM returns_batch_restoration WHERE return_id = $1 ORDER BY batch_id`,
+      `SELECT r.id, r.return_id, r.batch_id, r.variant_id, r.quantity, r.unit_cost_piasters,
+              b.effective_unit_cost_piasters
+       FROM returns_batch_restoration r
+       JOIN inventory_batch b ON b.id = r.batch_id
+       WHERE r.return_id = $1 ORDER BY r.batch_id`,
       [row.id],
     ),
     queryable.query<EventRow>(
@@ -507,11 +620,58 @@ async function toReturn(queryable: Queryable, row: ReturnRow): Promise<ReturnRec
     postedAt: row.posted_at,
     refundStatus: row.refund_status,
     refundPaidPiasters: asSafeInteger(row.refund_paid_piasters),
+    exchangeCreditAppliedPiasters: asSafeInteger(row.exchange_credit_applied_piasters),
     refundRecordedByStaffId: row.refund_recorded_by_staff_id,
     refundRecordedAt: row.refund_recorded_at,
     lines: lines.rows.map(toReturnLine),
     restorations: restorations.rows.map(toRestoration),
     refundEvents: events.rows.map(toEvent),
+  };
+}
+
+async function loadExchange(
+  queryable: Queryable,
+  column: "id" | "operation_id" | "return_id",
+  value: string,
+  lock: boolean,
+): Promise<ReturnExchangeRecord | null> {
+  const result = await queryable.query<ExchangeRow>(
+    `SELECT * FROM returns_exchange WHERE ${column} = $1 ${lock ? "FOR UPDATE" : ""}`,
+    [value],
+  );
+  return result.rows[0] ? toExchange(result.rows[0]) : null;
+}
+
+function toExchange(row: ExchangeRow): ReturnExchangeRecord {
+  return {
+    id: row.id,
+    operationId: row.operation_id,
+    returnId: row.return_id,
+    replacementSaleId: row.replacement_sale_id,
+    payloadFingerprint: row.payload_fingerprint,
+    creditAvailablePiasters: asSafeInteger(row.credit_available_piasters),
+    creditAppliedPiasters: asSafeInteger(row.credit_applied_piasters),
+    cashCollectedPiasters: asSafeInteger(row.cash_collected_piasters),
+    cashRefundStatus: row.cash_refund_status,
+    cashRefundPiasters: asSafeInteger(row.cash_refund_piasters),
+    cashRefundPaidPiasters: asSafeInteger(row.cash_refund_paid_piasters),
+    completedByStaffId: row.completed_by_staff_id,
+    completedAt: row.completed_at,
+  };
+}
+
+function toExchangeQuote(row: ExchangeQuoteRow): ReturnExchangeQuoteRecord {
+  return {
+    id: row.id,
+    returnId: row.return_id,
+    returnRevision: row.return_revision,
+    correctionRevision: row.correction_revision,
+    creditAvailablePiasters: asSafeInteger(row.credit_available_piasters),
+    settlement: row.settlement_identity,
+    payloadFingerprint: row.payload_fingerprint,
+    acceptedQuote: row.accepted_quote,
+    quotedByStaffId: row.quoted_by_staff_id,
+    quotedAt: row.quoted_at,
   };
 }
 
@@ -568,6 +728,7 @@ function toRestoration(row: RestorationRow): ReturnRestorationWrite {
     variantId: row.variant_id,
     quantity: row.quantity,
     unitCostPiasters: asSafeInteger(row.unit_cost_piasters),
+    effectiveUnitCostPiasters: asSafeInteger(row.effective_unit_cost_piasters),
   };
 }
 

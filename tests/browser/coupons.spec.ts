@@ -28,7 +28,7 @@ test("manager creates a coupon and cashier can apply, remove, reapply, and compl
   await addProduct(page, catalog.code, catalog.sizeName, catalog.colorName);
 
   const checkout = page.getByRole("form", { name: "إتمام البيع النقدي" });
-  const couponInput = checkout.getByLabel("كود الكوبون (يتطلب اتصالاً)");
+  const couponInput = checkout.getByLabel("كود الكوبون", { exact: true });
   const productLookupRequests: string[] = [];
   page.on("request", (request) => {
     if (new URL(request.url()).pathname === "/api/internal/catalog/lookup") productLookupRequests.push(request.url());
@@ -62,7 +62,131 @@ test("manager creates a coupon and cashier can apply, remove, reapply, and compl
   await expect.poll(async () => (await readLocalCouponSale(page, catalog.code))?.syncStatus).toBe("acknowledged");
 });
 
-test("a last-use conflict keeps the paid cashier sale locally with exact coupon values and a visible error", async ({ browser, page }) => {
+test("cached offer and coupon prices survive offline completion while usage stays correct across tabs and refresh", async ({ context, page }) => {
+  await signIn(page, "owner", "e2e-owner-pass");
+  const catalog = await seedProduct(page, "OFFLINE-PROMO-E2E", "عرض دون اتصال", 30_000, 6);
+  expect((await staffApi(page, "POST", "/api/internal/pricing/offers", {
+    nameAr: "عرض دون اتصال",
+    discountType: "percentage",
+    percentageBasisPoints: 1_000,
+    fixedDiscountPiasters: null,
+    startsOn: ACTIVE_START,
+    endsOn: ACTIVE_END,
+    active: true,
+    allowCoupon: true,
+    productIds: [catalog.productId],
+    categoryIds: [],
+  })).status).toBe(201);
+  const coupon = await staffApi(page, "POST", "/api/internal/pricing/coupons", {
+    code: "OFFLINE-CACHED-50",
+    discountType: "fixed",
+    percentageBasisPoints: null,
+    fixedDiscountPiasters: 5_000,
+    startsOn: ACTIVE_START,
+    endsOn: ACTIVE_END,
+    active: true,
+    allowAutomaticOffer: true,
+    usageLimit: 2,
+    productIds: [catalog.productId],
+    categoryIds: [],
+  });
+  expect(coupon.status).toBe(201);
+
+  await page.getByRole("button", { name: "تسجيل الخروج" }).click();
+  await signIn(page, "cashier", "e2e-cashier-pass", false);
+  await expect(page.getByTestId("offline-ready")).toBeVisible({ timeout: 30_000 });
+  await page.getByRole("link", { name: "البحث عن منتج" }).click();
+  await expect(page.getByRole("heading", { name: "البحث عن منتج" })).toBeVisible();
+  const secondTab = await context.newPage();
+  await secondTab.goto("http://127.0.0.1:5174/lookup");
+  await expect(secondTab.getByRole("heading", { name: "البحث عن منتج" })).toBeVisible();
+  await context.setOffline(true);
+  await completeCachedCouponSale(page, catalog, "OFFLINE-CACHED-50");
+  expect((await readLocalCouponSale(page, catalog.code))).toMatchObject({
+    syncStatus: "pending",
+    automaticOfferDiscountPiasters: 3_000,
+    couponDiscountPiasters: 5_000,
+    employeeDiscountPiasters: 2_000,
+    finalTotalPiasters: 20_000,
+  });
+
+  await context.setOffline(false);
+  await expect.poll(async () => (await readLocalCouponSale(page, catalog.code))?.syncStatus).toBe("acknowledged");
+  await expect.poll(async () => (await readLocalCouponSale(page, catalog.code))?.couponUsageAccountedSnapshotIssuedAt).toEqual(
+    expect.any(String),
+  );
+
+  await context.setOffline(true);
+  await completeCachedCouponSale(secondTab, catalog, "OFFLINE-CACHED-50");
+  expect((await readLocalCouponSale(secondTab, catalog.code))).toMatchObject({ couponDiscountPiasters: 5_000 });
+
+  await addProduct(page, catalog.code, catalog.sizeName, catalog.colorName);
+  const checkout = page.getByRole("form", { name: "إتمام البيع النقدي" });
+  await checkout.getByLabel("كود الكوبون", { exact: true }).fill("OFFLINE-CACHED-50");
+  await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
+  await expect(page.getByRole("alert")).toContainText("بلغ الكوبون الحد الأقصى للاستخدام.");
+  await expect(page.getByTestId("accepted-prices")).toHaveCount(0);
+});
+
+test("a Cairo-midnight handover keeps its accepted cached offer while a fresh offline quote expires", async ({ context, page }) => {
+  await signIn(page, "owner", "e2e-owner-pass");
+  const catalog = await seedProduct(page, "OFFLINE-BOUNDARY-E2E", "حد العرض الليلي", 30_000, 4);
+  expect((await staffApi(page, "POST", "/api/internal/pricing/offers", {
+    nameAr: "عرض يوم واحد",
+    discountType: "percentage",
+    percentageBasisPoints: 1_000,
+    fixedDiscountPiasters: null,
+    startsOn: "2026-09-15",
+    endsOn: "2026-09-15",
+    active: true,
+    allowCoupon: true,
+    productIds: [catalog.productId],
+    categoryIds: [],
+  })).status).toBe(201);
+  await page.getByRole("button", { name: "تسجيل الخروج" }).click();
+  await signIn(page, "cashier", "e2e-cashier-pass", false);
+  await expect(page.getByTestId("offline-ready")).toBeVisible({ timeout: 30_000 });
+  await page.getByRole("link", { name: "البحث عن منتج" }).click();
+  await expect(page.getByRole("heading", { name: "البحث عن منتج" })).toBeVisible();
+  await page.clock.setFixedTime(new Date("2026-09-15T20:59:59.000Z"));
+  await context.setOffline(true);
+
+  await addProduct(page, catalog.code, catalog.sizeName, catalog.colorName);
+  const checkout = page.getByRole("form", { name: "إتمام البيع النقدي" });
+  await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
+  await expect(page.getByTestId("automatic-offer-breakdown")).toContainText("30 ج.م.");
+  await expect(page.getByTestId("accepted-prices")).toContainText("الإجمالي: 270 ج.م.");
+
+  await page.clock.setFixedTime(new Date("2026-09-15T21:00:01.000Z"));
+  await checkout.getByLabel("استلم الزبون البضاعة ودفع نقداً").check();
+  await checkout.getByRole("button", { name: "إتمام البيع" }).click();
+  await expect(page.getByRole("status")).toContainText("تم حفظ البيع النقدي.");
+  const accepted = await readLocalCouponSale(page, catalog.code);
+  expect(accepted).toMatchObject({
+    occurredAt: "2026-09-15T21:00:01.000Z",
+    pricingOccurredAt: "2026-09-15T20:59:59.000Z",
+    automaticOfferDiscountPiasters: 3_000,
+    finalTotalPiasters: 27_000,
+  });
+
+  await context.setOffline(false);
+  await expect.poll(async () => (await readLocalCouponSale(page, catalog.code))?.syncStatus).toBe("acknowledged");
+  const central = await staffApi(page, "GET", `/api/internal/sales/operations/${accepted.operationId}`);
+  expect(central.status).toBe(200);
+  expect(central.body).toMatchObject({
+    occurredAt: "2026-09-15T21:00:01.000Z",
+    automaticOfferDiscountPiasters: 3_000,
+    finalTotalPiasters: 27_000,
+  });
+
+  await context.setOffline(true);
+  await addProduct(page, catalog.code, catalog.sizeName, catalog.colorName);
+  await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
+  await expect(page.getByTestId("automatic-offer-breakdown")).toHaveCount(0);
+  await expect(page.getByTestId("accepted-prices")).toContainText("الإجمالي: 300 ج.م.");
+});
+
+test("a last-use race preserves the paid prepared sale and exposes the coupon discrepancy", async ({ browser, page }) => {
   await signIn(page, "owner", "e2e-owner-pass");
   const catalog = await seedProduct(page, "COUPON-LIMIT-E2E", "حد كوبون متصفح", 20_000, 4);
   const coupon = await staffApi(page, "POST", "/api/internal/pricing/coupons", {
@@ -83,7 +207,7 @@ test("a last-use conflict keeps the paid cashier sale locally with exact coupon 
   await signIn(page, "cashier", "e2e-cashier-pass", false);
   await addProduct(page, catalog.code, catalog.sizeName, catalog.colorName);
   const checkout = page.getByRole("form", { name: "إتمام البيع النقدي" });
-  await page.getByLabel("كود الكوبون (يتطلب اتصالاً)").fill("ONLY-ONE-E2E");
+  await page.getByLabel("كود الكوبون", { exact: true }).fill("ONLY-ONE-E2E");
   await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
   await expect(page.getByTestId("coupon-breakdown")).toContainText("ONLY-ONE-E2E — 50 ج.م.");
   await expect(page.getByTestId("accepted-prices")).toContainText("الإجمالي: 150 ج.م.");
@@ -107,13 +231,11 @@ test("a last-use conflict keeps the paid cashier sale locally with exact coupon 
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع النقدي.");
   await expect(page.getByTestId("sale-coupon")).toContainText("ONLY-ONE-E2E — 50 ج.م.");
-  await expect(page.getByRole("alert").filter({ hasText: "بلغ الكوبون الحد الأقصى للاستخدام." })).toContainText(
-    "البيع المكتمل محفوظ محلياً وسيظل ضمن المبيعات غير المرسلة.",
-  );
+  await expect.poll(async () => (await readLocalCouponSale(page, catalog.code))?.syncStatus).toBe("acknowledged");
 
   const local = await readLocalCouponSale(page, catalog.code);
   expect(local).toMatchObject({
-    syncStatus: "pending",
+    syncStatus: "acknowledged",
     couponCode: "ONLY-ONE-E2E",
     couponDiscountPiasters: 5_000,
     finalTotalPiasters: 15_000,
@@ -123,8 +245,23 @@ test("a last-use conflict keeps the paid cashier sale locally with exact coupon 
   expect(local.lines[0]).toMatchObject({ couponDiscountPiasters: 5_000, paidPiasters: 15_000 });
   const central = await staffApi(page, "GET", `/api/internal/sales/operations/${local.operationId}`);
   expect(central.status).toBe(200);
-  expect(central.body.physicallyCompleted).toBe(false);
+  expect(central.body.physicallyCompleted).toBe(true);
+  expect(central.body.discrepancy.messageAr).toContain("تجاوز حد استخدام الكوبون");
   expect(central.body.appliedCoupon).toEqual(local.appliedCoupon);
+
+  const inspectionPage = await managerPage(browser);
+  try {
+    const inspected = await staffApi(inspectionPage, "GET", `/api/internal/sales/${local.id}`);
+    expect(inspected.body.couponUsageDiscrepancy).toMatchObject({
+      couponId: coupon.body.id,
+      couponCode: "ONLY-ONE-E2E",
+      couponDiscountPiasters: 5_000,
+      usageLimit: 1,
+      centralUsedCount: 2,
+    });
+  } finally {
+    await inspectionPage.context().close();
+  }
 });
 
 async function managerPage(browser: Browser) {
@@ -169,13 +306,39 @@ async function seedProduct(page: Page, code: string, label: string, price: numbe
 }
 
 async function addProduct(page: Page, code: string, sizeName: string, colorName: string) {
-  await page.getByRole("link", { name: "البحث عن منتج" }).click();
+  if (new URL(page.url()).pathname !== "/lookup") {
+    await page.getByRole("link", { name: "البحث عن منتج" }).click();
+  }
   const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
-  await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill(code);
-  await lookup.getByRole("button", { name: "بحث" }).click();
+  const codeInput = lookup.getByRole("textbox", { name: "رمز المنتج" });
+  const matchingResult = page.getByText(`رمز المنتج: ${code}`, { exact: true });
+  if ((await codeInput.inputValue()) !== code || (await matchingResult.count()) === 0) {
+    await codeInput.fill(code);
+    await lookup.getByRole("button", { name: "بحث" }).click();
+    await expect(matchingResult).toBeVisible();
+  }
   await page.getByLabel("المقاس").selectOption({ label: sizeName });
+  await expect(page.getByLabel("اللون")).toBeEnabled();
   await page.getByLabel("اللون").selectOption({ label: colorName });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
+}
+
+async function completeCachedCouponSale(
+  page: Page,
+  catalog: { code: string; sizeName: string; colorName: string },
+  couponCode: string,
+) {
+  await addProduct(page, catalog.code, catalog.sizeName, catalog.colorName);
+  const checkout = page.getByRole("form", { name: "إتمام البيع النقدي" });
+  await checkout.getByLabel("كود الكوبون", { exact: true }).fill(couponCode);
+  await checkout.getByLabel("خصم الموظف بالجنيه").fill("20");
+  await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
+  await expect(page.getByTestId("automatic-offer-breakdown")).toContainText("30 ج.م.");
+  await expect(page.getByTestId("coupon-breakdown")).toContainText("50 ج.م.");
+  await expect(page.getByTestId("accepted-prices")).toContainText("الإجمالي: 200 ج.م.");
+  await checkout.getByLabel("استلم الزبون البضاعة ودفع نقداً").check();
+  await checkout.getByRole("button", { name: "إتمام البيع" }).click();
+  await expect(page.getByRole("status")).toContainText("تم حفظ البيع النقدي.");
 }
 
 async function staffApi(page: Page, method: "GET" | "POST", url: string, payload?: unknown) {

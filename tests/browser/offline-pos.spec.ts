@@ -743,6 +743,7 @@ test("retrying a committed last-unit sale recovers the original fact", async ({ 
         })),
       },
       occurredAt: sale.occurredAt,
+      pricingOccurredAt: sale.pricingOccurredAt ?? null,
       quote: { ...sale, physicallyCompleted: true },
       snapshot: snapshotRow.snapshot,
       quoteOrigin: "snapshot",

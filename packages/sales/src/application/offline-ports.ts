@@ -44,12 +44,14 @@ export type OfflineCompletedSale = {
   operationId: string;
   deviceId: string;
   snapshotId: string | null;
+  pricingVersion?: 1 | null;
   kind: OfflineSaleKind;
   syncStatus: OfflineSyncStatus;
   branch: BranchDto;
   soldByStaffId: string;
   soldByDisplayName: string;
   occurredAt: string;
+  pricingOccurredAt?: string | null;
   recordedAt: string | null;
   customerName: string | null;
   customerPhone: string | null;
@@ -65,6 +67,7 @@ export type OfflineCompletedSale = {
   finalTotalPiasters: number;
   physicallyCompleted: true;
   payloadFingerprint: string | null;
+  couponUsageAccountedSnapshotIssuedAt?: string | null;
   lines: OfflineSaleLine[];
 };
 
@@ -92,6 +95,7 @@ export type OfflinePendingSale = {
     lines: Array<{ variantId: string; quantity: number }>;
   } | null;
   occurredAt: string | null;
+  pricingOccurredAt?: string | null;
   quote: SaleDto | null;
   snapshot: PosPriceSnapshotDto | null;
   quoteOrigin: "server" | "snapshot" | null;
@@ -115,6 +119,7 @@ export type CompleteOfflineSaleInput = {
   branch: BranchDto;
   soldByDisplayName: string;
   occurredAt: string;
+  pricingOccurredAt?: string | null;
   customerName: string | null;
   customerPhone: string | null;
   couponCode: string | null;
@@ -172,6 +177,7 @@ export type OfflinePosStore = {
   loadSnapshot(staffId: string): Promise<PosPriceSnapshotDto | null>;
   lookupProduct(staffId: string, code: string): Promise<CashierProductLookupDto | null>;
   availableQuantity(variantId: string, cachedAvailable: number): Promise<number>;
+  countUnaccountedCouponUses(couponId: string, snapshotIssuedAt: string): Promise<number>;
   completeSale(
     input: CompleteOfflineSaleInput,
     priced: {

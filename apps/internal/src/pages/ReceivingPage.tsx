@@ -10,6 +10,7 @@ import type {
 } from "@bravos/contracts";
 import {
   ApiError,
+  correctReceipt,
   finalizeReceipt,
   getInventorySettings,
   listBatches,
@@ -20,7 +21,7 @@ import {
   setVariantLowStockThreshold,
   updateInventorySettings,
 } from "../api.ts";
-import { egpInputToPiasters, formatEgpFromPiasters } from "../money.ts";
+import { egpInputToPiasters, formatEgpFromPiasters, piastersToEgpInput } from "../money.ts";
 import { signOutPreservingSales } from "../session.ts";
 import {
   assignPendingReceive,
@@ -41,6 +42,31 @@ type DraftLine = {
   quantity: string;
   costEgp: string;
 };
+
+type CorrectionDraftLine = {
+  lineId: string;
+  label: string;
+  quantity: string;
+  costEgp: string;
+};
+
+type CorrectionPayload = {
+  receiptId: string;
+  expectedRevision: number;
+  reason: string;
+  lines: Array<{ lineId: string; quantity: number; unitCostPiasters: number }>;
+};
+
+async function digestCorrectionPayload(input: CorrectionPayload): Promise<string> {
+  const canonical = JSON.stringify({
+    receiptId: input.receiptId,
+    expectedRevision: input.expectedRevision,
+    reason: input.reason.trim(),
+    lines: [...input.lines].sort((left, right) => left.lineId.localeCompare(right.lineId)),
+  });
+  const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonical));
+  return [...new Uint8Array(hash)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
 
 function emptyLine(): DraftLine {
   return { key: crypto.randomUUID(), productId: "", variantId: "", quantity: "", costEgp: "" };
@@ -77,6 +103,10 @@ export default function ReceivingPage({
   const [thresholdInput, setThresholdInput] = useState("3");
   const [overrideVariantId, setOverrideVariantId] = useState("");
   const [overrideThreshold, setOverrideThreshold] = useState("");
+  const [editingCorrection, setEditingCorrection] = useState(false);
+  const [correctionReason, setCorrectionReason] = useState("");
+  const [correctionLines, setCorrectionLines] = useState<CorrectionDraftLine[]>([]);
+  const [correctionRetryReady, setCorrectionRetryReady] = useState(false);
   const [pendingReceive, setPendingReceive] = useState<PendingReceive | null>(null);
   const [frozenPayload, setFrozenPayload] = useState<{
     receiptDate: string;
@@ -88,6 +118,8 @@ export default function ReceivingPage({
     receiptDate: string;
     lines: ReceivePayloadLines;
   } | null>(null);
+  const correctionAttemptRef = useRef<{ digest: string; operationId: string } | null>(null);
+  const correctionInFlightRef = useRef(false);
 
   async function refresh() {
     const [nextProducts, nextReceipts, nextBatches, nextLowStock, nextSettings] = await Promise.all([
@@ -421,6 +453,83 @@ export default function ReceivingPage({
     }
   }
 
+  function beginCorrection() {
+    if (!selectedReceipt) return;
+    resetCorrectionAttempt();
+    setCorrectionReason("");
+    setCorrectionLines(selectedReceipt.lines.map((line) => ({
+      lineId: line.id,
+      label: `${line.variant.product.code} / ${line.variant.size.nameAr} / ${line.variant.color.nameAr}`,
+      quantity: String(line.effectiveQuantity),
+      costEgp: piastersToEgpInput(line.effectiveUnitCostPiasters),
+    })));
+    setEditingCorrection(true);
+  }
+
+  function resetCorrectionAttempt() {
+    correctionAttemptRef.current = null;
+    setCorrectionRetryReady(false);
+  }
+
+  async function onCorrectReceipt(event: FormEvent) {
+    event.preventDefault();
+    if (!selectedReceipt || correctionInFlightRef.current) return;
+    const parsed = correctionLines.map((line) => ({
+      lineId: line.lineId,
+      quantity: Number(line.quantity),
+      unitCostPiasters: egpInputToPiasters(line.costEgp),
+    }));
+    if (parsed.some((line) => !Number.isInteger(line.quantity) || line.quantity < 0)) {
+      setError("الكمية الفعالة غير صالحة.");
+      return;
+    }
+    if (parsed.some((line) => line.unitCostPiasters === null)) {
+      setError("تكلفة الشراء الفعالة غير صالحة.");
+      return;
+    }
+    correctionInFlightRef.current = true;
+    try {
+      const payload: CorrectionPayload = {
+        receiptId: selectedReceipt.id,
+        expectedRevision: selectedReceipt.correctionRevision,
+        reason: correctionReason.trim(),
+        lines: parsed.map((line) => ({
+          lineId: line.lineId,
+          quantity: line.quantity,
+          unitCostPiasters: line.unitCostPiasters!,
+        })),
+      };
+      const digest = await digestCorrectionPayload(payload);
+      const attempt = correctionAttemptRef.current?.digest === digest
+        ? correctionAttemptRef.current
+        : { digest, operationId: crypto.randomUUID() };
+      correctionAttemptRef.current = attempt;
+      setPending("correction");
+      setError("");
+      setNotice("");
+      await correctReceipt(selectedReceipt.id, {
+        operationId: attempt.operationId,
+        expectedRevision: payload.expectedRevision,
+        reason: payload.reason,
+        lines: payload.lines,
+      });
+      resetCorrectionAttempt();
+      setEditingCorrection(false);
+      setNotice("تم حفظ تصحيح إذن الاستلام.");
+      await refresh();
+    } catch (caught) {
+      if (caught instanceof ApiError && caught.status >= 400 && caught.status < 500) {
+        resetCorrectionAttempt();
+      } else {
+        setCorrectionRetryReady(true);
+      }
+      setError(caught instanceof ApiError ? caught.messageAr : "تعذر حفظ تصحيح إذن الاستلام.");
+    } finally {
+      correctionInFlightRef.current = false;
+      setPending("");
+    }
+  }
+
   return (
     <main className="shell">
       <header className="brand">
@@ -571,13 +680,18 @@ export default function ReceivingPage({
           {receipts.length === 0 ? (
             <p className="empty">لا توجد أذون استلام بعد.</p>
           ) : (
-            <div className="staff-list">
+            <div className="staff-list" data-testid="receipt-list">
               {receipts.map((receipt) => (
                 <article className="staff-item" key={receipt.id}>
-                  <button type="button" className="secondary" onClick={() => setSelectedReceiptId(receipt.id)}>
+                  <button type="button" className="secondary" onClick={() => {
+                    resetCorrectionAttempt();
+                    setSelectedReceiptId(receipt.id);
+                    setEditingCorrection(false);
+                  }}>
                     عرض التفاصيل
                   </button>
                   <p>التاريخ: {receipt.receiptDate}</p>
+                  <p>{receipt.lines.map((line) => line.variant.product.code).join("، ")}</p>
                   <p className="muted">أصناف: {receipt.lines.length}</p>
                 </article>
               ))}
@@ -588,11 +702,90 @@ export default function ReceivingPage({
               <h3>تفاصيل الإذن</h3>
               <p>تاريخ الاستلام: {selectedReceipt.receiptDate}</p>
               {selectedReceipt.lines.map((line) => (
-                <p key={line.id}>
-                  {line.variant.product.code} / {line.variant.size.nameAr} / {line.variant.color.nameAr}
-                  : {line.quantity} × {formatEgpFromPiasters(line.unitCostPiasters)}
-                </p>
+                <div key={line.id} className="staff-item">
+                  <p>{line.variant.product.code} / {line.variant.size.nameAr} / {line.variant.color.nameAr}</p>
+                  <p>الأصل: {line.quantity} × {formatEgpFromPiasters(line.unitCostPiasters)}</p>
+                  <p>الفعلي: {line.effectiveQuantity} × {formatEgpFromPiasters(line.effectiveUnitCostPiasters)}</p>
+                  <p className="muted">المتاح: {line.remainingQuantity} — المستهلك حالياً: {line.allocatedQuantity}</p>
+                </div>
               ))}
+              <div className="actions">
+                <button type="button" className="secondary" onClick={beginCorrection}>تصحيح الإذن</button>
+              </div>
+              {editingCorrection ? (
+                <form className="stacked-form" aria-label="تصحيح إذن الاستلام" onSubmit={(event) => void onCorrectReceipt(event)}>
+                  <div className="field">
+                    <label htmlFor="receivingCorrectionReason">سبب التصحيح</label>
+                    <input
+                      id="receivingCorrectionReason"
+                      value={correctionReason}
+                      onChange={(event) => {
+                        resetCorrectionAttempt();
+                        setCorrectionReason(event.target.value);
+                      }}
+                      required
+                    />
+                  </div>
+                  {correctionLines.map((line, index) => (
+                    <div className="variant-row" key={line.lineId}>
+                      <p>{line.label}</p>
+                      <div className="field">
+                        <label htmlFor={`correctionQuantity-${line.lineId}`}>الكمية الفعالة</label>
+                        <input
+                          id={`correctionQuantity-${line.lineId}`}
+                          inputMode="numeric"
+                          value={line.quantity}
+                          onChange={(event) => {
+                            resetCorrectionAttempt();
+                            const next = [...correctionLines];
+                            next[index] = { ...line, quantity: event.target.value };
+                            setCorrectionLines(next);
+                          }}
+                          required
+                        />
+                      </div>
+                      <div className="field">
+                        <label htmlFor={`correctionCost-${line.lineId}`}>تكلفة الشراء الفعالة بالجنيه</label>
+                        <input
+                          id={`correctionCost-${line.lineId}`}
+                          value={line.costEgp}
+                          onChange={(event) => {
+                            resetCorrectionAttempt();
+                            const next = [...correctionLines];
+                            next[index] = { ...line, costEgp: event.target.value };
+                            setCorrectionLines(next);
+                          }}
+                          required
+                        />
+                      </div>
+                    </div>
+                  ))}
+                  <div className="actions">
+                    <button type="submit" disabled={pending === "correction"}>
+                      {pending === "correction"
+                        ? "جارٍ الحفظ…"
+                        : correctionRetryReady
+                          ? "إعادة محاولة التصحيح"
+                          : "حفظ التصحيح"}
+                    </button>
+                    <button type="button" className="secondary" onClick={() => {
+                      resetCorrectionAttempt();
+                      setEditingCorrection(false);
+                    }}>إلغاء</button>
+                  </div>
+                </form>
+              ) : null}
+              {selectedReceipt.corrections.length > 0 ? (
+                <div className="staff-list">
+                  <h4>سجل التصحيحات</h4>
+                  {selectedReceipt.corrections.map((correction) => (
+                    <article className="staff-item" key={correction.id}>
+                      <p>التصحيح {correction.revision}: {correction.reason}</p>
+                      <p className="muted">نفّذه {correction.changedByDisplayName} — {new Date(correction.changedAt).toLocaleString("ar-EG")}</p>
+                    </article>
+                  ))}
+                </div>
+              ) : null}
             </div>
           ) : null}
         </section>
@@ -608,8 +801,10 @@ export default function ReceivingPage({
                   <p>
                     {batch.variant.product.code} / {batch.variant.size.nameAr} / {batch.variant.color.nameAr}
                   </p>
-                  <p>المتبقي: {batch.remainingQuantity} من {batch.receivedQuantity}</p>
-                  <p>تكلفة الشراء: {formatEgpFromPiasters(batch.unitCostPiasters)}</p>
+                  <p>المتبقي: {batch.remainingQuantity} من {batch.effectiveReceivedQuantity}</p>
+                  <p>الكمية الأصلية: {batch.receivedQuantity} — الكمية الفعالة: {batch.effectiveReceivedQuantity}</p>
+                  <p>تكلفة الشراء الأصلية: {formatEgpFromPiasters(batch.unitCostPiasters)}</p>
+                  <p>التكلفة الفعالة: {formatEgpFromPiasters(batch.effectiveUnitCostPiasters)}</p>
                 </article>
               ))}
             </div>

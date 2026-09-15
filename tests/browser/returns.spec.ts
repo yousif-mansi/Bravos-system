@@ -78,6 +78,92 @@ test("manager uses the separate Arabic Returns picker, posts inspection, and rec
   await expect(page.getByTestId("return-details")).toContainText("دُفع 810 ج.م.");
 });
 
+test("manager completes an exchange from Return details and sees only the actual cash difference", async ({ page }) => {
+  await page.goto("http://127.0.0.1:5174/login");
+  await page.getByLabel("اسم الدخول").fill("owner");
+  await page.getByLabel("كلمة المرور").fill("e2e-owner-pass");
+  await page.getByRole("button", { name: "دخول" }).click();
+  await page.getByRole("button", { name: "أبشواي" }).click();
+
+  const category = await staffApi(page, "POST", "/api/internal/catalog/categories", { nameAr: "استبدال المتصفح" });
+  const size = await staffApi(page, "POST", "/api/internal/catalog/sizes", { nameAr: "L استبدال" });
+  const originalColor = await staffApi(page, "POST", "/api/internal/catalog/colors", { nameAr: "أصلي استبدال" });
+  const replacementColor = await staffApi(page, "POST", "/api/internal/catalog/colors", { nameAr: "بديل استبدال" });
+  const product = await staffApi(page, "POST", "/api/internal/catalog/products", {
+    code: "EXC-E2E",
+    nameAr: "قميص استبدال المتصفح",
+    descriptionAr: "تدفق استبدال حقيقي",
+    categoryId: category.body.id,
+    defaultSellingPricePiasters: 28000,
+    publication: "hidden",
+    imageRefs: [],
+    variants: [
+      { sizeId: size.body.id, colorId: originalColor.body.id, sellingPricePiastersOverride: 28000 },
+      { sizeId: size.body.id, colorId: replacementColor.body.id, sellingPricePiastersOverride: 40000 },
+    ],
+  });
+  const originalVariantId = product.body.variants.find((variant: { sellingPricePiasters: number }) => variant.sellingPricePiasters === 28000).id;
+  const replacementVariantId = product.body.variants.find((variant: { sellingPricePiasters: number }) => variant.sellingPricePiasters === 40000).id;
+  await staffApi(page, "POST", "/api/internal/receiving/receipts", {
+    operationId: crypto.randomUUID(), receiptDate: "2026-09-01",
+    lines: [
+      { variantId: originalVariantId, quantity: 1, unitCostPiasters: 10000 },
+      { variantId: replacementVariantId, quantity: 1, unitCostPiasters: 15000 },
+    ],
+  });
+  const original = await staffApi(page, "POST", "/api/internal/sales", {
+    saleId: crypto.randomUUID(), operationId: crypto.randomUUID(), physicallyCompleted: true,
+    employeeDiscountPiasters: 0, lines: [{ variantId: originalVariantId, quantity: 1 }],
+  });
+  await staffApi(page, "POST", "/api/internal/pricing/offers", {
+    nameAr: "عرض استبدال المتصفح",
+    discountType: "percentage",
+    percentageBasisPoints: 2000,
+    fixedDiscountPiasters: null,
+    startsOn: "2026-09-01",
+    endsOn: "2026-09-30",
+    active: true,
+    allowCoupon: true,
+    productIds: [product.body.id],
+    categoryIds: [],
+  });
+  const source = (await staffApi(page, "GET", `/api/internal/returns/sources?reference=${original.body.id}`)).body[0];
+  const drafted = await staffApi(page, "POST", "/api/internal/returns", {
+    returnId: crypto.randomUUID(), operationId: crypto.randomUUID(), sourceSaleId: original.body.id,
+    handlingBranchId: original.body.branch.id, authorizedRefundPiasters: 28000,
+    lines: [{ sourceSaleLineId: source.lines[0].saleLineId, quantity: 1, sellableQuantity: 1 }],
+  });
+  expect(drafted.status).toBe(201);
+
+  await page.getByRole("link", { name: "المرتجعات" }).click();
+  await page.locator(".return-history").getByRole("button", { name: new RegExp(original.body.id) }).click();
+  const exchangeForm = page.getByRole("form", { name: "إتمام استبدال" });
+  await exchangeForm.getByLabel("صنف الاستبدال").selectOption(originalVariantId);
+  await exchangeForm.getByRole("button", { name: "إضافة إلى سلة الاستبدال" }).click();
+  const basket = exchangeForm.getByRole("list", { name: "أصناف سلة الاستبدال" });
+  await expect(basket).toContainText("أصلي استبدال");
+  await basket.getByRole("button", { name: "حذف" }).click();
+  await expect(basket).not.toBeVisible();
+  await exchangeForm.getByLabel("صنف الاستبدال").selectOption(replacementVariantId);
+  await exchangeForm.getByLabel("كمية الاستبدال").fill("1");
+  await exchangeForm.getByRole("button", { name: "إضافة إلى سلة الاستبدال" }).click();
+  await exchangeForm.getByRole("button", { name: "عرض السعر والفرق" }).click();
+  const quote = page.getByTestId("exchange-quote");
+  await expect(quote).toContainText("320 ج.م.");
+  await expect(quote).toContainText("280 ج.م.");
+  await expect(quote).toContainText("40 ج.م.");
+  await exchangeForm.getByRole("button", { name: "تأكيد الاستبدال بعد مراجعة فرق النقد" }).click();
+
+  await expect(page.getByRole("status")).toContainText("تم إتمام الاستبدال");
+  const details = page.getByTestId("exchange-details");
+  await expect(details).toContainText("320 ج.م.");
+  await expect(details).toContainText("280 ج.م.");
+  await expect(details).toContainText("40 ج.م.");
+  const replacementSaleId = (await details.getByText(/بيع الاستبدال:/).textContent())?.split(": ")[1] ?? "";
+  const replacementSale = await staffApi(page, "GET", `/api/internal/sales/${replacementSaleId}`);
+  expect(replacementSale.body).toMatchObject({ finalTotalPiasters: 32000, exchangeCreditAppliedPiasters: 28000, cashReceivedPiasters: 4000 });
+});
+
 async function staffApi(page: Page, method: "GET" | "POST", url: string, payload?: unknown) {
   const response = await page.request.fetch(`http://127.0.0.1:5174${url}`, {
     method,

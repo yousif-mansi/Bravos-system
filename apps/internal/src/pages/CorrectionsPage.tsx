@@ -200,6 +200,8 @@ export default function CorrectionsPage({ workspace }: { workspace: WorkspaceDto
               </ul>
             )}
             <p>القيمة النقدية في التسجيل الأصلي: {formatEgpFromPiasters(detail.targetType === "sale" ? detail.actual.originalCashReceivedPiasters : detail.actual.originalRefundPaidPiasters)}</p>
+            {detail.targetType === "return" && detail.actual.exchangeCreditAppliedPiasters > 0 ? <p>رصيد الاستبدال المستخدم (ليس نقداً): {formatEgpFromPiasters(detail.actual.exchangeCreditAppliedPiasters)}</p> : null}
+            {detail.targetType === "return" && detail.effective ? <p>المتبقي النقدي المستحق حالياً: {formatEgpFromPiasters(Math.max(0, detail.effective.authorizedRefundPiasters - detail.actual.exchangeCreditAppliedPiasters - detail.actual.netRefundPaidPiasters))}</p> : null}
             <p>حركات النقد الفعلية في التصحيحات: دُفع {formatEgpFromPiasters(detail.actual.correctionCashPaidOutPiasters)}، واستُرد {formatEgpFromPiasters(detail.actual.correctionCashRecoveredPiasters)}.</p>
             <p>الصافي بعد حركات النقد الصريحة: {formatEgpFromPiasters(detail.targetType === "sale" ? detail.actual.netCashReceivedPiasters : detail.actual.netRefundPaidPiasters)}</p>
             <p>حركات البضاعة المسجلة في التصحيحات: عاد {detail.actual.merchandiseRestoredQuantity}، وخرج {detail.actual.merchandiseDeductedQuantity}.</p>

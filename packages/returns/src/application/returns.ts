@@ -1,4 +1,4 @@
-import type { ReturnDto, ReturnSourceDto } from "@bravos/contracts";
+import type { ReturnDto, ReturnExchangeQuoteDto, ReturnSourceDto } from "@bravos/contracts";
 import {
   ForbiddenError,
   isManager,
@@ -8,13 +8,16 @@ import {
 } from "@bravos/identity";
 import { OperationConflictError, assertQuantity } from "@bravos/inventory";
 import { ReturnWindowExpiredError, ReturnsValidationError } from "../domain/errors.ts";
-import { fingerprintRefundPayment, fingerprintReturnPayload } from "../domain/fingerprint.ts";
+import { fingerprintExchangePayload, fingerprintExchangeQuotePayload, fingerprintRefundPayment, fingerprintReturnPayload } from "../domain/fingerprint.ts";
 import type {
   RefundEventRecord,
   EffectiveReturnState,
   ReturnLineWrite,
+  ReturnExchangeRecord,
   ReturnRecord,
   ReturnCorrectionStateReader,
+  ReturnReplacementSaleReader,
+  ReturnReplacementPricing,
   ReturnRestorationWrite,
   ReturnServices,
   ReturnSourceRecord,
@@ -34,6 +37,15 @@ const UPDATE_DRAFT_KEYS = new Set(["expectedRevision", "handlingBranchId", "auth
 const LINE_KEYS = new Set(["sourceSaleLineId", "quantity", "sellableQuantity"]);
 const POST_KEYS = new Set(["receivedAndInspected", "expectedRevision"]);
 const PAY_KEYS = new Set(["operationId", "status", "amountPiasters"]);
+const EXCHANGE_KEYS = new Set([
+  "exchangeId", "operationId", "replacementSaleId", "replacementSaleOperationId",
+  "receivedAndInspected", "expectedRevision", "cashRefundStatus", "quoteId",
+]);
+const EXCHANGE_QUOTE_KEYS = new Set([
+  "quoteId", "expectedRevision", "replacementLines", "exchangeId", "operationId",
+  "replacementSaleId", "replacementSaleOperationId",
+]);
+const EXCHANGE_LINE_KEYS = new Set(["variantId", "quantity"]);
 
 export function createReturnServices(ports: {
   actors: ReturnsActorPort;
@@ -41,6 +53,8 @@ export function createReturnServices(ports: {
   returns: ReturnsStore;
   uow: ReturnsUnitOfWork;
   corrections: ReturnCorrectionStateReader;
+  replacementSales: ReturnReplacementSaleReader;
+  replacementPricing: ReturnReplacementPricing;
   clock?: { now(): Date };
 }): ReturnServices {
   const clock = ports.clock ?? { now: () => new Date() };
@@ -102,9 +116,10 @@ export function createReturnServices(ports: {
   }
 
   async function hydrate(record: ReturnRecord): Promise<ReturnDto> {
-    const [source, corrected] = await Promise.all([
+    const [source, corrected, exchangeRecord] = await Promise.all([
       ports.returns.getSource(record.sourceSaleId),
       record.status === "posted" ? ports.corrections.getEffectiveReturn(record.id) : Promise.resolve(null),
+      ports.returns.getExchangeByReturnId(record.id),
     ]);
     if (!source) throw new ReturnsValidationError("تعذر العثور على البيع الأصلي.");
     const [sourceValue, branches, identities] = await Promise.all([
@@ -119,8 +134,10 @@ export function createReturnServices(ports: {
       recordStatus: record.status,
       originalAuthorizedPiasters: record.authorizedRefundPiasters,
       originalPaidPiasters: record.refundPaidPiasters,
+      exchangeCreditAppliedPiasters: record.exchangeCreditAppliedPiasters,
       corrected,
     });
+    const exchange = exchangeRecord ? await hydrateExchange(exchangeRecord, refund) : null;
     const correctedLines = new Map((corrected?.lines ?? []).map((line) => [line.returnLineId, line]));
     return {
       id: record.id,
@@ -162,7 +179,9 @@ export function createReturnServices(ports: {
         variantId: item.variantId,
         quantity: item.quantity,
         unitCostPiasters: item.unitCostPiasters,
+        effectiveUnitCostPiasters: item.effectiveUnitCostPiasters,
       })),
+      exchange,
       refund: {
         status: refund.status,
         owedPiasters: refund.owedPiasters,
@@ -172,6 +191,70 @@ export function createReturnServices(ports: {
         recordedAt: record.refundRecordedAt?.toISOString() ?? null,
         events: record.refundEvents.map(toEventDto),
       },
+    };
+  }
+
+  async function hydrateExchange(
+    record: ReturnExchangeRecord,
+    refund: ReturnType<typeof projectEffectiveRefund>,
+  ) {
+    const sale = await ports.replacementSales.getById(record.replacementSaleId);
+    if (!sale) throw new ReturnsValidationError("تعذر العثور على بيع الاستبدال.");
+    const allocations = await ports.replacementSales.listAllocations(sale.operationId);
+    const cashRefundStatus: "none" | "owed" | "paid" | "cancelled" = refund.effectiveStatus === "cancelled"
+      ? "cancelled"
+      : refund.status === "owed"
+        ? "owed"
+        : refund.status === "paid" || refund.status === "overpaid"
+          ? "paid"
+          : "none";
+    return {
+      id: record.id,
+      operationId: record.operationId,
+      replacementSaleId: record.replacementSaleId,
+      replacementMerchandisePiasters: sale.finalTotalPiasters,
+      creditAppliedPiasters: record.creditAppliedPiasters,
+      cashCollectedPiasters: record.cashCollectedPiasters,
+      cashRefund: {
+        acceptedStatus: record.cashRefundStatus,
+        acceptedAmountPiasters: record.cashRefundPiasters,
+        status: cashRefundStatus,
+        owedPiasters: refund.owedPiasters,
+        paidPiasters: refund.paidPiasters,
+      },
+      allocations: allocations.map((item) => ({
+        batchId: item.batchId,
+        variantId: item.variantId,
+        quantity: item.quantity,
+        unitCostPiasters: item.unitCostPiasters,
+        effectiveUnitCostPiasters: item.effectiveUnitCostPiasters,
+      })),
+      completedByStaffId: record.completedByStaffId,
+      completedAt: record.completedAt.toISOString(),
+    };
+  }
+
+  function exchangeQuoteDto(record: import("./ports.ts").ReturnExchangeQuoteRecord): ReturnExchangeQuoteDto {
+    const creditAppliedPiasters = Math.min(record.creditAvailablePiasters, record.acceptedQuote.finalTotalPiasters);
+    return {
+      id: record.id,
+      returnId: record.returnId,
+      returnRevision: record.returnRevision,
+      correctionRevision: record.correctionRevision,
+      settlement: record.settlement,
+      replacementMerchandisePiasters: record.acceptedQuote.finalTotalPiasters,
+      creditAvailablePiasters: record.creditAvailablePiasters,
+      creditAppliedPiasters,
+      cashCollectedPiasters: record.acceptedQuote.finalTotalPiasters - creditAppliedPiasters,
+      cashRefundPiasters: record.creditAvailablePiasters - creditAppliedPiasters,
+      appliedAutomaticOffer: record.acceptedQuote.appliedAutomaticOffer,
+      lines: record.acceptedQuote.lines.map((line) => ({
+        variantId: line.variantId,
+        quantity: line.quantity,
+        listedUnitPricePiasters: line.listedUnitPricePiasters,
+        paidPiasters: line.paidPiasters,
+      })),
+      quotedAt: record.quotedAt.toISOString(),
     };
   }
 
@@ -398,6 +481,7 @@ export function createReturnServices(ports: {
           recordStatus: record.status,
           originalAuthorizedPiasters: record.authorizedRefundPiasters,
           originalPaidPiasters: record.refundPaidPiasters,
+          exchangeCreditAppliedPiasters: record.exchangeCreditAppliedPiasters,
           corrected: effective,
         });
         if (!effective || refund.effectiveStatus === "cancelled") {
@@ -423,6 +507,213 @@ export function createReturnServices(ports: {
       return { value: await hydrate(outcome.record), created: outcome.created };
     },
 
+    async quoteExchange(auth, id, input) {
+      const manager = await requireManager(auth);
+      const returnId = assertUuid(id, "الإرجاع غير موجود.");
+      const command = parseExchangeQuote(input);
+      const record = await ports.returns.getById(returnId);
+      if (!record) throw new NotFoundError("الإرجاع غير موجود.");
+      if (!canUseBranch(manager, record.handlingBranchId)) throw new ForbiddenError();
+      if (record.revision !== command.expectedRevision) {
+        throw new OperationConflictError("تغيرت بيانات الإرجاع. أعد تحميلها قبل عرض فرق الاستبدال.");
+      }
+      if (await ports.returns.getExchangeByReturnId(returnId)) {
+        throw new OperationConflictError("تم تسجيل استبدال لهذا الإرجاع بالفعل.");
+      }
+      let correctionRevision = 0;
+      let creditAvailablePiasters = record.authorizedRefundPiasters;
+      if (record.status === "posted") {
+        const effective = await ports.corrections.getEffectiveReturn(returnId);
+        if (!effective || effective.status === "cancelled") {
+          throw new OperationConflictError("أُلغي تسجيل هذا الإرجاع ولا يمكن استبداله.");
+        }
+        if (effective.paidPiasters > 0) {
+          throw new OperationConflictError("سُدد الاسترداد النقدي لهذا الإرجاع بالفعل ولا يمكن استخدامه كرصيد استبدال.");
+        }
+        correctionRevision = effective.revision;
+        creditAvailablePiasters = effective.authorizedRefundPiasters ?? record.authorizedRefundPiasters;
+      }
+      const payloadFingerprint = fingerprintExchangeQuotePayload({
+        returnId,
+        returnRevision: record.revision,
+        correctionRevision,
+        creditAvailablePiasters,
+        settlement: command.settlement,
+        replacementLines: command.replacementLines,
+      });
+      const existing = await ports.returns.getExchangeQuoteById(command.quoteId);
+      if (existing) {
+        if (existing.returnId !== returnId || existing.payloadFingerprint !== payloadFingerprint) {
+          throw new OperationConflictError();
+        }
+        return { value: exchangeQuoteDto(existing), created: false };
+      }
+      const quotedAt = clock.now();
+      const acceptedQuote = await ports.replacementPricing.quote(command.replacementLines, quotedAt);
+      const inserted = await ports.returns.insertExchangeQuote({
+        id: command.quoteId,
+        returnId,
+        returnRevision: record.revision,
+        correctionRevision,
+        creditAvailablePiasters,
+        settlement: command.settlement,
+        payloadFingerprint,
+        acceptedQuote,
+        quotedByStaffId: manager.id,
+        quotedAt,
+      });
+      if (inserted.kind === "existing" && inserted.record.payloadFingerprint !== payloadFingerprint) {
+        throw new OperationConflictError();
+      }
+      return { value: exchangeQuoteDto(inserted.record), created: inserted.kind === "created" };
+    },
+
+    async exchange(auth, id, input) {
+      const manager = await requireManager(auth);
+      const returnId = assertUuid(id, "الإرجاع غير موجود.");
+      const command = parseExchange(input);
+      const fingerprint = fingerprintExchangePayload({
+        returnId,
+        replacementSaleId: command.replacementSaleId,
+        replacementSaleOperationId: command.replacementSaleOperationId,
+        quoteId: command.quoteId,
+        expectedRevision: command.expectedRevision,
+        cashRefundStatus: command.cashRefundStatus,
+      });
+      const outcome = await ports.uow.run(async (tx) => {
+        const sourceSaleId = await tx.returns.getSourceSaleId(returnId);
+        if (!sourceSaleId) throw new NotFoundError("الإرجاع غير موجود.");
+        await tx.inventory.lockStockClock("update");
+        const source = await tx.returns.getSource(sourceSaleId, true);
+        if (!source) throw new ReturnsValidationError("تعذر العثور على البيع الأصلي.");
+        const record = await tx.returns.getById(returnId, true);
+        if (!record) throw new NotFoundError("الإرجاع غير موجود.");
+        if (record.sourceSaleId !== sourceSaleId) throw new OperationConflictError();
+        if (!canUseBranch(manager, record.handlingBranchId)) throw new ForbiddenError();
+        await tx.returns.lockIdentities(command.exchangeId, command.operationId);
+        const existingByReturn = await tx.returns.getExchangeByReturnId(returnId, true);
+        const existingById = await tx.returns.getExchangeById(command.exchangeId);
+        const existingByOperation = await tx.returns.getExchangeByOperationId(command.operationId);
+        const existing = existingByReturn ?? existingById ?? existingByOperation;
+        if (existing) {
+          if (existing.id !== command.exchangeId || existing.operationId !== command.operationId
+            || existing.returnId !== returnId || existing.replacementSaleId !== command.replacementSaleId
+            || existing.payloadFingerprint !== fingerprint) {
+            throw new OperationConflictError();
+          }
+          return { record, created: false };
+        }
+        if (record.revision !== command.expectedRevision) {
+          throw new OperationConflictError("تغيرت المسودة. أعد تحميلها قبل إتمام الاستبدال.");
+        }
+        const quote = await tx.returns.getExchangeQuoteById(command.quoteId);
+        if (!quote || quote.returnId !== returnId || quote.returnRevision !== record.revision) {
+          throw new OperationConflictError("تغيرت بيانات الاستبدال. اعرض السعر والفرق من جديد.");
+        }
+        if (quote.settlement.exchangeId !== command.exchangeId
+          || quote.settlement.operationId !== command.operationId
+          || quote.settlement.replacementSaleId !== command.replacementSaleId
+          || quote.settlement.replacementSaleOperationId !== command.replacementSaleOperationId) {
+          throw new OperationConflictError("عرض السعر لا يخص عملية الاستبدال الحالية. اعرض السعر والفرق من جديد.");
+        }
+        let completedAt = clock.now();
+        let posted = record;
+        let creditAvailablePiasters = record.authorizedRefundPiasters;
+        let correctionRevision = 0;
+        if (record.status === "draft") {
+          if (!command.receivedAndInspected) throw new ReturnsValidationError("يجب تأكيد استلام الأصناف وفحصها.");
+          if (completedAt.getTime() > source.returnDeadlineAt.getTime()) throw new ReturnWindowExpiredError();
+          const plan = planReturn(source, record.lines.map((line) => ({
+            sourceSaleLineId: line.sourceSaleLineId,
+            quantity: line.quantity,
+            sellableQuantity: line.sellableQuantity,
+          })));
+          if (plan.suggestedRefundPiasters !== record.suggestedRefundPiasters) {
+            throw new OperationConflictError("تغيرت الكميات المتاحة للإرجاع. أنشئ مسودة جديدة.");
+          }
+          const claimed = await tx.inventory.claimReturnOperation({
+            operationId: record.operationId,
+            payloadFingerprint: record.draftPayloadFingerprint,
+            actorStaffId: manager.id,
+          });
+          if (claimed.kind === "replay") throw new OperationConflictError();
+          completedAt = claimed.recordedAt;
+          const lineIdBySource = new Map(record.lines.map((line) => [line.sourceSaleLineId, line.id]));
+          const units: ReturnUnitWrite[] = plan.units.map((unit) => ({
+            id: crypto.randomUUID(),
+            returnLineId: lineIdBySource.get(unit.sourceSaleLineId) ?? "",
+            sourceSaleUnitId: unit.sourceSaleUnitId,
+            sourceRecordingSaleUnitId: unit.sourceRecordingSaleUnitId,
+            startOffset: unit.startOffset,
+            quantity: unit.quantity,
+            paidUnitPiasters: unit.paidUnitPiasters,
+          }));
+          if (units.some((unit) => !unit.returnLineId)) throw new ReturnsValidationError("بيانات أصناف الإرجاع غير متطابقة.");
+          const restorations: ReturnRestorationWrite[] = plan.restorations.map((item) => ({ id: crypto.randomUUID(), ...item }));
+          for (const item of restorations) {
+            await tx.inventory.restoreToOriginalBatch({
+              operationId: record.operationId,
+              batchId: item.batchId,
+              variantId: item.variantId,
+              quantity: item.quantity,
+              recordedAt: completedAt,
+            });
+          }
+          posted = await tx.returns.post({
+            returnId,
+            postedByStaffId: manager.id,
+            postedAt: completedAt,
+            units,
+            restorations,
+          });
+        } else {
+          const effective = await tx.corrections.getEffectiveReturn(returnId);
+          if (!effective || effective.status === "cancelled") {
+            throw new OperationConflictError("أُلغي تسجيل هذا الإرجاع ولا يمكن استبداله.");
+          }
+          if (effective.paidPiasters > 0) {
+            throw new OperationConflictError("سُدد الاسترداد النقدي لهذا الإرجاع بالفعل ولا يمكن استخدامه كرصيد استبدال.");
+          }
+          creditAvailablePiasters = effective.authorizedRefundPiasters ?? record.authorizedRefundPiasters;
+          correctionRevision = effective.revision;
+        }
+        if (quote.correctionRevision !== correctionRevision || quote.creditAvailablePiasters !== creditAvailablePiasters) {
+          throw new OperationConflictError("تغير رصيد الإرجاع. اعرض السعر والفرق من جديد قبل تسليم النقد.");
+        }
+        const replacement = await tx.replacementSales.create({
+          saleId: command.replacementSaleId,
+          operationId: command.replacementSaleOperationId,
+          payloadFingerprint: fingerprint,
+          branchId: record.handlingBranchId,
+          actorStaffId: manager.id,
+          actorDisplayName: manager.displayName,
+          occurredAt: completedAt,
+          creditAvailablePiasters,
+          acceptedQuote: quote.acceptedQuote,
+        });
+        const cashRefundPiasters = creditAvailablePiasters - replacement.creditAppliedPiasters;
+        const cashRefundStatus = cashRefundPiasters === 0 ? "none" : command.cashRefundStatus;
+        await tx.returns.insertExchange({
+          id: command.exchangeId,
+          operationId: command.operationId,
+          returnId,
+          replacementSaleId: replacement.sale.id,
+          payloadFingerprint: fingerprint,
+          creditAvailablePiasters,
+          creditAppliedPiasters: replacement.creditAppliedPiasters,
+          cashCollectedPiasters: replacement.cashCollectedPiasters,
+          cashRefundStatus,
+          cashRefundPiasters,
+          cashRefundPaidPiasters: cashRefundStatus === "paid" ? cashRefundPiasters : 0,
+          completedByStaffId: manager.id,
+          completedAt,
+        });
+        await tx.inventory.bumpStockVersion();
+        return { record: await tx.returns.getById(posted.id) ?? posted, created: true };
+      });
+      return { value: await hydrate(outcome.record), created: outcome.created };
+    },
+
     async list(auth, input) {
       await requireManager(auth);
       const page = parseReturnList(input);
@@ -436,6 +727,7 @@ export function createReturnServices(ports: {
             recordStatus: row.status,
             originalAuthorizedPiasters: row.authorizedRefundPiasters,
             originalPaidPiasters: 0,
+            exchangeCreditAppliedPiasters: (await ports.returns.getById(row.id))?.exchangeCreditAppliedPiasters ?? 0,
             corrected,
           });
           return {
@@ -466,6 +758,7 @@ function projectEffectiveRefund(input: {
   recordStatus: "draft" | "posted";
   originalAuthorizedPiasters: number;
   originalPaidPiasters: number;
+  exchangeCreditAppliedPiasters: number;
   corrected: EffectiveReturnState | null;
 }) {
   const effectiveStatus = input.corrected?.status ?? "active";
@@ -474,8 +767,12 @@ function projectEffectiveRefund(input: {
     : 0;
   const paidPiasters = input.corrected?.paidPiasters ?? input.originalPaidPiasters;
   const activePosted = input.recordStatus === "posted" && effectiveStatus === "active";
-  const owedPiasters = activePosted ? Math.max(0, authorizedPiasters - paidPiasters) : 0;
-  const overpaidPiasters = activePosted ? Math.max(0, paidPiasters - authorizedPiasters) : 0;
+  const owedPiasters = activePosted
+    ? Math.max(0, authorizedPiasters - input.exchangeCreditAppliedPiasters - paidPiasters)
+    : 0;
+  const overpaidPiasters = activePosted
+    ? Math.max(0, input.exchangeCreditAppliedPiasters + paidPiasters - authorizedPiasters)
+    : 0;
   const status: ReturnDto["refund"]["status"] = input.recordStatus === "draft"
     ? "none"
     : effectiveStatus === "cancelled"
@@ -484,7 +781,9 @@ function projectEffectiveRefund(input: {
         ? "owed"
         : overpaidPiasters > 0
           ? "overpaid"
-          : "paid";
+          : input.exchangeCreditAppliedPiasters > 0 && paidPiasters === 0
+            ? "none"
+            : "paid";
   return {
     effectiveStatus,
     correctionRevision: input.corrected?.revision ?? 0,
@@ -586,16 +885,22 @@ function restorationPlan(
   source: ReturnSourceRecord,
   selected: Array<{ variantId: string; variantOrdinal: number; quantity: number; sellableQuantity: number }>,
 ) {
-  const allocationsByVariant = new Map<string, Array<{ start: number; end: number; batchId: string; unitCostPiasters: number }>>();
+  const allocationsByVariant = new Map<string, Array<{ start: number; end: number; batchId: string; unitCostPiasters: number; effectiveUnitCostPiasters: number }>>();
   const offsets = new Map<string, number>();
   for (const allocation of source.allocations) {
     const start = offsets.get(allocation.variantId) ?? 0;
     const list = allocationsByVariant.get(allocation.variantId) ?? [];
-    list.push({ start, end: start + allocation.quantity, batchId: allocation.batchId, unitCostPiasters: allocation.unitCostPiasters });
+    list.push({
+      start,
+      end: start + allocation.quantity,
+      batchId: allocation.batchId,
+      unitCostPiasters: allocation.unitCostPiasters,
+      effectiveUnitCostPiasters: allocation.effectiveUnitCostPiasters,
+    });
     allocationsByVariant.set(allocation.variantId, list);
     offsets.set(allocation.variantId, start + allocation.quantity);
   }
-  const totals = new Map<string, { batchId: string; variantId: string; quantity: number; unitCostPiasters: number }>();
+  const totals = new Map<string, Omit<ReturnRestorationWrite, "id">>();
   for (const segment of selected) {
     let remaining = segment.sellableQuantity;
     let cursor = segment.variantOrdinal;
@@ -610,6 +915,7 @@ function restorationPlan(
         variantId: segment.variantId,
         quantity: (existing?.quantity ?? 0) + take,
         unitCostPiasters: allocation.unitCostPiasters,
+        effectiveUnitCostPiasters: allocation.effectiveUnitCostPiasters,
       });
       cursor += take;
       remaining -= take;
@@ -660,6 +966,60 @@ function parseDraftUpdate(input: unknown) {
       if (sellableQuantity > quantity) throw new ReturnsValidationError("الكمية القابلة للبيع تتجاوز كمية الإرجاع.");
       return { sourceSaleLineId: assertUuid(line.sourceSaleLineId, "صنف البيع الأصلي غير صالح."), quantity, sellableQuantity };
     }),
+  };
+}
+
+function parseExchange(input: unknown) {
+  const body = expectObject(input, "بيانات الاستبدال غير صالحة.");
+  assertAllowedKeys(body, EXCHANGE_KEYS, "بيانات الاستبدال غير صالحة.");
+  if (body.receivedAndInspected !== true) {
+    throw new ReturnsValidationError("يجب تأكيد استلام الأصناف وفحصها.");
+  }
+  if (body.cashRefundStatus !== "owed" && body.cashRefundStatus !== "paid") {
+    throw new ReturnsValidationError("حالة فرق الاسترداد النقدي غير صالحة.");
+  }
+  const cashRefundStatus: "owed" | "paid" = body.cashRefundStatus;
+  return {
+    exchangeId: assertUuid(body.exchangeId, "معرّف الاستبدال غير صالح."),
+    operationId: assertUuid(body.operationId, "معرّف عملية الاستبدال غير صالح."),
+    replacementSaleId: assertUuid(body.replacementSaleId, "معرّف بيع الاستبدال غير صالح."),
+    replacementSaleOperationId: assertUuid(body.replacementSaleOperationId, "معرّف عملية بيع الاستبدال غير صالح."),
+    quoteId: assertUuid(body.quoteId, "معرّف عرض سعر الاستبدال غير صالح."),
+    receivedAndInspected: true as const,
+    expectedRevision: positiveQuantity(body.expectedRevision, "نسخة المسودة غير صالحة."),
+    cashRefundStatus,
+  };
+}
+
+function parseExchangeQuote(input: unknown) {
+  const body = expectObject(input, "بيانات عرض سعر الاستبدال غير صالحة.");
+  assertAllowedKeys(body, EXCHANGE_QUOTE_KEYS, "بيانات عرض سعر الاستبدال غير صالحة.");
+  if (!Array.isArray(body.replacementLines) || body.replacementLines.length === 0) {
+    throw new ReturnsValidationError("اختر صنف استبدال واحداً على الأقل.");
+  }
+  const quantities = new Map<string, number>();
+  for (const raw of body.replacementLines) {
+    const line = expectObject(raw, "بيانات صنف الاستبدال غير صالحة.");
+    assertAllowedKeys(line, EXCHANGE_LINE_KEYS, "بيانات صنف الاستبدال غير صالحة.");
+    const variantId = assertUuid(line.variantId, "متغير الاستبدال غير صالح.");
+    const quantity = positiveQuantity(line.quantity, "كمية الاستبدال غير صالحة.");
+    const merged = (quantities.get(variantId) ?? 0) + quantity;
+    if (!Number.isSafeInteger(merged) || merged > 1_000_000) {
+      throw new ReturnsValidationError("كمية الاستبدال غير صالحة.");
+    }
+    quantities.set(variantId, merged);
+  }
+  return {
+    quoteId: assertUuid(body.quoteId, "معرّف عرض سعر الاستبدال غير صالح."),
+    expectedRevision: positiveQuantity(body.expectedRevision, "نسخة المسودة غير صالحة."),
+    settlement: {
+      exchangeId: assertUuid(body.exchangeId, "معرّف الاستبدال غير صالح."),
+      operationId: assertUuid(body.operationId, "معرّف عملية الاستبدال غير صالح."),
+      replacementSaleId: assertUuid(body.replacementSaleId, "معرّف بيع الاستبدال غير صالح."),
+      replacementSaleOperationId: assertUuid(body.replacementSaleOperationId, "معرّف عملية بيع الاستبدال غير صالح."),
+    },
+    replacementLines: [...quantities].sort(([left], [right]) => left.localeCompare(right))
+      .map(([variantId, quantity]) => ({ variantId, quantity })),
   };
 }
 

@@ -29,8 +29,10 @@ type BatchRow = {
   id: string;
   variant_id: string;
   received_quantity: number;
+  effective_received_quantity: number;
   remaining_quantity: number;
   unit_cost_piasters: number;
+  effective_unit_cost_piasters: number;
   recorded_at: Date;
   source_receipt_id: string;
   receipt_date: string;
@@ -48,13 +50,15 @@ export function createPostgresInventoryStore(queryable: Queryable): InventoryRea
     referencedVariantIds: (variantIds) => referencedVariantIds(queryable, variantIds),
     async listBatches() {
       const result = await queryable.query<BatchRow>(
-        `SELECT id, variant_id, received_quantity, remaining_quantity, unit_cost_piasters,
+        `SELECT id, variant_id, received_quantity, effective_received_quantity,
+                remaining_quantity, unit_cost_piasters, effective_unit_cost_piasters,
                 recorded_at, source_receipt_id, receipt_date::text AS receipt_date, source_line_id
          FROM inventory_batch
          ORDER BY ${FIFO_BATCH_ORDER_SQL}`,
       );
       return result.rows.map(toBatchRecord);
     },
+    getBatchStates: (batchIds) => getBatchStates(queryable, batchIds),
     listAllocations: (operationId) => listAllocations(queryable, operationId),
     listDiscrepancies: (operationId) => listDiscrepancies(queryable, operationId),
     async getSettings() {
@@ -194,11 +198,13 @@ export function createInventoryTransaction(client: PoolClient): InventoryTransac
         for (const line of input.lines) {
           const inserted = await client.query<BatchRow>(
             `INSERT INTO inventory_batch (
-               id, variant_id, received_quantity, remaining_quantity, unit_cost_piasters,
+               id, variant_id, received_quantity, effective_received_quantity,
+               remaining_quantity, unit_cost_piasters, effective_unit_cost_piasters,
                recorded_at, operation_id, source_receipt_id, receipt_date, source_line_id
              ) VALUES (
-               gen_random_uuid(), $1, $2, $2, $3, $4, $5, $6, $7::date, $8
-             ) RETURNING id, variant_id, received_quantity, remaining_quantity, unit_cost_piasters,
+               gen_random_uuid(), $1, $2, $2, $2, $3, $3, $4, $5, $6, $7::date, $8
+             ) RETURNING id, variant_id, received_quantity, effective_received_quantity,
+                         remaining_quantity, unit_cost_piasters, effective_unit_cost_piasters,
                          recorded_at, source_receipt_id, receipt_date::text AS receipt_date, source_line_id`,
             [
               line.variantId,
@@ -229,6 +235,77 @@ export function createInventoryTransaction(client: PoolClient): InventoryTransac
       return created;
     },
 
+    async applyReceivingCorrection(input) {
+      const batchIds = [...new Set(input.lines.map((line) => line.batchId))].sort();
+      const locked = await client.query<BatchRow>(
+        `SELECT id, variant_id, received_quantity, effective_received_quantity,
+                remaining_quantity, unit_cost_piasters, effective_unit_cost_piasters,
+                recorded_at, source_receipt_id, receipt_date::text AS receipt_date, source_line_id
+         FROM inventory_batch
+         WHERE id = ANY($1::uuid[])
+         ORDER BY id
+         FOR UPDATE`,
+        [batchIds],
+      );
+      const byId = new Map(locked.rows.map((row) => [row.id, row]));
+      if (byId.size !== batchIds.length) {
+        throw new InventoryValidationError("تعذر العثور على دفعة التكلفة الأصلية.");
+      }
+      const results = [];
+      for (const line of [...input.lines].sort((left, right) => left.batchId.localeCompare(right.batchId))) {
+        const row = mustRow(byId.get(line.batchId));
+        if (row.variant_id !== line.variantId) {
+          throw new InventoryValidationError("دفعة التكلفة لا تخص المتغير المحدد.");
+        }
+        const allocatedQuantity = row.effective_received_quantity - row.remaining_quantity;
+        if (line.effectiveQuantity < allocatedQuantity) {
+          throw new InventoryValidationError("لا يمكن تقليل كمية الاستلام عن الوحدات المستهلكة حالياً.");
+        }
+        const quantityDelta = line.effectiveQuantity - row.effective_received_quantity;
+        const unitCostDeltaPiasters = line.effectiveUnitCostPiasters - row.effective_unit_cost_piasters;
+        const updated = await client.query<{ remaining_quantity: number }>(
+          `UPDATE inventory_batch
+           SET effective_received_quantity = $2,
+               effective_unit_cost_piasters = $3,
+               remaining_quantity = remaining_quantity + $4
+           WHERE id = $1
+             AND remaining_quantity + $4 >= 0
+             AND remaining_quantity + $4 <= $2
+           RETURNING remaining_quantity`,
+          [line.batchId, line.effectiveQuantity, line.effectiveUnitCostPiasters, quantityDelta],
+        );
+        const remainingQuantity = updated.rows[0]?.remaining_quantity;
+        if (remainingQuantity === undefined) {
+          throw new InventoryValidationError("لا يمكن تقليل كمية الاستلام عن الوحدات المستهلكة حالياً.");
+        }
+        if (quantityDelta !== 0) {
+          await client.query(
+            `INSERT INTO inventory_movement (
+               id, batch_id, variant_id, operation_id, kind, quantity, recorded_at
+             ) VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6)`,
+            [line.batchId, line.variantId, input.operationId,
+              quantityDelta > 0 ? "correction_restore" : "correction_deduct",
+              Math.abs(quantityDelta), input.recordedAt],
+          );
+        }
+        results.push({
+          batchId: row.id,
+          variantId: row.variant_id,
+          originalQuantity: row.received_quantity,
+          originalUnitCostPiasters: row.unit_cost_piasters,
+          previousQuantity: row.effective_received_quantity,
+          previousUnitCostPiasters: row.effective_unit_cost_piasters,
+          effectiveQuantity: line.effectiveQuantity,
+          effectiveUnitCostPiasters: line.effectiveUnitCostPiasters,
+          remainingQuantity,
+          allocatedQuantity,
+          quantityDelta,
+          unitCostDeltaPiasters,
+        });
+      }
+      return results;
+    },
+
     async allocateFromOldestAvailable(input) {
       return allocateFromOldestAvailable(client, input);
     },
@@ -240,7 +317,7 @@ export function createInventoryTransaction(client: PoolClient): InventoryTransac
         `UPDATE inventory_batch
          SET remaining_quantity = remaining_quantity + $3
          WHERE id = $1 AND variant_id = $2
-           AND remaining_quantity + $3 <= received_quantity
+           AND remaining_quantity + $3 <= effective_received_quantity
          RETURNING remaining_quantity`,
         [input.batchId, input.variantId, input.quantity],
       );
@@ -256,12 +333,15 @@ export function createInventoryTransaction(client: PoolClient): InventoryTransac
     },
     async adjustCorrectionBatch(input) {
       const delta = input.direction === "restore" ? input.quantity : -input.quantity;
-      const updated = await client.query<{ unit_cost_piasters: number | string }>(
+      const updated = await client.query<{
+        unit_cost_piasters: number | string;
+        effective_unit_cost_piasters: number | string;
+      }>(
         `UPDATE inventory_batch
          SET remaining_quantity = remaining_quantity + $3
          WHERE id = $1 AND variant_id = $2
-           AND remaining_quantity + $3 BETWEEN 0 AND received_quantity
-         RETURNING unit_cost_piasters`,
+           AND remaining_quantity + $3 BETWEEN 0 AND effective_received_quantity
+         RETURNING unit_cost_piasters, effective_unit_cost_piasters`,
         [input.batchId, input.variantId, delta],
       );
       const row = updated.rows[0];
@@ -278,7 +358,10 @@ export function createInventoryTransaction(client: PoolClient): InventoryTransac
           input.direction === "restore" ? "correction_restore" : "correction_deduct",
           input.quantity, input.recordedAt],
       );
-      return { unitCostPiasters: asSafeInteger(row.unit_cost_piasters) };
+      return {
+        unitCostPiasters: asSafeInteger(row.unit_cost_piasters),
+        effectiveUnitCostPiasters: asSafeInteger(row.effective_unit_cost_piasters),
+      };
     },
     async recordDiscrepancy(input) {
       const unallocatedQuantity = input.requestedQuantity - input.allocatedQuantity;
@@ -319,7 +402,8 @@ export function createInventoryTransaction(client: PoolClient): InventoryTransac
     referencedVariantIds: (variantIds) => referencedVariantIds(client, variantIds),
     async listAvailableBatchesFifo(variantId) {
       const result = await client.query<BatchRow>(
-        `SELECT id, variant_id, received_quantity, remaining_quantity, unit_cost_piasters,
+        `SELECT id, variant_id, received_quantity, effective_received_quantity,
+                remaining_quantity, unit_cost_piasters, effective_unit_cost_piasters,
                 recorded_at, source_receipt_id, receipt_date::text AS receipt_date, source_line_id
          FROM inventory_batch
          WHERE variant_id = $1 AND remaining_quantity > 0
@@ -328,6 +412,7 @@ export function createInventoryTransaction(client: PoolClient): InventoryTransac
       );
       return result.rows.map(toReceivedBatch);
     },
+    getBatchStates: (batchIds) => getBatchStates(client, batchIds),
     lockStockClock: (mode) => lockStockClock(client, mode),
     bumpStockVersion: () => bumpStockVersion(client),
     currentStockVersion: () => currentStockVersion(client),
@@ -346,7 +431,8 @@ async function allocateFromOldestAvailable(
   },
 ): Promise<AllocateResult> {
   const locked = await client.query<BatchRow>(
-    `SELECT id, variant_id, received_quantity, remaining_quantity, unit_cost_piasters,
+    `SELECT id, variant_id, received_quantity, effective_received_quantity,
+            remaining_quantity, unit_cost_piasters, effective_unit_cost_piasters,
             recorded_at, source_receipt_id, receipt_date::text AS receipt_date, source_line_id
      FROM inventory_batch
      WHERE variant_id = $1 AND remaining_quantity > 0
@@ -418,6 +504,7 @@ async function allocateFromOldestAvailable(
         variantId: input.variantId,
         quantity: take,
         unitCostPiasters: row.unit_cost_piasters,
+        effectiveUnitCostPiasters: row.effective_unit_cost_piasters,
         recordedAt: input.recordedAt,
       });
       remainingNeed -= take;
@@ -445,12 +532,15 @@ async function listAllocations(queryable: Queryable, operationId: string): Promi
     variant_id: string;
     quantity: number;
     unit_cost_piasters: number;
+    effective_unit_cost_piasters: number;
     recorded_at: Date;
   }>(
-    `SELECT batch_id, variant_id, quantity, unit_cost_piasters, recorded_at
-     FROM inventory_allocation
-     WHERE operation_id = $1
-     ORDER BY recorded_at ASC, batch_id ASC`,
+    `SELECT a.batch_id, a.variant_id, a.quantity, a.unit_cost_piasters,
+            b.effective_unit_cost_piasters, a.recorded_at
+     FROM inventory_allocation a
+     JOIN inventory_batch b ON b.id = a.batch_id
+     WHERE a.operation_id = $1
+     ORDER BY a.recorded_at ASC, a.batch_id ASC`,
     [operationId],
   );
   return result.rows.map((row) => ({
@@ -458,6 +548,7 @@ async function listAllocations(queryable: Queryable, operationId: string): Promi
     variantId: row.variant_id,
     quantity: row.quantity,
     unitCostPiasters: row.unit_cost_piasters,
+    effectiveUnitCostPiasters: row.effective_unit_cost_piasters,
     recordedAt: row.recorded_at,
   }));
 }
@@ -631,12 +722,28 @@ function toBatchRecord(row: BatchRow): BatchRecord {
     id: row.id,
     variantId: row.variant_id,
     receivedQuantity: row.received_quantity,
+    effectiveReceivedQuantity: row.effective_received_quantity,
     remainingQuantity: row.remaining_quantity,
     unitCostPiasters: row.unit_cost_piasters,
+    effectiveUnitCostPiasters: row.effective_unit_cost_piasters,
     recordedAt: row.recorded_at,
     receiptId: row.source_receipt_id,
     receiptDate: row.receipt_date,
   };
+}
+
+async function getBatchStates(queryable: Queryable, batchIds: string[]): Promise<BatchRecord[]> {
+  if (batchIds.length === 0) return [];
+  const result = await queryable.query<BatchRow>(
+    `SELECT id, variant_id, received_quantity, effective_received_quantity,
+            remaining_quantity, unit_cost_piasters, effective_unit_cost_piasters,
+            recorded_at, source_receipt_id, receipt_date::text AS receipt_date, source_line_id
+     FROM inventory_batch
+     WHERE id = ANY($1::uuid[])
+     ORDER BY id`,
+    [batchIds],
+  );
+  return result.rows.map(toBatchRecord);
 }
 
 function toReceivedBatch(row: BatchRow): ReceivedBatchRecord {

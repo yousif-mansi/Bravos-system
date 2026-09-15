@@ -244,7 +244,16 @@ test("stale and invalid correction attempts are atomic, and an undercount retry 
   expect(corrected.body).toMatchObject({
     original: { finalTotalPiasters: 30000, lines: [{ quantity: 1, paidPiasters: 30000 }] },
     effective: { finalTotalPiasters: 50000, lines: [{ quantity: 2, paidPiasters: 50000, paidRanges: [{ quantity: 2, paidUnitPiasters: 25000 }] }] },
-    changes: [{ merchandise: [{ direction: "deduct", quantity: 1, batches: [{ batchId: secondBatchId, quantity: 1, unitCostPiasters: 20000 }] }] }],
+    changes: [{ merchandise: [{
+      direction: "deduct",
+      quantity: 1,
+      batches: [{
+        batchId: secondBatchId,
+        quantity: 1,
+        unitCostPiasters: 20000,
+        effectiveUnitCostPiasters: 20000,
+      }],
+    }] }],
   });
   expect(await remainingTotal(manager)).toBe(1);
 
@@ -381,7 +390,16 @@ test("changing inspection restores the exact batch of that Return and reuses it 
   });
   expect(restored.status).toBe(201);
   expect(restored.body.changes[0].merchandise).toEqual([
-    expect.objectContaining({ direction: "restore", quantity: 1, batches: [{ batchId: secondBatchId, quantity: 1, unitCostPiasters: 20000 }] }),
+    expect.objectContaining({
+      direction: "restore",
+      quantity: 1,
+      batches: [{
+        batchId: secondBatchId,
+        quantity: 1,
+        unitCostPiasters: 20000,
+        effectiveUnitCostPiasters: 20000,
+      }],
+    }),
   ]);
   expect(await batchRemainders(manager)).toMatchObject({ [firstBatchId]: 0, [secondBatchId]: 1 });
 
@@ -400,6 +418,84 @@ test("changing inspection restores the exact batch of that Return and reuses it 
   expect(restoredAgain.status).toBe(201);
   expect(restoredAgain.body.changes[2].merchandise[0].batches[0]).toMatchObject({ batchId: secondBatchId, unitCostPiasters: 20000 });
   expect(await batchRemainders(manager)).toMatchObject({ [firstBatchId]: 0, [secondBatchId]: 1 });
+});
+
+test("posted unsellable Return inspection exposes original and corrected effective batch cost", async () => {
+  const manager = await signIn("owner", "owner-pass-1");
+  await api(manager, "POST", "/api/internal/active-branch", { branchId });
+  const { variantId } = await seedProduct(manager);
+  const receipt = await receive(manager, variantId, 1, 10000);
+  const original = await sale(manager, variantId, 1);
+  const source = (await api(manager, "GET", `/api/internal/returns/sources?reference=${original.id}`)).body[0];
+  const draft = await api(manager, "POST", "/api/internal/returns", {
+    returnId: crypto.randomUUID(),
+    operationId: crypto.randomUUID(),
+    sourceSaleId: original.id,
+    handlingBranchId: branchId,
+    authorizedRefundPiasters: 30000,
+    lines: [{ sourceSaleLineId: source.lines[0].saleLineId, quantity: 1, sellableQuantity: 0 }],
+  });
+  expect(draft.status).toBe(201);
+  const posted = await api(manager, "POST", `/api/internal/returns/${draft.body.id}/post`, {
+    receivedAndInspected: true,
+    expectedRevision: draft.body.revision,
+  });
+  expect(posted.status).toBe(201);
+
+  const receivingCorrection = await api(
+    manager,
+    "POST",
+    `/api/internal/receiving/receipts/${receipt.id}/corrections`,
+    {
+      operationId: crypto.randomUUID(),
+      expectedRevision: 0,
+      reason: "تصحيح فاتورة المورد إلى مائة وأربعين",
+      lines: [{ lineId: receipt.lines[0].id, quantity: 1, unitCostPiasters: 14000 }],
+    },
+  );
+  expect(receivingCorrection.status).toBe(201);
+
+  const detail = await api(manager, "GET", `/api/internal/corrections/returns/${draft.body.id}`);
+  const line = detail.body.original.lines[0];
+  const inspectedSellable = await api(manager, "POST", `/api/internal/corrections/returns/${draft.body.id}`, {
+    operationId: crypto.randomUUID(),
+    expectedRevision: 0,
+    type: "correction",
+    reason: "الفحص النهائي أكد صلاحية القطعة",
+    effective: {
+      authorizedRefundPiasters: 30000,
+      lines: [{ lineId: line.returnLineId, quantity: 1, sellableQuantity: 1 }],
+    },
+    merchandise: [{ lineId: line.returnLineId, quantityDelta: 1 }],
+    cash: null,
+  });
+  expect(inspectedSellable.status).toBe(201);
+  expect(inspectedSellable.body.changes[0].merchandise[0].batches).toEqual([{
+    batchId: receipt.lines[0].batchId,
+    quantity: 1,
+    unitCostPiasters: 10000,
+    effectiveUnitCostPiasters: 14000,
+  }]);
+
+  const laterReceivingCorrection = await api(
+    manager,
+    "POST",
+    `/api/internal/receiving/receipts/${receipt.id}/corrections`,
+    {
+      operationId: crypto.randomUUID(),
+      expectedRevision: 1,
+      reason: "تصحيح لاحق إلى مائة وخمسين",
+      lines: [{ lineId: receipt.lines[0].id, quantity: 1, unitCostPiasters: 15000 }],
+    },
+  );
+  expect(laterReceivingCorrection.status).toBe(201);
+  const refreshedInspection = await api(manager, "GET", `/api/internal/corrections/returns/${draft.body.id}`);
+  expect(refreshedInspection.body.changes[0].merchandise[0].batches[0]).toEqual({
+    batchId: receipt.lines[0].batchId,
+    quantity: 1,
+    unitCostPiasters: 10000,
+    effectiveUnitCostPiasters: 15000,
+  });
 });
 
 async function seedProduct(session: Session) {

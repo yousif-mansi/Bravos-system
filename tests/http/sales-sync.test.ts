@@ -646,7 +646,7 @@ test("late accepted sale keeps FIFO 100 then 140 costs and holds leftover availa
   expect(late.body.lines[0].allocatedQuantity).toBe(2);
   const managerView = await api(manager, "GET", `/api/internal/sales/${late.body.id}`);
   expect(managerView.body.costsIncomplete).toBe(true);
-  expect(managerView.body.allocations).toEqual([{ batchId: expect.any(String), variantId: seed.variantId, quantity: 2, unitCostPiasters: 14000 }]);
+  expect(managerView.body.allocations).toEqual([{ batchId: expect.any(String), variantId: seed.variantId, quantity: 2, unitCostPiasters: 14000, effectiveUnitCostPiasters: 14000 }]);
   await receive(manager, seed.variantId, 5, 16000);
   const lookup = await api(cashier, "GET", `/api/internal/catalog/lookup?code=${encodeURIComponent("TS-001")}`);
   expect(lookup.body.variants[0].availableQuantity).toBe(0);

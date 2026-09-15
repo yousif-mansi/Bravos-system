@@ -1,4 +1,4 @@
-import type { BranchDto, ReturnDto, ReturnListPageDto, ReturnSourceDto, VariantIdentityDto } from "@bravos/contracts";
+import type { AppliedAutomaticOfferDto, BranchDto, ReturnDto, ReturnExchangeQuoteDto, ReturnListPageDto, ReturnSourceDto, VariantIdentityDto } from "@bravos/contracts";
 import type { AuthenticatedStaff, VerifiedAuth } from "@bravos/identity";
 import type { AllocationRecord, InventoryTransaction } from "@bravos/inventory";
 
@@ -70,6 +70,7 @@ export type ReturnRestorationWrite = {
   variantId: string;
   quantity: number;
   unitCostPiasters: number;
+  effectiveUnitCostPiasters: number;
 };
 
 export type RefundEventRecord = {
@@ -100,11 +101,74 @@ export type ReturnRecord = {
   postedAt: Date | null;
   refundStatus: "none" | "owed" | "paid";
   refundPaidPiasters: number;
+  exchangeCreditAppliedPiasters: number;
   refundRecordedByStaffId: string | null;
   refundRecordedAt: Date | null;
   lines: ReturnLineWrite[];
   restorations: ReturnRestorationWrite[];
   refundEvents: RefundEventRecord[];
+};
+
+export type ReturnExchangeRecord = {
+  id: string;
+  operationId: string;
+  returnId: string;
+  replacementSaleId: string;
+  payloadFingerprint: string;
+  creditAvailablePiasters: number;
+  creditAppliedPiasters: number;
+  cashCollectedPiasters: number;
+  cashRefundStatus: "none" | "owed" | "paid";
+  cashRefundPiasters: number;
+  cashRefundPaidPiasters: number;
+  completedByStaffId: string;
+  completedAt: Date;
+};
+
+export type ReturnReplacementAcceptedQuote = {
+  originalTotalPiasters: number;
+  finalTotalPiasters: number;
+  automaticOfferDiscountPiasters: number;
+  appliedAutomaticOffer: AppliedAutomaticOfferDto | null;
+  lines: Array<{
+    variantId: string;
+    quantity: number;
+    listedUnitPricePiasters: number;
+    originalPiasters: number;
+    discountPiasters: number;
+    paidPiasters: number;
+    automaticOfferDiscountPiasters: number;
+    couponDiscountPiasters: number;
+    employeeDiscountPiasters: number;
+    units: Array<{
+      unitIndex: number;
+      quantity: number;
+      listedPiasters: number;
+      discountPiasters: number;
+      paidPiasters: number;
+      automaticOfferDiscountPiasters: number;
+      couponDiscountPiasters: number;
+      employeeDiscountPiasters: number;
+    }>;
+  }>;
+};
+
+export type ReturnExchangeQuoteRecord = {
+  id: string;
+  returnId: string;
+  returnRevision: number;
+  correctionRevision: number;
+  creditAvailablePiasters: number;
+  settlement: {
+    exchangeId: string;
+    operationId: string;
+    replacementSaleId: string;
+    replacementSaleOperationId: string;
+  };
+  payloadFingerprint: string;
+  acceptedQuote: ReturnReplacementAcceptedQuote;
+  quotedByStaffId: string;
+  quotedAt: Date;
 };
 
 export type ReturnListRecord = {
@@ -146,7 +210,7 @@ export type ReturnsStore = {
   getSource(saleId: string, lock?: boolean): Promise<ReturnSourceRecord | null>;
   getSourceSaleId(returnId: string): Promise<string | null>;
   lockIdentities(returnId: string, operationId: string): Promise<void>;
-  insertDraft(input: Omit<ReturnRecord, "createdAt" | "updatedAt" | "postedByStaffId" | "postedAt" | "refundStatus" | "refundPaidPiasters" | "refundRecordedByStaffId" | "refundRecordedAt" | "restorations" | "refundEvents">): Promise<{ kind: "created" | "existing"; record: ReturnRecord }>;
+  insertDraft(input: Omit<ReturnRecord, "createdAt" | "updatedAt" | "postedByStaffId" | "postedAt" | "refundStatus" | "refundPaidPiasters" | "exchangeCreditAppliedPiasters" | "refundRecordedByStaffId" | "refundRecordedAt" | "restorations" | "refundEvents">): Promise<{ kind: "created" | "existing"; record: ReturnRecord }>;
   updateDraft(input: {
     returnId: string;
     expectedRevision: number;
@@ -162,6 +226,12 @@ export type ReturnsStore = {
   getByOperationId(operationId: string): Promise<ReturnRecord | null>;
   listPage(input: { limit: number; cursor: string | null }): Promise<{ items: ReturnListRecord[]; nextCursor: string | null }>;
   getRefundEventByOperation(operationId: string): Promise<(RefundEventRecord & { returnId: string }) | null>;
+  getExchangeByReturnId(returnId: string, lock?: boolean): Promise<ReturnExchangeRecord | null>;
+  getExchangeById(id: string): Promise<ReturnExchangeRecord | null>;
+  getExchangeByOperationId(operationId: string): Promise<ReturnExchangeRecord | null>;
+  getExchangeQuoteById(id: string): Promise<ReturnExchangeQuoteRecord | null>;
+  insertExchangeQuote(input: ReturnExchangeQuoteRecord): Promise<{ kind: "created" | "existing"; record: ReturnExchangeQuoteRecord }>;
+  insertExchange(input: ReturnExchangeRecord): Promise<ReturnExchangeRecord>;
   post(input: {
     returnId: string;
     postedByStaffId: string;
@@ -183,8 +253,46 @@ export type ReturnVariantReader = {
   getVariants(ids: string[]): Promise<VariantIdentityDto[]>;
 };
 
+export type ReturnReplacementSaleRecord = {
+  id: string;
+  operationId: string;
+  finalTotalPiasters: number;
+};
+
+export type ReturnReplacementSaleWriter = {
+  create(input: {
+    saleId: string;
+    operationId: string;
+    payloadFingerprint: string;
+    branchId: string;
+    actorStaffId: string;
+    actorDisplayName: string;
+    occurredAt: Date;
+    creditAvailablePiasters: number;
+    acceptedQuote: ReturnReplacementAcceptedQuote;
+  }): Promise<{
+    sale: ReturnReplacementSaleRecord;
+    allocations: AllocationRecord[];
+    creditAppliedPiasters: number;
+    cashCollectedPiasters: number;
+  }>;
+  getById(id: string): Promise<ReturnReplacementSaleRecord | null>;
+  listAllocations(operationId: string): Promise<AllocationRecord[]>;
+};
+
+export type ReturnReplacementSaleReader = Pick<ReturnReplacementSaleWriter, "getById" | "listAllocations">;
+
+export type ReturnReplacementPricing = {
+  quote(lines: Array<{ variantId: string; quantity: number }>, at: Date): Promise<ReturnReplacementAcceptedQuote>;
+};
+
 export type ReturnsUnitOfWork = {
-  run<T>(work: (tx: { returns: ReturnsStore; inventory: InventoryTransaction; corrections: ReturnCorrectionStateReader }) => Promise<T>): Promise<T>;
+  run<T>(work: (tx: {
+    returns: ReturnsStore;
+    inventory: InventoryTransaction;
+    corrections: ReturnCorrectionStateReader;
+    replacementSales: ReturnReplacementSaleWriter;
+  }) => Promise<T>): Promise<T>;
 };
 
 export type ReturnServices = {
@@ -193,6 +301,8 @@ export type ReturnServices = {
   updateDraft(auth: VerifiedAuth | null, id: string, input: unknown): Promise<ReturnDto>;
   post(auth: VerifiedAuth | null, id: string, input: unknown): Promise<{ value: ReturnDto; created: boolean }>;
   markPaid(auth: VerifiedAuth | null, id: string, input: unknown): Promise<{ value: ReturnDto; created: boolean }>;
+  quoteExchange(auth: VerifiedAuth | null, id: string, input: unknown): Promise<{ value: ReturnExchangeQuoteDto; created: boolean }>;
+  exchange(auth: VerifiedAuth | null, id: string, input: unknown): Promise<{ value: ReturnDto; created: boolean }>;
   list(auth: VerifiedAuth | null, input: unknown): Promise<ReturnListPageDto>;
   get(auth: VerifiedAuth | null, id: string): Promise<ReturnDto>;
 };
