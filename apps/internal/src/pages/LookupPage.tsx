@@ -13,6 +13,7 @@ import {
   pos,
   PosStorageError,
   saleFromOffline,
+  syncOutcomeMessage,
 } from "../pos.ts";
 import { mergeVariantQuantities, SalesValidationError } from "@bravos/sales/browser";
 import { accountGeneration, subscribeAccount } from "../account-session.ts";
@@ -31,6 +32,7 @@ function saleWriteFromRecord(sale: SaleDto, occurredAt: string | null) {
     operationId: sale.operationId,
     customerName: sale.customerName,
     customerPhone: sale.customerPhone,
+    couponCode: sale.appliedCoupon?.code ?? null,
     employeeDiscountPiasters: sale.employeeDiscountPiasters,
     discountReason: sale.discountReason,
     occurredAt,
@@ -91,6 +93,7 @@ export default function LookupPage({
   const [cart, setCart] = useState<CartLine[]>([]);
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
+  const [couponCode, setCouponCode] = useState("");
   const [discountEgp, setDiscountEgp] = useState("0");
   const [discountReason, setDiscountReason] = useState("");
   const [quote, setQuote] = useState<SaleDto | null>(null);
@@ -186,6 +189,7 @@ export default function LookupPage({
         setFrozenPayload(stored.payload);
         setCustomerName(stored.payload.customerName ?? "");
         setCustomerPhone(stored.payload.customerPhone ?? "");
+        setCouponCode(stored.payload.couponCode ?? "");
         setDiscountEgp((stored.payload.employeeDiscountPiasters / 100).toString());
         setDiscountReason(stored.payload.discountReason ?? "");
       }
@@ -411,9 +415,14 @@ export default function LookupPage({
       setError("قيمة الخصم غير صالحة.");
       return null;
     }
+    if (couponCode.trim() && typeof navigator !== "undefined" && !navigator.onLine) {
+      setError("تطبيق كوبون جديد يتطلب اتصالاً بالخادم.");
+      return null;
+    }
     return {
       customerName: customerName.trim() || null,
       customerPhone: customerPhone.trim() || null,
+      couponCode: couponCode.trim().toLocaleUpperCase("en-US") || null,
       employeeDiscountPiasters: discountPiasters,
       discountReason: discountReason.trim() || null,
       lines: cart.map((line) => ({ variantId: line.variant.id, quantity: line.quantity })),
@@ -486,6 +495,7 @@ export default function LookupPage({
       setCart([]);
       setCustomerName("");
       setCustomerPhone("");
+      setCouponCode("");
       setDiscountEgp("0");
       setDiscountReason("");
       setHandedOver(false);
@@ -522,6 +532,7 @@ export default function LookupPage({
   }
 
   async function quoteFromSnapshot(pending: PendingSale, payload: SalePayload): Promise<SaleDto> {
+    if (payload.couponCode) throw new ApiError(503, "VALIDATION", "تطبيق الكوبون يتطلب اتصالاً بالخادم.");
     const snapshot = quoteSnapshotRef.current ?? (await pos.loadSnapshot(workspace.staff.id));
     if (!snapshot || !workspace.activeBranch) {
       throw new ApiError(503, "VALIDATION", "لم تكتمل جاهزية نقطة البيع دون اتصال بعد.");
@@ -541,6 +552,7 @@ export default function LookupPage({
       occurredAt: pending.occurredAt ?? new Date().toISOString(),
       customerName: payload.customerName,
       customerPhone: payload.customerPhone,
+      couponCode: null,
       employeeDiscountPiasters: payload.employeeDiscountPiasters,
       discountReason: payload.discountReason,
       lines: cart.map((line) => ({
@@ -564,6 +576,8 @@ export default function LookupPage({
       originalTotalPiasters: priced.originalTotalPiasters,
       automaticOfferDiscountPiasters: 0,
       appliedAutomaticOffer: null,
+      couponDiscountPiasters: 0,
+      appliedCoupon: null,
       employeeDiscountPiasters: payload.employeeDiscountPiasters,
       discountReason: payload.discountReason,
       discountedByStaffId: payload.employeeDiscountPiasters > 0 ? workspace.staff.id : null,
@@ -645,8 +659,8 @@ export default function LookupPage({
           ? await acceptOfflineSale(await acceptedPayload(local))
           : await completeSale(await completedPayload(local));
       await applySyncedSale(local, synced);
-    } catch {
-      /* keep unacknowledged */
+    } catch (caught) {
+      setError(`${syncOutcomeMessage(caught)} البيع المكتمل محفوظ محلياً وسيظل ضمن المبيعات غير المرسلة.`);
     }
   }
 
@@ -1215,6 +1229,10 @@ export default function LookupPage({
           <input id="customerPhone" value={customerPhone} disabled={formLocked} onChange={(event) => { if (beginCartRevision()) setCustomerPhone(event.target.value); }} />
         </div>
         <div className="field">
+          <label htmlFor="couponCode">كود الكوبون (يتطلب اتصالاً)</label>
+          <input id="couponCode" value={couponCode} disabled={formLocked} onChange={(event) => { if (beginCartRevision()) setCouponCode(event.target.value); }} />
+        </div>
+        <div className="field">
           <label htmlFor="discountEgp">خصم الموظف بالجنيه</label>
           <input id="discountEgp" value={discountEgp} disabled={formLocked} onChange={(event) => { if (beginCartRevision()) setDiscountEgp(event.target.value); }} />
         </div>
@@ -1231,6 +1249,9 @@ export default function LookupPage({
                 العرض التلقائي: {quote.appliedAutomaticOffer.nameAr} — {formatEgpFromPiasters(quote.automaticOfferDiscountPiasters)}
               </p>
             ) : <p className="muted">لا يوجد عرض تلقائي مطبق.</p>}
+            {quote.appliedCoupon ? (
+              <p data-testid="coupon-breakdown">الكوبون: {quote.appliedCoupon.code} — {formatEgpFromPiasters(quote.couponDiscountPiasters)}</p>
+            ) : null}
             <p>خصم الموظف: {formatEgpFromPiasters(quote.employeeDiscountPiasters)}</p>
             <p>الإجمالي: {formatEgpFromPiasters(quote.finalTotalPiasters)}</p>
           </section>

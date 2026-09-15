@@ -1,5 +1,6 @@
 import type { CompletedOperationProofDto } from "@bravos/contracts";
 import type { Pool, PoolClient } from "pg";
+import type { CouponUsageTransaction } from "@bravos/pricing";
 import { OperationConflictError, type InventoryTransaction } from "@bravos/inventory";
 import type {
   AutomaticPricingPort,
@@ -34,10 +35,18 @@ type SaleRow = {
   automatic_offer_discount_piasters: number | string;
   applied_automatic_offer_id: string | null;
   applied_automatic_offer_name_ar: string | null;
-  applied_automatic_offer_type: "percentage" | "fixed" | null;
+  applied_automatic_offer_type: "percentage" | "fixed" | "fixed_bundle" | "buy_x_get_y" | null;
   applied_automatic_offer_percentage_basis_points: number | null;
   applied_automatic_offer_fixed_discount_piasters: number | string | null;
   applied_automatic_offer_allow_coupon: boolean | null;
+  applied_automatic_offer_details: unknown;
+  coupon_discount_piasters: number | string;
+  applied_coupon_id: string | null;
+  applied_coupon_code: string | null;
+  applied_coupon_type: "percentage" | "fixed" | null;
+  applied_coupon_percentage_basis_points: number | null;
+  applied_coupon_fixed_discount_piasters: number | string | null;
+  applied_coupon_allow_automatic_offer: boolean | null;
   employee_discount_piasters: number | string;
   discount_reason: string | null;
   final_total_piasters: number | string;
@@ -58,6 +67,7 @@ type LineRow = {
   discount_piasters: number | string;
   paid_piasters: number | string;
   automatic_offer_discount_piasters: number | string;
+  coupon_discount_piasters: number | string;
   employee_discount_piasters: number | string;
   allocated_quantity: number;
   unallocated_quantity: number;
@@ -74,6 +84,7 @@ type UnitRow = {
   discount_piasters: number | string;
   paid_piasters: number | string;
   automatic_offer_discount_piasters: number | string;
+  coupon_discount_piasters: number | string;
   employee_discount_piasters: number | string;
 };
 
@@ -96,11 +107,14 @@ export function createPostgresSaleStore(queryable: Queryable): SaleStore {
              automatic_offer_discount_piasters, applied_automatic_offer_id, applied_automatic_offer_name_ar,
              applied_automatic_offer_type, applied_automatic_offer_percentage_basis_points,
              applied_automatic_offer_fixed_discount_piasters, applied_automatic_offer_allow_coupon,
-             employee_discount_piasters, discount_reason, final_total_piasters, payload_fingerprint,
+             applied_automatic_offer_details,
+             coupon_discount_piasters, applied_coupon_id, applied_coupon_code, applied_coupon_type,
+             applied_coupon_percentage_basis_points, applied_coupon_fixed_discount_piasters,
+             applied_coupon_allow_automatic_offer, employee_discount_piasters, discount_reason, final_total_piasters, payload_fingerprint,
              physically_completed, costs_incomplete, recovered_by_staff_id, recovered_at
            ) VALUES (
              $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
-             $18, $19, $20, $21, $22, $23, $24, $25, $26
+             $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34
            ) ON CONFLICT (id) DO NOTHING
            RETURNING id`,
           [
@@ -122,6 +136,14 @@ export function createPostgresSaleStore(queryable: Queryable): SaleStore {
             input.appliedAutomaticOffer?.percentageBasisPoints ?? null,
             input.appliedAutomaticOffer?.fixedDiscountPiasters ?? null,
             input.appliedAutomaticOffer?.allowCoupon ?? null,
+            appliedOfferDetails(input.appliedAutomaticOffer),
+            input.couponDiscountPiasters,
+            input.appliedCoupon?.id ?? null,
+            input.appliedCoupon?.code ?? null,
+            input.appliedCoupon?.discountType ?? null,
+            input.appliedCoupon?.percentageBasisPoints ?? null,
+            input.appliedCoupon?.fixedDiscountPiasters ?? null,
+            input.appliedCoupon?.allowAutomaticOffer ?? null,
             input.employeeDiscountPiasters,
             input.discountReason,
             input.finalTotalPiasters,
@@ -231,6 +253,7 @@ export function createPostgresSaleStore(queryable: Queryable): SaleStore {
 export function createPostgresSalesUnitOfWork(
   pool: Pool,
   inventoryFor: (client: PoolClient) => InventoryTransaction,
+  couponUsageFor: (client: PoolClient) => CouponUsageTransaction,
 ): SalesUnitOfWork {
   return {
     async run(work) {
@@ -241,6 +264,7 @@ export function createPostgresSalesUnitOfWork(
           sales: createPostgresSaleStore(client),
           inventory: inventoryFor(client),
           snapshots: createPostgresPriceSnapshotStore(client),
+          couponUsage: couponUsageFor(client),
         });
         await client.query("COMMIT");
         return result;
@@ -285,8 +309,8 @@ async function insertLines(queryable: Queryable, saleId: string, lines: SaleLine
       `INSERT INTO sales_sale_line (
          id, sale_id, variant_id, quantity, listed_unit_price_piasters, original_piasters,
          discount_piasters, paid_piasters, automatic_offer_discount_piasters,
-         employee_discount_piasters, allocated_quantity, unallocated_quantity, line_index
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+         coupon_discount_piasters, employee_discount_piasters, allocated_quantity, unallocated_quantity, line_index
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
       [
         line.id,
         saleId,
@@ -297,6 +321,7 @@ async function insertLines(queryable: Queryable, saleId: string, lines: SaleLine
         line.discountPiasters,
         line.paidPiasters,
         line.automaticOfferDiscountPiasters,
+        line.couponDiscountPiasters,
         line.employeeDiscountPiasters,
         line.allocatedQuantity,
         line.unallocatedQuantity,
@@ -314,7 +339,8 @@ async function insertUnit(queryable: Queryable, saleId: string, lineId: string, 
     `INSERT INTO sales_sale_unit (
        id, sale_id, line_id, unit_index, quantity, listed_piasters, discount_piasters, paid_piasters,
        automatic_offer_discount_piasters, employee_discount_piasters
-     ) VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+       , coupon_discount_piasters
+     ) VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
     [
       saleId,
       lineId,
@@ -325,6 +351,7 @@ async function insertUnit(queryable: Queryable, saleId: string, lineId: string, 
       unit.paidPiasters,
       unit.automaticOfferDiscountPiasters,
       unit.employeeDiscountPiasters,
+      unit.couponDiscountPiasters,
     ],
   );
 }
@@ -406,6 +433,7 @@ async function loadLinesForSales(queryable: Queryable, saleIds: string[]): Promi
       discountPiasters: asSafeInteger(row.discount_piasters),
       paidPiasters: asSafeInteger(row.paid_piasters),
       automaticOfferDiscountPiasters: asSafeInteger(row.automatic_offer_discount_piasters),
+      couponDiscountPiasters: asSafeInteger(row.coupon_discount_piasters),
       employeeDiscountPiasters: asSafeInteger(row.employee_discount_piasters),
     });
     unitsByLine.set(row.line_id, list);
@@ -421,6 +449,7 @@ async function loadLinesForSales(queryable: Queryable, saleIds: string[]): Promi
       discountPiasters: asSafeInteger(row.discount_piasters),
       paidPiasters: asSafeInteger(row.paid_piasters),
       automaticOfferDiscountPiasters: asSafeInteger(row.automatic_offer_discount_piasters),
+      couponDiscountPiasters: asSafeInteger(row.coupon_discount_piasters),
       employeeDiscountPiasters: asSafeInteger(row.employee_discount_piasters),
       allocatedQuantity: row.allocated_quantity,
       unallocatedQuantity: row.unallocated_quantity,
@@ -446,17 +475,18 @@ function toSale(row: SaleRow, lines: SaleLineWrite[]): SaleRecord {
     customerPhone: row.customer_phone,
     originalTotalPiasters: asSafeInteger(row.original_total_piasters),
     automaticOfferDiscountPiasters: asSafeInteger(row.automatic_offer_discount_piasters),
-    appliedAutomaticOffer: row.applied_automatic_offer_id && row.applied_automatic_offer_name_ar && row.applied_automatic_offer_type
+    appliedAutomaticOffer: toAppliedOffer(row),
+    couponDiscountPiasters: asSafeInteger(row.coupon_discount_piasters),
+    appliedCoupon: row.applied_coupon_id && row.applied_coupon_code && row.applied_coupon_type
       ? {
-          id: row.applied_automatic_offer_id,
-          nameAr: row.applied_automatic_offer_name_ar,
-          discountType: row.applied_automatic_offer_type,
-          percentageBasisPoints: row.applied_automatic_offer_percentage_basis_points,
-          fixedDiscountPiasters: row.applied_automatic_offer_fixed_discount_piasters === null
-            ? null
-            : asSafeInteger(row.applied_automatic_offer_fixed_discount_piasters),
-          allowCoupon: row.applied_automatic_offer_allow_coupon ?? true,
-          discountPiasters: asSafeInteger(row.automatic_offer_discount_piasters),
+          id: row.applied_coupon_id,
+          code: row.applied_coupon_code,
+          discountType: row.applied_coupon_type,
+          percentageBasisPoints: row.applied_coupon_percentage_basis_points,
+          fixedDiscountPiasters: row.applied_coupon_fixed_discount_piasters === null
+            ? null : asSafeInteger(row.applied_coupon_fixed_discount_piasters),
+          allowAutomaticOffer: row.applied_coupon_allow_automatic_offer ?? true,
+          discountPiasters: asSafeInteger(row.coupon_discount_piasters),
         }
       : null,
     employeeDiscountPiasters: asSafeInteger(row.employee_discount_piasters),
@@ -469,6 +499,73 @@ function toSale(row: SaleRow, lines: SaleLineWrite[]): SaleRecord {
     recoveredAt: row.recovered_at,
     lines,
   };
+}
+
+function appliedOfferDetails(offer: SaleRecord["appliedAutomaticOffer"]): string | null {
+  if (!offer || offer.discountType === "percentage" || offer.discountType === "fixed") return null;
+  return JSON.stringify({
+    bundlePricePiasters: offer.bundlePricePiasters,
+    bundleItems: offer.bundleItems,
+    buyQuantity: offer.buyQuantity,
+    rewardQuantity: offer.rewardQuantity,
+    rewardPercentageBasisPoints: offer.rewardPercentageBasisPoints,
+  });
+}
+
+function toAppliedOffer(row: SaleRow): SaleRecord["appliedAutomaticOffer"] {
+  if (!row.applied_automatic_offer_id || !row.applied_automatic_offer_name_ar || !row.applied_automatic_offer_type) {
+    return null;
+  }
+  const details = offerDetails(row.applied_automatic_offer_details);
+  return {
+    id: row.applied_automatic_offer_id,
+    nameAr: row.applied_automatic_offer_name_ar,
+    discountType: row.applied_automatic_offer_type,
+    percentageBasisPoints: row.applied_automatic_offer_percentage_basis_points,
+    fixedDiscountPiasters: row.applied_automatic_offer_fixed_discount_piasters === null
+      ? null
+      : asSafeInteger(row.applied_automatic_offer_fixed_discount_piasters),
+    bundlePricePiasters: details.bundlePricePiasters,
+    bundleItems: details.bundleItems,
+    buyQuantity: details.buyQuantity,
+    rewardQuantity: details.rewardQuantity,
+    rewardPercentageBasisPoints: details.rewardPercentageBasisPoints,
+    allowCoupon: row.applied_automatic_offer_allow_coupon ?? true,
+    discountPiasters: asSafeInteger(row.automatic_offer_discount_piasters),
+  };
+}
+
+function offerDetails(value: unknown): {
+  bundlePricePiasters: number | null;
+  bundleItems: Array<{ variantId: string; requiredQuantity: number }>;
+  buyQuantity: number | null;
+  rewardQuantity: number | null;
+  rewardPercentageBasisPoints: number | null;
+} {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { bundlePricePiasters: null, bundleItems: [], buyQuantity: null, rewardQuantity: null, rewardPercentageBasisPoints: null };
+  }
+  const details = value as Record<string, unknown>;
+  return {
+    bundlePricePiasters: nullableSafeInteger(details.bundlePricePiasters),
+    bundleItems: Array.isArray(details.bundleItems) ? details.bundleItems.map((item) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("Invalid retained bundle item.");
+      const row = item as Record<string, unknown>;
+      if (typeof row.variantId !== "string") throw new Error("Invalid retained bundle item.");
+      return { variantId: row.variantId, requiredQuantity: nullableSafeInteger(row.requiredQuantity) ?? 0 };
+    }) : [],
+    buyQuantity: nullableSafeInteger(details.buyQuantity),
+    rewardQuantity: nullableSafeInteger(details.rewardQuantity),
+    rewardPercentageBasisPoints: nullableSafeInteger(details.rewardPercentageBasisPoints),
+  };
+}
+
+function nullableSafeInteger(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  if ((typeof value !== "number" && typeof value !== "string") || !Number.isSafeInteger(Number(value))) {
+    throw new Error("Unrepresentable retained offer value.");
+  }
+  return Number(value);
 }
 
 function isUniqueViolation(error: unknown): boolean {

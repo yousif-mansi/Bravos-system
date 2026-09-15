@@ -56,6 +56,9 @@ importers:
       '@bravos/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@bravos/corrections':
+        specifier: workspace:*
+        version: link:../../packages/corrections
       '@bravos/expenses':
         specifier: workspace:*
         version: link:../../packages/expenses
@@ -212,6 +215,31 @@ importers:
         version: 5.9.2
 
   packages/contracts: {}
+
+  packages/corrections:
+    dependencies:
+      '@bravos/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@bravos/identity':
+        specifier: workspace:*
+        version: link:../identity
+      '@bravos/inventory':
+        specifier: workspace:*
+        version: link:../inventory
+      pg:
+        specifier: 8.16.3
+        version: 8.16.3
+    devDependencies:
+      '@types/node':
+        specifier: 22.18.6
+        version: 22.18.6
+      '@types/pg':
+        specifier: 8.15.5
+        version: 8.15.5
+      typescript:
+        specifier: 5.9.2
+        version: 5.9.2
 
   packages/expenses:
     dependencies:
@@ -378,6 +406,9 @@ importers:
       '@bravos/inventory':
         specifier: workspace:*
         version: link:../inventory
+      '@bravos/pricing':
+        specifier: workspace:*
+        version: link:../pricing
       dexie:
         specifier: 4.4.5
         version: 4.4.5

@@ -294,6 +294,9 @@ export function WorkspacePage({
           {online && workspace.staff.role === "manager" && workspace.capabilities.manageInventory ? (
             <Link className="button secondary" to="/returns">المرتجعات</Link>
           ) : null}
+          {online && workspace.staff.role === "manager" && workspace.capabilities.manageInventory ? (
+            <Link className="button secondary" to="/corrections">تصحيح التسجيلات</Link>
+          ) : null}
           {workspace.capabilities.cashier ? (
             <Link className="button secondary" to="/lookup">البحث عن منتج</Link>
           ) : null}

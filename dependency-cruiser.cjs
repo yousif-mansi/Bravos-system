@@ -72,6 +72,15 @@ module.exports = {
       },
     },
     {
+      name: "corrections-domain-inward-only",
+      comment: "Corrections domain must not import application, adapters, other features, UI or infrastructure.",
+      severity: "error",
+      from: { path: "^packages/corrections/src/domain" },
+      to: {
+        path: "(packages/corrections/src/(application|adapters)|packages/(identity|catalog|inventory|receiving|pricing|sales|expenses|returns|storefront-config)|apps/|better-auth|fastify|react|next|vite|pg)",
+      },
+    },
+    {
       name: "expenses-domain-inward-only",
       comment: "Expenses domain must not import application, adapters, UI or infrastructure.",
       severity: "error",
@@ -84,9 +93,9 @@ module.exports = {
       name: "application-inward-only",
       comment: "Application use cases depend inward, not on Fastify, pg, React or Better Auth.",
       severity: "error",
-      from: { path: "^packages/(identity|catalog|inventory|receiving|pricing|sales|expenses|returns|storefront-config)/src/application" },
+      from: { path: "^packages/(identity|catalog|inventory|receiving|pricing|sales|expenses|returns|corrections|storefront-config)/src/application" },
       to: {
-        path: "(packages/(identity|catalog|inventory|receiving|pricing|sales|expenses|returns|storefront-config)/src/adapters|apps/|better-auth|fastify|react|next|vite|\\bpg\\b|dexie)",
+        path: "(packages/(identity|catalog|inventory|receiving|pricing|sales|expenses|returns|corrections|storefront-config)/src/adapters|apps/|better-auth|fastify|react|next|vite|\\bpg\\b|dexie)",
       },
     },
     {
@@ -95,7 +104,7 @@ module.exports = {
       severity: "error",
       from: { path: "^packages/contracts" },
       to: {
-        path: "(packages/identity|packages/catalog|packages/inventory|packages/receiving|packages/pricing|packages/sales|packages/expenses|packages/returns|packages/storefront-config|apps/|better-auth|fastify|pg|react|next)",
+        path: "(packages/identity|packages/catalog|packages/inventory|packages/receiving|packages/pricing|packages/sales|packages/expenses|packages/returns|packages/corrections|packages/storefront-config|apps/|better-auth|fastify|pg|react|next)",
       },
     },
     {
@@ -113,7 +122,7 @@ module.exports = {
       severity: "error",
       from: { path: "^apps/storefront" },
       to: {
-        path: "(apps/internal|packages/identity|packages/catalog|packages/inventory|packages/receiving|packages/pricing|packages/sales|packages/expenses|packages/returns|packages/storefront-config|packages/persistence|apps/api|better-auth)",
+        path: "(apps/internal|packages/identity|packages/catalog|packages/inventory|packages/receiving|packages/pricing|packages/sales|packages/expenses|packages/returns|packages/corrections|packages/storefront-config|packages/persistence|apps/api|better-auth)",
       },
     },
     {
@@ -171,6 +180,13 @@ module.exports = {
       severity: "error",
       from: { pathNot: "^packages/returns/src" },
       to: { path: "^packages/returns/src/(domain|application|adapters)/" },
+    },
+    {
+      name: "no-private-corrections-imports",
+      comment: "Cross-package imports must use the corrections public interface.",
+      severity: "error",
+      from: { pathNot: "^packages/corrections/src" },
+      to: { path: "^packages/corrections/src/(domain|application|adapters)/" },
     },
     {
       name: "no-private-storefront-config-imports",
@@ -234,6 +250,20 @@ module.exports = {
       severity: "error",
       from: { path: "^packages/expenses" },
       to: { path: "^packages/(catalog|inventory|receiving|sales)" },
+    },
+    {
+      name: "corrections-does-not-import-owned-features",
+      comment: "Corrections coordinates through identity and inventory public interfaces without reaching into other feature packages.",
+      severity: "error",
+      from: { path: "^packages/corrections" },
+      to: { path: "^packages/(catalog|receiving|pricing|sales|expenses|returns|storefront-config|persistence)" },
+    },
+    {
+      name: "owned-features-do-not-import-corrections",
+      comment: "Other feature packages use composition ports and do not depend on the corrections coordinator.",
+      severity: "error",
+      from: { path: "^packages/(identity|catalog|inventory|receiving|pricing|sales|expenses|returns|storefront-config)" },
+      to: { path: "^packages/corrections" },
     },
     {
       name: "storefront-config-is-isolated",

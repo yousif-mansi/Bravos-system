@@ -170,7 +170,7 @@ export default function ReturnsPage({ workspace }: { workspace: WorkspaceDto; on
     try {
       const operationId = paymentOperationRef.current ?? crypto.randomUUID();
       paymentOperationRef.current = operationId;
-      const value = await payReturnRefund(selectedReturn.id, selectedReturn.authorizedRefundPiasters, operationId);
+      const value = await payReturnRefund(selectedReturn.id, selectedReturn.refund.owedPiasters, operationId);
       paymentOperationRef.current = null;
       setSelectedReturn(value);
       setNotice("تم تسجيل دفع الاسترداد النقدي.");
@@ -282,7 +282,7 @@ export default function ReturnsPage({ workspace }: { workspace: WorkspaceDto; on
 
       <section className="card">
         <h2>سجل المرتجعات</h2>
-        <div className="return-history">{returns.map((row) => <button className="return-source" type="button" key={row.id} onClick={() => void openReturn(row.id)}><strong>{row.sourceReference}</strong><span>{row.status === "draft" ? "مسودة" : "مرحّل"} · {row.originalBranch.nameAr} ← {row.handlingBranch.nameAr}</span><span>{formatEgpFromPiasters(row.authorizedRefundPiasters)} · {row.refundStatus === "paid" ? "مدفوع" : row.refundStatus === "owed" ? "مستحق" : "بلا التزام نقدي"}</span></button>)}</div>
+        <div className="return-history">{returns.map((row) => <button className="return-source" type="button" key={row.id} onClick={() => void openReturn(row.id)}><strong>{row.sourceReference}</strong><span>{row.status === "draft" ? "مسودة" : row.effectiveStatus === "cancelled" ? "ملغى مع حفظ الأصل" : "مرحّل"} · {row.originalBranch.nameAr} ← {row.handlingBranch.nameAr}</span><span>{formatEgpFromPiasters(row.authorizedRefundPiasters)} · {row.refundStatus === "paid" ? "مدفوع" : row.refundStatus === "owed" ? "مستحق" : row.refundStatus === "overpaid" ? "مدفوع أكثر من المعتمد حالياً" : row.refundStatus === "cancelled" ? "ملغى" : "بلا التزام نقدي"}</span></button>)}</div>
         {nextCursor ? <button type="button" className="secondary" disabled={busy} onClick={() => void loadMoreReturns()}>تحميل مرتجعات أقدم</button> : null}
       </section>
 
@@ -291,11 +291,13 @@ export default function ReturnsPage({ workspace }: { workspace: WorkspaceDto; on
           <h2>تفاصيل الإرجاع</h2>
           <p>الأصل: {selectedReturn.source.reference} · {selectedReturn.source.originalBranch.nameAr}</p>
           <p>المعالجة: {selectedReturn.handlingBranch.nameAr} · الحالة: {selectedReturn.status === "draft" ? "مسودة بلا آثار" : "مرحّل بعد الاستلام والفحص"}</p>
-          <p>المقترح: {formatEgpFromPiasters(selectedReturn.suggestedRefundPiasters)} · المعتمد: {formatEgpFromPiasters(selectedReturn.authorizedRefundPiasters)}</p>
+          <p>المقترح: {formatEgpFromPiasters(selectedReturn.suggestedRefundPiasters)} · المعتمد حالياً: {formatEgpFromPiasters(selectedReturn.authorizedRefundPiasters)}</p>
+          {selectedReturn.correctionRevision > 0 ? <p className="muted">المعتمد الأصلي المحفوظ: {formatEgpFromPiasters(selectedReturn.originalAuthorizedRefundPiasters)} · توجد تصحيحات إدارية مرتبطة بهذا الأصل.</p> : null}
           <ul>{selectedReturn.lines.map((line) => <li key={line.id}>{line.variant.product.nameAr}: {line.quantity} مستلم، {line.sellableQuantity} قابل للبيع، {line.unsellableQuantity} غير قابل للبيع</li>)}</ul>
           {selectedReturn.status === "draft" ? <div className="actions"><button type="button" className="secondary" disabled={busy} onClick={editSelectedDraft}>تعديل المسودة</button><button type="button" disabled={busy} onClick={() => void post()}>تأكيد الاستلام والفحص وترحيل الإرجاع</button></div> : null}
-          {selectedReturn.status === "posted" && selectedReturn.refund.status === "owed" ? <button type="button" disabled={busy} onClick={() => void pay()}>تسجيل دفع {formatEgpFromPiasters(selectedReturn.authorizedRefundPiasters)}</button> : null}
-          {selectedReturn.refund.status === "paid" ? <p className="notice">دُفع {formatEgpFromPiasters(selectedReturn.refund.paidPiasters)} بواسطة المدير في {selectedReturn.refund.recordedAt ? new Date(selectedReturn.refund.recordedAt).toLocaleString("ar-EG") : "—"}</p> : selectedReturn.refund.status === "owed" ? <p className="notice">الاسترداد النقدي مستحق ولم يُدفع بعد.</p> : <p className="notice">المسودة لا تنشئ التزاماً نقدياً قبل ترحيل الاستلام والفحص.</p>}
+          {selectedReturn.status === "posted" && selectedReturn.refund.status === "owed" ? <button type="button" disabled={busy} onClick={() => void pay()}>تسجيل دفع {formatEgpFromPiasters(selectedReturn.refund.owedPiasters)}</button> : null}
+          {selectedReturn.refund.status === "paid" ? <p className="notice">دُفع {formatEgpFromPiasters(selectedReturn.refund.paidPiasters)} فعلياً بواسطة المدير في {selectedReturn.refund.recordedAt ? new Date(selectedReturn.refund.recordedAt).toLocaleString("ar-EG") : "—"}</p> : selectedReturn.refund.status === "owed" ? <p className="notice">الاسترداد النقدي مستحق. المتبقي للدفع: {formatEgpFromPiasters(selectedReturn.refund.owedPiasters)}.</p> : selectedReturn.refund.status === "overpaid" ? <p className="notice">المدفوع الفعلي يزيد عن المعتمد حالياً بمقدار {formatEgpFromPiasters(selectedReturn.refund.overpaidPiasters)}. لا يُسجل استرداد نقد تلقائياً.</p> : selectedReturn.refund.status === "cancelled" ? <p className="notice">أُلغي أثر تسجيل الإرجاع مع بقاء الأصل وحركات النقد الفعلية محفوظة.</p> : <p className="notice">المسودة لا تنشئ التزاماً نقدياً قبل ترحيل الاستلام والفحص.</p>}
+          {selectedReturn.status === "posted" ? <Link className="button secondary" to={`/corrections?target=return&id=${selectedReturn.id}`}>تصحيح تسجيل هذا الإرجاع</Link> : null}
         </section>
       ) : null}
     </main>

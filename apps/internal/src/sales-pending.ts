@@ -5,6 +5,7 @@ export type SalePayloadLines = Array<{ variantId: string; quantity: number }>;
 export type SalePayload = {
   customerName: string | null;
   customerPhone: string | null;
+  couponCode?: string | null;
   employeeDiscountPiasters: number;
   discountReason: string | null;
   lines: SalePayloadLines;
@@ -143,9 +144,11 @@ export async function digestSalePayload(input: SalePayload): Promise<string> {
       }
       return left.quantity - right.quantity;
     });
+  const couponCode = input.couponCode?.normalize("NFC").trim().toLocaleUpperCase("en-US") || null;
   const canonical = JSON.stringify({
     customerName: input.customerName,
     customerPhone: input.customerPhone,
+    ...(couponCode ? { couponCode } : {}),
     employeeDiscountPiasters: input.employeeDiscountPiasters,
     discountReason: input.discountReason,
     lines,

@@ -27,12 +27,16 @@ try {
       "011_automatic_offers.sql",
       "012_physical_returns.sql",
       "013_storefront_contacts.sql",
+      "014_bundles.sql",
+      "015_coupons.sql",
+      "016_recording_corrections.sql",
     ];
     if (first.join(",") !== expectedMigrations.join(",") || afterApply.join(",") !== first.join(",")) {
       throw new Error(`Scratch apply did not record multiple migrations: ${first.join(",")}`);
     }
-    const latest = first.at(-1);
-    const previous = first.slice(0, -1);
+    const batchStart = first.indexOf("014_bundles.sql");
+    const currentBatch = first.slice(batchStart);
+    const previous = first.slice(0, batchStart);
     const tablesAfterApply = await tableNames(pool);
     if (!tablesAfterApply.includes("user") || !tablesAfterApply.includes("staff_profile")) {
       throw new Error("Scratch apply did not create identity tables.");
@@ -74,10 +78,22 @@ try {
     if (!tablesAfterApply.includes("storefront_contacts")) {
       throw new Error("Scratch apply did not create storefront contacts from migration 013.");
     }
+    if (!tablesAfterApply.includes("pricing_automatic_offer_bundle_item")
+      || !(await columnExists(pool, "sales_sale", "applied_automatic_offer_details"))) {
+      throw new Error("Scratch apply did not create bundle pricing storage from migration 014.");
+    }
 
-    const reverted = await revertLastMigration(pool);
-    if (reverted !== latest) {
-      throw new Error(`Scratch down did not revert the latest migration: ${reverted}`);
+    if (!tablesAfterApply.includes("pricing_coupon") || !tablesAfterApply.includes("pricing_coupon_usage")
+      || !(await columnExists(pool, "sales_sale", "coupon_discount_piasters"))) {
+      throw new Error("Scratch apply did not create coupon storage from migration 015.");
+    }
+    if (!tablesAfterApply.includes("recording_correction") || !tablesAfterApply.includes("recording_sale_unit_value")
+      || !(await columnExists(pool, "returns_return_unit", "source_recording_sale_unit_id"))) {
+      throw new Error("Scratch apply did not create recording correction storage from migration 016.");
+    }
+    for (const expected of [...currentBatch].reverse()) {
+      const reverted = await revertLastMigration(pool);
+      if (reverted !== expected) throw new Error(`Scratch down expected ${expected}, got ${reverted}`);
     }
     const afterDown = await listAppliedMigrations(pool);
     if (afterDown.join(",") !== previous.join(",")) {
@@ -113,18 +129,39 @@ try {
     if (!tablesAfterDown.includes("expense_record") || !tablesAfterDown.includes("pricing_automatic_offer") || !tablesAfterDown.includes("returns_return")) {
       throw new Error("Scratch storefront down removed an earlier feature table.");
     }
-    if (tablesAfterDown.includes("storefront_contacts")) {
-      throw new Error("Scratch storefront down left the latest table behind.");
+    if (!tablesAfterDown.includes("storefront_contacts")) {
+      throw new Error("Scratch bundle down removed storefront configuration from migration 013.");
+    }
+    if (tablesAfterDown.includes("pricing_automatic_offer_bundle_item")
+      || await columnExists(pool, "sales_sale", "applied_automatic_offer_details")) {
+      throw new Error("Scratch bundle down left migration 014 storage behind.");
+    }
+    if (tablesAfterDown.includes("pricing_coupon") || tablesAfterDown.includes("pricing_coupon_usage")
+      || await columnExists(pool, "sales_sale", "coupon_discount_piasters")) {
+      throw new Error("Scratch coupon down left migration 015 storage behind.");
+    }
+
+    if (tablesAfterDown.includes("recording_correction") || tablesAfterDown.includes("recording_sale_unit_value")
+      || await columnExists(pool, "returns_return_unit", "source_recording_sale_unit_id")) {
+      throw new Error("Scratch corrections down left migration 016 storage behind.");
     }
 
     const reapplied = await applyMigrations(pool);
     const afterReapply = await listAppliedMigrations(pool);
-    if (reapplied.join(",") !== latest || afterReapply.join(",") !== afterApply.join(",")) {
+    if (reapplied.join(",") !== currentBatch.join(",") || afterReapply.join(",") !== afterApply.join(",")) {
       throw new Error("Scratch reapply did not restore the latest migration.");
     }
     const tablesAfterReapply = await tableNames(pool);
     if (!tablesAfterReapply.includes("sales_pos_snapshot") || !tablesAfterReapply.includes("sales_sale")) {
       throw new Error("Scratch reapply did not restore snapshot and sales tables.");
+    }
+    if (!tablesAfterReapply.includes("pricing_automatic_offer_bundle_item")
+      || !(await columnExists(pool, "sales_sale", "applied_automatic_offer_details"))) {
+      throw new Error("Scratch reapply did not restore bundle pricing storage.");
+    }
+    if (!tablesAfterReapply.includes("pricing_coupon") || !tablesAfterReapply.includes("pricing_coupon_usage")
+      || !(await columnExists(pool, "sales_sale", "coupon_discount_piasters"))) {
+      throw new Error("Scratch reapply did not restore coupon storage.");
     }
     if (!(await columnExists(pool, "sales_sale_unit", "quantity"))) {
       throw new Error("Scratch reapply did not preserve the sale-unit quantity column from migration 008.");
@@ -142,6 +179,11 @@ try {
     }
     if (!tablesAfterReapply.includes("pricing_automatic_offer") || !tablesAfterReapply.includes("returns_return") || !tablesAfterReapply.includes("storefront_contacts")) {
       throw new Error("Scratch reapply did not restore migrations 011 through 013.");
+    }
+
+    if (!tablesAfterReapply.includes("recording_correction") || !tablesAfterReapply.includes("recording_sale_unit_value")
+      || !(await columnExists(pool, "returns_return_unit", "source_recording_sale_unit_id"))) {
+      throw new Error("Scratch reapply did not restore recording correction storage.");
     }
 
     const fullyReverted: string[] = [];
@@ -168,7 +210,7 @@ try {
     await expectFailedMigrationRollsBack(pool);
 
     console.log(
-      `scratch migration apply/down/reapply ok: applied=${first.join(",")} reverted=${reverted} reapplied=${reapplied.join(",")}`,
+      `scratch migration apply/down/reapply ok: applied=${first.join(",")} reverted=${[...currentBatch].reverse().join(",")} reapplied=${reapplied.join(",")}`,
     );
   } finally {
     await pool.end();

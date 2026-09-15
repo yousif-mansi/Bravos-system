@@ -36,6 +36,9 @@ test("apply, down the latest migration, and reapply works with multiple migratio
       "011_automatic_offers.sql",
       "012_physical_returns.sql",
       "013_storefront_contacts.sql",
+      "014_bundles.sql",
+      "015_coupons.sql",
+      "016_recording_corrections.sql",
     ]);
     expect(await listAppliedMigrations(pool)).toEqual(first);
     expect(await tableNames(pool)).toEqual(
@@ -55,17 +58,20 @@ test("apply, down the latest migration, and reapply works with multiple migratio
         "pricing_automatic_offer",
         "returns_return",
         "storefront_contacts",
+        "pricing_automatic_offer_bundle_item",
+        "pricing_coupon",
+        "pricing_coupon_usage",
+        "recording_correction",
+        "recording_sale_unit_value",
       ]),
     );
 
-    const storefrontIndex = first.indexOf("013_storefront_contacts.sql");
-    expect(storefrontIndex).toBeGreaterThan(-1);
-    while ((await listAppliedMigrations(pool)).at(-1) !== "013_storefront_contacts.sql") {
-      expect(await revertLastMigration(pool)).toBeTruthy();
+    const bundleIndex = first.indexOf("014_bundles.sql");
+    expect(bundleIndex).toBeGreaterThan(-1);
+    for (const migration of first.slice(bundleIndex).reverse()) {
+      expect(await revertLastMigration(pool)).toBe(migration);
     }
-    const reverted = await revertLastMigration(pool);
-    expect(reverted).toBe("013_storefront_contacts.sql");
-    expect(await listAppliedMigrations(pool)).toEqual(first.slice(0, storefrontIndex));
+    expect(await listAppliedMigrations(pool)).toEqual(first.slice(0, bundleIndex));
     const afterDown = await tableNames(pool);
     expect(afterDown).toEqual(
       expect.arrayContaining([
@@ -89,10 +95,17 @@ test("apply, down the latest migration, and reapply works with multiple migratio
     expect(afterDown).toContain("expense_operation");
     expect(afterDown).toContain("pricing_automatic_offer");
     expect(afterDown).toContain("returns_return");
-    expect(afterDown).not.toContain("storefront_contacts");
+    expect(afterDown).toContain("storefront_contacts");
+    expect(afterDown).not.toContain("pricing_automatic_offer_bundle_item");
+    expect(await columnExists(pool, "sales_sale", "applied_automatic_offer_details")).toBe(false);
+    expect(afterDown).not.toContain("pricing_coupon");
+    expect(afterDown).not.toContain("pricing_coupon_usage");
+    expect(await columnExists(pool, "sales_sale", "coupon_discount_piasters")).toBe(false);
+    expect(afterDown).not.toContain("recording_correction");
+    expect(await columnExists(pool, "returns_return_unit", "source_recording_sale_unit_id")).toBe(false);
 
     const reapplied = await applyMigrations(pool);
-    expect(reapplied).toEqual(["013_storefront_contacts.sql"]);
+    expect(reapplied).toEqual(first.slice(bundleIndex));
     expect(await listAppliedMigrations(pool)).toEqual(first);
     expect(await tableNames(pool)).toEqual(
       expect.arrayContaining(["user", "staff_profile", "catalog_product", "inventory_batch", "receiving_receipt", "sales_sale", "sales_pos_snapshot", "expense_record", "expense_change", "expense_operation", "storefront_contacts"]),
@@ -104,6 +117,12 @@ test("apply, down the latest migration, and reapply works with multiple migratio
     expect(await tableNames(pool)).toEqual(expect.arrayContaining(["inventory_stock_clock"]));
     expect(await tableNames(pool)).toEqual(expect.arrayContaining(["pricing_automatic_offer"]));
     expect(await tableNames(pool)).toEqual(expect.arrayContaining(["returns_return", "returns_return_line", "returns_refund_event"]));
+    expect(await tableNames(pool)).toContain("pricing_automatic_offer_bundle_item");
+    expect(await columnExists(pool, "sales_sale", "applied_automatic_offer_details")).toBe(true);
+    expect(await tableNames(pool)).toEqual(expect.arrayContaining(["pricing_coupon", "pricing_coupon_usage"]));
+    expect(await columnExists(pool, "sales_sale", "coupon_discount_piasters")).toBe(true);
+    expect(await tableNames(pool)).toEqual(expect.arrayContaining(["recording_correction", "recording_sale_unit_value"]));
+    expect(await columnExists(pool, "returns_return_unit", "source_recording_sale_unit_id")).toBe(true);
 
     const fullyReverted: string[] = [];
     for (;;) {
@@ -253,6 +272,9 @@ test("008 down expands counted unit ranges into one legacy row per ordinal", asy
       "011_automatic_offers.sql",
       "012_physical_returns.sql",
       "013_storefront_contacts.sql",
+      "014_bundles.sql",
+      "015_coupons.sql",
+      "016_recording_corrections.sql",
     ]);
     const restored = await pool.query<{ unit_index: number; quantity: number; paid_piasters: number }>(
       `SELECT unit_index, quantity, paid_piasters FROM sales_sale_unit ORDER BY unit_index`,

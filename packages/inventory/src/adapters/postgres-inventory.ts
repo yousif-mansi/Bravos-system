@@ -167,6 +167,27 @@ export function createInventoryTransaction(client: PoolClient): InventoryTransac
       return { kind: "replay", operationId: row.id, recordedAt: row.recorded_at };
     },
 
+    async claimCorrectionOperation(input) {
+      const inserted = await client.query<OperationRow>(
+        `INSERT INTO inventory_operation (id, kind, payload_fingerprint, actor_staff_id, recorded_at)
+         VALUES ($1, 'correction', $2, $3, now())
+         ON CONFLICT (id) DO NOTHING
+         RETURNING id, payload_fingerprint, recorded_at`,
+        [input.operationId, input.payloadFingerprint, input.actorStaffId],
+      );
+      const created = inserted.rows[0];
+      if (created) return { kind: "created", operationId: created.id, recordedAt: created.recorded_at };
+      const existing = await client.query<OperationRow & { kind: string }>(
+        `SELECT id, kind, payload_fingerprint, recorded_at FROM inventory_operation WHERE id = $1`,
+        [input.operationId],
+      );
+      const row = existing.rows[0];
+      if (!row || row.kind !== "correction" || row.payload_fingerprint !== input.payloadFingerprint) {
+        throw new OperationConflictError();
+      }
+      return { kind: "replay", operationId: row.id, recordedAt: row.recorded_at };
+    },
+
     async receiveBatches(input) {
       const created: ReceivedBatchRecord[] = [];
       try {
@@ -211,6 +232,9 @@ export function createInventoryTransaction(client: PoolClient): InventoryTransac
     async allocateFromOldestAvailable(input) {
       return allocateFromOldestAvailable(client, input);
     },
+    async allocateCorrectionFromOldestAvailable(input) {
+      return allocateFromOldestAvailable(client, { ...input, allowPartial: false, movementKind: "correction_deduct" });
+    },
     async restoreToOriginalBatch(input) {
       const updated = await client.query<{ remaining_quantity: number }>(
         `UPDATE inventory_batch
@@ -229,6 +253,32 @@ export function createInventoryTransaction(client: PoolClient): InventoryTransac
          ) VALUES (gen_random_uuid(), $1, $2, $3, 'return', $4, $5)`,
         [input.batchId, input.variantId, input.operationId, input.quantity, input.recordedAt],
       );
+    },
+    async adjustCorrectionBatch(input) {
+      const delta = input.direction === "restore" ? input.quantity : -input.quantity;
+      const updated = await client.query<{ unit_cost_piasters: number | string }>(
+        `UPDATE inventory_batch
+         SET remaining_quantity = remaining_quantity + $3
+         WHERE id = $1 AND variant_id = $2
+           AND remaining_quantity + $3 BETWEEN 0 AND received_quantity
+         RETURNING unit_cost_piasters`,
+        [input.batchId, input.variantId, delta],
+      );
+      const row = updated.rows[0];
+      if (!row) throw new InventoryValidationError(
+        input.direction === "restore"
+          ? "تعذر استعادة الصنف إلى دفعة التكلفة الأصلية."
+          : "تعذر خصم الصنف من دفعة التكلفة الأصلية لأن الكمية لم تعد متاحة.",
+      );
+      await client.query(
+        `INSERT INTO inventory_movement (
+           id, batch_id, variant_id, operation_id, kind, quantity, recorded_at
+         ) VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6)`,
+        [input.batchId, input.variantId, input.operationId,
+          input.direction === "restore" ? "correction_restore" : "correction_deduct",
+          input.quantity, input.recordedAt],
+      );
+      return { unitCostPiasters: asSafeInteger(row.unit_cost_piasters) };
     },
     async recordDiscrepancy(input) {
       const unallocatedQuantity = input.requestedQuantity - input.allocatedQuantity;
@@ -292,6 +342,7 @@ async function allocateFromOldestAvailable(
     quantity: number;
     recordedAt: Date;
     allowPartial: boolean;
+    movementKind?: "sale" | "correction_deduct";
   },
 ): Promise<AllocateResult> {
   const locked = await client.query<BatchRow>(
@@ -353,8 +404,8 @@ async function allocateFromOldestAvailable(
       await client.query(
         `INSERT INTO inventory_movement (
            id, batch_id, variant_id, operation_id, kind, quantity, recorded_at
-         ) VALUES (gen_random_uuid(), $1, $2, $3, 'sale', $4, $5)`,
-        [row.id, input.variantId, input.operationId, take, input.recordedAt],
+         ) VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6)`,
+        [row.id, input.variantId, input.operationId, input.movementKind ?? "sale", take, input.recordedAt],
       );
       await client.query(
         `INSERT INTO inventory_allocation (
@@ -600,6 +651,14 @@ function mustRow<T>(row: T | undefined): T {
     throw new Error("Expected a database row.");
   }
   return row;
+}
+
+function asSafeInteger(value: number | string): number {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) {
+    throw new Error("Inventory piaster value exceeds the safe integer range.");
+  }
+  return parsed;
 }
 
 export type { VariantLowStockDto };

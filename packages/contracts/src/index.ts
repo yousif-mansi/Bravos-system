@@ -44,7 +44,12 @@ export type CategoryDto = {
   parentId: string | null;
 };
 
-export type AutomaticOfferDiscountType = "percentage" | "fixed";
+export type AutomaticOfferDiscountType = "percentage" | "fixed" | "fixed_bundle" | "buy_x_get_y";
+
+export type AutomaticOfferBundleItemDto = {
+  variantId: string;
+  requiredQuantity: number;
+};
 
 export type AutomaticOfferDto = {
   id: string;
@@ -52,6 +57,15 @@ export type AutomaticOfferDto = {
   discountType: AutomaticOfferDiscountType;
   percentageBasisPoints: number | null;
   fixedDiscountPiasters: number | null;
+  bundlePricePiasters: number | null;
+  bundleItems: AutomaticOfferBundleItemDto[];
+  buyQuantity: number | null;
+  rewardQuantity: number | null;
+  rewardPercentageBasisPoints: number | null;
+  buyProductIds: string[];
+  buyCategoryIds: string[];
+  rewardProductIds: string[];
+  rewardCategoryIds: string[];
   startsOn: string;
   endsOn: string;
   active: boolean;
@@ -70,6 +84,15 @@ export type AutomaticOfferWriteDto = Pick<
   | "discountType"
   | "percentageBasisPoints"
   | "fixedDiscountPiasters"
+  | "bundlePricePiasters"
+  | "bundleItems"
+  | "buyQuantity"
+  | "rewardQuantity"
+  | "rewardPercentageBasisPoints"
+  | "buyProductIds"
+  | "buyCategoryIds"
+  | "rewardProductIds"
+  | "rewardCategoryIds"
   | "startsOn"
   | "endsOn"
   | "active"
@@ -80,7 +103,61 @@ export type AutomaticOfferWriteDto = Pick<
 
 export type AppliedAutomaticOfferDto = Pick<
   AutomaticOfferDto,
-  "id" | "nameAr" | "discountType" | "percentageBasisPoints" | "fixedDiscountPiasters" | "allowCoupon"
+  | "id"
+  | "nameAr"
+  | "discountType"
+  | "percentageBasisPoints"
+  | "fixedDiscountPiasters"
+  | "bundlePricePiasters"
+  | "bundleItems"
+  | "buyQuantity"
+  | "rewardQuantity"
+  | "rewardPercentageBasisPoints"
+  | "allowCoupon"
+> & {
+  discountPiasters: number;
+};
+
+export type CouponDiscountType = "percentage" | "fixed";
+
+export type CouponDto = {
+  id: string;
+  code: string;
+  discountType: CouponDiscountType;
+  percentageBasisPoints: number | null;
+  fixedDiscountPiasters: number | null;
+  startsOn: string;
+  endsOn: string;
+  active: boolean;
+  allowAutomaticOffer: boolean;
+  usageLimit: number;
+  usedCount: number;
+  productIds: string[];
+  categoryIds: string[];
+  createdByStaffId: string;
+  updatedByStaffId: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type CouponWriteDto = Pick<
+  CouponDto,
+  | "code"
+  | "discountType"
+  | "percentageBasisPoints"
+  | "fixedDiscountPiasters"
+  | "startsOn"
+  | "endsOn"
+  | "active"
+  | "allowAutomaticOffer"
+  | "usageLimit"
+  | "productIds"
+  | "categoryIds"
+>;
+
+export type AppliedCouponDto = Pick<
+  CouponDto,
+  "id" | "code" | "discountType" | "percentageBasisPoints" | "fixedDiscountPiasters" | "allowAutomaticOffer"
 > & {
   discountPiasters: number;
 };
@@ -230,6 +307,7 @@ export type SaleUnitDto = {
   discountPiasters: number;
   paidPiasters: number;
   automaticOfferDiscountPiasters?: number;
+  couponDiscountPiasters?: number;
   employeeDiscountPiasters?: number;
 };
 
@@ -242,6 +320,7 @@ export type SaleLineDto = {
   discountPiasters: number;
   paidPiasters: number;
   automaticOfferDiscountPiasters?: number;
+  couponDiscountPiasters?: number;
   employeeDiscountPiasters?: number;
   allocatedQuantity: number;
   unallocatedQuantity: number;
@@ -298,6 +377,8 @@ export type SaleDto = {
   originalTotalPiasters: number;
   automaticOfferDiscountPiasters: number;
   appliedAutomaticOffer: AppliedAutomaticOfferDto | null;
+  couponDiscountPiasters: number;
+  appliedCoupon: AppliedCouponDto | null;
   employeeDiscountPiasters: number;
   discountReason: string | null;
   discountedByStaffId: string | null;
@@ -435,6 +516,9 @@ export type ReturnDto = {
   handlingBranch: BranchDto;
   suggestedRefundPiasters: number;
   authorizedRefundPiasters: number;
+  originalAuthorizedRefundPiasters: number;
+  effectiveStatus: "active" | "cancelled";
+  correctionRevision: number;
   createdByStaffId: string;
   createdAt: string;
   updatedByStaffId: string;
@@ -444,8 +528,9 @@ export type ReturnDto = {
   lines: ReturnLineDto[];
   restorations: ReturnBatchRestorationDto[];
   refund: {
-    status: "none" | "owed" | "paid";
+    status: "none" | "owed" | "paid" | "overpaid" | "cancelled";
     owedPiasters: number;
+    overpaidPiasters: number;
     paidPiasters: number;
     recordedByStaffId: string | null;
     recordedAt: string | null;
@@ -462,7 +547,10 @@ export type ReturnListItemDto = {
   originalBranch: BranchDto;
   handlingBranch: BranchDto;
   authorizedRefundPiasters: number;
-  refundStatus: "none" | "owed" | "paid";
+  originalAuthorizedRefundPiasters: number;
+  effectiveStatus: "active" | "cancelled";
+  correctionRevision: number;
+  refundStatus: "none" | "owed" | "paid" | "overpaid" | "cancelled";
   createdAt: string;
   postedAt: string | null;
 };
@@ -470,6 +558,93 @@ export type ReturnListItemDto = {
 export type ReturnListPageDto = {
   items: ReturnListItemDto[];
   nextCursor: string | null;
+};
+
+export type CorrectionCashFactDto = {
+  direction: "paid_out" | "recovered";
+  amountPiasters: number;
+};
+
+export type CorrectionMerchandiseFactDto = {
+  lineId: string;
+  variantId: string;
+  direction: "restore" | "deduct";
+  quantity: number;
+  batches: Array<{ batchId: string; quantity: number; unitCostPiasters: number }>;
+};
+
+export type SaleCorrectionLineDto = {
+  saleLineId: string;
+  variantId: string;
+  variant: VariantIdentityDto;
+  quantity: number;
+  paidPiasters: number;
+  paidRanges: Array<{ quantity: number; paidUnitPiasters: number }>;
+};
+
+export type ReturnCorrectionLineDto = {
+  returnLineId: string;
+  sourceSaleLineId: string;
+  variantId: string;
+  variant: VariantIdentityDto;
+  quantity: number;
+  sellableQuantity: number;
+};
+
+export type CorrectionChangeDto = {
+  id: string;
+  operationId: string;
+  type: "correction" | "cancellation";
+  revision: number;
+  reason: string;
+  changedByStaffId: string;
+  changedByDisplayName: string;
+  changedAt: string;
+  effectiveTotalPiasters: number | null;
+  merchandise: CorrectionMerchandiseFactDto[];
+  cash: CorrectionCashFactDto | null;
+};
+
+export type SaleCorrectionDetailDto = {
+  targetType: "sale";
+  id: string;
+  reference: string;
+  revision: number;
+  status: "active" | "cancelled";
+  original: { finalTotalPiasters: number; lines: SaleCorrectionLineDto[] };
+  effective: { finalTotalPiasters: number; lines: SaleCorrectionLineDto[] } | null;
+  relationships: {
+    returns: Array<{ id: string; status: "draft" | "posted"; effectiveStatus: "active" | "cancelled"; refundPaidPiasters: number }>;
+  };
+  actual: {
+    originalCashReceivedPiasters: number;
+    correctionCashPaidOutPiasters: number;
+    correctionCashRecoveredPiasters: number;
+    netCashReceivedPiasters: number;
+    merchandiseRestoredQuantity: number;
+    merchandiseDeductedQuantity: number;
+  };
+  changes: CorrectionChangeDto[];
+};
+
+export type ReturnCorrectionDetailDto = {
+  targetType: "return";
+  id: string;
+  reference: string;
+  sourceSaleId: string;
+  revision: number;
+  status: "active" | "cancelled";
+  original: { authorizedRefundPiasters: number; paidPiasters: number; lines: ReturnCorrectionLineDto[] };
+  effective: { authorizedRefundPiasters: number; paidPiasters: number; lines: ReturnCorrectionLineDto[] } | null;
+  actual: {
+    originalRefundPaidPiasters: number;
+    correctionCashPaidOutPiasters: number;
+    correctionCashRecoveredPiasters: number;
+    netRefundPaidPiasters: number;
+    merchandiseRestoredQuantity: number;
+    merchandiseDeductedQuantity: number;
+  };
+  changes: CorrectionChangeDto[];
 };
 
 export type StaffChangeDto = {

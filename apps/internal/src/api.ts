@@ -3,6 +3,8 @@ import type {
   AutomaticOfferDto,
   AutomaticOfferWriteDto,
   CategoryDto,
+  CouponDto,
+  CouponWriteDto,
   ColorDto,
   ExpenseCategoryDto,
   ExpenseDto,
@@ -13,10 +15,12 @@ import type {
   ManagerProductDto,
   PosPriceSnapshotDto,
   ReceiptDto,
+  ReturnCorrectionDetailDto,
   ReturnDto,
   ReturnListPageDto,
   ReturnSourceDto,
   SaleAcknowledgementDto,
+  SaleCorrectionDetailDto,
   SaleDto,
   SizeDto,
   StaffAccountDto,
@@ -304,6 +308,18 @@ export function updateAutomaticOffer(offerId: string, input: AutomaticOfferWrite
   });
 }
 
+export function listCoupons() {
+  return request<CouponDto[]>("/api/internal/pricing/coupons");
+}
+
+export function createCoupon(input: CouponWriteDto) {
+  return request<CouponDto>("/api/internal/pricing/coupons", { method: "POST", body: JSON.stringify(input) });
+}
+
+export function updateCoupon(couponId: string, input: CouponWriteDto) {
+  return request<CouponDto>(`/api/internal/pricing/coupons/${couponId}`, { method: "PUT", body: JSON.stringify(input) });
+}
+
 export function lookupProductByCode(code: string) {
   return request<CashierProductLookupDto>(
     `/api/internal/catalog/lookup?code=${encodeURIComponent(code)}`,
@@ -371,6 +387,7 @@ export type SaleWrite = {
   operationId: string;
   customerName?: string | null;
   customerPhone?: string | null;
+  couponCode?: string | null;
   employeeDiscountPiasters: number;
   discountReason?: string | null;
   occurredAt?: string | null;
@@ -576,4 +593,46 @@ export function listReturns(input: { limit?: number; cursor?: string } = {}) {
 
 export function getReturn(returnId: string) {
   return request<ReturnDto>(`/api/internal/returns/${returnId}`);
+}
+
+export type SaleCorrectionWrite = {
+  operationId: string;
+  expectedRevision: number;
+  type: "correction" | "cancellation";
+  reason: string;
+  effective: {
+    finalTotalPiasters: number;
+    lines: Array<{ lineId: string; quantity: number; paidPiasters: number }>;
+  } | null;
+  merchandise: Array<{ lineId: string; quantityDelta: number }>;
+  cash: { direction: "paid_out" | "recovered"; amountPiasters: number } | null;
+};
+
+export type ReturnCorrectionWrite = Omit<SaleCorrectionWrite, "effective"> & {
+  effective: {
+    authorizedRefundPiasters: number;
+    lines: Array<{ lineId: string; quantity: number; sellableQuantity: number }>;
+  } | null;
+};
+
+export function getSaleCorrection(saleId: string) {
+  return request<SaleCorrectionDetailDto>(`/api/internal/corrections/sales/${saleId}`);
+}
+
+export function changeSaleCorrection(saleId: string, input: SaleCorrectionWrite) {
+  return request<SaleCorrectionDetailDto>(`/api/internal/corrections/sales/${saleId}`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function getReturnCorrection(returnId: string) {
+  return request<ReturnCorrectionDetailDto>(`/api/internal/corrections/returns/${returnId}`);
+}
+
+export function changeReturnCorrection(returnId: string, input: ReturnCorrectionWrite) {
+  return request<ReturnCorrectionDetailDto>(`/api/internal/corrections/returns/${returnId}`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
 }

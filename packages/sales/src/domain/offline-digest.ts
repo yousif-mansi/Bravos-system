@@ -28,6 +28,7 @@ export async function digestConnectedSalePayload(input: {
   saleId: string;
   customerName: string | null;
   customerPhone: string | null;
+  couponCode?: string | null;
   employeeDiscountPiasters: number;
   discountReason: string | null;
   lines: Array<{ variantId: string; quantity: number }>;
@@ -39,6 +40,7 @@ export async function digestConnectedSalePayload(input: {
       snapshotId: null,
       customerName: input.customerName,
       customerPhone: input.customerPhone,
+      couponCode: input.couponCode ?? null,
       employeeDiscountPiasters: input.employeeDiscountPiasters,
       discountReason: input.discountReason,
       lines: input.lines,
@@ -52,6 +54,7 @@ export async function digestOfflineSale(input: {
   snapshotId: string | null;
   customerName: string | null;
   customerPhone: string | null;
+  couponCode?: string | null;
   employeeDiscountPiasters: number;
   discountReason: string | null;
   lines: Array<{ variantId: string; quantity: number }>;

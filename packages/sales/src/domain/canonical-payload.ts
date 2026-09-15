@@ -2,6 +2,7 @@ export type SalePayload = {
   saleId: string;
   customerName: string | null;
   customerPhone: string | null;
+  couponCode?: string | null;
   employeeDiscountPiasters: number;
   discountReason: string | null;
   lines: Array<{ variantId: string; quantity: number }>;
@@ -29,10 +30,12 @@ function sortedLines(lines: Array<{ variantId: string; quantity: number }>) {
 }
 
 export function normalizeSalePayload(input: SalePayload): SalePayload {
+  const couponCode = input.couponCode?.normalize("NFC").trim().toLocaleUpperCase("en-US") || null;
   return {
     saleId: input.saleId,
     customerName: input.customerName,
     customerPhone: input.customerPhone,
+    ...(couponCode ? { couponCode } : {}),
     employeeDiscountPiasters: input.employeeDiscountPiasters,
     discountReason: input.discountReason,
     lines: sortedLines(input.lines),
@@ -65,6 +68,7 @@ export function canonicalOfflineSaleFactsJson(input: {
   snapshotId: string | null;
   customerName: string | null;
   customerPhone: string | null;
+  couponCode?: string | null;
   employeeDiscountPiasters: number;
   discountReason: string | null;
   lines: Array<{ variantId: string; quantity: number }>;
@@ -84,6 +88,7 @@ export function canonicalOfflineSaleFactsJson(input: {
     saleId: input.id,
     customerName: input.customerName,
     customerPhone: input.customerPhone,
+    ...(input.couponCode ? { couponCode: input.couponCode } : {}),
     employeeDiscountPiasters: input.employeeDiscountPiasters,
     discountReason: input.discountReason,
     lines: input.lines,

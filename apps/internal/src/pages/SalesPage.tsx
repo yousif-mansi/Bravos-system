@@ -149,6 +149,7 @@ export default function SalesPage({
         {selected ? (
           <div>
             <SaleSummary sale={selected} />
+            {managerSale ? <Link className="button secondary" to={`/corrections?target=sale&id=${selected.id}`}>تصحيح تسجيل هذا البيع</Link> : null}
             {managerSale ? (
               <section className="card" data-testid="sale-costs">
                 <h2>تكلفة الدفعات</h2>

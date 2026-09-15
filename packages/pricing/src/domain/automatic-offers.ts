@@ -34,7 +34,7 @@ export function evaluateAutomaticOffers(input: {
   const cairoDate = cairoDateAt(input.at);
   const relevantOffers = input.offers
     .filter((offer) => offerIsActiveOn(offer, cairoDate))
-    .filter((offer) => input.lines.some((line) => appliesTo(offer, line)));
+    .filter((offer) => offerRelevant(offer, input.lines));
   if (relevantOffers.length === 0) {
     return { appliedAutomaticOffer: null, automaticOfferDiscountPiasters: 0, unitRanges: [] };
   }
@@ -67,6 +67,11 @@ export function evaluateAutomaticOffers(input: {
       discountType: winner.offer.discountType,
       percentageBasisPoints: winner.offer.percentageBasisPoints,
       fixedDiscountPiasters: winner.offer.fixedDiscountPiasters,
+      bundlePricePiasters: winner.offer.bundlePricePiasters,
+      bundleItems: winner.offer.bundleItems,
+      buyQuantity: winner.offer.buyQuantity,
+      rewardQuantity: winner.offer.rewardQuantity,
+      rewardPercentageBasisPoints: winner.offer.rewardPercentageBasisPoints,
       allowCoupon: winner.offer.allowCoupon,
       discountPiasters: winner.automaticOfferDiscountPiasters,
     },
@@ -76,21 +81,38 @@ export function evaluateAutomaticOffers(input: {
 }
 
 function evaluateOffer(offer: AutomaticOfferDto, ranges: IndexedRange[]) {
-  const eligible = ranges.filter((range) => appliesTo(offer, range));
-  if (eligible.length === 0) {
-    return null;
+  let discounted: IndexedRange[] | null;
+  switch (offer.discountType) {
+    case "fixed": {
+      const eligible = ranges.filter((range) => appliesToStandard(offer, range));
+      if (eligible.length === 0) return null;
+      const capacity = eligible.reduce(
+        (sum, range) => addSafe(sum, multiplySafe(range.listedPiasters, range.quantity)),
+        0,
+      );
+      discounted = allocateEqualCappedRanges(
+        ranges,
+        (range) => appliesToStandard(offer, range),
+        Math.min(offer.fixedDiscountPiasters ?? 0, capacity),
+      );
+      break;
+    }
+    case "percentage":
+      if (!ranges.some((range) => appliesToStandard(offer, range))) return null;
+      discounted = allocatePercentageRanges(
+        ranges,
+        (range) => appliesToStandard(offer, range),
+        offer.percentageBasisPoints ?? 0,
+      );
+      break;
+    case "fixed_bundle":
+      discounted = evaluateFixedBundle(offer, ranges);
+      break;
+    case "buy_x_get_y":
+      discounted = evaluateBuyXGetY(offer, ranges);
+      break;
   }
-
-  let discounted: IndexedRange[];
-  if (offer.discountType === "fixed") {
-    const capacity = eligible.reduce(
-      (sum, range) => addSafe(sum, multiplySafe(range.listedPiasters, range.quantity)),
-      0,
-    );
-    discounted = allocateEqualCappedRanges(ranges, offer, Math.min(offer.fixedDiscountPiasters ?? 0, capacity));
-  } else {
-    discounted = allocatePercentageRanges(ranges, offer, offer.percentageBasisPoints ?? 0);
-  }
+  if (!discounted) return null;
   const total = discounted.reduce(
     (sum, range) => addSafe(sum, multiplySafe(range.automaticOfferDiscountPiasters, range.quantity)),
     0,
@@ -100,13 +122,13 @@ function evaluateOffer(offer: AutomaticOfferDto, ranges: IndexedRange[]) {
 
 function allocateEqualCappedRanges(
   input: IndexedRange[],
-  offer: AutomaticOfferDto,
+  eligible: (range: IndexedRange) => boolean,
   requested: number,
 ): IndexedRange[] {
   let ranges = input.map((range) => ({ ...range }));
   let remaining = requested;
   while (remaining > 0) {
-    const eligibleQuantity = ranges.reduce((sum, range) => appliesTo(offer, range)
+    const eligibleQuantity = ranges.reduce((sum, range) => eligible(range)
       && range.automaticOfferDiscountPiasters < range.listedPiasters
       ? addSafe(sum, range.quantity)
       : sum, 0);
@@ -117,7 +139,7 @@ function allocateEqualCappedRanges(
       let unitsToIncrement = remaining;
       const split: IndexedRange[] = [];
       for (const range of ranges) {
-        if (unitsToIncrement > 0 && appliesTo(offer, range)
+        if (unitsToIncrement > 0 && eligible(range)
           && range.automaticOfferDiscountPiasters < range.listedPiasters) {
           const quantity = Math.min(unitsToIncrement, range.quantity);
           split.push({ ...range, quantity, automaticOfferDiscountPiasters: range.automaticOfferDiscountPiasters + 1 });
@@ -136,7 +158,7 @@ function allocateEqualCappedRanges(
 
     let applied = 0;
     ranges = ranges.map((range) => {
-      if (!appliesTo(offer, range) || range.automaticOfferDiscountPiasters >= range.listedPiasters) {
+      if (!eligible(range) || range.automaticOfferDiscountPiasters >= range.listedPiasters) {
         return range;
       }
       const increment = Math.min(share, range.listedPiasters - range.automaticOfferDiscountPiasters);
@@ -150,10 +172,10 @@ function allocateEqualCappedRanges(
 
 function allocatePercentageRanges(
   ranges: IndexedRange[],
-  offer: AutomaticOfferDto,
+  eligible: (range: IndexedRange) => boolean,
   basisPoints: number,
 ): IndexedRange[] {
-  const subtotal = ranges.reduce((sum, range) => appliesTo(offer, range)
+  const subtotal = ranges.reduce((sum, range) => eligible(range)
     ? addSafe(sum, multiplySafe(range.listedPiasters, range.quantity))
     : sum, 0);
   if (subtotal === 0 || basisPoints === 0) return ranges.map((range) => ({ ...range }));
@@ -161,7 +183,7 @@ function allocatePercentageRanges(
   const roundedTotal = Number((BigInt(subtotal) * BigInt(basisPoints) + 5_000n) / 10_000n);
   const denominator = BigInt(subtotal);
   const rows = ranges.map((range, index) => {
-    if (!appliesTo(offer, range)) return { range: { ...range }, index, remainder: -1n };
+    if (!eligible(range)) return { range: { ...range }, index, remainder: -1n };
     const numerator = BigInt(range.listedPiasters) * BigInt(roundedTotal);
     return {
       range: { ...range, automaticOfferDiscountPiasters: Number(numerator / denominator) },
@@ -229,8 +251,154 @@ function toRanges(lines: PricingBasketLine[]): IndexedRange[] {
   });
 }
 
-function appliesTo(offer: AutomaticOfferDto, line: { productId: string; categoryId: string }): boolean {
+function appliesToStandard(offer: AutomaticOfferDto, line: { productId: string; categoryId: string }): boolean {
   return offer.productIds.includes(line.productId) || offer.categoryIds.includes(line.categoryId);
+}
+
+function offerRelevant(offer: AutomaticOfferDto, lines: PricingBasketLine[]): boolean {
+  switch (offer.discountType) {
+    case "percentage":
+    case "fixed":
+      return lines.some((line) => appliesToStandard(offer, line));
+    case "fixed_bundle": {
+      const variants = new Set(lines.map((line) => line.variantId));
+      return offer.bundleItems.every((item) => variants.has(item.variantId));
+    }
+    case "buy_x_get_y":
+      return lines.some((line) => matchesScope(line, offer.buyProductIds, offer.buyCategoryIds))
+        && lines.some((line) => matchesScope(line, offer.rewardProductIds, offer.rewardCategoryIds));
+  }
+}
+
+function evaluateFixedBundle(offer: AutomaticOfferDto, ranges: IndexedRange[]): IndexedRange[] | null {
+  if (offer.bundlePricePiasters === null || offer.bundleItems.length === 0) return null;
+  const quantityByVariant = new Map<string, number>();
+  for (const range of ranges) {
+    quantityByVariant.set(range.variantId, addSafe(quantityByVariant.get(range.variantId) ?? 0, range.quantity));
+  }
+  let applications = Number.MAX_SAFE_INTEGER;
+  for (const item of offer.bundleItems) {
+    applications = Math.min(
+      applications,
+      Math.floor((quantityByVariant.get(item.variantId) ?? 0) / item.requiredQuantity),
+    );
+  }
+  if (applications < 1 || !Number.isSafeInteger(applications)) return null;
+
+  const includedByVariant = new Map(offer.bundleItems.map((item) => [
+    item.variantId,
+    multiplySafe(item.requiredQuantity, applications),
+  ]));
+  const included = (range: IndexedRange) => range.unitIndex < (includedByVariant.get(range.variantId) ?? 0);
+  const listedTotal = ranges.reduce((sum, range) => included(range)
+    ? addSafe(sum, multiplySafe(range.listedPiasters, Math.min(
+        range.quantity,
+        (includedByVariant.get(range.variantId) ?? 0) - range.unitIndex,
+      )))
+    : sum, 0);
+  const bundleTotal = multiplySafe(offer.bundlePricePiasters, applications);
+  if (bundleTotal >= listedTotal) return null;
+  return allocateEqualCappedRanges(
+    splitAtQuantities(ranges, includedByVariant),
+    included,
+    listedTotal - bundleTotal,
+  );
+}
+
+function evaluateBuyXGetY(offer: AutomaticOfferDto, ranges: IndexedRange[]): IndexedRange[] | null {
+  const buyQuantity = offer.buyQuantity ?? 0;
+  const rewardQuantity = offer.rewardQuantity ?? 0;
+  const rewardBasisPoints = offer.rewardPercentageBasisPoints ?? 0;
+  if (buyQuantity < 1 || rewardQuantity < 1 || rewardBasisPoints < 1) return null;
+
+  const isBuy = (range: IndexedRange) => matchesScope(range, offer.buyProductIds, offer.buyCategoryIds);
+  const isReward = (range: IndexedRange) => matchesScope(range, offer.rewardProductIds, offer.rewardCategoryIds);
+  const purchaseCount = ranges.reduce((sum, range) => isBuy(range) ? addSafe(sum, range.quantity) : sum, 0);
+  const rewardCount = ranges.reduce((sum, range) => isReward(range) ? addSafe(sum, range.quantity) : sum, 0);
+  const overlappingCount = ranges.reduce(
+    (sum, range) => isBuy(range) && isReward(range) ? addSafe(sum, range.quantity) : sum,
+    0,
+  );
+  const rewardOnlyCount = rewardCount - overlappingCount;
+  let low = 0;
+  let high = Math.min(Math.floor(purchaseCount / buyQuantity), Math.floor(rewardCount / rewardQuantity));
+  while (low < high) {
+    const candidate = Math.ceil((low + high) / 2);
+    if (buyXGetYApplicationsAreFeasible(
+      candidate,
+      purchaseCount,
+      rewardOnlyCount,
+      overlappingCount,
+      buyQuantity,
+      rewardQuantity,
+    )) low = candidate;
+    else high = candidate - 1;
+  }
+  if (low === 0) return null;
+
+  let rewardUnitsNeeded = multiplySafe(low, rewardQuantity);
+  let overlappingUnitsAllowed = purchaseCount - multiplySafe(low, buyQuantity);
+  const selectedByVariant = new Map<string, number>();
+  const candidates = ranges.filter(isReward).sort((left, right) =>
+    left.listedPiasters - right.listedPiasters
+    || left.variantId.localeCompare(right.variantId)
+    || left.unitIndex - right.unitIndex);
+  for (const range of candidates) {
+    if (rewardUnitsNeeded === 0) break;
+    const overlap = isBuy(range);
+    const quantity = Math.min(
+      range.quantity,
+      rewardUnitsNeeded,
+      overlap ? overlappingUnitsAllowed : range.quantity,
+    );
+    if (quantity <= 0) continue;
+    selectedByVariant.set(range.variantId, addSafe(selectedByVariant.get(range.variantId) ?? 0, quantity));
+    rewardUnitsNeeded -= quantity;
+    if (overlap) overlappingUnitsAllowed -= quantity;
+  }
+  if (rewardUnitsNeeded !== 0) return null;
+  const selected = (range: IndexedRange) => range.unitIndex < (selectedByVariant.get(range.variantId) ?? 0);
+  return allocatePercentageRanges(
+    splitAtQuantities(ranges, selectedByVariant),
+    selected,
+    rewardBasisPoints,
+  );
+}
+
+function buyXGetYApplicationsAreFeasible(
+  applications: number,
+  purchaseCount: number,
+  rewardOnlyCount: number,
+  overlappingCount: number,
+  buyQuantity: number,
+  rewardQuantity: number,
+): boolean {
+  const rewardsNeeded = multiplySafe(applications, rewardQuantity);
+  const overlapAllowed = purchaseCount - multiplySafe(applications, buyQuantity);
+  return overlapAllowed >= 0 && rewardsNeeded <= addSafe(rewardOnlyCount, Math.min(overlappingCount, overlapAllowed));
+}
+
+function splitAtQuantities(ranges: IndexedRange[], quantities: Map<string, number>): IndexedRange[] {
+  const result: IndexedRange[] = [];
+  for (const range of ranges) {
+    const boundary = quantities.get(range.variantId) ?? 0;
+    const split = boundary - range.unitIndex;
+    if (split > 0 && split < range.quantity) {
+      result.push({ ...range, quantity: split });
+      result.push({ ...range, unitIndex: range.unitIndex + split, quantity: range.quantity - split });
+    } else {
+      result.push({ ...range });
+    }
+  }
+  return result;
+}
+
+function matchesScope(
+  line: { productId: string; categoryId: string },
+  productIds: string[],
+  categoryIds: string[],
+): boolean {
+  return productIds.includes(line.productId) || categoryIds.includes(line.categoryId);
 }
 
 function mergeRanges(ranges: IndexedRange[]): IndexedRange[] {

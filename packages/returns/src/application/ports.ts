@@ -11,6 +11,7 @@ export type ReturnsActorPort = {
 
 export type ReturnSourceUnit = {
   id: string;
+  sourceType: "original" | "correction";
   lineId: string;
   variantId: string;
   unitIndex: number;
@@ -46,7 +47,8 @@ export type ReturnSourceRecord = {
 export type ReturnUnitWrite = {
   id: string;
   returnLineId: string;
-  sourceSaleUnitId: string;
+  sourceSaleUnitId: string | null;
+  sourceRecordingSaleUnitId: string | null;
   startOffset: number;
   quantity: number;
   paidUnitPiasters: number;
@@ -119,6 +121,18 @@ export type ReturnListRecord = {
   postedAt: Date | null;
 };
 
+export type EffectiveReturnState = {
+  revision: number;
+  status: "active" | "cancelled";
+  authorizedRefundPiasters: number | null;
+  paidPiasters: number;
+  lines: Array<{ returnLineId: string; quantity: number; sellableQuantity: number }> | null;
+};
+
+export type ReturnCorrectionStateReader = {
+  getEffectiveReturn(returnId: string): Promise<EffectiveReturnState | null>;
+};
+
 export type SourceSearch = {
   reference?: string;
   date?: string;
@@ -130,6 +144,7 @@ export type SourceSearch = {
 export type ReturnsStore = {
   listSources(search: SourceSearch): Promise<ReturnSourceRecord[]>;
   getSource(saleId: string, lock?: boolean): Promise<ReturnSourceRecord | null>;
+  getSourceSaleId(returnId: string): Promise<string | null>;
   lockIdentities(returnId: string, operationId: string): Promise<void>;
   insertDraft(input: Omit<ReturnRecord, "createdAt" | "updatedAt" | "postedByStaffId" | "postedAt" | "refundStatus" | "refundPaidPiasters" | "refundRecordedByStaffId" | "refundRecordedAt" | "restorations" | "refundEvents">): Promise<{ kind: "created" | "existing"; record: ReturnRecord }>;
   updateDraft(input: {
@@ -169,7 +184,7 @@ export type ReturnVariantReader = {
 };
 
 export type ReturnsUnitOfWork = {
-  run<T>(work: (tx: { returns: ReturnsStore; inventory: InventoryTransaction }) => Promise<T>): Promise<T>;
+  run<T>(work: (tx: { returns: ReturnsStore; inventory: InventoryTransaction; corrections: ReturnCorrectionStateReader }) => Promise<T>): Promise<T>;
 };
 
 export type ReturnServices = {

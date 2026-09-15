@@ -40,6 +40,10 @@ const returnsChunk = internalFiles.find((file) => path.basename(file).includes("
 if (!returnsChunk) {
   throw new Error("Returns was not split into its own chunk.");
 }
+const correctionsChunk = internalFiles.find((file) => path.basename(file).includes("recording-corrections"));
+if (!correctionsChunk) {
+  throw new Error("Recording corrections were not split into their own chunk.");
+}
 const storefrontSettingsChunk = internalFiles.find((file) => path.basename(file).includes("storefront-settings"));
 if (!storefrontSettingsChunk) {
   throw new Error("Storefront settings were not split into their own chunk.");
@@ -61,14 +65,14 @@ for (const file of staticGraph) {
   if (source.includes("إنشاء حساب موظف") || source.includes("StaffPage")) {
     throw new Error(`${path.relative(internalDist, file)} should not include staff management for the initial login route.`);
   }
-  if (source.includes("إنشاء منتج") || source.includes("CatalogPage") || source.includes("LookupPage") || source.includes("البحث برمز المنتج") || source.includes("إذن استلام جديد") || source.includes("دفعات التكلفة") || source.includes("سلة البيع") || source.includes("SalesPage") || source.includes("ExpensePage") || source.includes("مصروف جديد") || source.includes("OffersPage") || source.includes("عرض جديد") || source.includes("ReturnsPage") || source.includes("اختيار البيع الأصلي") || source.includes("StorefrontSettingsPage") || source.includes("إعداد روابط التواصل في المتجر")) {
-    throw new Error(`${path.relative(internalDist, file)} should not include catalog, lookup, receiving, sales or returns screens for the initial login route.`);
+  if (source.includes("إنشاء منتج") || source.includes("CatalogPage") || source.includes("LookupPage") || source.includes("البحث برمز المنتج") || source.includes("إذن استلام جديد") || source.includes("دفعات التكلفة") || source.includes("سلة البيع") || source.includes("SalesPage") || source.includes("ExpensePage") || source.includes("مصروف جديد") || source.includes("OffersPage") || source.includes("عرض جديد") || source.includes("ReturnsPage") || source.includes("اختيار البيع الأصلي") || source.includes("CorrectionsPage") || source.includes("الإلغاء وحده لا يعيد بضاعة") || source.includes("StorefrontSettingsPage") || source.includes("إعداد روابط التواصل في المتجر")) {
+    throw new Error(`${path.relative(internalDist, file)} should not include optional operational screens for the initial login route.`);
   }
   if (path.basename(file).includes("staff-management")) {
     throw new Error("Login entry statically imports the staff-management chunk.");
   }
-  if (path.basename(file).includes("catalog-maintenance") || path.basename(file).includes("cashier-lookup") || path.basename(file).includes("receiving-stock") || path.basename(file).includes("cashier-sales") || path.basename(file).includes("expenses-online") || path.basename(file).includes("offer-management") || path.basename(file).includes("physical-returns") || path.basename(file).includes("storefront-settings")) {
-    throw new Error("Login entry statically imports a catalog, lookup, receiving or sales chunk.");
+  if (path.basename(file).includes("catalog-maintenance") || path.basename(file).includes("cashier-lookup") || path.basename(file).includes("receiving-stock") || path.basename(file).includes("cashier-sales") || path.basename(file).includes("expenses-online") || path.basename(file).includes("offer-management") || path.basename(file).includes("physical-returns") || path.basename(file).includes("recording-corrections") || path.basename(file).includes("storefront-settings")) {
+    throw new Error("Login entry statically imports an optional operational chunk.");
   }
 }
 
@@ -80,6 +84,7 @@ const dynamicSales = [];
 const dynamicExpenses = [];
 const dynamicOffers = [];
 const dynamicReturns = [];
+const dynamicCorrections = [];
 const dynamicStorefrontSettings = [];
 for (const file of staticGraph) {
   const source = await readFile(file, "utf8");
@@ -92,6 +97,7 @@ for (const file of staticGraph) {
   dynamicExpenses.push(...specifiers.filter((specifier) => specifier.includes("expenses-online")));
   dynamicOffers.push(...specifiers.filter((specifier) => specifier.includes("offer-management")));
   dynamicReturns.push(...specifiers.filter((specifier) => specifier.includes("physical-returns")));
+  dynamicCorrections.push(...specifiers.filter((specifier) => specifier.includes("recording-corrections")));
   dynamicStorefrontSettings.push(...specifiers.filter((specifier) => specifier.includes("storefront-settings")));
 }
 if (dynamicStaff.length === 0) {
@@ -118,6 +124,9 @@ if (dynamicOffers.length === 0) {
 if (dynamicReturns.length === 0) {
   throw new Error("Returns chunk is not loaded through a dynamic import from the login graph.");
 }
+if (dynamicCorrections.length === 0) {
+  throw new Error("Recording corrections chunk is not loaded through a dynamic import from the login graph.");
+}
 if (dynamicStorefrontSettings.length === 0) {
   throw new Error("Storefront settings chunk is not loaded through a dynamic import from the login graph.");
 }
@@ -136,7 +145,7 @@ if (!swSource.includes("cashier-sales")) {
 if (!swSource.includes("POS_SW_SCHEMA_VERSION") && !swSource.includes("schemaVersion")) {
   throw new Error("Service worker does not publish POS schema version to waiting clients.");
 }
-if (swSource.includes("staff-management") || swSource.includes("catalog-maintenance") || swSource.includes("receiving-stock") || swSource.includes("expenses-online") || swSource.includes("offer-management") || swSource.includes("physical-returns") || swSource.includes("storefront-settings")) {
+if (swSource.includes("staff-management") || swSource.includes("catalog-maintenance") || swSource.includes("receiving-stock") || swSource.includes("expenses-online") || swSource.includes("offer-management") || swSource.includes("physical-returns") || swSource.includes("recording-corrections") || swSource.includes("storefront-settings")) {
   throw new Error("Service worker precaches optional manager/receiving/returns chunks.");
 }
 if (/\/api\/(?:auth|internal)/.test(swSource) && swSource.includes("CacheFirst")) {
@@ -152,7 +161,7 @@ if (storefrontFiles.length === 0) {
 }
 for (const file of storefrontFiles) {
   const source = await readFile(file, "utf8");
-  if (source.includes("@bravos/identity") || source.includes("إدارة الموظفين") || source.includes("إدارة المنتجات") || source.includes("استلام المخزون") || source.includes("مصروف جديد") || source.includes("ExpensesPage") || source.includes("@bravos/catalog") || source.includes("@bravos/inventory") || source.includes("@bravos/receiving") || source.includes("@bravos/sales") || source.includes("@bravos/expenses")) {
+  if (source.includes("@bravos/identity") || source.includes("إدارة الموظفين") || source.includes("إدارة المنتجات") || source.includes("استلام المخزون") || source.includes("الإلغاء وحده لا يعيد بضاعة") || source.includes("مصروف جديد") || source.includes("ExpensesPage") || source.includes("CorrectionsPage") || source.includes("@bravos/catalog") || source.includes("@bravos/inventory") || source.includes("@bravos/receiving") || source.includes("@bravos/sales") || source.includes("@bravos/expenses") || source.includes("@bravos/corrections")) {
     throw new Error(`Public build leaked internal staff modules: ${file}`);
   }
 }

@@ -1,6 +1,7 @@
 import type {
   BranchDto,
   AppliedAutomaticOfferDto,
+  AppliedCouponDto,
   CashierProductLookupDto,
   CompletedOperationProofDto,
   ManagerSaleDto,
@@ -11,6 +12,7 @@ import type {
 } from "@bravos/contracts";
 import type { AuthenticatedStaff, VerifiedAuth } from "@bravos/identity";
 import type { AllocationRecord, DiscrepancyRecord, InventoryTransaction } from "@bravos/inventory";
+import type { CouponUsageTransaction } from "@bravos/pricing";
 import type { VariantLineAllocation } from "../domain/discount.ts";
 
 export type { VerifiedAuth };
@@ -39,6 +41,7 @@ export type AutomaticPricingPort = {
       listedUnitPricePiasters: number;
     }>,
     at?: Date,
+    couponCode?: string | null,
   ): Promise<{
     appliedAutomaticOffer: AppliedAutomaticOfferDto | null;
     automaticOfferDiscountPiasters: number;
@@ -48,6 +51,16 @@ export type AutomaticPricingPort = {
       quantity: number;
       listedPiasters: number;
       automaticOfferDiscountPiasters: number;
+    }>;
+    appliedCoupon: AppliedCouponDto | null;
+    couponDiscountPiasters: number;
+    couponUnitRanges: Array<{
+      variantId: string;
+      unitIndex: number;
+      quantity: number;
+      listedPiasters: number;
+      automaticOfferDiscountPiasters: number;
+      couponDiscountPiasters: number;
     }>;
   }>;
 };
@@ -93,6 +106,7 @@ export type SaleUnitWrite = {
   discountPiasters: number;
   paidPiasters: number;
   automaticOfferDiscountPiasters: number;
+  couponDiscountPiasters: number;
   employeeDiscountPiasters: number;
 };
 
@@ -105,6 +119,7 @@ export type SaleLineWrite = {
   discountPiasters: number;
   paidPiasters: number;
   automaticOfferDiscountPiasters: number;
+  couponDiscountPiasters: number;
   employeeDiscountPiasters: number;
   allocatedQuantity: number;
   unallocatedQuantity: number;
@@ -125,7 +140,9 @@ export type SaleRecord = {
   customerPhone: string | null;
   originalTotalPiasters: number;
   automaticOfferDiscountPiasters: number;
+  couponDiscountPiasters: number;
   appliedAutomaticOffer: AppliedAutomaticOfferDto | null;
+  appliedCoupon: AppliedCouponDto | null;
   employeeDiscountPiasters: number;
   discountReason: string | null;
   finalTotalPiasters: number;
@@ -150,7 +167,9 @@ export type SaleInsert = {
   customerPhone: string | null;
   originalTotalPiasters: number;
   automaticOfferDiscountPiasters: number;
+  couponDiscountPiasters: number;
   appliedAutomaticOffer: AppliedAutomaticOfferDto | null;
+  appliedCoupon: AppliedCouponDto | null;
   employeeDiscountPiasters: number;
   discountReason: string | null;
   finalTotalPiasters: number;
@@ -193,6 +212,7 @@ export type SalesUnitOfWork = {
       sales: SaleStore;
       inventory: InventoryTransaction;
       snapshots: PriceSnapshotStore;
+      couponUsage: CouponUsageTransaction;
     }) => Promise<T>,
   ): Promise<T>;
 };

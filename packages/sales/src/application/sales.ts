@@ -51,6 +51,7 @@ const PREPARE_KEYS = new Set([
   "operationId",
   "customerName",
   "customerPhone",
+  "couponCode",
   "employeeDiscountPiasters",
   "discountReason",
   "occurredAt",
@@ -58,7 +59,7 @@ const PREPARE_KEYS = new Set([
 ]);
 const COMPLETE_KEYS = new Set([...PREPARE_KEYS, "physicallyCompleted", "pendingOperationIds"]);
 const ACCEPTED_KEYS = new Set([
-  ...COMPLETE_KEYS,
+  ...[...COMPLETE_KEYS].filter((key) => key !== "couponCode"),
   "deviceId",
   "snapshotId",
 ]);
@@ -212,6 +213,8 @@ export function createSalesServices(ports: {
       originalTotalPiasters: record.originalTotalPiasters,
       automaticOfferDiscountPiasters: record.automaticOfferDiscountPiasters,
       appliedAutomaticOffer: record.appliedAutomaticOffer,
+      couponDiscountPiasters: record.couponDiscountPiasters,
+      appliedCoupon: record.appliedCoupon,
       employeeDiscountPiasters: record.employeeDiscountPiasters,
       discountReason: record.discountReason,
       discountedByStaffId: record.discountedByStaffId,
@@ -337,7 +340,7 @@ export function createSalesServices(ports: {
         })),
         input.command.employeeDiscountPiasters,
       );
-      const acceptedPricing = { ...priced, appliedAutomaticOffer: null };
+      const acceptedPricing = { ...priced, appliedAutomaticOffer: null, appliedCoupon: null };
       const sourceLines = priced.lines.map((line) => ({
         id: crypto.randomUUID(),
         variantId: line.variantId,
@@ -361,6 +364,7 @@ export function createSalesServices(ports: {
           discountPiasters: line.discountPiasters,
           paidPiasters: line.paidPiasters,
           automaticOfferDiscountPiasters: line.automaticOfferDiscountPiasters,
+          couponDiscountPiasters: line.couponDiscountPiasters,
           employeeDiscountPiasters: line.employeeDiscountPiasters,
           allocatedQuantity: row?.allocatedQuantity ?? 0,
           unallocatedQuantity: row?.unallocatedQuantity ?? line.quantity,
@@ -376,6 +380,7 @@ export function createSalesServices(ports: {
             physicallyCompleted: true,
             customerName: input.command.customerName,
             customerPhone: input.command.customerPhone,
+            couponCode: null,
             employeeDiscountPiasters: input.command.employeeDiscountPiasters,
             discountReason: input.command.discountReason,
             occurredAt: input.command.occurredAt,
@@ -418,7 +423,7 @@ export function createSalesServices(ports: {
         (await ports.sales.getByOperationId(command.operationId));
       const priced = preliminary ? null : await ports.pricingQuote.run(async (quote) => {
         const listed = await quote.prices.getListedPrices(quantities.map((item) => item.variantId));
-        return priceFromListed(quote.automaticPricing, listed, quantities, command.employeeDiscountPiasters);
+        return priceFromListed(quote.automaticPricing, listed, quantities, command.employeeDiscountPiasters, command.couponCode);
       });
       const outcome = await ports.uow.run(async (tx) => {
         await tx.inventory.lockStockClock("share");
@@ -469,7 +474,7 @@ export function createSalesServices(ports: {
         (await ports.sales.getByOperationId(command.operationId));
       const directPricing = preliminary ? null : await ports.pricingQuote.run(async (quote) => {
         const listed = await quote.prices.getListedPrices(quantities.map((item) => item.variantId));
-        return priceFromListed(quote.automaticPricing, listed, quantities, command.employeeDiscountPiasters);
+        return priceFromListed(quote.automaticPricing, listed, quantities, command.employeeDiscountPiasters, command.couponCode);
       });
       const outcome = await ports.uow.run(async (tx) => {
         await tx.inventory.lockStockClock("update");
@@ -517,6 +522,18 @@ export function createSalesServices(ports: {
           return finish(replayed, false);
         }
 
+        const acceptedCoupon = existing?.appliedCoupon ?? directPricing?.appliedCoupon ?? null;
+        if (acceptedCoupon) {
+          await tx.couponUsage.claim({
+            couponId: acceptedCoupon.id,
+            sourceType: "physical_sale",
+            sourceId: command.saleId,
+            operationId: command.operationId,
+            payloadFingerprint: fingerprint,
+            claimedAt: claimed.recordedAt,
+          });
+        }
+
         const sourceLines =
           prepared && existing
             ? existing.lines.map((line) => ({
@@ -549,6 +566,7 @@ export function createSalesServices(ports: {
                 discountPiasters: line.discountPiasters,
                 paidPiasters: line.paidPiasters,
                 automaticOfferDiscountPiasters: line.automaticOfferDiscountPiasters,
+                couponDiscountPiasters: line.couponDiscountPiasters,
                 employeeDiscountPiasters: line.employeeDiscountPiasters,
                 units: line.units.map((unit) => ({
                   unitIndex: unit.unitIndex,
@@ -557,12 +575,14 @@ export function createSalesServices(ports: {
                   discountPiasters: unit.discountPiasters,
                   paidPiasters: unit.paidPiasters,
                   automaticOfferDiscountPiasters: unit.automaticOfferDiscountPiasters,
+                  couponDiscountPiasters: unit.couponDiscountPiasters,
                   employeeDiscountPiasters: unit.employeeDiscountPiasters,
                 })),
               })),
               originalTotalPiasters: existing.originalTotalPiasters,
               finalTotalPiasters: existing.finalTotalPiasters,
               appliedAutomaticOffer: existing.appliedAutomaticOffer,
+              appliedCoupon: existing.appliedCoupon,
             }
           : directPricing;
         if (!priced) {
@@ -579,6 +599,7 @@ export function createSalesServices(ports: {
             discountPiasters: line.discountPiasters,
             paidPiasters: line.paidPiasters,
             automaticOfferDiscountPiasters: line.automaticOfferDiscountPiasters,
+            couponDiscountPiasters: line.couponDiscountPiasters,
             employeeDiscountPiasters: line.employeeDiscountPiasters,
             allocatedQuantity: allocated?.allocatedQuantity ?? 0,
             unallocatedQuantity: allocated?.unallocatedQuantity ?? line.quantity,
@@ -763,6 +784,16 @@ export function createSalesServices(ports: {
             }
             return finish(replayed, false);
           }
+          if (existing.appliedCoupon) {
+            await tx.couponUsage.claim({
+              couponId: existing.appliedCoupon.id,
+              sourceType: "physical_sale",
+              sourceId: existing.id,
+              operationId: existing.operationId,
+              payloadFingerprint: existing.payloadFingerprint,
+              claimedAt: claimed.recordedAt,
+            });
+          }
           const sourceLines = existing.lines.map((line) => ({
             id: line.id,
             variantId: line.variantId,
@@ -905,6 +936,7 @@ async function priceFromListed(
   listed: Awaited<ReturnType<ListedPriceReader["getListedPrices"]>>,
   quantities: Array<{ variantId: string; quantity: number }>,
   employeeDiscountPiasters: number,
+  couponCode: string | null,
 ) {
   const byId = new Map(listed.map((row) => [row.variantId, row]));
   const missing = quantities.filter((line) => !byId.has(line.variantId));
@@ -922,19 +954,22 @@ async function priceFromListed(
       listedUnitPricePiasters: basis.listedUnitPricePiasters,
     };
   });
-  const automatic = await automaticPricing.evaluate(lines);
+  const automatic = await automaticPricing.evaluate(lines, undefined, couponCode);
   return {
     ...priceSaleLines(
       lines,
       employeeDiscountPiasters,
       automatic.appliedAutomaticOffer ? automatic.unitRanges : undefined,
+      automatic.appliedCoupon ? automatic.couponUnitRanges : undefined,
     ),
     appliedAutomaticOffer: automatic.appliedAutomaticOffer,
+    appliedCoupon: automatic.appliedCoupon,
   };
 }
 
 type PricedSale = ReturnType<typeof priceSaleLines> & {
   appliedAutomaticOffer: SaleInsert["appliedAutomaticOffer"];
+  appliedCoupon: SaleInsert["appliedCoupon"];
 };
 
 function toInsert(
@@ -958,6 +993,7 @@ function toInsert(
     (sum, line) => addMoney(sum, line.automaticOfferDiscountPiasters),
     0,
   );
+  const couponDiscountPiasters = pricedLines.reduce((sum, line) => addMoney(sum, line.couponDiscountPiasters), 0);
   const lines =
     options.completedLines ??
     pricedLines.map((line, index) => ({
@@ -969,6 +1005,7 @@ function toInsert(
       discountPiasters: line.discountPiasters,
       paidPiasters: line.paidPiasters,
       automaticOfferDiscountPiasters: line.automaticOfferDiscountPiasters,
+      couponDiscountPiasters: line.couponDiscountPiasters,
       employeeDiscountPiasters: line.employeeDiscountPiasters,
       allocatedQuantity: 0,
       unallocatedQuantity: 0,
@@ -989,11 +1026,13 @@ function toInsert(
     originalTotalPiasters,
     automaticOfferDiscountPiasters,
     appliedAutomaticOffer: priced.appliedAutomaticOffer,
+    couponDiscountPiasters,
+    appliedCoupon: priced.appliedCoupon,
     employeeDiscountPiasters: command.employeeDiscountPiasters,
     discountReason: command.discountReason,
     finalTotalPiasters: subtractMoney(
       subtractMoney(originalTotalPiasters, automaticOfferDiscountPiasters),
-      command.employeeDiscountPiasters,
+      addMoney(couponDiscountPiasters, command.employeeDiscountPiasters),
     ),
     payloadFingerprint: fingerprint,
     physicallyCompleted: options.physicallyCompleted,
@@ -1009,6 +1048,7 @@ function toPayload(command: ParsedSale): SalePayload {
     saleId: command.saleId,
     customerName: command.customerName,
     customerPhone: command.customerPhone,
+    couponCode: command.couponCode,
     employeeDiscountPiasters: command.employeeDiscountPiasters,
     discountReason: command.discountReason,
     lines: command.lines,
@@ -1019,9 +1059,10 @@ function toLineDto(line: SaleLineWrite, variant: SaleLineDto["variant"] | undefi
   if (!variant) {
     throw new SalesValidationError("المتغير المحدد غير موجود.");
   }
-  const offerEffects = line.automaticOfferDiscountPiasters > 0
+  const offerEffects = line.automaticOfferDiscountPiasters > 0 || line.couponDiscountPiasters > 0
     ? {
         automaticOfferDiscountPiasters: line.automaticOfferDiscountPiasters,
+        couponDiscountPiasters: line.couponDiscountPiasters,
         employeeDiscountPiasters: line.employeeDiscountPiasters,
       }
     : {};
@@ -1042,9 +1083,10 @@ function toLineDto(line: SaleLineWrite, variant: SaleLineDto["variant"] | undefi
       listedPiasters: unit.listedPiasters,
       discountPiasters: unit.discountPiasters,
       paidPiasters: unit.paidPiasters,
-      ...(unit.automaticOfferDiscountPiasters > 0
+      ...(unit.automaticOfferDiscountPiasters > 0 || unit.couponDiscountPiasters > 0
         ? {
             automaticOfferDiscountPiasters: unit.automaticOfferDiscountPiasters,
+            couponDiscountPiasters: unit.couponDiscountPiasters,
             employeeDiscountPiasters: unit.employeeDiscountPiasters,
           }
         : {}),
@@ -1059,6 +1101,7 @@ type ParsedSale = {
   physicallyCompleted: boolean;
   customerName: string | null;
   customerPhone: string | null;
+  couponCode: string | null;
   employeeDiscountPiasters: number;
   discountReason: string | null;
   occurredAt: Date | null;
@@ -1179,6 +1222,7 @@ function parseSaleWrite(input: unknown, complete: boolean): ParsedSale {
     physicallyCompleted: complete,
     customerName: parseOptionalText(body.customerName, 120, "اسم الزبون غير صالح."),
     customerPhone: parseOptionalText(body.customerPhone, 40, "هاتف الزبون غير صالح."),
+    couponCode: parseCouponCode(body.couponCode),
     employeeDiscountPiasters: assertDiscountPiasters(body.employeeDiscountPiasters),
     discountReason: parseOptionalText(body.discountReason, 200, "سبب الخصم غير صالح."),
     occurredAt: parseOptionalTime(body.occurredAt),
@@ -1213,6 +1257,7 @@ function toUnitWrites(
     discountPiasters: number;
     paidPiasters: number;
     automaticOfferDiscountPiasters?: number;
+    couponDiscountPiasters?: number;
     employeeDiscountPiasters?: number;
   }>,
 ): SaleLineWrite["units"] {
@@ -1223,9 +1268,15 @@ function toUnitWrites(
     discountPiasters: unit.discountPiasters,
     paidPiasters: unit.paidPiasters,
     automaticOfferDiscountPiasters: unit.automaticOfferDiscountPiasters ?? 0,
+    couponDiscountPiasters: unit.couponDiscountPiasters ?? 0,
     employeeDiscountPiasters:
-      unit.employeeDiscountPiasters ?? unit.discountPiasters - (unit.automaticOfferDiscountPiasters ?? 0),
+      unit.employeeDiscountPiasters ?? unit.discountPiasters - (unit.automaticOfferDiscountPiasters ?? 0) - (unit.couponDiscountPiasters ?? 0),
   }));
+}
+
+function parseCouponCode(value: unknown): string | null {
+  const parsed = parseOptionalText(value, 64, "كود الكوبون غير صالح.");
+  return parsed ? parsed.toLocaleUpperCase("en-US") : null;
 }
 
 function parseOptionalText(value: unknown, max: number, messageAr: string): string | null {

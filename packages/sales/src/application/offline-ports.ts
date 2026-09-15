@@ -20,6 +20,9 @@ export type OfflineSaleLine = {
   originalPiasters: number;
   discountPiasters: number;
   paidPiasters: number;
+  automaticOfferDiscountPiasters?: number;
+  couponDiscountPiasters?: number;
+  employeeDiscountPiasters?: number;
   allocatedQuantity: number;
   unallocatedQuantity: number;
   units: Array<{
@@ -28,6 +31,9 @@ export type OfflineSaleLine = {
     listedPiasters: number;
     discountPiasters: number;
     paidPiasters: number;
+    automaticOfferDiscountPiasters?: number;
+    couponDiscountPiasters?: number;
+    employeeDiscountPiasters?: number;
   }>;
   variant: SaleDto["lines"][number]["variant"];
 };
@@ -47,9 +53,12 @@ export type OfflineCompletedSale = {
   recordedAt: string | null;
   customerName: string | null;
   customerPhone: string | null;
+  couponCode: string | null;
   originalTotalPiasters: number;
   automaticOfferDiscountPiasters: number;
   appliedAutomaticOffer: SaleDto["appliedAutomaticOffer"];
+  couponDiscountPiasters: number;
+  appliedCoupon: SaleDto["appliedCoupon"];
   employeeDiscountPiasters: number;
   discountReason: string | null;
   discountedByStaffId: string | null;
@@ -77,6 +86,7 @@ export type OfflinePendingSale = {
   payload: {
     customerName: string | null;
     customerPhone: string | null;
+    couponCode?: string | null;
     employeeDiscountPiasters: number;
     discountReason: string | null;
     lines: Array<{ variantId: string; quantity: number }>;
@@ -107,6 +117,7 @@ export type CompleteOfflineSaleInput = {
   occurredAt: string;
   customerName: string | null;
   customerPhone: string | null;
+  couponCode: string | null;
   employeeDiscountPiasters: number;
   discountReason: string | null;
   lines: Array<{
@@ -168,6 +179,8 @@ export type OfflinePosStore = {
       originalTotalPiasters: number;
       automaticOfferDiscountPiasters: number;
       appliedAutomaticOffer: SaleDto["appliedAutomaticOffer"];
+      couponDiscountPiasters: number;
+      appliedCoupon: SaleDto["appliedCoupon"];
       finalTotalPiasters: number;
       payloadFingerprint: string;
     },

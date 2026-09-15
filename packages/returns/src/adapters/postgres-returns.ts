@@ -7,6 +7,7 @@ import type {
   ReturnListRecord,
   ReturnRecord,
   ReturnRestorationWrite,
+  ReturnCorrectionStateReader,
   ReturnsStore,
   ReturnsUnitOfWork,
   ReturnSourceLine,
@@ -28,6 +29,7 @@ type SourceRow = {
   final_total_piasters: number | string;
   customer_name: string | null;
   customer_phone: string | null;
+  correction_id: string | null;
 };
 
 type SourceLineRow = {
@@ -45,7 +47,7 @@ type SourceUnitRow = {
   unit_index: number;
   quantity: number;
   paid_piasters: number | string;
-  already_returned_quantity: number | string;
+  source_type: "original" | "correction";
 };
 
 type AllocationRow = {
@@ -134,11 +136,16 @@ export function createPostgresReturnsStore(queryable: Queryable): ReturnsStore {
       const rows: ReturnSourceRecord[] = [];
       for (const item of result.rows) {
         const source = await loadSource(queryable, item.id, false);
-        if (source) rows.push(source);
+        if (source && (search.amountPiasters === undefined || source.finalTotalPiasters === search.amountPiasters)) rows.push(source);
       }
       return rows;
     },
     getSource: (saleId, lock = false) => loadSource(queryable, saleId, lock),
+    async getSourceSaleId(returnId) {
+      const result = await queryable.query<{ source_sale_id: string }>(
+        `SELECT source_sale_id FROM returns_return WHERE id = $1`, [returnId]);
+      return result.rows[0]?.source_sale_id ?? null;
+    },
     async lockIdentities(returnId, operationId) {
       for (const key of [...new Set([returnId, operationId])].sort()) {
         await queryable.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [key]);
@@ -236,9 +243,11 @@ export function createPostgresReturnsStore(queryable: Queryable): ReturnsStore {
       for (const unit of input.units) {
         await queryable.query(
           `INSERT INTO returns_return_unit (
-             id, return_id, return_line_id, source_sale_unit_id, start_offset, quantity, paid_unit_piasters
-           ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-          [unit.id, input.returnId, unit.returnLineId, unit.sourceSaleUnitId, unit.startOffset, unit.quantity, unit.paidUnitPiasters],
+             id, return_id, return_line_id, source_sale_unit_id, source_recording_sale_unit_id,
+             start_offset, quantity, paid_unit_piasters
+           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+          [unit.id, input.returnId, unit.returnLineId, unit.sourceSaleUnitId,
+            unit.sourceRecordingSaleUnitId, unit.startOffset, unit.quantity, unit.paidUnitPiasters],
         );
       }
       for (const item of input.restorations) {
@@ -274,23 +283,21 @@ export function createPostgresReturnsStore(queryable: Queryable): ReturnsStore {
         if (!replay) throw new OperationConflictError();
         return { kind: "existing", record: replay, event: byOperation };
       }
-      if (record.refundStatus === "paid") {
-        throw new OperationConflictError("تم تسجيل دفع هذا الاسترداد بمعرّف عملية آخر.");
-      }
       await queryable.query(
         `INSERT INTO returns_refund_event (
            id, operation_id, return_id, status, amount_piasters, payload_fingerprint, actor_staff_id, recorded_at
          ) VALUES (gen_random_uuid(), $1, $2, 'paid', $3, $4, $5, $6)`,
         [input.operationId, input.returnId, input.amountPiasters, input.payloadFingerprint, input.actorStaffId, input.recordedAt],
       );
-      await queryable.query(
+      const updatedRow = await queryable.query<{ id: string }>(
         `UPDATE returns_return
-         SET refund_status = 'paid', refund_paid_piasters = $2,
+         SET refund_status = 'paid', refund_paid_piasters = refund_paid_piasters + $2,
              refund_recorded_by_staff_id = $3, refund_recorded_at = $4,
              updated_by_staff_id = $3, updated_at = $4
-         WHERE id = $1 AND refund_status = 'owed'`,
+         WHERE id = $1 AND status = 'posted' RETURNING id`,
         [input.returnId, input.amountPiasters, input.actorStaffId, input.recordedAt],
       );
+      if (!updatedRow.rows[0]) throw new OperationConflictError();
       const updated = await loadReturn(queryable, input.returnId, false);
       const event = await loadEventByOperation(queryable, input.operationId);
       if (!updated || !event) throw new Error("Paid refund could not be loaded.");
@@ -302,13 +309,18 @@ export function createPostgresReturnsStore(queryable: Queryable): ReturnsStore {
 export function createPostgresReturnsUnitOfWork(
   pool: Pool,
   inventoryFor: (client: PoolClient) => InventoryTransaction,
+  correctionsFor: (client: PoolClient) => ReturnCorrectionStateReader,
 ): ReturnsUnitOfWork {
   return {
     async run(work) {
       const client = await pool.connect();
       try {
         await client.query("BEGIN");
-        const value = await work({ returns: createPostgresReturnsStore(client), inventory: inventoryFor(client) });
+        const value = await work({
+          returns: createPostgresReturnsStore(client),
+          inventory: inventoryFor(client),
+          corrections: correctionsFor(client),
+        });
         await client.query("COMMIT");
         return value;
       } catch (error) {
@@ -327,52 +339,88 @@ async function loadSource(queryable: Queryable, saleId: string, lock: boolean): 
             s.occurred_at,
             ((s.occurred_at AT TIME ZONE 'Africa/Cairo') + interval '14 days')
               AT TIME ZONE 'Africa/Cairo' AS return_deadline_at,
-            s.final_total_piasters, s.customer_name, s.customer_phone
+            COALESCE(latest.effective_total_piasters, s.final_total_piasters) AS final_total_piasters,
+            s.customer_name, s.customer_phone, latest.id AS correction_id
      FROM sales_sale s
+     LEFT JOIN LATERAL (
+       SELECT c.id, c.change_type, c.effective_total_piasters
+       FROM recording_correction c WHERE c.sale_id = s.id ORDER BY c.revision DESC LIMIT 1
+     ) latest ON true
      WHERE s.id = $1 AND s.physically_completed = true
-     ${lock ? "FOR UPDATE" : ""}`,
+       AND COALESCE(latest.change_type, 'correction') <> 'cancellation'
+     ${lock ? "FOR UPDATE OF s" : ""}`,
     [saleId],
   );
   const row = result.rows[0];
   if (!row) return null;
-  const [linesResult, unitsResult, allocationsResult] = await Promise.all([
+  const [linesResult, unitsResult, returnedResult, allocationsResult] = await Promise.all([
     queryable.query<SourceLineRow>(
-      `SELECT id, variant_id, quantity, paid_piasters, line_index
-       FROM sales_sale_line WHERE sale_id = $1 ORDER BY line_index`,
-      [saleId],
+      `SELECT sl.id, sl.variant_id, COALESCE(v.quantity, sl.quantity)::int AS quantity,
+              COALESCE(v.paid_piasters, sl.paid_piasters) AS paid_piasters, sl.line_index
+       FROM sales_sale_line sl
+       LEFT JOIN recording_sale_line_value v
+         ON v.correction_id = $2::uuid AND v.sale_line_id = sl.id
+       WHERE sl.sale_id = $1 ORDER BY sl.line_index`,
+      [saleId, row.correction_id],
     ),
-    queryable.query<SourceUnitRow>(
-      `SELECT u.id, u.line_id, l.variant_id, u.unit_index, u.quantity, u.paid_piasters,
-              COALESCE(SUM(CASE WHEN r.status = 'posted' THEN ru.quantity ELSE 0 END), 0)::int AS already_returned_quantity
-       FROM sales_sale_unit u
-       JOIN sales_sale_line l ON l.id = u.line_id
-       LEFT JOIN returns_return_unit ru ON ru.source_sale_unit_id = u.id
-       LEFT JOIN returns_return r ON r.id = ru.return_id
-       WHERE u.sale_id = $1
-       GROUP BY u.id, u.line_id, l.variant_id, l.line_index, u.unit_index, u.quantity, u.paid_piasters
-       ORDER BY l.line_index, u.unit_index`,
-      [saleId],
-    ),
+    row.correction_id
+      ? queryable.query<SourceUnitRow>(
+          `SELECT u.id, u.sale_line_id AS line_id, sl.variant_id, u.unit_index,
+                  u.quantity, u.paid_unit_piasters AS paid_piasters, 'correction'::text AS source_type
+           FROM recording_sale_unit_value u
+           JOIN sales_sale_line sl ON sl.id = u.sale_line_id
+           WHERE u.correction_id = $1 ORDER BY sl.line_index, u.unit_index`, [row.correction_id])
+      : queryable.query<SourceUnitRow>(
+          `SELECT u.id, u.line_id, l.variant_id, u.unit_index, u.quantity, u.paid_piasters,
+                  'original'::text AS source_type
+           FROM sales_sale_unit u JOIN sales_sale_line l ON l.id = u.line_id
+           WHERE u.sale_id = $1 ORDER BY l.line_index, u.unit_index`, [saleId]),
+    queryable.query<{ source_sale_line_id: string; quantity: number | string }>(
+      `SELECT rl.source_sale_line_id,
+              COALESCE(SUM(CASE WHEN latest.change_type = 'cancellation' THEN 0
+                ELSE COALESCE(v.quantity, rl.quantity) END), 0)::int AS quantity
+       FROM returns_return_line rl
+       JOIN returns_return r ON r.id = rl.return_id
+       LEFT JOIN LATERAL (
+         SELECT c.id, c.change_type FROM recording_correction c
+         WHERE c.return_id = r.id ORDER BY c.revision DESC LIMIT 1
+       ) latest ON true
+       LEFT JOIN recording_return_line_value v
+         ON v.correction_id = latest.id AND v.return_line_id = rl.id
+       WHERE r.source_sale_id = $1 AND r.status = 'posted'
+       GROUP BY rl.source_sale_line_id`, [saleId]),
     queryable.query<AllocationRow>(
-      `SELECT a.batch_id, a.variant_id, a.quantity, a.unit_cost_piasters, a.recorded_at
-       FROM inventory_allocation a
-       JOIN inventory_batch b ON b.id = a.batch_id
-       WHERE a.operation_id = $1
-       ORDER BY a.variant_id, b.recorded_at, b.id`,
-      [row.operation_id],
-    ),
+      `WITH effects AS (
+         SELECT a.batch_id, a.variant_id, a.unit_cost_piasters, a.quantity::bigint AS amount
+         FROM inventory_allocation a WHERE a.operation_id = $1
+         UNION ALL
+         SELECT f.batch_id, f.variant_id, f.unit_cost_piasters,
+                CASE WHEN f.direction = 'deduct' THEN f.quantity ELSE -f.quantity END
+         FROM recording_merchandise_fact f
+         JOIN recording_correction c ON c.id = f.correction_id WHERE c.sale_id = $2
+       )
+       SELECT e.batch_id, e.variant_id, SUM(e.amount)::int AS quantity,
+              e.unit_cost_piasters, b.recorded_at
+       FROM effects e JOIN inventory_batch b ON b.id = e.batch_id
+       GROUP BY e.batch_id, e.variant_id, e.unit_cost_piasters, b.recorded_at
+       HAVING SUM(e.amount) > 0
+       ORDER BY e.variant_id, b.recorded_at, e.batch_id`, [row.operation_id, saleId]),
   ]);
+  const returnedByLine = new Map(returnedResult.rows.map((item) => [item.source_sale_line_id, asSafeInteger(item.quantity)]));
   const unitsByLine = new Map<string, ReturnSourceUnit[]>();
   for (const unit of unitsResult.rows) {
     const list = unitsByLine.get(unit.line_id) ?? [];
+    const alreadyBefore = list.reduce((sum, item) => sum + item.alreadyReturnedQuantity, 0);
+    const returnedForLine = returnedByLine.get(unit.line_id) ?? 0;
     list.push({
       id: unit.id,
+      sourceType: unit.source_type,
       lineId: unit.line_id,
       variantId: unit.variant_id,
       unitIndex: unit.unit_index,
       quantity: unit.quantity,
       paidPiasters: asSafeInteger(unit.paid_piasters),
-      alreadyReturnedQuantity: asSafeInteger(unit.already_returned_quantity),
+      alreadyReturnedQuantity: Math.min(unit.quantity, Math.max(0, returnedForLine - alreadyBefore)),
     });
     unitsByLine.set(unit.line_id, list);
   }
@@ -551,7 +599,6 @@ function sourceSearchSql(search: SourceSearch) {
         OR sz.name_ar ILIKE '%' || $${index} || '%' OR c.name_ar ILIKE '%' || $${index} || '%')
     )`);
   }
-  if (search.amountPiasters !== undefined) where.push(`s.final_total_piasters = $${paramIndex(search, "amountPiasters")}`);
   return `SELECT s.id FROM sales_sale s WHERE ${where.join(" AND ")} ORDER BY s.occurred_at DESC, s.id DESC LIMIT 100`;
 }
 
@@ -561,7 +608,6 @@ function sourceSearchParams(search: SourceSearch) {
   if (search.date) params.push(search.date);
   if (search.branchId) params.push(search.branchId);
   if (search.item) params.push(search.item);
-  if (search.amountPiasters !== undefined) params.push(search.amountPiasters);
   return params;
 }
 

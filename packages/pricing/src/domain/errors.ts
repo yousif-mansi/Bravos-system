@@ -6,3 +6,12 @@ export class PricingValidationError extends Error {
     this.name = "PricingValidationError";
   }
 }
+
+export class CouponUsageConflictError extends Error {
+  readonly code = "CONFLICT" as const;
+
+  constructor(message = "بلغ الكوبون الحد الأقصى للاستخدام.") {
+    super(message);
+    this.name = "CouponUsageConflictError";
+  }
+}

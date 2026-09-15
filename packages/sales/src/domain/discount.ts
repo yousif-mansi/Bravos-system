@@ -22,6 +22,7 @@ export type VariantLineAllocation = {
   discountPiasters: number;
   paidPiasters: number;
   automaticOfferDiscountPiasters: number;
+  couponDiscountPiasters: number;
   employeeDiscountPiasters: number;
   units: Array<{
     unitIndex: number;
@@ -30,6 +31,7 @@ export type VariantLineAllocation = {
     discountPiasters: number;
     paidPiasters: number;
     automaticOfferDiscountPiasters: number;
+    couponDiscountPiasters: number;
     employeeDiscountPiasters: number;
   }>;
 };
@@ -167,6 +169,7 @@ export function foldAllocatedUnits(units: AllocatedUnit[]): VariantLineAllocatio
       discountPiasters,
       paidPiasters: subtractMoney(originalPiasters, discountPiasters),
       automaticOfferDiscountPiasters: 0,
+      couponDiscountPiasters: 0,
       employeeDiscountPiasters: discountPiasters,
       units: group.map((unit, unitIndex) => ({
         unitIndex,
@@ -175,6 +178,7 @@ export function foldAllocatedUnits(units: AllocatedUnit[]): VariantLineAllocatio
         discountPiasters: unit.discountPiasters,
         paidPiasters: unit.paidPiasters,
         automaticOfferDiscountPiasters: 0,
+        couponDiscountPiasters: 0,
         employeeDiscountPiasters: unit.discountPiasters,
       })),
     };
@@ -318,6 +322,7 @@ function foldDiscountGroups(groups: DiscountGroup[]): VariantLineAllocation[] {
         discountPiasters: group.discountPiasters,
         paidPiasters: subtractMoney(group.listedPiasters, group.discountPiasters),
         automaticOfferDiscountPiasters: 0,
+        couponDiscountPiasters: 0,
         employeeDiscountPiasters: group.discountPiasters,
       });
       ordinal += group.quantity;
@@ -330,6 +335,7 @@ function foldDiscountGroups(groups: DiscountGroup[]): VariantLineAllocation[] {
       discountPiasters,
       paidPiasters: subtractMoney(originalPiasters, discountPiasters),
       automaticOfferDiscountPiasters: 0,
+      couponDiscountPiasters: 0,
       employeeDiscountPiasters: discountPiasters,
       units,
     };
@@ -346,21 +352,31 @@ export function priceSaleLines(
     listedPiasters: number;
     automaticOfferDiscountPiasters: number;
   }>,
+  couponRanges?: Array<{
+    variantId: string;
+    unitIndex: number;
+    quantity: number;
+    listedPiasters: number;
+    automaticOfferDiscountPiasters: number;
+    couponDiscountPiasters: number;
+  }>,
 ): { lines: VariantLineAllocation[]; originalTotalPiasters: number; finalTotalPiasters: number } {
-  const folded = automaticRanges
-    ? priceWithAutomaticEffects(lines, automaticRanges, employeeDiscountPiasters)
+  const configuredRanges = couponRanges ?? automaticRanges;
+  const folded = configuredRanges
+    ? priceWithConfiguredEffects(lines, configuredRanges, employeeDiscountPiasters)
     : foldDiscountGroups(allocateDiscountGroups(lines, employeeDiscountPiasters));
   const originalTotalPiasters = folded.reduce((sum, line) => addMoney(sum, line.originalPiasters), 0);
   const automaticOfferDiscountPiasters = folded.reduce(
     (sum, line) => addMoney(sum, line.automaticOfferDiscountPiasters),
     0,
   );
+  const couponDiscountPiasters = folded.reduce((sum, line) => addMoney(sum, line.couponDiscountPiasters), 0);
   return {
     lines: folded,
     originalTotalPiasters,
     finalTotalPiasters: subtractMoney(
       subtractMoney(originalTotalPiasters, automaticOfferDiscountPiasters),
-      employeeDiscountPiasters,
+      addMoney(couponDiscountPiasters, employeeDiscountPiasters),
     ),
   };
 }
@@ -371,10 +387,11 @@ type EffectRange = {
   quantity: number;
   listedPiasters: number;
   automaticOfferDiscountPiasters: number;
+  couponDiscountPiasters: number;
   employeeDiscountPiasters: number;
 };
 
-function priceWithAutomaticEffects(
+function priceWithConfiguredEffects(
   lines: Array<{ variantId: string; quantity: number; listedUnitPricePiasters: number }>,
   automaticRanges: Array<{
     variantId: string;
@@ -382,6 +399,7 @@ function priceWithAutomaticEffects(
     quantity: number;
     listedPiasters: number;
     automaticOfferDiscountPiasters: number;
+    couponDiscountPiasters?: number;
   }>,
   employeeDiscountPiasters: number,
 ): VariantLineAllocation[] {
@@ -409,10 +427,11 @@ function priceWithAutomaticEffects(
     }
     nextIndex.set(automatic.variantId, expectedIndex + automatic.quantity);
     const discount = assertSafeMoney(automatic.automaticOfferDiscountPiasters);
-    if (discount > automatic.listedPiasters) {
+    const couponDiscount = assertSafeMoney(automatic.couponDiscountPiasters ?? 0);
+    if (addMoney(discount, couponDiscount) > automatic.listedPiasters) {
       throw new SalesValidationError("تفاصيل العرض التلقائي غير صالحة.");
     }
-    return { ...automatic, automaticOfferDiscountPiasters: discount, employeeDiscountPiasters: 0 };
+    return { ...automatic, automaticOfferDiscountPiasters: discount, couponDiscountPiasters: couponDiscount, employeeDiscountPiasters: 0 };
   });
   for (const [variantId, source] of expected) {
     if ((nextIndex.get(variantId) ?? 0) !== source.quantity) {
@@ -431,7 +450,7 @@ function allocateEmployeeEffectRanges(input: EffectRange[], discountPiasters: nu
   assertSafeMoney(discountPiasters);
   const available = input.reduce((sum, range) => addMoney(
     sum,
-    multiplyMoney(subtractMoney(range.listedPiasters, range.automaticOfferDiscountPiasters), range.quantity),
+    multiplyMoney(subtractMoney(range.listedPiasters, addMoney(range.automaticOfferDiscountPiasters, range.couponDiscountPiasters)), range.quantity),
   ), 0);
   if (discountPiasters > available) throw new SalesValidationError("لا يمكن أن يكون إجمالي البيع سالباً.");
 
@@ -439,7 +458,7 @@ function allocateEmployeeEffectRanges(input: EffectRange[], discountPiasters: nu
   let remaining = discountPiasters;
   while (remaining > 0) {
     const eligibleQuantity = ranges.reduce((sum, range) =>
-      range.listedPiasters - range.automaticOfferDiscountPiasters - range.employeeDiscountPiasters > 0
+      range.listedPiasters - range.automaticOfferDiscountPiasters - range.couponDiscountPiasters - range.employeeDiscountPiasters > 0
         ? addMoney(sum, range.quantity)
         : sum, 0);
     if (eligibleQuantity === 0) throw new SalesValidationError("لا يمكن أن يكون إجمالي البيع سالباً.");
@@ -448,7 +467,7 @@ function allocateEmployeeEffectRanges(input: EffectRange[], discountPiasters: nu
       let need = remaining;
       const split: EffectRange[] = [];
       for (const range of ranges) {
-        const capacity = range.listedPiasters - range.automaticOfferDiscountPiasters - range.employeeDiscountPiasters;
+        const capacity = range.listedPiasters - range.automaticOfferDiscountPiasters - range.couponDiscountPiasters - range.employeeDiscountPiasters;
         if (need <= 0 || capacity <= 0) {
           split.push(range);
           continue;
@@ -466,7 +485,7 @@ function allocateEmployeeEffectRanges(input: EffectRange[], discountPiasters: nu
     }
     let applied = 0;
     ranges = ranges.map((range) => {
-      const capacity = range.listedPiasters - range.automaticOfferDiscountPiasters - range.employeeDiscountPiasters;
+      const capacity = range.listedPiasters - range.automaticOfferDiscountPiasters - range.couponDiscountPiasters - range.employeeDiscountPiasters;
       if (capacity <= 0) return range;
       const increment = Math.min(share, capacity);
       applied = addMoney(applied, multiplyMoney(increment, range.quantity));
@@ -490,17 +509,20 @@ function foldEffectRanges(ranges: EffectRange[]): VariantLineAllocation[] {
       addMoney(sum, multiplyMoney(range.automaticOfferDiscountPiasters, range.quantity)), 0);
     const employeeDiscountPiasters = source.reduce((sum, range) =>
       addMoney(sum, multiplyMoney(range.employeeDiscountPiasters, range.quantity)), 0);
+    const couponDiscountPiasters = source.reduce((sum, range) =>
+      addMoney(sum, multiplyMoney(range.couponDiscountPiasters, range.quantity)), 0);
     const originalPiasters = source.reduce((sum, range) =>
       addMoney(sum, multiplyMoney(range.listedPiasters, range.quantity)), 0);
     const compact: VariantLineAllocation["units"] = [];
     for (const range of source) {
       const last = compact.at(-1);
-      const discountPiasters = addMoney(range.automaticOfferDiscountPiasters, range.employeeDiscountPiasters);
+      const discountPiasters = addMoney(addMoney(range.automaticOfferDiscountPiasters, range.couponDiscountPiasters), range.employeeDiscountPiasters);
       const paidPiasters = subtractMoney(range.listedPiasters, discountPiasters);
       if (
         last && last.unitIndex + last.quantity === range.unitIndex
         && last.listedPiasters === range.listedPiasters
         && last.automaticOfferDiscountPiasters === range.automaticOfferDiscountPiasters
+        && last.couponDiscountPiasters === range.couponDiscountPiasters
         && last.employeeDiscountPiasters === range.employeeDiscountPiasters
       ) {
         last.quantity += range.quantity;
@@ -510,19 +532,21 @@ function foldEffectRanges(ranges: EffectRange[]): VariantLineAllocation[] {
           quantity: range.quantity,
           listedPiasters: range.listedPiasters,
           automaticOfferDiscountPiasters: range.automaticOfferDiscountPiasters,
+          couponDiscountPiasters: range.couponDiscountPiasters,
           employeeDiscountPiasters: range.employeeDiscountPiasters,
           discountPiasters,
           paidPiasters,
         });
       }
     }
-    const discountPiasters = addMoney(automaticOfferDiscountPiasters, employeeDiscountPiasters);
+    const discountPiasters = addMoney(addMoney(automaticOfferDiscountPiasters, couponDiscountPiasters), employeeDiscountPiasters);
     return {
       variantId,
       quantity: source.reduce((sum, range) => sum + range.quantity, 0),
       listedUnitPricePiasters: source[0]?.listedPiasters ?? 0,
       originalPiasters,
       automaticOfferDiscountPiasters,
+      couponDiscountPiasters,
       employeeDiscountPiasters,
       discountPiasters,
       paidPiasters: subtractMoney(originalPiasters, discountPiasters),

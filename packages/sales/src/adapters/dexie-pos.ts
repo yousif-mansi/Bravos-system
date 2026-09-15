@@ -125,6 +125,9 @@ function normalizeCompletedSale(sale: OfflineCompletedSale): OfflineCompletedSal
     ...sale,
     automaticOfferDiscountPiasters: sale.automaticOfferDiscountPiasters ?? 0,
     appliedAutomaticOffer: sale.appliedAutomaticOffer ?? null,
+    couponCode: sale.couponCode ?? sale.appliedCoupon?.code ?? null,
+    couponDiscountPiasters: sale.couponDiscountPiasters ?? 0,
+    appliedCoupon: sale.appliedCoupon ?? null,
     payloadFingerprint:
       typeof sale.payloadFingerprint === "string" && /^[0-9a-f]{64}$/i.test(sale.payloadFingerprint)
         ? sale.payloadFingerprint.toLowerCase()
@@ -337,6 +340,7 @@ function saleFacts(local: OfflineCompletedSale) {
     snapshotId: local.snapshotId,
     customerName: local.customerName,
     customerPhone: local.customerPhone,
+    couponCode: local.couponCode,
     employeeDiscountPiasters: local.employeeDiscountPiasters,
     discountReason: local.discountReason,
     lines: local.lines,
@@ -510,6 +514,7 @@ function sameCompletedReplay(existing: OfflineCompletedSale, input: CompleteOffl
   if (existing.customerName !== input.customerName || existing.customerPhone !== input.customerPhone) {
     return false;
   }
+  if ((existing.couponCode ?? null) !== (input.couponCode ?? null)) return false;
   if (existing.employeeDiscountPiasters !== input.employeeDiscountPiasters) {
     return false;
   }
@@ -578,6 +583,16 @@ async function assertCurrentActor(db: BravosPosDatabase, staffId: string) {
 }
 
 function toPendingRecord(parsed: OfflinePendingSale): OfflinePendingSale {
+  const payload = parsed.payload
+    ? { ...parsed.payload, couponCode: parsed.payload.couponCode ?? null }
+    : null;
+  const quote = parsed.quote
+    ? {
+        ...parsed.quote,
+        couponDiscountPiasters: parsed.quote.couponDiscountPiasters ?? 0,
+        appliedCoupon: parsed.quote.appliedCoupon ?? null,
+      }
+    : null;
   return {
     staffId: parsed.staffId,
     saleId: parsed.saleId,
@@ -585,9 +600,9 @@ function toPendingRecord(parsed: OfflinePendingSale): OfflinePendingSale {
     phase: parsed.phase === "prepared" || parsed.phase === "rejected" ? parsed.phase : "uncertain",
     physicallyCompleted: parsed.physicallyCompleted === true,
     digest: typeof parsed.digest === "string" ? parsed.digest : null,
-    payload: parsed.payload ?? null,
+    payload,
     occurredAt: typeof parsed.occurredAt === "string" ? parsed.occurredAt : null,
-    quote: parsed.quote ?? null,
+    quote,
     snapshot: parsed.snapshot ?? null,
     quoteOrigin: parsed.quoteOrigin === "server" || parsed.quoteOrigin === "snapshot" ? parsed.quoteOrigin : null,
     cachedByVariant: parsed.cachedByVariant ?? null,
@@ -814,6 +829,7 @@ export function createDexiePosStore(options?: { databaseName?: string }): Offlin
           snapshotId: input.kind === "accepted" ? input.snapshot.snapshotId : null,
           customerName: input.customerName,
           customerPhone: input.customerPhone,
+          couponCode: input.couponCode,
           employeeDiscountPiasters: input.employeeDiscountPiasters,
           discountReason: input.discountReason,
           lines: input.lines,
@@ -851,9 +867,12 @@ export function createDexiePosStore(options?: { databaseName?: string }): Offlin
             recordedAt: null,
             customerName: input.customerName,
             customerPhone: input.customerPhone,
+            couponCode: input.couponCode,
             originalTotalPiasters: priced.originalTotalPiasters,
             automaticOfferDiscountPiasters: priced.automaticOfferDiscountPiasters,
             appliedAutomaticOffer: priced.appliedAutomaticOffer,
+            couponDiscountPiasters: priced.couponDiscountPiasters,
+            appliedCoupon: priced.appliedCoupon,
             employeeDiscountPiasters: input.employeeDiscountPiasters,
             discountReason: input.discountReason,
             discountedByStaffId: input.employeeDiscountPiasters > 0 ? input.staffId : null,
@@ -1054,7 +1073,8 @@ export function createDexiePosStore(options?: { databaseName?: string }): Offlin
       if (!(await matchesCurrentActor(db, staffId))) {
         return null;
       }
-      return (await db.pending.get(staffId)) ?? null;
+      const pending = await db.pending.get(staffId);
+      return pending ? toPendingRecord(pending) : null;
     },
 
     async listRecoverablePending(staffId) {
@@ -1073,7 +1093,7 @@ export function createDexiePosStore(options?: { databaseName?: string }): Offlin
           rows.push(extra);
         }
       }
-      return rows;
+      return rows.map(toPendingRecord);
     },
 
     async savePending(pending) {

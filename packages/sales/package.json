@@ -15,6 +15,7 @@
     "@bravos/contracts": "workspace:*",
     "@bravos/identity": "workspace:*",
     "@bravos/inventory": "workspace:*",
+    "@bravos/pricing": "workspace:*",
     "dexie": "4.4.5",
     "pg": "8.16.3"
   },

@@ -24,6 +24,7 @@ const SalesPage = lazy(() => import("./pages/SalesPage.tsx"));
 const ExpensesPage = lazy(() => import("./pages/ExpensesPage.tsx"));
 const OffersPage = lazy(() => import("./pages/OffersPage.tsx"));
 const ReturnsPage = lazy(() => import("./pages/ReturnsPage.tsx"));
+const CorrectionsPage = lazy(() => import("./pages/CorrectionsPage.tsx"));
 const StorefrontSettingsPage = lazy(() => import("./pages/StorefrontSettingsPage.tsx"));
 
 export function App() {
@@ -235,7 +236,10 @@ export function App() {
           if (!value.capabilities.cashier) {
             return;
           }
-          await retryUnsyncedSales(staffId, sync, stillCurrent);
+          const result = await retryUnsyncedSales(staffId, sync, stillCurrent);
+          if (stillCurrent() && result.error) {
+            setError(`${result.error} البيع المكتمل محفوظ محلياً وسيظل ضمن المبيعات غير المرسلة.`);
+          }
         } catch (caught: unknown) {
           if (!stillCurrent()) {
             return;
@@ -467,6 +471,18 @@ export function App() {
             workspace?.activeBranch && workspace.staff.role === "manager" && workspace.capabilities.manageInventory ? (
               <Suspense fallback={<main className="shell">جارٍ التحميل…</main>}>
                 <ReturnsPage workspace={workspace} onChanged={replaceWorkspace} />
+              </Suspense>
+            ) : (
+              <Navigate to={workspace?.activeBranch ? "/workspace" : workspace ? "/select-branch" : "/login"} replace />
+            )
+          }
+        />
+        <Route
+          path="/corrections"
+          element={
+            workspace?.activeBranch && workspace.staff.role === "manager" && workspace.capabilities.manageInventory ? (
+              <Suspense fallback={<main className="shell">جارٍ التحميل…</main>}>
+                <CorrectionsPage workspace={workspace} onChanged={replaceWorkspace} />
               </Suspense>
             ) : (
               <Navigate to={workspace?.activeBranch ? "/workspace" : workspace ? "/select-branch" : "/login"} replace />

@@ -255,13 +255,14 @@ test("a sale quote uses one committed catalog and offer snapshot", async () => {
   try {
     await blocker.query("BEGIN");
     await blocker.query("LOCK TABLE pricing_automatic_offer IN ACCESS EXCLUSIVE MODE");
+    const blockerPid = await blocker.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
     const pending = api(manager, "POST", "/api/internal/sales/prepare", {
       saleId: crypto.randomUUID(),
       operationId: crypto.randomUUID(),
       employeeDiscountPiasters: 0,
       lines: [{ variantId: catalog.cheapVariantId, quantity: 1 }],
     });
-    await waitForBlockedOfferRead();
+    await waitForBlockedOfferRead(blockerPid.rows[0]!.pid);
 
     const changed = await api(manager, "PATCH", `/api/internal/catalog/products/${catalog.productId}`, {
       code: product.body.code,
@@ -333,17 +334,25 @@ async function api(session: Session | undefined, method: "GET" | "POST" | "PUT" 
   return { status: response.statusCode, body: response.body ? JSON.parse(response.body) : null };
 }
 
-async function waitForBlockedOfferRead(): Promise<void> {
+async function waitForBlockedOfferRead(blockerPid: number): Promise<void> {
   const deadline = Date.now() + 5_000;
   while (Date.now() < deadline) {
     const waiting = await built.pool.query<{ waiting: boolean }>(
       `SELECT EXISTS (
-         SELECT 1 FROM pg_stat_activity
-         WHERE datname = current_database()
-           AND pid <> pg_backend_pid()
-           AND wait_event_type = 'Lock'
-           AND query LIKE '%FROM pricing_automatic_offer o%'
+         SELECT 1
+         FROM pg_stat_activity activity
+         WHERE activity.datname = current_database()
+           AND activity.pid <> pg_backend_pid()
+           AND activity.wait_event_type = 'Lock'
+           AND $1 = ANY(pg_blocking_pids(activity.pid))
+           AND EXISTS (
+             SELECT 1 FROM pg_locks waiting_lock
+             WHERE waiting_lock.pid = activity.pid
+               AND waiting_lock.granted = false
+               AND waiting_lock.relation = 'pricing_automatic_offer'::regclass
+           )
        ) AS waiting`,
+      [blockerPid],
     );
     if (waiting.rows[0]?.waiting) return;
     await new Promise((resolve) => setTimeout(resolve, 20));

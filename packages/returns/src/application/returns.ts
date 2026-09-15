@@ -11,8 +11,10 @@ import { ReturnWindowExpiredError, ReturnsValidationError } from "../domain/erro
 import { fingerprintRefundPayment, fingerprintReturnPayload } from "../domain/fingerprint.ts";
 import type {
   RefundEventRecord,
+  EffectiveReturnState,
   ReturnLineWrite,
   ReturnRecord,
+  ReturnCorrectionStateReader,
   ReturnRestorationWrite,
   ReturnServices,
   ReturnSourceRecord,
@@ -38,6 +40,7 @@ export function createReturnServices(ports: {
   variants: ReturnVariantReader;
   returns: ReturnsStore;
   uow: ReturnsUnitOfWork;
+  corrections: ReturnCorrectionStateReader;
   clock?: { now(): Date };
 }): ReturnServices {
   const clock = ports.clock ?? { now: () => new Date() };
@@ -99,7 +102,10 @@ export function createReturnServices(ports: {
   }
 
   async function hydrate(record: ReturnRecord): Promise<ReturnDto> {
-    const source = await ports.returns.getSource(record.sourceSaleId);
+    const [source, corrected] = await Promise.all([
+      ports.returns.getSource(record.sourceSaleId),
+      record.status === "posted" ? ports.corrections.getEffectiveReturn(record.id) : Promise.resolve(null),
+    ]);
     if (!source) throw new ReturnsValidationError("تعذر العثور على البيع الأصلي.");
     const [sourceValue, branches, identities] = await Promise.all([
       sourceDto(source),
@@ -109,6 +115,13 @@ export function createReturnServices(ports: {
     const handlingBranch = branches.find((item) => item.id === record.handlingBranchId);
     if (!handlingBranch) throw new ReturnsValidationError("فرع معالجة الإرجاع غير موجود.");
     const byId = new Map(identities.map((item) => [item.id, item]));
+    const refund = projectEffectiveRefund({
+      recordStatus: record.status,
+      originalAuthorizedPiasters: record.authorizedRefundPiasters,
+      originalPaidPiasters: record.refundPaidPiasters,
+      corrected,
+    });
+    const correctedLines = new Map((corrected?.lines ?? []).map((line) => [line.returnLineId, line]));
     return {
       id: record.id,
       operationId: record.operationId,
@@ -117,7 +130,10 @@ export function createReturnServices(ports: {
       source: sourceValue,
       handlingBranch,
       suggestedRefundPiasters: record.suggestedRefundPiasters,
-      authorizedRefundPiasters: record.authorizedRefundPiasters,
+      authorizedRefundPiasters: refund.authorizedPiasters,
+      originalAuthorizedRefundPiasters: record.authorizedRefundPiasters,
+      effectiveStatus: refund.effectiveStatus,
+      correctionRevision: refund.correctionRevision,
       createdByStaffId: record.createdByStaffId,
       createdAt: record.createdAt.toISOString(),
       updatedByStaffId: record.updatedByStaffId,
@@ -127,14 +143,17 @@ export function createReturnServices(ports: {
       lines: record.lines.map((line) => {
         const variant = byId.get(line.variantId);
         if (!variant) throw new ReturnsValidationError("المتغير المحدد غير موجود.");
+        const effectiveLine = correctedLines.get(line.id);
+        const quantity = effectiveLine?.quantity ?? line.quantity;
+        const sellableQuantity = effectiveLine?.sellableQuantity ?? line.sellableQuantity;
         return {
           id: line.id,
           sourceSaleLineId: line.sourceSaleLineId,
           variantId: line.variantId,
           variant,
-          quantity: line.quantity,
-          sellableQuantity: line.sellableQuantity,
-          unsellableQuantity: line.quantity - line.sellableQuantity,
+          quantity,
+          sellableQuantity,
+          unsellableQuantity: quantity - sellableQuantity,
           suggestedRefundPiasters: line.suggestedRefundPiasters,
         };
       }),
@@ -145,9 +164,10 @@ export function createReturnServices(ports: {
         unitCostPiasters: item.unitCostPiasters,
       })),
       refund: {
-        status: record.refundStatus,
-        owedPiasters: record.status === "posted" && record.refundStatus === "owed" ? record.authorizedRefundPiasters : 0,
-        paidPiasters: record.refundPaidPiasters,
+        status: refund.status,
+        owedPiasters: refund.owedPiasters,
+        overpaidPiasters: refund.overpaidPiasters,
+        paidPiasters: refund.paidPiasters,
         recordedByStaffId: record.refundRecordedByStaffId,
         recordedAt: record.refundRecordedAt?.toISOString() ?? null,
         events: record.refundEvents.map(toEventDto),
@@ -167,24 +187,12 @@ export function createReturnServices(ports: {
       const manager = await requireManager(auth);
       const command = parseDraft(input);
       if (!canUseBranch(manager, command.handlingBranchId)) throw new ForbiddenError();
-      const source = await ports.returns.getSource(command.sourceSaleId);
-      if (!source) throw new NotFoundError("تعذر العثور على البيع الأصلي.");
-      const plan = planReturn(source, command.lines);
       const fingerprint = fingerprintReturnPayload({
         sourceSaleId: command.sourceSaleId,
         handlingBranchId: command.handlingBranchId,
         authorizedRefundPiasters: command.authorizedRefundPiasters,
         lines: command.lines,
       });
-      const lines: ReturnLineWrite[] = plan.lines.map((line, lineIndex) => ({
-        id: crypto.randomUUID(),
-        sourceSaleLineId: line.sourceSaleLineId,
-        variantId: line.variantId,
-        quantity: line.quantity,
-        sellableQuantity: line.sellableQuantity,
-        suggestedRefundPiasters: line.suggestedRefundPiasters,
-        lineIndex,
-      }));
       const outcome = await ports.uow.run(async (tx) => {
         await tx.returns.lockIdentities(command.returnId, command.operationId);
         const byId = await tx.returns.getById(command.returnId);
@@ -196,6 +204,18 @@ export function createReturnServices(ports: {
           }
           return { record: existing, created: false };
         }
+        const source = await tx.returns.getSource(command.sourceSaleId, true);
+        if (!source) throw new NotFoundError("تعذر العثور على البيع الأصلي.");
+        const plan = planReturn(source, command.lines);
+        const lines: ReturnLineWrite[] = plan.lines.map((line, lineIndex) => ({
+          id: crypto.randomUUID(),
+          sourceSaleLineId: line.sourceSaleLineId,
+          variantId: line.variantId,
+          quantity: line.quantity,
+          sellableQuantity: line.sellableQuantity,
+          suggestedRefundPiasters: line.suggestedRefundPiasters,
+          lineIndex,
+        }));
         const inserted = await tx.returns.insertDraft({
           id: command.returnId,
           operationId: command.operationId,
@@ -221,8 +241,13 @@ export function createReturnServices(ports: {
       const returnId = assertUuid(id, "الإرجاع غير موجود.");
       const command = parseDraftUpdate(input);
       const record = await ports.uow.run(async (tx) => {
+        const sourceSaleId = await tx.returns.getSourceSaleId(returnId);
+        if (!sourceSaleId) throw new NotFoundError("الإرجاع غير موجود.");
+        const source = await tx.returns.getSource(sourceSaleId, true);
+        if (!source) throw new NotFoundError("تعذر العثور على البيع الأصلي.");
         const existing = await tx.returns.getById(returnId, true);
         if (!existing) throw new NotFoundError("الإرجاع غير موجود.");
+        if (existing.sourceSaleId !== sourceSaleId) throw new OperationConflictError();
         if (!canUseBranch(manager, command.handlingBranchId)) throw new ForbiddenError();
         const fingerprint = fingerprintReturnPayload({
           sourceSaleId: existing.sourceSaleId,
@@ -243,8 +268,6 @@ export function createReturnServices(ports: {
         if (existing.revision !== command.expectedRevision) {
           throw new OperationConflictError("تغيرت المسودة. أعد تحميلها قبل حفظ التعديل.");
         }
-        const source = await tx.returns.getSource(existing.sourceSaleId, true);
-        if (!source) throw new NotFoundError("تعذر العثور على البيع الأصلي.");
         const plan = planReturn(source, command.lines);
         return tx.returns.updateDraft({
           returnId,
@@ -279,16 +302,19 @@ export function createReturnServices(ports: {
       }
       const expectedRevision = positiveQuantity(body.expectedRevision, "نسخة المسودة غير صالحة.");
       const outcome = await ports.uow.run(async (tx) => {
+        const sourceSaleId = await tx.returns.getSourceSaleId(returnId);
+        if (!sourceSaleId) throw new NotFoundError("الإرجاع غير موجود.");
+        await tx.inventory.lockStockClock("update");
+        const source = await tx.returns.getSource(sourceSaleId, true);
+        if (!source) throw new ReturnsValidationError("تعذر العثور على البيع الأصلي.");
         const record = await tx.returns.getById(returnId, true);
         if (!record) throw new NotFoundError("الإرجاع غير موجود.");
+        if (record.sourceSaleId !== sourceSaleId) throw new OperationConflictError();
         if (!canUseBranch(manager, record.handlingBranchId)) throw new ForbiddenError();
         if (record.revision !== expectedRevision) {
           throw new OperationConflictError("تغيرت المسودة. أعد تحميلها قبل ترحيل الإرجاع.");
         }
         if (record.status === "posted") return { record, created: false };
-        await tx.inventory.lockStockClock("update");
-        const source = await tx.returns.getSource(record.sourceSaleId, true);
-        if (!source) throw new ReturnsValidationError("تعذر العثور على البيع الأصلي.");
         const now = clock.now();
         if (now.getTime() > source.returnDeadlineAt.getTime()) throw new ReturnWindowExpiredError();
         const plan = planReturn(source, record.lines.map((line) => ({
@@ -314,6 +340,7 @@ export function createReturnServices(ports: {
           id: crypto.randomUUID(),
           returnLineId: lineIdBySource.get(unit.sourceSaleLineId) ?? "",
           sourceSaleUnitId: unit.sourceSaleUnitId,
+          sourceRecordingSaleUnitId: unit.sourceRecordingSaleUnitId,
           startOffset: unit.startOffset,
           quantity: unit.quantity,
           paidUnitPiasters: unit.paidUnitPiasters,
@@ -366,11 +393,22 @@ export function createReturnServices(ports: {
           }
           return { record, created: false };
         }
-        if (record.refundStatus === "paid") {
-          throw new OperationConflictError("تم تسجيل دفع هذا الاسترداد بمعرّف عملية آخر.");
+        const effective = await tx.corrections.getEffectiveReturn(returnId);
+        const refund = projectEffectiveRefund({
+          recordStatus: record.status,
+          originalAuthorizedPiasters: record.authorizedRefundPiasters,
+          originalPaidPiasters: record.refundPaidPiasters,
+          corrected: effective,
+        });
+        if (!effective || refund.effectiveStatus === "cancelled") {
+          throw new OperationConflictError("أُلغي تسجيل هذا الإرجاع ولا يمكن دفع استرداد له.");
         }
-        if (amountPiasters !== record.authorizedRefundPiasters) {
-          throw new ReturnsValidationError("يجب أن يساوي المبلغ المدفوع قيمة الاسترداد المعتمدة.");
+        const outstandingPiasters = refund.owedPiasters;
+        if (outstandingPiasters === 0) {
+          throw new OperationConflictError("لا يوجد مبلغ استرداد نقدي مستحق لهذا الإرجاع.");
+        }
+        if (amountPiasters !== outstandingPiasters) {
+          throw new ReturnsValidationError("يجب أن يساوي المبلغ المدفوع الرصيد الفعلي المستحق.");
         }
         const result = await tx.returns.markPaid({
           returnId,
@@ -390,10 +428,26 @@ export function createReturnServices(ports: {
       const page = parseReturnList(input);
       const result = await ports.returns.listPage(page);
       return {
-        items: result.items.map((row) => ({
-          ...row,
-          createdAt: row.createdAt.toISOString(),
-          postedAt: row.postedAt?.toISOString() ?? null,
+        items: await Promise.all(result.items.map(async (row) => {
+          const corrected = row.status === "posted"
+            ? await ports.corrections.getEffectiveReturn(row.id)
+            : null;
+          const refund = projectEffectiveRefund({
+            recordStatus: row.status,
+            originalAuthorizedPiasters: row.authorizedRefundPiasters,
+            originalPaidPiasters: 0,
+            corrected,
+          });
+          return {
+            ...row,
+            authorizedRefundPiasters: refund.authorizedPiasters,
+            originalAuthorizedRefundPiasters: row.authorizedRefundPiasters,
+            effectiveStatus: refund.effectiveStatus,
+            correctionRevision: refund.correctionRevision,
+            refundStatus: refund.status,
+            createdAt: row.createdAt.toISOString(),
+            postedAt: row.postedAt?.toISOString() ?? null,
+          };
         })),
         nextCursor: result.nextCursor,
       };
@@ -408,6 +462,40 @@ export function createReturnServices(ports: {
   };
 }
 
+function projectEffectiveRefund(input: {
+  recordStatus: "draft" | "posted";
+  originalAuthorizedPiasters: number;
+  originalPaidPiasters: number;
+  corrected: EffectiveReturnState | null;
+}) {
+  const effectiveStatus = input.corrected?.status ?? "active";
+  const authorizedPiasters = effectiveStatus === "active"
+    ? input.corrected?.authorizedRefundPiasters ?? input.originalAuthorizedPiasters
+    : 0;
+  const paidPiasters = input.corrected?.paidPiasters ?? input.originalPaidPiasters;
+  const activePosted = input.recordStatus === "posted" && effectiveStatus === "active";
+  const owedPiasters = activePosted ? Math.max(0, authorizedPiasters - paidPiasters) : 0;
+  const overpaidPiasters = activePosted ? Math.max(0, paidPiasters - authorizedPiasters) : 0;
+  const status: ReturnDto["refund"]["status"] = input.recordStatus === "draft"
+    ? "none"
+    : effectiveStatus === "cancelled"
+      ? "cancelled"
+      : owedPiasters > 0
+        ? "owed"
+        : overpaidPiasters > 0
+          ? "overpaid"
+          : "paid";
+  return {
+    effectiveStatus,
+    correctionRevision: input.corrected?.revision ?? 0,
+    authorizedPiasters,
+    paidPiasters,
+    owedPiasters,
+    overpaidPiasters,
+    status,
+  };
+}
+
 type RequestedLine = { sourceSaleLineId: string; quantity: number; sellableQuantity: number };
 
 function planReturn(source: ReturnSourceRecord, requested: RequestedLine[]) {
@@ -415,7 +503,8 @@ function planReturn(source: ReturnSourceRecord, requested: RequestedLine[]) {
   const seen = new Set<string>();
   const selected: Array<{
     sourceSaleLineId: string;
-    sourceSaleUnitId: string;
+    sourceSaleUnitId: string | null;
+    sourceRecordingSaleUnitId: string | null;
     variantId: string;
     startOffset: number;
     quantity: number;
@@ -449,7 +538,8 @@ function planReturn(source: ReturnSourceRecord, requested: RequestedLine[]) {
       suggestion += take * unit.paidPiasters;
       selected.push({
         sourceSaleLineId: line.id,
-        sourceSaleUnitId: unit.id,
+        sourceSaleUnitId: unit.sourceType === "original" ? unit.id : null,
+        sourceRecordingSaleUnitId: unit.sourceType === "correction" ? unit.id : null,
         variantId: line.variantId,
         startOffset: unit.alreadyReturnedQuantity,
         quantity: take,

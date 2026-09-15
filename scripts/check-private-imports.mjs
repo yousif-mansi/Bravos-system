@@ -54,6 +54,11 @@ const forbidden = [
     message: "Frontend/contracts cannot import the returns server package.",
   },
   {
+    from: ["apps/internal", "apps/storefront", "packages/contracts"],
+    pattern: /@bravos\/corrections(?:\/node)?/,
+    message: "Frontend/contracts cannot import the corrections server package.",
+  },
+  {
     from: ["apps", "packages"],
     pattern: /@bravos\/identity\/src\//,
     message: "Deep identity imports are not part of the public interface.",
@@ -90,16 +95,21 @@ const forbidden = [
   },
   {
     from: ["apps", "packages"],
+    pattern: /@bravos\/corrections\/src\//,
+    message: "Deep corrections imports are not part of the public interface.",
+  },
+  {
+    from: ["apps", "packages"],
     pattern: /@bravos\/storefront-config\/src\//,
     message: "Deep storefront configuration imports are not part of the public interface.",
   },
   {
-    from: ["packages/identity/src/domain", "packages/identity/src/application", "packages/catalog/src/domain", "packages/catalog/src/application", "packages/inventory/src/domain", "packages/inventory/src/application", "packages/receiving/src/domain", "packages/receiving/src/application", "packages/pricing/src/domain", "packages/pricing/src/application", "packages/sales/src/domain", "packages/sales/src/application", "packages/expenses/src/domain", "packages/expenses/src/application", "packages/returns/src/domain", "packages/returns/src/application", "packages/storefront-config/src/domain", "packages/storefront-config/src/application"],
+    from: ["packages/identity/src/domain", "packages/identity/src/application", "packages/catalog/src/domain", "packages/catalog/src/application", "packages/inventory/src/domain", "packages/inventory/src/application", "packages/receiving/src/domain", "packages/receiving/src/application", "packages/pricing/src/domain", "packages/pricing/src/application", "packages/sales/src/domain", "packages/sales/src/application", "packages/expenses/src/domain", "packages/expenses/src/application", "packages/returns/src/domain", "packages/returns/src/application", "packages/corrections/src/domain", "packages/corrections/src/application", "packages/storefront-config/src/domain", "packages/storefront-config/src/application"],
     pattern: /from ["'](better-auth|fastify|pg|react|next|vite|dexie)/,
     message: "Inner feature layers cannot import infrastructure SDKs.",
   },
   {
-    from: ["packages/identity/src/domain", "packages/identity/src/application", "packages/catalog/src/domain", "packages/catalog/src/application", "packages/inventory/src/domain", "packages/inventory/src/application", "packages/receiving/src/domain", "packages/receiving/src/application", "packages/pricing/src/domain", "packages/pricing/src/application", "packages/sales/src/domain", "packages/sales/src/application", "packages/expenses/src/domain", "packages/expenses/src/application", "packages/returns/src/domain", "packages/returns/src/application", "packages/storefront-config/src/domain", "packages/storefront-config/src/application"],
+    from: ["packages/identity/src/domain", "packages/identity/src/application", "packages/catalog/src/domain", "packages/catalog/src/application", "packages/inventory/src/domain", "packages/inventory/src/application", "packages/receiving/src/domain", "packages/receiving/src/application", "packages/pricing/src/domain", "packages/pricing/src/application", "packages/sales/src/domain", "packages/sales/src/application", "packages/expenses/src/domain", "packages/expenses/src/application", "packages/returns/src/domain", "packages/returns/src/application", "packages/corrections/src/domain", "packages/corrections/src/application", "packages/storefront-config/src/domain", "packages/storefront-config/src/application"],
     pattern: /\bHeaders\b/,
     message: "Application/domain cannot depend on HTTP Headers.",
   },
@@ -134,6 +144,11 @@ const forbidden = [
     message: "Returns domain cannot import other feature packages.",
   },
   {
+    from: ["packages/corrections/src/domain"],
+    pattern: /@bravos\/(identity|inventory|catalog|receiving|pricing|sales|expenses|returns|storefront-config)/,
+    message: "Corrections domain cannot import other feature packages.",
+  },
+  {
     from: ["packages/identity"],
     pattern: /@bravos\/(catalog|inventory|receiving|sales|expenses)/,
     message: "Identity cannot import catalog, inventory, receiving, sales or expenses.",
@@ -162,6 +177,16 @@ const forbidden = [
     from: ["packages/expenses"],
     pattern: /@bravos\/(catalog|inventory|receiving|sales)/,
     message: "Expenses cannot import catalog, inventory, receiving or sales.",
+  },
+  {
+    from: ["packages/corrections"],
+    pattern: /@bravos\/(catalog|receiving|pricing|sales|expenses|returns|storefront-config|persistence)/,
+    message: "Corrections cannot import other owned business features.",
+  },
+  {
+    from: ["packages/identity", "packages/catalog", "packages/inventory", "packages/receiving", "packages/pricing", "packages/sales", "packages/expenses", "packages/returns", "packages/storefront-config"],
+    pattern: /@bravos\/corrections/,
+    message: "Owned features cannot import the corrections coordinator.",
   },
   {
     from: ["packages/storefront-config"],

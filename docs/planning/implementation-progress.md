@@ -2,14 +2,14 @@
 
 Updated: 2026-09-15 (Cairo). The user authorized the full 28-ticket queue and now requests parallel native GPT-5.6 Sol agents at HIGH effort. Root guides, reviews, independently verifies and commits accepted slices. Internal operations launch before the public store. No hosting or domain purchase is authorized now.
 
-Current work: Eleven of28 tickets are independently accepted:01–08,12,17,18. Automatic offers, physical Returns and storefront browsing/cart passed independent Standards/Spec review, scoped repairs and combined verification. All108 HTTP assertions passed; one Windows teardown failure was followed by a clean4/4 rerun. The browser run passed71/73; two test-only corrections were verified by rerunning both entire affected files with20/20 passing. See the batch review for exact evidence. Three Sol HIGH agents are now implementing09,10 and14 in isolated worktrees from verified commit6004d52. Root coordinates, reviews and integrates their work. No important features have been removed.
+Current work: Fourteen of 28 tickets are independently accepted: 01–10, 12, 14, 17 and 18. Three Sol HIGH agents completed bundles/Buy-X-Get-Y, coupons and linked sale/Returns corrections. Root integrated the batch, resolved independent Standards/Specification findings and verified the required gates. The full HTTP run passed 124 assertions, followed by a clean 18/18 recheck covering final repairs and a Windows teardown retry. Browser verification passed 76/77, followed by 2/2 across the repaired Returns test and corrections flow. See the batch review for precise evidence. No important features have been removed.
 
 ## Source and delivery status
 
 - Specification: [approved v1 specification](bravos-v1-spec.md), 114 stories and 36 acceptance scenarios.
 - Independent review: [review disposition](../reviews/bravos-v1-grok-review.md).
 - GitHub source of truth: [approved specification #1](https://github.com/yousif-mansi/Bravos-system/issues/1) and implementation issues #2–#29, with native blocking dependencies. Initial network timeouts recovered. Local ticket bodies mirror the published work; GitHub status is authoritative.
-- Implementation: Staff access (#2), catalog (#3), receiving/FIFO batches (#4), and connected cash sales (#5) have passed independent review and verification. Eleven of28 tickets are independently verified. Native GPT-5.6 Sol agents at HIGH effort write application code and tests; root guides, reviews, verifies and commits. Cash sales passed 68 HTTP tests, 27 browser tests, typecheck, builds, architecture, full migration roundtrips/rollback and a clean audit on 2026-09-11. The permanent receiving cross-tab regression is also verified. Cash-sale commit0c2f56b is pushed and issue#5 is closed. Offline POS (#6) passed independent verification on 2026-09-14; see its review below. This is a local development milestone, not a production release.
+- Implementation: Staff access (#2), catalog (#3), receiving/FIFO batches (#4), and connected cash sales (#5) have passed independent review and verification. Fourteen of 28 tickets are independently verified. Native GPT-5.6 Sol agents at HIGH effort write application code and tests; root guides, reviews, verifies and commits. Cash sales passed 68 HTTP tests, 27 browser tests, typecheck, builds, architecture, full migration roundtrips/rollback and a clean audit on 2026-09-11. The permanent receiving cross-tab regression is also verified. Cash-sale commit0c2f56b is pushed and issue#5 is closed. Offline POS (#6) passed independent verification on 2026-09-14; see its review below. This is a local development milestone, not a production release.
 - Testing: authenticated public HTTP business operations against real PostgreSQL; focused real-browser recovery/interface tests; automated architecture checks.
 - Publication verification: the specification and all 28 ticket bodies match GitHub; ready-for-agent labels and every native blocking edge were independently read back and checked. All 114 stories and all 36 acceptance scenarios are assigned before the release rehearsal.
 
@@ -27,12 +27,12 @@ Each item includes its necessary schema, business behavior, API, usable UI and b
 | [06](https://github.com/yousif-mansi/Bravos-system/issues/7) | Synchronize completed sales with safe acknowledgements and account recovery | 05 | 48, 49, 50 / A12, A17, A18, A19, A20, A21 | Independently verified |
 | [07](https://github.com/yousif-mansi/Bravos-system/issues/8) | Record employee expenses and manager corrections with immediate totals | 01 | 7, 8, 89, 90, 91, 92 / A01, A02, A27 | Independently verified |
 | [08](https://github.com/yousif-mansi/Bravos-system/issues/9) | Manage automatic offers and select the greatest eligible saving | 04 | 36, 37, 38, 39, 108, 112 / A08, A09, A10, A34 | Independently verified |
-| [09](https://github.com/yousif-mansi/Bravos-system/issues/10) | Price fixed bundles and cheapest eligible Buy-X-Get-Y rewards | 08 | 109 / A09, A10, A34, A36 | Implementing with Sol HIGH |
-| [10](https://github.com/yousif-mansi/Bravos-system/issues/11) | Apply manager-configured coupons with atomic usage limits | 08 | 110, 111, 112, 113 / A08, A09, A10, A12, A34 | Implementing with Sol HIGH |
+| [09](https://github.com/yousif-mansi/Bravos-system/issues/10) | Price fixed bundles and cheapest eligible Buy-X-Get-Y rewards | 08 | 109 / A09, A10, A34, A36 | Independently verified |
+| [10](https://github.com/yousif-mansi/Bravos-system/issues/11) | Apply manager-configured coupons with atomic usage limits | 08 | 110, 111, 112, 113 / A08, A09, A10, A12, A34 | Independently verified |
 | [11](https://github.com/yousif-mansi/Bravos-system/issues/12) | Use cached promotions and reconcile offline coupon overuse | 06, 09, 10 | 44, 48, 113 / A10, A17, A20 | Queued |
 | [12](https://github.com/yousif-mansi/Bravos-system/issues/13) | Process dedicated physical Returns with inspection and editable refunds | 04 | 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87 / A23, A24, A25 | Independently verified |
 | [13](https://github.com/yousif-mansi/Bravos-system/issues/14) | Complete exchanges with replacement stock and actual cash differences | 12, 09, 10 | 88 / A06, A25, A26, A36 | Queued |
-| [14](https://github.com/yousif-mansi/Bravos-system/issues/15) | Correct erroneous saved sales and Returns while preserving actual effects | 12 | 41, 79, 87 / A12, A24, A25 | Implementing with Sol HIGH |
+| [14](https://github.com/yousif-mansi/Bravos-system/issues/15) | Correct erroneous saved sales and Returns while preserving actual effects | 12 | 41, 79, 87 / A12, A24, A25 | Independently verified |
 | [15](https://github.com/yousif-mansi/Bravos-system/issues/16) | Correct receiving quantities and historical costs through linked records | 03, 12 | 26, 83, 95 / A22, A25 | Queued |
 | [16](https://github.com/yousif-mansi/Bravos-system/issues/17) | Coordinate quantity corrections and reconcile late completed sales | 06, 15 | 27, 28, 48 / A20, A22 | Queued |
 | [17](https://github.com/yousif-mansi/Bravos-system/issues/18) | Manage product media and publication with a safe public catalog | 03 | 11, 16, 17, 18, 19, 50 / A02, A03, A04 | Independently verified |
@@ -112,7 +112,7 @@ Each lane uses GPT-5.6 Sol at HIGH effort. Reserved migration numbers are 011 fo
 
 - Tickets08,12,18 accepted on2026-09-15 after independent Standards/Spec review and Sol HIGH repairs. Root verified full typecheck,108 HTTP assertions (plus clean4/4 teardown recheck), all production application builds, corrected bundle separation, architecture, migrations001–013 including rollback, zero-vulnerability audit and browser71/73 followed by20/20 across both repaired test files. See [offers, Returns and storefront review](../reviews/offers-returns-storefront-review.md). The next requested lanes are09,10 and14.
 
-## Active lanes09,10,14 — 2026-09-15
+## Accepted batch 09, 10, 14 — 2026-09-15
 
 Prerequisite commit6004d52 is pushed; issues9,13,19 are confirmed CLOSED. All three new worktrees have their own dependencies installed with pnpm10.34.5. Each native agent uses GPT-5.6 Sol at HIGH effort.
 
@@ -122,4 +122,4 @@ Prerequisite commit6004d52 is pushed; issues9,13,19 are confirmed CLOSED. All th
 |10 coupons and atomic usage|.scratch/worktrees/10-coupons|015|55450|
 |14 linked sale/Returns corrections|.scratch/worktrees/14-corrections|016|55451|
 
-Root owns commits, integration and final verification. Agents coordinate shared browser/migration ports and public pricing contracts;09 retains counted automatic ranges while10 overlays separate coupon effects.14 preserves original/effective/actual facts and rejects invalid online corrections atomically. These tickets are in progress, not accepted.
+Root owns commits, integration and final verification. Agents coordinate shared browser/migration ports and public pricing contracts;09 retains counted automatic ranges while10 overlays separate coupon effects.14 preserves original/effective/actual facts and rejects invalid online corrections atomically. All three tickets are independently accepted. The implementation, repair decisions and exact verification results are recorded in [bundles, coupons and corrections review](../reviews/bundles-coupons-corrections-review.md). Later ticket scope remains queued as listed above.

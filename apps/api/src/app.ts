@@ -8,6 +8,11 @@ import {
   type ExpenseServices,
 } from "@bravos/expenses";
 import { createPostgresExpenseRepository } from "@bravos/expenses/node";
+import { CorrectionsValidationError, createCorrectionServices, type CorrectionServices } from "@bravos/corrections";
+import {
+  createPostgresCorrectionsRepository,
+  createPostgresReturnCorrectionStateReader,
+} from "@bravos/corrections/node";
 import {
   CatalogValidationError,
   DuplicateProductCodeError,
@@ -73,10 +78,12 @@ import {
 } from "@bravos/identity/node";
 import type { VerifiedAuth } from "@bravos/identity";
 import { applyMigrations } from "@bravos/persistence";
-import { PricingValidationError, createPricingServices, type PricingServices } from "@bravos/pricing";
+import { CouponUsageConflictError, PricingValidationError, createPricingServices, type PricingServices } from "@bravos/pricing";
 import {
   createPostgresAutomaticOfferStore,
   createPostgresAutomaticPricingReader,
+  createPostgresCouponStore,
+  createPostgresCouponUsageTransaction,
 } from "@bravos/pricing/node";
 import type { AppConfig } from "./config.ts";
 
@@ -98,6 +105,7 @@ export type BuiltApp = {
   sales: SalesServices;
   expenses: ExpenseServices;
   returns: ReturnServices;
+  corrections: CorrectionServices;
   storefrontConfig: StorefrontConfigServices;
   auth: ReturnType<typeof createBetterAuth>;
   identity: IdentityGateway;
@@ -176,6 +184,7 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
     const pricing = createPricingServices({
       actors: { getStaff: (staffId) => directory.getStaff(staffId) },
       offers: createPostgresAutomaticOfferStore(pool),
+      coupons: createPostgresCouponStore(pool),
     });
     const saleStore = createPostgresSaleStore(pool);
     const sales = createSalesServices({
@@ -197,7 +206,7 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
       cashierCatalog: {
         listCashierProducts: (auth) => catalog.listCashierCatalog(auth),
       },
-      uow: createPostgresSalesUnitOfWork(pool, createInventoryTransaction),
+      uow: createPostgresSalesUnitOfWork(pool, createInventoryTransaction, createPostgresCouponUsageTransaction),
       allocations: { listAllocations: (operationId) => inventoryStore.listAllocations(operationId) },
     });
     const expenses = createExpenseServices({
@@ -214,7 +223,17 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
       },
       variants: { getVariants: (ids) => catalogStore.getVariants(ids) },
       returns: createPostgresReturnsStore(pool),
-      uow: createPostgresReturnsUnitOfWork(pool, createInventoryTransaction),
+      corrections: createPostgresReturnCorrectionStateReader(pool),
+      uow: createPostgresReturnsUnitOfWork(
+        pool,
+        createInventoryTransaction,
+        createPostgresReturnCorrectionStateReader,
+      ),
+      clock: { now: config.businessClock ?? (() => new Date()) },
+    });
+    const corrections = createCorrectionServices({
+      actors: { getStaff: (staffId) => directory.getStaff(staffId) },
+      corrections: createPostgresCorrectionsRepository(pool, createInventoryTransaction),
       clock: { now: config.businessClock ?? (() => new Date()) },
     });
     const storefrontConfig = createStorefrontConfigServices({
@@ -224,7 +243,7 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
 
     const instance = Fastify({ logger: false });
     app = instance;
-    await registerRoutes(instance, config, auth, identity, services, catalog, inventory, receiving, pricing, sales, expenses, returns, storefrontConfig);
+    await registerRoutes(instance, config, auth, identity, services, catalog, inventory, receiving, pricing, sales, expenses, returns, corrections, storefrontConfig);
 
     return {
       app: instance,
@@ -237,6 +256,7 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
       sales,
       expenses,
       returns,
+      corrections,
       storefrontConfig,
       auth,
       identity,
@@ -274,6 +294,7 @@ async function registerRoutes(
   sales: SalesServices,
   expenses: ExpenseServices,
   returns: ReturnServices,
+  corrections: CorrectionServices,
   storefrontConfig: StorefrontConfigServices,
 ) {
   app.addHook("onRequest", async (request, reply) => {
@@ -580,6 +601,28 @@ async function registerRoutes(
     return handle(reply, async () => pricing.update(await verifiedAuth(identity, request), params.offerId, request.body));
   });
 
+  app.get("/api/internal/pricing/coupons", async (request, reply) => {
+    return handle(reply, async () => pricing.listCoupons(await verifiedAuth(identity, request)));
+  });
+
+  app.post("/api/internal/pricing/coupons", async (request, reply) => {
+    return handle(reply, async () => {
+      const coupon = await pricing.createCoupon(await verifiedAuth(identity, request), request.body);
+      reply.status(201);
+      return coupon;
+    });
+  });
+
+  app.get("/api/internal/pricing/coupons/:couponId", async (request, reply) => {
+    const params = request.params as { couponId: string };
+    return handle(reply, async () => pricing.getCoupon(await verifiedAuth(identity, request), params.couponId));
+  });
+
+  app.put("/api/internal/pricing/coupons/:couponId", async (request, reply) => {
+    const params = request.params as { couponId: string };
+    return handle(reply, async () => pricing.updateCoupon(await verifiedAuth(identity, request), params.couponId, request.body));
+  });
+
   app.post("/api/internal/receiving/receipts", async (request, reply) => {
     return handle(reply, async () => {
       const result = await receiving.finalize(await verifiedAuth(identity, request), request.body);
@@ -786,6 +829,34 @@ async function registerRoutes(
     const params = request.params as { returnId: string };
     return handle(reply, async () => returns.get(await verifiedAuth(identity, request), params.returnId));
   });
+
+  app.get("/api/internal/corrections/sales/:saleId", async (request, reply) => {
+    const params = request.params as { saleId: string };
+    return handle(reply, async () => corrections.getSale(await verifiedAuth(identity, request), params.saleId));
+  });
+
+  app.post("/api/internal/corrections/sales/:saleId", async (request, reply) => {
+    const params = request.params as { saleId: string };
+    return handle(reply, async () => {
+      const result = await corrections.changeSale(await verifiedAuth(identity, request), params.saleId, request.body);
+      reply.status(result.created ? 201 : 200);
+      return result.value;
+    });
+  });
+
+  app.get("/api/internal/corrections/returns/:returnId", async (request, reply) => {
+    const params = request.params as { returnId: string };
+    return handle(reply, async () => corrections.getReturn(await verifiedAuth(identity, request), params.returnId));
+  });
+
+  app.post("/api/internal/corrections/returns/:returnId", async (request, reply) => {
+    const params = request.params as { returnId: string };
+    return handle(reply, async () => {
+      const result = await corrections.changeReturn(await verifiedAuth(identity, request), params.returnId, request.body);
+      reply.status(result.created ? 201 : 200);
+      return result.value;
+    });
+  });
 }
 
 function isPrivilegedPath(url: string): boolean {
@@ -936,6 +1007,9 @@ function sendError(reply: FastifyReply, error: unknown) {
   if (error instanceof OperationConflictError) {
     return reply.status(409).send(errorBody(error.code, error.message));
   }
+  if (error instanceof CouponUsageConflictError) {
+    return reply.status(409).send(errorBody(error.code, error.message));
+  }
   if (error instanceof ExpenseOperationConflictError || error instanceof ExpenseRevisionConflictError) {
     return reply.status(409).send(errorBody(error.code, error.message));
   }
@@ -948,6 +1022,7 @@ function sendError(reply: FastifyReply, error: unknown) {
     error instanceof SalesValidationError ||
     error instanceof ExpensesValidationError ||
     error instanceof ReturnsValidationError ||
+    error instanceof CorrectionsValidationError ||
     error instanceof StorefrontConfigValidationError
   ) {
     return reply.status(400).send(errorBody(error.code, error.message));

@@ -42,7 +42,8 @@ test("manager uses the separate Arabic Returns picker, posts inspection, and rec
   const search = page.getByRole("form", { name: "البحث عن البيع الأصلي" });
   await search.getByLabel("المرجع").fill(original.body.id);
   await search.getByRole("button", { name: "بحث" }).click();
-  const source = page.getByTestId("return-source-list").getByRole("button");
+  const source = page.getByTestId("return-source-list").getByRole("button").filter({ hasText: original.body.id });
+  await expect(source).toHaveCount(1);
   await expect(source).toContainText("قميص إرجاع المتصفح");
   await source.click();
 

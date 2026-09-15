@@ -16,6 +16,11 @@ export function SaleSummary({ sale }: { sale: SaleDto }) {
           العرض التلقائي: {sale.appliedAutomaticOffer.nameAr} — {formatEgpFromPiasters(sale.automaticOfferDiscountPiasters)}
         </p>
       ) : null}
+      {sale.appliedCoupon ? (
+        <p data-testid="sale-coupon">
+          الكوبون: {sale.appliedCoupon.code} — {formatEgpFromPiasters(sale.couponDiscountPiasters)}
+        </p>
+      ) : null}
       <p>خصم الموظف: {formatEgpFromPiasters(sale.employeeDiscountPiasters)}</p>
       <p>الإجمالي: {formatEgpFromPiasters(sale.finalTotalPiasters)}</p>
       {sale.discountReason ? <p>سبب الخصم: {sale.discountReason}</p> : null}
