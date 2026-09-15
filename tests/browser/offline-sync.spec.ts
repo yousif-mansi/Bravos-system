@@ -391,9 +391,11 @@ test("lost acknowledgement is reconciled from an opaque later snapshot without l
   const original = (await readPrivacyState(page)).sales[0];
   expect(original?.customerPhone).toBe("01099887766");
   await page.unroute("**/api/internal/sales/accepted");
+  let lostAcknowledgementCompleted = false;
   await page.route("**/api/internal/sales/accepted", async (route) => {
     await route.fetch();
     await route.abort("failed");
+    lostAcknowledgementCompleted = true;
   });
   await page.route("**/api/internal/sales/pos-snapshots", (route) => route.abort("failed"));
   await page.getByRole("link", { name: "العودة لمساحة العمل" }).click();
@@ -401,29 +403,18 @@ test("lost acknowledgement is reconciled from an opaque later snapshot without l
     (await staffApi(page, "GET", "/api/internal/sales")).body.some((sale: { id: string }) => sale.id === original?.id),
   ).toBe(true);
   await expect(page.getByTestId("unsynced-count")).toContainText("مبيعات غير مزامنة: 1");
+  await expect.poll(() => lostAcknowledgementCompleted, { timeout: 15_000 }).toBe(true);
   await page.unroute("**/api/internal/sales/accepted");
   await page.unroute("**/api/internal/sales/pos-snapshots");
-  const snapshotBodies: unknown[] = [];
-  page.on("response", async (response) => {
-    if (response.url().includes("/api/internal/sales/pos-snapshots") && response.ok()) {
-      snapshotBodies.push(await response.json());
-    }
-  });
   await page.getByRole("button", { name: "تسجيل الخروج" }).click();
   await page.getByLabel("اسم الدخول").fill("cashier-b");
   await page.getByLabel("كلمة المرور").fill("e2e-cashier-b-pass");
   await page.getByRole("button", { name: "دخول" }).click();
+  const betaSnapshotResponse = page.waitForResponse(
+    (response) => response.url().includes("/api/internal/sales/pos-snapshots") && response.ok(),
+  );
   await page.getByRole("button", { name: "أبشواي" }).click();
-  await expect.poll(() =>
-    snapshotBodies.some(
-      (body) =>
-        Array.isArray((body as { includedOperationIds?: string[] }).includedOperationIds) &&
-        (body as { includedOperationIds: string[] }).includedOperationIds.includes(original?.operationId ?? ""),
-    ),
-  ).toBe(true);
-  const betaSnapshot = [...snapshotBodies].reverse().find((body) =>
-    (body as { includedOperationIds?: string[] }).includedOperationIds?.includes(original?.operationId ?? ""),
-  ) as {
+  const betaSnapshot = (await (await betaSnapshotResponse).json()) as {
     includedOperationIds: string[];
     includedOperations: Array<Record<string, unknown>>;
     staffId: string;

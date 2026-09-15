@@ -25,10 +25,6 @@ import type {
   OpeningImportPreviewRequest,
   PosPriceSnapshotDto,
   ReceiptDto,
-  ReturnCorrectionDetailDto,
-  ReturnDto,
-  ReturnListPageDto,
-  ReturnSourceDto,
   SaleAcknowledgementDto,
   SaleCorrectionDetailDto,
   SaleDto,
@@ -58,7 +54,7 @@ export class ApiError extends Error {
 
 const MAX_PRODUCT_IMAGE_BYTES = 5 * 1024 * 1024;
 
-async function request<T>(url: string, init?: RequestInit): Promise<T> {
+export async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
     credentials: "include",
     headers: {
@@ -841,105 +837,6 @@ export async function lookupExpenseOperation(operationId: string): Promise<Expen
   }
 }
 
-export type ReturnSourceSearch = {
-  reference?: string;
-  date?: string;
-  branchId?: string;
-  item?: string;
-  amountPiasters?: number;
-};
-
-export function listReturnSources(search: ReturnSourceSearch = {}) {
-  const query = new URLSearchParams();
-  if (search.reference) query.set("reference", search.reference);
-  if (search.date) query.set("date", search.date);
-  if (search.branchId) query.set("branchId", search.branchId);
-  if (search.item) query.set("item", search.item);
-  if (search.amountPiasters !== undefined) query.set("amountPiasters", String(search.amountPiasters));
-  const suffix = query.size ? `?${query.toString()}` : "";
-  return request<ReturnSourceDto[]>(`/api/internal/returns/sources${suffix}`);
-}
-
-export function createReturnDraft(input: {
-  returnId: string;
-  operationId: string;
-  sourceSaleId: string;
-  handlingBranchId: string;
-  authorizedRefundPiasters: number;
-  lines: Array<{ sourceSaleLineId: string; quantity: number; sellableQuantity: number }>;
-}) {
-  return request<ReturnDto>("/api/internal/returns", { method: "POST", body: JSON.stringify(input) });
-}
-
-export function updateReturnDraft(returnId: string, input: {
-  expectedRevision: number;
-  handlingBranchId: string;
-  authorizedRefundPiasters: number;
-  lines: Array<{ sourceSaleLineId: string; quantity: number; sellableQuantity: number }>;
-}) {
-  return request<ReturnDto>(`/api/internal/returns/${returnId}`, {
-    method: "PATCH",
-    body: JSON.stringify(input),
-  });
-}
-
-export function postReturn(returnId: string, expectedRevision: number) {
-  return request<ReturnDto>(`/api/internal/returns/${returnId}/post`, {
-    method: "POST",
-    body: JSON.stringify({ receivedAndInspected: true, expectedRevision }),
-  });
-}
-
-export function payReturnRefund(returnId: string, amountPiasters: number, operationId: string) {
-  return request<ReturnDto>(`/api/internal/returns/${returnId}/refund`, {
-    method: "POST",
-    body: JSON.stringify({ operationId, status: "paid", amountPiasters }),
-  });
-}
-
-export function quoteReturnExchange(returnId: string, input: {
-  quoteId: string;
-  exchangeId: string;
-  operationId: string;
-  replacementSaleId: string;
-  replacementSaleOperationId: string;
-  expectedRevision: number;
-  replacementLines: Array<{ variantId: string; quantity: number }>;
-}) {
-  return request<import("@bravos/contracts").ReturnExchangeQuoteDto>(`/api/internal/returns/${returnId}/exchange-quote`, {
-    method: "POST",
-    body: JSON.stringify(input),
-  });
-}
-
-export function completeReturnExchange(returnId: string, input: {
-  exchangeId: string;
-  operationId: string;
-  replacementSaleId: string;
-  replacementSaleOperationId: string;
-  receivedAndInspected: true;
-  expectedRevision: number;
-  cashRefundStatus: "owed" | "paid";
-  quoteId: string;
-}) {
-  return request<ReturnDto>(`/api/internal/returns/${returnId}/exchange`, {
-    method: "POST",
-    body: JSON.stringify(input),
-  });
-}
-
-export function listReturns(input: { limit?: number; cursor?: string } = {}) {
-  const query = new URLSearchParams();
-  if (input.limit !== undefined) query.set("limit", String(input.limit));
-  if (input.cursor) query.set("cursor", input.cursor);
-  const suffix = query.size ? `?${query.toString()}` : "";
-  return request<ReturnListPageDto>(`/api/internal/returns${suffix}`);
-}
-
-export function getReturn(returnId: string) {
-  return request<ReturnDto>(`/api/internal/returns/${returnId}`);
-}
-
 export type SaleCorrectionWrite = {
   operationId: string;
   expectedRevision: number;
@@ -953,30 +850,12 @@ export type SaleCorrectionWrite = {
   cash: { direction: "paid_out" | "recovered"; amountPiasters: number } | null;
 };
 
-export type ReturnCorrectionWrite = Omit<SaleCorrectionWrite, "effective"> & {
-  effective: {
-    authorizedRefundPiasters: number;
-    lines: Array<{ lineId: string; quantity: number; sellableQuantity: number }>;
-  } | null;
-};
-
 export function getSaleCorrection(saleId: string) {
   return request<SaleCorrectionDetailDto>(`/api/internal/corrections/sales/${saleId}`);
 }
 
 export function changeSaleCorrection(saleId: string, input: SaleCorrectionWrite) {
   return request<SaleCorrectionDetailDto>(`/api/internal/corrections/sales/${saleId}`, {
-    method: "POST",
-    body: JSON.stringify(input),
-  });
-}
-
-export function getReturnCorrection(returnId: string) {
-  return request<ReturnCorrectionDetailDto>(`/api/internal/corrections/returns/${returnId}`);
-}
-
-export function changeReturnCorrection(returnId: string, input: ReturnCorrectionWrite) {
-  return request<ReturnCorrectionDetailDto>(`/api/internal/corrections/returns/${returnId}`, {
     method: "POST",
     body: JSON.stringify(input),
   });

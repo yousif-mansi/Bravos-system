@@ -1,4 +1,4 @@
-import type { ReturnDto, ReturnExchangeQuoteDto, ReturnSourceDto } from "@bravos/contracts";
+import type { ReturnDto, ReturnExchangeQuoteDto, ReturnRefundBreakdownDto, ReturnSourceDto, ReturnSourceKeyDto } from "@bravos/contracts";
 import {
   ForbiddenError,
   isManager,
@@ -7,6 +7,8 @@ import {
   canUseBranch,
 } from "@bravos/identity";
 import { OperationConflictError, assertQuantity } from "@bravos/inventory";
+import type { ProtectedOrderAllocationProvenance } from "@bravos/inventory";
+import type { DeliveredOnlineOrderSource } from "@bravos/online-orders";
 import { ReturnWindowExpiredError, ReturnsValidationError } from "../domain/errors.ts";
 import { fingerprintExchangePayload, fingerprintExchangeQuotePayload, fingerprintRefundPayment, fingerprintReturnPayload } from "../domain/fingerprint.ts";
 import type {
@@ -25,16 +27,18 @@ import type {
   ReturnsActorPort,
   ReturnsStore,
   ReturnsUnitOfWork,
+  ReturnsTransaction,
   ReturnVariantReader,
+  ReturnServiceDependencies,
   SourceSearch,
   VerifiedAuth,
 } from "./ports.ts";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
-const DRAFT_KEYS = new Set(["returnId", "operationId", "sourceSaleId", "handlingBranchId", "authorizedRefundPiasters", "lines"]);
-const UPDATE_DRAFT_KEYS = new Set(["expectedRevision", "handlingBranchId", "authorizedRefundPiasters", "lines"]);
-const LINE_KEYS = new Set(["sourceSaleLineId", "quantity", "sellableQuantity"]);
+const DRAFT_KEYS = new Set(["returnId", "operationId", "source", "sourceSaleId", "handlingBranchId", "authorizedRefund", "authorizedRefundPiasters", "lines"]);
+const UPDATE_DRAFT_KEYS = new Set(["expectedRevision", "handlingBranchId", "authorizedRefund", "authorizedRefundPiasters", "lines"]);
+const LINE_KEYS = new Set(["sourceLineId", "sourceSaleLineId", "quantity", "sellableQuantity"]);
 const POST_KEYS = new Set(["receivedAndInspected", "expectedRevision"]);
 const PAY_KEYS = new Set(["operationId", "status", "amountPiasters"]);
 const EXCHANGE_KEYS = new Set([
@@ -47,14 +51,7 @@ const EXCHANGE_QUOTE_KEYS = new Set([
 ]);
 const EXCHANGE_LINE_KEYS = new Set(["variantId", "quantity"]);
 
-export function createReturnServices(ports: {
-  actors: ReturnsActorPort;
-  variants: ReturnVariantReader;
-  returns: ReturnsStore;
-  uow: ReturnsUnitOfWork;
-  corrections: ReturnCorrectionStateReader;
-  replacementSales: ReturnReplacementSaleReader;
-  replacementPricing: ReturnReplacementPricing;
+export function createReturnServices(ports: Omit<ReturnServiceDependencies, "clock"> & {
   clock?: { now(): Date };
 }): ReturnServices {
   const clock = ports.clock ?? { now: () => new Date() };
@@ -67,36 +64,135 @@ export function createReturnServices(ports: {
     return staff;
   }
 
+  async function onlineSourceRecord(
+    delivered: DeliveredOnlineOrderSource,
+    allocations: ProtectedOrderAllocationProvenance[],
+    store: ReturnsStore,
+  ): Promise<ReturnSourceRecord> {
+    const lineIds = delivered.confirmedQuote.lines.map((line) => line.id);
+    const usage = await store.getSourceUsage(
+      { kind: "delivered_online_order", id: delivered.orderId },
+      lineIds,
+    );
+    return {
+      source: { kind: "delivered_online_order", id: delivered.orderId },
+      reference: delivered.reference,
+      channel: "online",
+      branchId: null,
+      seller: null,
+      receivedAt: delivered.customerReceivedAt,
+      returnDeadlineAt: delivered.returnDeadlineAt,
+      originalPayment: {
+        merchandisePiasters: delivered.confirmedQuote.merchandiseTotalPiasters,
+        checkoutChargePiasters: delivered.confirmedQuote.deliveryFeePiasters,
+        totalPiasters: delivered.confirmedQuote.finalTotalPiasters,
+      },
+      availableCheckoutChargePiasters: usage.checkoutChargeAlreadyAuthorized
+        ? 0
+        : delivered.confirmedQuote.deliveryFeePiasters,
+      customerName: delivered.customerName,
+      customerPhone: delivered.primaryPhone,
+      lines: delivered.confirmedQuote.lines.map((line, lineIndex) => {
+        return {
+          id: line.id,
+          variantId: line.variantId,
+          lineIndex,
+          quantity: line.quantity,
+          paidPiasters: line.merchandiseTotalPiasters,
+          acceptedNames: {
+            productNameAr: line.productNameAr,
+            sizeNameAr: line.sizeNameAr,
+            colorNameAr: line.colorNameAr,
+          },
+          units: line.units.map((unit) => {
+            const returnedRanges = usage.returnedRangesByOnlineUnit.get(`${line.id}:${unit.unitIndex}`) ?? [];
+            const alreadyReturnedQuantity = returnedRanges.reduce((sum, range) => sum + range.quantity, 0);
+            return {
+              id: `${line.id}:${unit.unitIndex}`,
+              sourceType: "online" as const,
+              lineId: line.id,
+              variantId: line.variantId,
+              unitIndex: unit.unitIndex,
+              quantity: unit.quantity,
+              paidPiasters: unit.paidPiasters,
+              alreadyReturnedQuantity,
+              returnedRanges,
+            };
+          }),
+        };
+      }),
+      allocations: allocations.map((allocation) => ({
+        allocationId: allocation.allocationId,
+        sourceLineId: allocation.sourceLineId,
+        batchId: allocation.batchId,
+        variantId: allocation.variantId,
+        quantity: allocation.quantity,
+        unitCostPiasters: allocation.unitCostPiasters,
+        effectiveUnitCostPiasters: allocation.effectiveUnitCostPiasters,
+        recordedAt: allocation.allocatedAt,
+      })),
+    };
+  }
+
+  async function getSourceOutside(source: ReturnSourceKeyDto): Promise<ReturnSourceRecord | null> {
+    if (source.kind === "physical_sale") return ports.returns.getPhysicalSource(source.id);
+    const delivered = await ports.onlineSources.getDeliveredSource(source.id);
+    if (!delivered) return null;
+    const allocations = await ports.inventoryReads.listProtectedOrderAllocations(source.id);
+    return onlineSourceRecord(delivered, allocations, ports.returns);
+  }
+
+  async function getSourceInTransaction(
+    tx: ReturnsTransaction,
+    source: ReturnSourceKeyDto,
+  ): Promise<ReturnSourceRecord | null> {
+    if (source.kind === "physical_sale") return tx.returns.getPhysicalSource(source.id, true);
+    const delivered = await tx.onlineSources.getDeliveredSource(source.id, true);
+    if (!delivered) return null;
+    const allocations = await tx.inventory.lockProtectedOrderAllocations(source.id);
+    return onlineSourceRecord(delivered, allocations, tx.returns);
+  }
+
   async function sourceDto(source: ReturnSourceRecord): Promise<ReturnSourceDto> {
     const [branches, identities] = await Promise.all([
       ports.actors.listBranches(),
       ports.variants.getVariants(source.lines.map((line) => line.variantId)),
     ]);
-    const branch = branches.find((item) => item.id === source.branchId);
-    if (!branch) throw new ReturnsValidationError("فرع البيع الأصلي غير موجود.");
+    const branch = source.branchId ? branches.find((item) => item.id === source.branchId) ?? null : null;
+    if (source.channel === "physical" && !branch) throw new ReturnsValidationError("فرع البيع الأصلي غير موجود.");
     const byId = new Map(identities.map((item) => [item.id, item]));
     return {
-      saleId: source.saleId,
-      reference: source.saleId,
-      channel: "physical",
+      source: source.source,
+      ...(source.source.kind === "physical_sale" ? { saleId: source.source.id } : {}),
+      reference: source.reference,
+      channel: source.channel,
       originalBranch: branch,
-      soldByStaffId: source.soldByStaffId,
-      soldByDisplayName: source.soldByDisplayName,
-      receivedAt: source.occurredAt.toISOString(),
+      seller: source.seller,
+      ...(source.seller ? { soldByStaffId: source.seller.staffId, soldByDisplayName: source.seller.displayName } : {}),
+      receivedAt: source.receivedAt.toISOString(),
       returnDeadlineAt: source.returnDeadlineAt.toISOString(),
-      finalTotalPiasters: source.finalTotalPiasters,
+      originalPayment: source.originalPayment,
+      availableCheckoutChargePiasters: source.availableCheckoutChargePiasters,
+      finalTotalPiasters: source.originalPayment.totalPiasters,
       customerName: source.customerName,
       customerPhone: source.customerPhone,
       lines: source.lines.map((line) => {
-        const variant = byId.get(line.variantId);
-        if (!variant) throw new ReturnsValidationError("المتغير المحدد غير موجود.");
+        const currentVariant = byId.get(line.variantId);
+        if (!currentVariant) throw new ReturnsValidationError("المتغير المحدد غير موجود.");
+        const variant = line.acceptedNames ? {
+          ...currentVariant,
+          product: { ...currentVariant.product, nameAr: line.acceptedNames.productNameAr },
+          size: { ...currentVariant.size, nameAr: line.acceptedNames.sizeNameAr },
+          color: { ...currentVariant.color, nameAr: line.acceptedNames.colorNameAr },
+        } : currentVariant;
         const returnedQuantity = line.units.reduce((sum, unit) => sum + unit.alreadyReturnedQuantity, 0);
         const remainingSuggestedPiasters = line.units.reduce(
           (sum, unit) => sum + (unit.quantity - unit.alreadyReturnedQuantity) * unit.paidPiasters,
           0,
         );
         return {
-          saleLineId: line.id,
+          sourceLineId: line.id,
+          ...(source.source.kind === "physical_sale" ? { saleLineId: line.id } : {}),
           variantId: line.variantId,
           variant,
           purchasedQuantity: line.quantity,
@@ -117,15 +213,16 @@ export function createReturnServices(ports: {
 
   async function hydrate(record: ReturnRecord): Promise<ReturnDto> {
     const [source, corrected, exchangeRecord] = await Promise.all([
-      ports.returns.getSource(record.sourceSaleId),
+      getSourceOutside(record.source),
       record.status === "posted" ? ports.corrections.getEffectiveReturn(record.id) : Promise.resolve(null),
       ports.returns.getExchangeByReturnId(record.id),
     ]);
     if (!source) throw new ReturnsValidationError("تعذر العثور على البيع الأصلي.");
-    const [sourceValue, branches, identities] = await Promise.all([
+    const [sourceValue, branches, identities, refundActor] = await Promise.all([
       sourceDto(source),
       ports.actors.listBranches(),
       ports.variants.getVariants(record.lines.map((line) => line.variantId)),
+      record.refundRecordedByStaffId ? ports.actors.getStaff(record.refundRecordedByStaffId) : Promise.resolve(null),
     ]);
     const handlingBranch = branches.find((item) => item.id === record.handlingBranchId);
     if (!handlingBranch) throw new ReturnsValidationError("فرع معالجة الإرجاع غير موجود.");
@@ -147,6 +244,9 @@ export function createReturnServices(ports: {
       source: sourceValue,
       handlingBranch,
       suggestedRefundPiasters: record.suggestedRefundPiasters,
+      suggestedRefund: record.suggestedRefund,
+      authorizedRefund: corrected?.authorizedRefund ?? record.authorizedRefund,
+      originalAuthorizedRefund: record.authorizedRefund,
       authorizedRefundPiasters: refund.authorizedPiasters,
       originalAuthorizedRefundPiasters: record.authorizedRefundPiasters,
       effectiveStatus: refund.effectiveStatus,
@@ -165,7 +265,8 @@ export function createReturnServices(ports: {
         const sellableQuantity = effectiveLine?.sellableQuantity ?? line.sellableQuantity;
         return {
           id: line.id,
-          sourceSaleLineId: line.sourceSaleLineId,
+          sourceLineId: line.sourceLineId,
+          ...(record.source.kind === "physical_sale" ? { sourceSaleLineId: line.sourceLineId } : {}),
           variantId: line.variantId,
           variant,
           quantity,
@@ -188,6 +289,7 @@ export function createReturnServices(ports: {
         overpaidPiasters: refund.overpaidPiasters,
         paidPiasters: refund.paidPiasters,
         recordedByStaffId: record.refundRecordedByStaffId,
+        recordedByDisplayName: refundActor?.displayName ?? null,
         recordedAt: record.refundRecordedAt?.toISOString() ?? null,
         events: record.refundEvents.map(toEventDto),
       },
@@ -201,6 +303,7 @@ export function createReturnServices(ports: {
     const sale = await ports.replacementSales.getById(record.replacementSaleId);
     if (!sale) throw new ReturnsValidationError("تعذر العثور على بيع الاستبدال.");
     const allocations = await ports.replacementSales.listAllocations(sale.operationId);
+    const completedBy = await ports.actors.getStaff(record.completedByStaffId);
     const cashRefundStatus: "none" | "owed" | "paid" | "cancelled" = refund.effectiveStatus === "cancelled"
       ? "cancelled"
       : refund.status === "owed"
@@ -230,6 +333,7 @@ export function createReturnServices(ports: {
         effectiveUnitCostPiasters: item.effectiveUnitCostPiasters,
       })),
       completedByStaffId: record.completedByStaffId,
+      completedByDisplayName: completedBy?.displayName ?? record.completedByStaffId,
       completedAt: record.completedAt.toISOString(),
     };
   }
@@ -262,7 +366,18 @@ export function createReturnServices(ports: {
     async listSources(auth, input) {
       await requireManager(auth);
       const search = parseSearch(input);
-      const rows = await ports.returns.listSources(search);
+      const physical = search.channel === "online" ? [] : await ports.returns.listPhysicalSources(search);
+      const onlineRows = search.channel === "physical" || search.branchId
+        ? []
+        : await ports.onlineSources.listDeliveredSources(search);
+      const online = await Promise.all(onlineRows.map(async (delivered) => onlineSourceRecord(
+        delivered,
+        await ports.inventoryReads.listProtectedOrderAllocations(delivered.orderId),
+        ports.returns,
+      )));
+      const rows = [...physical, ...online]
+        .sort((left, right) => right.receivedAt.getTime() - left.receivedAt.getTime())
+        .slice(0, 100);
       return Promise.all(rows.map(sourceDto));
     },
 
@@ -271,12 +386,13 @@ export function createReturnServices(ports: {
       const command = parseDraft(input);
       if (!canUseBranch(manager, command.handlingBranchId)) throw new ForbiddenError();
       const fingerprint = fingerprintReturnPayload({
-        sourceSaleId: command.sourceSaleId,
+        source: command.source,
         handlingBranchId: command.handlingBranchId,
-        authorizedRefundPiasters: command.authorizedRefundPiasters,
+        authorizedRefund: command.authorizedRefund,
         lines: command.lines,
       });
       const outcome = await ports.uow.run(async (tx) => {
+        await tx.inventory.lockStockClock("update");
         await tx.returns.lockIdentities(command.returnId, command.operationId);
         const byId = await tx.returns.getById(command.returnId);
         const byOperation = await tx.returns.getByOperationId(command.operationId);
@@ -287,12 +403,12 @@ export function createReturnServices(ports: {
           }
           return { record: existing, created: false };
         }
-        const source = await tx.returns.getSource(command.sourceSaleId, true);
-        if (!source) throw new NotFoundError("تعذر العثور على البيع الأصلي.");
+        const source = await getSourceInTransaction(tx, command.source);
+        if (!source) throw new NotFoundError("تعذر العثور على المصدر الأصلي.");
         const plan = planReturn(source, command.lines);
         const lines: ReturnLineWrite[] = plan.lines.map((line, lineIndex) => ({
           id: crypto.randomUUID(),
-          sourceSaleLineId: line.sourceSaleLineId,
+          sourceLineId: line.sourceLineId,
           variantId: line.variantId,
           quantity: line.quantity,
           sellableQuantity: line.sellableQuantity,
@@ -302,14 +418,16 @@ export function createReturnServices(ports: {
         const inserted = await tx.returns.insertDraft({
           id: command.returnId,
           operationId: command.operationId,
-          sourceSaleId: command.sourceSaleId,
+          source: command.source,
           handlingBranchId: command.handlingBranchId,
           status: "draft",
           revision: 1,
           payloadFingerprint: fingerprint,
           draftPayloadFingerprint: fingerprint,
           suggestedRefundPiasters: plan.suggestedRefundPiasters,
-          authorizedRefundPiasters: command.authorizedRefundPiasters,
+          authorizedRefundPiasters: command.authorizedRefund.totalPiasters,
+          suggestedRefund: plan.suggestedRefund,
+          authorizedRefund: command.authorizedRefund,
           createdByStaffId: manager.id,
           updatedByStaffId: manager.id,
           lines,
@@ -324,18 +442,19 @@ export function createReturnServices(ports: {
       const returnId = assertUuid(id, "الإرجاع غير موجود.");
       const command = parseDraftUpdate(input);
       const record = await ports.uow.run(async (tx) => {
-        const sourceSaleId = await tx.returns.getSourceSaleId(returnId);
-        if (!sourceSaleId) throw new NotFoundError("الإرجاع غير موجود.");
-        const source = await tx.returns.getSource(sourceSaleId, true);
-        if (!source) throw new NotFoundError("تعذر العثور على البيع الأصلي.");
+        const sourceKey = await tx.returns.getSourceKey(returnId);
+        if (!sourceKey) throw new NotFoundError("الإرجاع غير موجود.");
+        await tx.inventory.lockStockClock("update");
+        const source = await getSourceInTransaction(tx, sourceKey);
+        if (!source) throw new NotFoundError("تعذر العثور على المصدر الأصلي.");
         const existing = await tx.returns.getById(returnId, true);
         if (!existing) throw new NotFoundError("الإرجاع غير موجود.");
-        if (existing.sourceSaleId !== sourceSaleId) throw new OperationConflictError();
+        if (existing.source.kind !== sourceKey.kind || existing.source.id !== sourceKey.id) throw new OperationConflictError();
         if (!canUseBranch(manager, command.handlingBranchId)) throw new ForbiddenError();
         const fingerprint = fingerprintReturnPayload({
-          sourceSaleId: existing.sourceSaleId,
+          source: existing.source,
           handlingBranchId: command.handlingBranchId,
-          authorizedRefundPiasters: command.authorizedRefundPiasters,
+          authorizedRefund: command.authorizedRefund,
           lines: command.lines,
         });
         if (
@@ -358,12 +477,14 @@ export function createReturnServices(ports: {
           handlingBranchId: command.handlingBranchId,
           draftPayloadFingerprint: fingerprint,
           suggestedRefundPiasters: plan.suggestedRefundPiasters,
-          authorizedRefundPiasters: command.authorizedRefundPiasters,
+          authorizedRefundPiasters: command.authorizedRefund.totalPiasters,
+          suggestedRefund: plan.suggestedRefund,
+          authorizedRefund: command.authorizedRefund,
           updatedByStaffId: manager.id,
           updatedAt: clock.now(),
           lines: plan.lines.map((line, lineIndex) => ({
             id: crypto.randomUUID(),
-            sourceSaleLineId: line.sourceSaleLineId,
+            sourceLineId: line.sourceLineId,
             variantId: line.variantId,
             quantity: line.quantity,
             sellableQuantity: line.sellableQuantity,
@@ -385,14 +506,14 @@ export function createReturnServices(ports: {
       }
       const expectedRevision = positiveQuantity(body.expectedRevision, "نسخة المسودة غير صالحة.");
       const outcome = await ports.uow.run(async (tx) => {
-        const sourceSaleId = await tx.returns.getSourceSaleId(returnId);
-        if (!sourceSaleId) throw new NotFoundError("الإرجاع غير موجود.");
+        const sourceKey = await tx.returns.getSourceKey(returnId);
+        if (!sourceKey) throw new NotFoundError("الإرجاع غير موجود.");
         await tx.inventory.lockStockClock("update");
-        const source = await tx.returns.getSource(sourceSaleId, true);
-        if (!source) throw new ReturnsValidationError("تعذر العثور على البيع الأصلي.");
+        const source = await getSourceInTransaction(tx, sourceKey);
+        if (!source) throw new ReturnsValidationError("تعذر العثور على المصدر الأصلي.");
         const record = await tx.returns.getById(returnId, true);
         if (!record) throw new NotFoundError("الإرجاع غير موجود.");
-        if (record.sourceSaleId !== sourceSaleId) throw new OperationConflictError();
+        if (record.source.kind !== sourceKey.kind || record.source.id !== sourceKey.id) throw new OperationConflictError();
         if (!canUseBranch(manager, record.handlingBranchId)) throw new ForbiddenError();
         if (record.revision !== expectedRevision) {
           throw new OperationConflictError("تغيرت المسودة. أعد تحميلها قبل ترحيل الإرجاع.");
@@ -402,11 +523,12 @@ export function createReturnServices(ports: {
         const now = clock.now();
         if (now.getTime() > source.returnDeadlineAt.getTime()) throw new ReturnWindowExpiredError();
         const plan = planReturn(source, record.lines.map((line) => ({
-          sourceSaleLineId: line.sourceSaleLineId,
+          sourceLineId: line.sourceLineId,
           quantity: line.quantity,
           sellableQuantity: line.sellableQuantity,
         })));
-        if (plan.suggestedRefundPiasters !== record.suggestedRefundPiasters) {
+        if (plan.suggestedRefundPiasters !== record.suggestedRefundPiasters
+          || plan.suggestedRefund.checkoutChargePiasters !== record.suggestedRefund.checkoutChargePiasters) {
           throw new OperationConflictError("تغيرت الكميات المتاحة للإرجاع. أنشئ مسودة جديدة.");
         }
         const claimed = await tx.inventory.claimReturnOperation({
@@ -419,12 +541,14 @@ export function createReturnServices(ports: {
           if (!replay?.postedAt) throw new OperationConflictError();
           return { record: replay, created: false };
         }
-        const lineIdBySource = new Map(record.lines.map((line) => [line.sourceSaleLineId, line.id]));
+        const lineIdBySource = new Map(record.lines.map((line) => [line.sourceLineId, line.id]));
         const units: ReturnUnitWrite[] = plan.units.map((unit) => ({
           id: crypto.randomUUID(),
-          returnLineId: lineIdBySource.get(unit.sourceSaleLineId) ?? "",
+          returnLineId: lineIdBySource.get(unit.sourceLineId) ?? "",
           sourceSaleUnitId: unit.sourceSaleUnitId,
           sourceRecordingSaleUnitId: unit.sourceRecordingSaleUnitId,
+          sourceOnlineOrderLineId: unit.sourceOnlineOrderLineId,
+          sourceOnlineOrderUnitIndex: unit.sourceOnlineOrderUnitIndex,
           startOffset: unit.startOffset,
           quantity: unit.quantity,
           paidUnitPiasters: unit.paidUnitPiasters,
@@ -434,6 +558,14 @@ export function createReturnServices(ports: {
           id: crypto.randomUUID(),
           ...item,
         }));
+        if (record.source.kind === "delivered_online_order" && plan.protectionEffects.length > 0) {
+          await tx.inventory.adjustDeliveredReturnProtection({
+            orderId: record.source.id,
+            operationId: record.operationId,
+            recordedAt: claimed.recordedAt,
+            effects: plan.protectionEffects,
+          });
+        }
         for (const item of restorations) {
           await tx.inventory.restoreToOriginalBatch({
             operationId: record.operationId,
@@ -582,14 +714,14 @@ export function createReturnServices(ports: {
         cashRefundStatus: command.cashRefundStatus,
       });
       const outcome = await ports.uow.run(async (tx) => {
-        const sourceSaleId = await tx.returns.getSourceSaleId(returnId);
-        if (!sourceSaleId) throw new NotFoundError("الإرجاع غير موجود.");
+        const sourceKey = await tx.returns.getSourceKey(returnId);
+        if (!sourceKey) throw new NotFoundError("الإرجاع غير موجود.");
         await tx.inventory.lockStockClock("update");
-        const source = await tx.returns.getSource(sourceSaleId, true);
-        if (!source) throw new ReturnsValidationError("تعذر العثور على البيع الأصلي.");
+        const source = await getSourceInTransaction(tx, sourceKey);
+        if (!source) throw new ReturnsValidationError("تعذر العثور على المصدر الأصلي.");
         const record = await tx.returns.getById(returnId, true);
         if (!record) throw new NotFoundError("الإرجاع غير موجود.");
-        if (record.sourceSaleId !== sourceSaleId) throw new OperationConflictError();
+        if (record.source.kind !== sourceKey.kind || record.source.id !== sourceKey.id) throw new OperationConflictError();
         if (!canUseBranch(manager, record.handlingBranchId)) throw new ForbiddenError();
         await tx.returns.lockIdentities(command.exchangeId, command.operationId);
         const existingByReturn = await tx.returns.getExchangeByReturnId(returnId, true);
@@ -626,11 +758,12 @@ export function createReturnServices(ports: {
           if (!command.receivedAndInspected) throw new ReturnsValidationError("يجب تأكيد استلام الأصناف وفحصها.");
           if (completedAt.getTime() > source.returnDeadlineAt.getTime()) throw new ReturnWindowExpiredError();
           const plan = planReturn(source, record.lines.map((line) => ({
-            sourceSaleLineId: line.sourceSaleLineId,
+            sourceLineId: line.sourceLineId,
             quantity: line.quantity,
             sellableQuantity: line.sellableQuantity,
           })));
-          if (plan.suggestedRefundPiasters !== record.suggestedRefundPiasters) {
+          if (plan.suggestedRefundPiasters !== record.suggestedRefundPiasters
+            || plan.suggestedRefund.checkoutChargePiasters !== record.suggestedRefund.checkoutChargePiasters) {
             throw new OperationConflictError("تغيرت الكميات المتاحة للإرجاع. أنشئ مسودة جديدة.");
           }
           const claimed = await tx.inventory.claimReturnOperation({
@@ -640,18 +773,28 @@ export function createReturnServices(ports: {
           });
           if (claimed.kind === "replay") throw new OperationConflictError();
           completedAt = claimed.recordedAt;
-          const lineIdBySource = new Map(record.lines.map((line) => [line.sourceSaleLineId, line.id]));
+          const lineIdBySource = new Map(record.lines.map((line) => [line.sourceLineId, line.id]));
           const units: ReturnUnitWrite[] = plan.units.map((unit) => ({
             id: crypto.randomUUID(),
-            returnLineId: lineIdBySource.get(unit.sourceSaleLineId) ?? "",
+            returnLineId: lineIdBySource.get(unit.sourceLineId) ?? "",
             sourceSaleUnitId: unit.sourceSaleUnitId,
             sourceRecordingSaleUnitId: unit.sourceRecordingSaleUnitId,
+            sourceOnlineOrderLineId: unit.sourceOnlineOrderLineId,
+            sourceOnlineOrderUnitIndex: unit.sourceOnlineOrderUnitIndex,
             startOffset: unit.startOffset,
             quantity: unit.quantity,
             paidUnitPiasters: unit.paidUnitPiasters,
           }));
           if (units.some((unit) => !unit.returnLineId)) throw new ReturnsValidationError("بيانات أصناف الإرجاع غير متطابقة.");
           const restorations: ReturnRestorationWrite[] = plan.restorations.map((item) => ({ id: crypto.randomUUID(), ...item }));
+          if (record.source.kind === "delivered_online_order" && plan.protectionEffects.length > 0) {
+            await tx.inventory.adjustDeliveredReturnProtection({
+              orderId: record.source.id,
+              operationId: record.operationId,
+              recordedAt: completedAt,
+              effects: plan.protectionEffects,
+            });
+          }
           for (const item of restorations) {
             await tx.inventory.restoreToOriginalBatch({
               operationId: record.operationId,
@@ -734,6 +877,7 @@ export function createReturnServices(ports: {
           });
           return {
             ...row,
+            authorizedRefund: corrected?.authorizedRefund ?? row.authorizedRefund,
             authorizedRefundPiasters: refund.authorizedPiasters,
             originalAuthorizedRefundPiasters: row.authorizedRefundPiasters,
             effectiveStatus: refund.effectiveStatus,
@@ -797,15 +941,17 @@ function projectEffectiveRefund(input: {
   };
 }
 
-type RequestedLine = { sourceSaleLineId: string; quantity: number; sellableQuantity: number };
+type RequestedLine = { sourceLineId: string; quantity: number; sellableQuantity: number };
 
 function planReturn(source: ReturnSourceRecord, requested: RequestedLine[]) {
   const sourceByLine = new Map(source.lines.map((line) => [line.id, line]));
   const seen = new Set<string>();
   const selected: Array<{
-    sourceSaleLineId: string;
+    sourceLineId: string;
     sourceSaleUnitId: string | null;
     sourceRecordingSaleUnitId: string | null;
+    sourceOnlineOrderLineId: string | null;
+    sourceOnlineOrderUnitIndex: number | null;
     variantId: string;
     startOffset: number;
     quantity: number;
@@ -814,7 +960,7 @@ function planReturn(source: ReturnSourceRecord, requested: RequestedLine[]) {
     sellableQuantity: number;
   }> = [];
   const linePlans: Array<{
-    sourceSaleLineId: string;
+    sourceLineId: string;
     variantId: string;
     quantity: number;
     sellableQuantity: number;
@@ -823,37 +969,40 @@ function planReturn(source: ReturnSourceRecord, requested: RequestedLine[]) {
   const variantPrefixes = unitVariantPrefixes(source);
 
   for (const request of requested) {
-    if (seen.has(request.sourceSaleLineId)) throw new ReturnsValidationError("لا تكرر صنف البيع في الإرجاع.");
-    seen.add(request.sourceSaleLineId);
-    const line = sourceByLine.get(request.sourceSaleLineId);
+    if (seen.has(request.sourceLineId)) throw new ReturnsValidationError("لا تكرر صنف البيع في الإرجاع.");
+    seen.add(request.sourceLineId);
+    const line = sourceByLine.get(request.sourceLineId);
     if (!line) throw new ReturnsValidationError("صنف البيع الأصلي غير موجود.");
     let needed = request.quantity;
     let sellableNeeded = request.sellableQuantity;
     let suggestion = 0;
     for (const unit of line.units) {
       if (needed <= 0) break;
-      const available = unit.quantity - unit.alreadyReturnedQuantity;
-      if (available <= 0) continue;
-      const take = Math.min(needed, available);
-      const sellableTake = Math.min(sellableNeeded, take);
-      suggestion += take * unit.paidPiasters;
-      selected.push({
-        sourceSaleLineId: line.id,
-        sourceSaleUnitId: unit.sourceType === "original" ? unit.id : null,
-        sourceRecordingSaleUnitId: unit.sourceType === "correction" ? unit.id : null,
-        variantId: line.variantId,
-        startOffset: unit.alreadyReturnedQuantity,
-        quantity: take,
-        paidUnitPiasters: unit.paidPiasters,
-        variantOrdinal: (variantPrefixes.get(unit.id) ?? 0) + unit.alreadyReturnedQuantity,
-        sellableQuantity: sellableTake,
-      });
-      needed -= take;
-      sellableNeeded -= sellableTake;
+      for (const available of availableUnitRanges(unit)) {
+        if (needed <= 0) break;
+        const take = Math.min(needed, available.quantity);
+        const sellableTake = Math.min(sellableNeeded, take);
+        suggestion += take * unit.paidPiasters;
+        selected.push({
+          sourceLineId: line.id,
+          sourceSaleUnitId: unit.sourceType === "original" ? unit.id : null,
+          sourceRecordingSaleUnitId: unit.sourceType === "correction" ? unit.id : null,
+          sourceOnlineOrderLineId: unit.sourceType === "online" ? line.id : null,
+          sourceOnlineOrderUnitIndex: unit.sourceType === "online" ? unit.unitIndex : null,
+          variantId: line.variantId,
+          startOffset: available.startOffset,
+          quantity: take,
+          paidUnitPiasters: unit.paidPiasters,
+          variantOrdinal: (variantPrefixes.get(unit.id) ?? 0) + available.startOffset,
+          sellableQuantity: sellableTake,
+        });
+        needed -= take;
+        sellableNeeded -= sellableTake;
+      }
     }
     if (needed > 0) throw new ReturnsValidationError("الكمية المطلوبة تتجاوز الكمية غير المرتجعة.");
     linePlans.push({
-      sourceSaleLineId: line.id,
+      sourceLineId: line.id,
       variantId: line.variantId,
       quantity: request.quantity,
       sellableQuantity: request.sellableQuantity,
@@ -862,12 +1011,76 @@ function planReturn(source: ReturnSourceRecord, requested: RequestedLine[]) {
   }
 
   const restorations = restorationPlan(source, selected);
+  const protectionEffects = protectionPlan(source, selected);
+  const merchandisePiasters = linePlans.reduce((sum, line) => sum + line.suggestedRefundPiasters, 0);
+  const exhaustsRemaining = source.lines.every((line) => {
+    const requestedQuantity = requested.find((item) => item.sourceLineId === line.id)?.quantity ?? 0;
+    const remaining = line.units.reduce((sum, unit) => sum + unit.quantity - unit.alreadyReturnedQuantity, 0);
+    return requestedQuantity === remaining;
+  });
+  const checkoutChargePiasters = exhaustsRemaining ? source.availableCheckoutChargePiasters : 0;
   return {
     lines: linePlans,
     units: selected,
     restorations,
-    suggestedRefundPiasters: linePlans.reduce((sum, line) => sum + line.suggestedRefundPiasters, 0),
+    protectionEffects,
+    suggestedRefund: {
+      merchandisePiasters,
+      checkoutChargePiasters,
+      totalPiasters: safeMoneySum(merchandisePiasters, checkoutChargePiasters),
+    },
+    suggestedRefundPiasters: safeMoneySum(merchandisePiasters, checkoutChargePiasters),
   };
+}
+
+function availableUnitRanges(unit: ReturnSourceRecord["lines"][number]["units"][number]) {
+  const occupied = [...unit.returnedRanges].sort((left, right) => left.startOffset - right.startOffset);
+  const available: Array<{ startOffset: number; quantity: number }> = [];
+  let cursor = 0;
+  for (const range of occupied) {
+    if (range.startOffset > cursor) available.push({ startOffset: cursor, quantity: range.startOffset - cursor });
+    cursor = Math.max(cursor, range.startOffset + range.quantity);
+  }
+  if (cursor < unit.quantity) available.push({ startOffset: cursor, quantity: unit.quantity - cursor });
+  return available;
+}
+
+function protectionPlan(
+  source: ReturnSourceRecord,
+  selected: Array<{ sourceLineId: string; variantOrdinal: number; quantity: number }>,
+) {
+  if (source.source.kind !== "delivered_online_order") return [];
+  const totals = new Map<string, { allocationId: string; quantityDelta: number }>();
+  const byLine = new Map<string, Array<{ allocationId: string; start: number; end: number }>>();
+  for (const line of source.lines) {
+    let offset = 0;
+    const rows = source.allocations
+      .filter((allocation) => allocation.sourceLineId === line.id && allocation.allocationId)
+      .map((allocation) => {
+        const row = { allocationId: allocation.allocationId!, start: offset, end: offset + allocation.quantity };
+        offset += allocation.quantity;
+        return row;
+      });
+    byLine.set(line.id, rows);
+  }
+  for (const segment of selected) {
+    let remaining = segment.quantity;
+    let cursor = segment.variantOrdinal;
+    for (const allocation of byLine.get(segment.sourceLineId) ?? []) {
+      if (remaining <= 0) break;
+      if (cursor >= allocation.end || cursor < allocation.start) continue;
+      const take = Math.min(remaining, allocation.end - cursor);
+      const current = totals.get(allocation.allocationId);
+      totals.set(allocation.allocationId, {
+        allocationId: allocation.allocationId,
+        quantityDelta: (current?.quantityDelta ?? 0) + take,
+      });
+      cursor += take;
+      remaining -= take;
+    }
+    if (remaining > 0) throw new ReturnsValidationError("بيانات تخصيص الطلب الأصلي غير مكتملة.");
+  }
+  return [...totals.values()];
 }
 
 function unitVariantPrefixes(source: ReturnSourceRecord) {
@@ -875,9 +1088,10 @@ function unitVariantPrefixes(source: ReturnSourceRecord) {
   const counters = new Map<string, number>();
   for (const line of [...source.lines].sort((a, b) => a.lineIndex - b.lineIndex)) {
     for (const unit of [...line.units].sort((a, b) => a.unitIndex - b.unitIndex)) {
-      const current = counters.get(line.variantId) ?? 0;
+      const key = source.source.kind === "delivered_online_order" ? line.id : line.variantId;
+      const current = counters.get(key) ?? 0;
       result.set(unit.id, current);
-      counters.set(line.variantId, current + unit.quantity);
+      counters.set(key, current + unit.quantity);
     }
   }
   return result;
@@ -885,12 +1099,13 @@ function unitVariantPrefixes(source: ReturnSourceRecord) {
 
 function restorationPlan(
   source: ReturnSourceRecord,
-  selected: Array<{ variantId: string; variantOrdinal: number; quantity: number; sellableQuantity: number }>,
+  selected: Array<{ sourceLineId: string; variantId: string; variantOrdinal: number; quantity: number; sellableQuantity: number }>,
 ) {
   const allocationsByVariant = new Map<string, Array<{ start: number; end: number; batchId: string; unitCostPiasters: number; effectiveUnitCostPiasters: number }>>();
   const offsets = new Map<string, number>();
   for (const allocation of source.allocations) {
-    const start = offsets.get(allocation.variantId) ?? 0;
+    const offsetKey = source.source.kind === "delivered_online_order" ? allocation.sourceLineId ?? "" : allocation.variantId;
+    const start = offsets.get(offsetKey) ?? 0;
     const list = allocationsByVariant.get(allocation.variantId) ?? [];
     list.push({
       start,
@@ -900,13 +1115,22 @@ function restorationPlan(
       effectiveUnitCostPiasters: allocation.effectiveUnitCostPiasters,
     });
     allocationsByVariant.set(allocation.variantId, list);
-    offsets.set(allocation.variantId, start + allocation.quantity);
+    offsets.set(offsetKey, start + allocation.quantity);
   }
   const totals = new Map<string, Omit<ReturnRestorationWrite, "id">>();
   for (const segment of selected) {
     let remaining = segment.sellableQuantity;
     let cursor = segment.variantOrdinal;
-    for (const allocation of allocationsByVariant.get(segment.variantId) ?? []) {
+    const allocationRows = source.source.kind === "delivered_online_order"
+      ? source.allocations.filter((item) => item.sourceLineId === segment.sourceLineId).map((item, index, all) => ({
+          start: all.slice(0, index).reduce((sum, row) => sum + row.quantity, 0),
+          end: all.slice(0, index + 1).reduce((sum, row) => sum + row.quantity, 0),
+          batchId: item.batchId,
+          unitCostPiasters: item.unitCostPiasters,
+          effectiveUnitCostPiasters: item.effectiveUnitCostPiasters,
+        }))
+      : allocationsByVariant.get(segment.variantId) ?? [];
+    for (const allocation of allocationRows) {
       if (remaining <= 0) break;
       if (cursor >= allocation.end || cursor < allocation.start) continue;
       const take = Math.min(remaining, allocation.end - cursor);
@@ -936,16 +1160,16 @@ function parseDraft(input: unknown) {
   return {
     returnId: assertUuid(body.returnId, "معرّف الإرجاع غير صالح."),
     operationId: assertUuid(body.operationId, "معرّف العملية غير صالح."),
-    sourceSaleId: assertUuid(body.sourceSaleId, "البيع الأصلي غير صالح."),
+    source: parseReturnSource(body.source, body.sourceSaleId),
     handlingBranchId: assertUuid(body.handlingBranchId, "فرع معالجة الإرجاع غير صالح."),
-    authorizedRefundPiasters: nonnegativeMoney(body.authorizedRefundPiasters, "قيمة الاسترداد المعتمدة غير صالحة."),
+    authorizedRefund: parseAuthorizedRefund(body.authorizedRefund, body.authorizedRefundPiasters),
     lines: body.lines.map((raw) => {
       const line = expectObject(raw, "بيانات صنف الإرجاع غير صالحة.");
       assertAllowedKeys(line, LINE_KEYS, "بيانات صنف الإرجاع غير صالحة.");
       const quantity = positiveQuantity(line.quantity, "كمية الإرجاع غير صالحة.");
       const sellableQuantity = nonnegativeQuantity(line.sellableQuantity, "الكمية القابلة للبيع غير صالحة.");
       if (sellableQuantity > quantity) throw new ReturnsValidationError("الكمية القابلة للبيع تتجاوز كمية الإرجاع.");
-      return { sourceSaleLineId: assertUuid(line.sourceSaleLineId, "صنف البيع الأصلي غير صالح."), quantity, sellableQuantity };
+      return { sourceLineId: assertUuid(line.sourceLineId ?? line.sourceSaleLineId, "صنف المصدر الأصلي غير صالح."), quantity, sellableQuantity };
     }),
   };
 }
@@ -959,14 +1183,14 @@ function parseDraftUpdate(input: unknown) {
   return {
     expectedRevision: positiveQuantity(body.expectedRevision, "نسخة المسودة غير صالحة."),
     handlingBranchId: assertUuid(body.handlingBranchId, "فرع معالجة الإرجاع غير صالح."),
-    authorizedRefundPiasters: nonnegativeMoney(body.authorizedRefundPiasters, "قيمة الاسترداد المعتمدة غير صالحة."),
+    authorizedRefund: parseAuthorizedRefund(body.authorizedRefund, body.authorizedRefundPiasters),
     lines: body.lines.map((raw) => {
       const line = expectObject(raw, "بيانات صنف الإرجاع غير صالحة.");
       assertAllowedKeys(line, LINE_KEYS, "بيانات صنف الإرجاع غير صالحة.");
       const quantity = positiveQuantity(line.quantity, "كمية الإرجاع غير صالحة.");
       const sellableQuantity = nonnegativeQuantity(line.sellableQuantity, "الكمية القابلة للبيع غير صالحة.");
       if (sellableQuantity > quantity) throw new ReturnsValidationError("الكمية القابلة للبيع تتجاوز كمية الإرجاع.");
-      return { sourceSaleLineId: assertUuid(line.sourceSaleLineId, "صنف البيع الأصلي غير صالح."), quantity, sellableQuantity };
+      return { sourceLineId: assertUuid(line.sourceLineId ?? line.sourceSaleLineId, "صنف المصدر الأصلي غير صالح."), quantity, sellableQuantity };
     }),
   };
 }
@@ -1053,7 +1277,41 @@ function parseSearch(input: unknown): SourceSearch {
   if (typeof body.branchId === "string" && body.branchId) search.branchId = assertUuid(body.branchId, "فرع البحث غير صالح.");
   if (typeof body.item === "string" && body.item.trim()) search.item = body.item.trim().slice(0, 120);
   if (body.amountPiasters !== undefined && body.amountPiasters !== "") search.amountPiasters = nonnegativeMoney(Number(body.amountPiasters), "قيمة البحث غير صالحة.");
+  if (body.channel !== undefined && body.channel !== "physical" && body.channel !== "online") {
+    throw new ReturnsValidationError("قناة البحث غير صالحة.");
+  }
+  if (body.channel === "physical" || body.channel === "online") search.channel = body.channel;
   return search;
+}
+
+function parseReturnSource(value: unknown, legacySaleId: unknown): ReturnSourceKeyDto {
+  if (value === undefined && legacySaleId !== undefined) {
+    return { kind: "physical_sale", id: assertUuid(legacySaleId, "البيع الأصلي غير صالح.") };
+  }
+  const source = expectObject(value, "مصدر الإرجاع غير صالح.");
+  if (source.kind !== "physical_sale" && source.kind !== "delivered_online_order") {
+    throw new ReturnsValidationError("نوع مصدر الإرجاع غير صالح.");
+  }
+  assertAllowedKeys(source, new Set(["kind", "id"]), "مصدر الإرجاع غير صالح.");
+  return { kind: source.kind, id: assertUuid(source.id, "مصدر الإرجاع غير صالح.") };
+}
+
+function parseAuthorizedRefund(value: unknown, legacyTotal: unknown): ReturnRefundBreakdownDto {
+  if (value === undefined) {
+    const total = nonnegativeMoney(legacyTotal, "قيمة الاسترداد المعتمدة غير صالحة.");
+    return { merchandisePiasters: total, checkoutChargePiasters: 0, totalPiasters: total };
+  }
+  const refund = expectObject(value, "تفاصيل الاسترداد المعتمد غير صالحة.");
+  assertAllowedKeys(refund, new Set(["merchandisePiasters", "checkoutChargePiasters"]), "تفاصيل الاسترداد المعتمد غير صالحة.");
+  const merchandisePiasters = nonnegativeMoney(refund.merchandisePiasters, "قيمة البضاعة المعتمدة غير صالحة.");
+  const checkoutChargePiasters = nonnegativeMoney(refund.checkoutChargePiasters, "قيمة رسوم الطلب المعتمدة غير صالحة.");
+  return { merchandisePiasters, checkoutChargePiasters, totalPiasters: safeMoneySum(merchandisePiasters, checkoutChargePiasters) };
+}
+
+function safeMoneySum(left: number, right: number) {
+  const total = left + right;
+  if (!Number.isSafeInteger(total)) throw new ReturnsValidationError("قيمة الاسترداد غير صالحة.");
+  return total;
 }
 
 function positiveQuantity(value: unknown, message: string) {

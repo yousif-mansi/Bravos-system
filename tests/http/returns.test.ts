@@ -805,7 +805,7 @@ test("concurrent partial postings cannot return the same units and unsellable qu
   expect((await batches(manager))[0].remainingQuantity).toBe(0);
   const listed = await api(manager, "GET", "/api/internal/returns");
   expect(listed.body.items.filter((row: { status: string }) => row.status === "posted")).toHaveLength(1);
-  expect(listed.body.items[0]).not.toHaveProperty("source");
+  expect(listed.body.items[0]).toMatchObject({ source: { kind: "physical_sale", id: original.body.id } });
   expect(listed.body.items[0]).not.toHaveProperty("lines");
 });
 
@@ -833,7 +833,7 @@ test("return history uses bounded summaries and a stable cursor", async () => {
   expect(first.body.items).toHaveLength(1);
   expect(first.body.nextCursor).toEqual(expect.any(String));
   expect(first.body.items[0]).toMatchObject({ status: "draft", refundStatus: "none" });
-  expect(first.body.items[0]).not.toHaveProperty("source");
+  expect(first.body.items[0]).toMatchObject({ source: { kind: "physical_sale", id: original.body.id } });
   expect(first.body.items[0]).not.toHaveProperty("lines");
 
   const second = await api(manager, "GET", `/api/internal/returns?limit=1&cursor=${first.body.nextCursor}`);

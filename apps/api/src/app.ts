@@ -282,6 +282,7 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
       actors,
       expenses: createPostgresExpenseRepository(pool),
     });
+    const onlineOrderStore = createPostgresOnlineOrderStore(pool);
     const returns = createReturnServices({
       actors: {
         getStaff: (staffId) => directory.getStaff(staffId),
@@ -292,6 +293,8 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
       },
       variants: { getVariants: (ids) => catalogStore.getVariants(ids) },
       returns: createPostgresReturnsStore(pool),
+      onlineSources: onlineOrderStore,
+      inventoryReads: inventoryStore,
       corrections: createPostgresReturnCorrectionStateReader(pool),
       replacementSales: {
         getById: (id) => saleStore.getById(id),
@@ -304,6 +307,7 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
       uow: createPostgresReturnsUnitOfWork(
         pool,
         createInventoryTransaction,
+        createPostgresOnlineOrderStore,
         createPostgresReturnCorrectionStateReader,
         (client, inventoryTransaction) => createExchangeReplacementSaleWriter({
           sales: createPostgresSaleStore(client),
@@ -314,14 +318,13 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
     });
     const corrections = createCorrectionServices({
       actors: { getStaff: (staffId) => directory.getStaff(staffId) },
-      corrections: createPostgresCorrectionsRepository(pool, createInventoryTransaction),
+      corrections: createPostgresCorrectionsRepository(pool, createInventoryTransaction, createPostgresOnlineOrderStore),
       clock: { now: config.businessClock ?? (() => new Date()) },
     });
     const storefrontConfig = createStorefrontConfigServices({
       actors,
       contacts: createPostgresStorefrontContactsStore(pool),
     });
-    const onlineOrderStore = createPostgresOnlineOrderStore(pool);
     const onlineOrders = createOnlineOrderServices({
       actors,
       store: onlineOrderStore,

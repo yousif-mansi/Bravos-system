@@ -11,7 +11,8 @@ import type {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ROOT_KEYS = new Set(["operationId", "expectedRevision", "type", "reason", "effective", "merchandise", "cash"]);
 const SALE_EFFECTIVE_KEYS = new Set(["finalTotalPiasters", "lines"]);
-const RETURN_EFFECTIVE_KEYS = new Set(["authorizedRefundPiasters", "lines"]);
+const RETURN_EFFECTIVE_KEYS = new Set(["authorizedRefund", "authorizedRefundPiasters", "lines"]);
+const RETURN_REFUND_KEYS = new Set(["merchandisePiasters", "checkoutChargePiasters"]);
 const SALE_LINE_KEYS = new Set(["lineId", "quantity", "paidPiasters"]);
 const RETURN_LINE_KEYS = new Set(["lineId", "quantity", "sellableQuantity"]);
 const MERCHANDISE_KEYS = new Set(["lineId", "quantityDelta"]);
@@ -109,8 +110,10 @@ function parse(input: unknown, target: "sale" | "return"): ParsedSale | ParsedRe
     };
   } else {
     const value = object(body.effective, "القيم الفعالة للإرجاع مطلوبة."); allowed(value, RETURN_EFFECTIVE_KEYS);
+    const authorizedRefund = parseReturnRefund(value.authorizedRefund, value.authorizedRefundPiasters);
     effective = {
-      authorizedRefundPiasters: money(value.authorizedRefundPiasters, "قيمة الاسترداد الفعالة غير صالحة."),
+      authorizedRefundPiasters: authorizedRefund.totalPiasters,
+      authorizedRefund,
       lines: lines(value.lines, RETURN_LINE_KEYS).map((line) => {
         const quantity = integer(line.quantity, 0, "كمية الإرجاع الفعالة غير صالحة.");
         const sellableQuantity = integer(line.sellableQuantity, 0, "الكمية القابلة للبيع غير صالحة.");
@@ -120,6 +123,20 @@ function parse(input: unknown, target: "sale" | "return"): ParsedSale | ParsedRe
     };
   }
   return { operationId, expectedRevision, type, reason, effective, merchandise, cash } as ParsedSale | ParsedReturn;
+}
+
+function parseReturnRefund(value: unknown, legacyTotal: unknown) {
+  if (value === undefined) {
+    const totalPiasters = money(legacyTotal, "قيمة الاسترداد الفعالة غير صالحة.");
+    return { merchandisePiasters: totalPiasters, checkoutChargePiasters: 0, totalPiasters };
+  }
+  const refund = object(value, "تفاصيل الاسترداد الفعالة غير صالحة.");
+  allowed(refund, RETURN_REFUND_KEYS);
+  const merchandisePiasters = money(refund.merchandisePiasters, "قيمة البضاعة الفعالة غير صالحة.");
+  const checkoutChargePiasters = money(refund.checkoutChargePiasters, "قيمة رسوم الطلب الفعالة غير صالحة.");
+  const totalPiasters = merchandisePiasters + checkoutChargePiasters;
+  if (!Number.isSafeInteger(totalPiasters)) throw new CorrectionsValidationError("قيمة الاسترداد الفعالة غير صالحة.");
+  return { merchandisePiasters, checkoutChargePiasters, totalPiasters };
 }
 
 function parseMerchandise(value: unknown): MerchandiseAdjustmentWrite[] {

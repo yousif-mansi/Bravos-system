@@ -1,5 +1,6 @@
 import type { Pool, PoolClient } from "pg";
 import type { InventoryTransaction } from "@bravos/inventory";
+import type { DeliveredOnlineOrderSourceReader } from "@bravos/online-orders";
 import { OperationConflictError } from "@bravos/inventory";
 import type {
   RefundEventRecord,
@@ -91,7 +92,8 @@ type AllocationRow = {
 type ReturnRow = {
   id: string;
   operation_id: string;
-  source_sale_id: string;
+  source_sale_id: string | null;
+  source_online_order_id: string | null;
   handling_branch_id: string;
   status: "draft" | "posted";
   revision: number;
@@ -99,6 +101,10 @@ type ReturnRow = {
   draft_payload_fingerprint: string;
   suggested_refund_piasters: number | string;
   authorized_refund_piasters: number | string;
+  suggested_merchandise_refund_piasters: number | string;
+  suggested_checkout_charge_refund_piasters: number | string;
+  authorized_merchandise_refund_piasters: number | string;
+  authorized_checkout_charge_refund_piasters: number | string;
   created_by_staff_id: string;
   created_at: Date;
   updated_by_staff_id: string;
@@ -116,15 +122,19 @@ type ReturnListRow = {
   id: string;
   status: "draft" | "posted";
   revision: number;
-  source_sale_id: string;
+  source_sale_id: string | null;
+  source_online_order_id: string | null;
+  channel: "physical" | "online";
   source_reference: string;
-  original_branch_id: string;
-  original_branch_code: ReturnListRecord["originalBranch"]["code"];
-  original_branch_name_ar: string;
+  original_branch_id: string | null;
+  original_branch_code: "abshway" | "fayoum" | null;
+  original_branch_name_ar: string | null;
   handling_branch_id: string;
   handling_branch_code: ReturnListRecord["handlingBranch"]["code"];
   handling_branch_name_ar: string;
   authorized_refund_piasters: number | string;
+  authorized_merchandise_refund_piasters: number | string;
+  authorized_checkout_charge_refund_piasters: number | string;
   refund_status: "none" | "owed" | "paid";
   created_at: Date;
   posted_at: Date | null;
@@ -133,7 +143,8 @@ type ReturnListRow = {
 type ReturnLineRow = {
   id: string;
   return_id: string;
-  source_sale_line_id: string;
+  source_sale_line_id: string | null;
+  source_online_order_line_id: string | null;
   variant_id: string;
   quantity: number;
   sellable_quantity: number;
@@ -192,20 +203,102 @@ type ExchangeQuoteRow = {
 
 export function createPostgresReturnsStore(queryable: Queryable): ReturnsStore {
   return {
-    async listSources(search) {
+    async listPhysicalSources(search) {
+      if (search.channel === "online") return [];
       const result = await queryable.query<{ id: string }>(sourceSearchSql(search), sourceSearchParams(search));
       const rows: ReturnSourceRecord[] = [];
       for (const item of result.rows) {
-        const source = await loadSource(queryable, item.id, false);
-        if (source && (search.amountPiasters === undefined || source.finalTotalPiasters === search.amountPiasters)) rows.push(source);
+        const source = await loadPhysicalSource(queryable, item.id, false);
+        if (source && (search.amountPiasters === undefined
+          || source.originalPayment.totalPiasters === search.amountPiasters)) rows.push(source);
       }
       return rows;
     },
-    getSource: (saleId, lock = false) => loadSource(queryable, saleId, lock),
-    async getSourceSaleId(returnId) {
-      const result = await queryable.query<{ source_sale_id: string }>(
-        `SELECT source_sale_id FROM returns_return WHERE id = $1`, [returnId]);
-      return result.rows[0]?.source_sale_id ?? null;
+    getPhysicalSource: (saleId, lock = false) => loadPhysicalSource(queryable, saleId, lock),
+    async getSourceKey(returnId) {
+      const result = await queryable.query<{ source_sale_id: string | null; source_online_order_id: string | null }>(
+        `SELECT source_sale_id,source_online_order_id FROM returns_return WHERE id = $1`, [returnId]);
+      const row = result.rows[0];
+      if (row?.source_sale_id) return { kind: "physical_sale", id: row.source_sale_id };
+      if (row?.source_online_order_id) return { kind: "delivered_online_order", id: row.source_online_order_id };
+      return null;
+    },
+    async getSourceUsage(source, lineIds) {
+      if (lineIds.length === 0) return { returnedByLine: new Map(), returnedRangesByOnlineUnit: new Map(), checkoutChargeAlreadyAuthorized: false };
+      const keyColumn = source.kind === "physical_sale" ? "source_sale_id" : "source_online_order_id";
+      const lineColumn = source.kind === "physical_sale" ? "source_sale_line_id" : "source_online_order_line_id";
+      const returned = await queryable.query<{ source_line_id: string; quantity: number | string }>(
+        `SELECT rl.${lineColumn} AS source_line_id,
+                COALESCE(SUM(CASE WHEN latest.change_type='cancellation' THEN 0
+                  ELSE COALESCE(value.quantity,rl.quantity) END),0)::int AS quantity
+         FROM returns_return_line rl
+         JOIN returns_return r ON r.id=rl.return_id
+         LEFT JOIN LATERAL (
+           SELECT correction.id,correction.change_type
+           FROM recording_correction correction
+           WHERE correction.return_id=r.id ORDER BY correction.revision DESC LIMIT 1
+         ) latest ON true
+         LEFT JOIN recording_return_line_value value
+           ON value.correction_id=latest.id AND value.return_line_id=rl.id
+         WHERE r.${keyColumn}=$1 AND r.status='posted' AND rl.${lineColumn}=ANY($2::uuid[])
+         GROUP BY rl.${lineColumn}`,
+        [source.id, lineIds],
+      );
+      const checkout = await queryable.query<{ present: boolean }>(
+        `SELECT EXISTS (
+           SELECT 1 FROM returns_return r
+           LEFT JOIN LATERAL (
+             SELECT correction.change_type,correction.effective_refund_checkout_charge_piasters
+             FROM recording_correction correction
+             WHERE correction.return_id=r.id ORDER BY correction.revision DESC LIMIT 1
+           ) latest ON true
+           WHERE r.${keyColumn}=$1 AND r.status='posted'
+             AND COALESCE(latest.change_type,'correction') <> 'cancellation'
+             AND COALESCE(latest.effective_refund_checkout_charge_piasters,
+               r.authorized_checkout_charge_refund_piasters) > 0
+         ) AS present`,
+        [source.id],
+      );
+      const onlineRanges = source.kind === "delivered_online_order"
+        ? await queryable.query<{
+            source_line_id: string; unit_index: number; start_offset: number; quantity: number;
+          }>(
+            `WITH active AS (
+               SELECT r.id AS return_id,latest.id AS correction_id
+               FROM returns_return r
+               LEFT JOIN LATERAL (SELECT correction.id,correction.change_type
+                 FROM recording_correction correction WHERE correction.return_id=r.id
+                 ORDER BY correction.revision DESC LIMIT 1) latest ON true
+               WHERE r.source_online_order_id=$1 AND r.status='posted'
+                 AND COALESCE(latest.change_type,'correction')<>'cancellation'
+             ), spans AS (
+               SELECT unit.source_online_order_line_id AS source_line_id,
+                      unit.source_online_order_unit_index AS unit_index,
+                      unit.start_offset,unit.quantity
+               FROM active JOIN returns_return_unit unit ON unit.return_id=active.return_id
+               WHERE active.correction_id IS NULL
+               UNION ALL
+               SELECT value.source_online_order_line_id,value.source_online_order_unit_index,
+                      value.start_offset,value.quantity
+               FROM active JOIN recording_online_return_unit_value value
+                 ON value.correction_id=active.correction_id
+             )
+             SELECT source_line_id,unit_index,start_offset,quantity FROM spans
+             WHERE source_line_id=ANY($2::uuid[])
+             ORDER BY source_line_id,unit_index,start_offset`, [source.id, lineIds])
+        : { rows: [] as Array<{ source_line_id: string; unit_index: number; start_offset: number; quantity: number }> };
+      const returnedRangesByOnlineUnit = new Map<string, Array<{ startOffset: number; quantity: number }>>();
+      for (const range of onlineRanges.rows) {
+        const key = `${range.source_line_id}:${range.unit_index}`;
+        const values = returnedRangesByOnlineUnit.get(key) ?? [];
+        values.push({ startOffset: range.start_offset, quantity: range.quantity });
+        returnedRangesByOnlineUnit.set(key, values);
+      }
+      return {
+        returnedByLine: new Map(returned.rows.map((row) => [row.source_line_id, asSafeInteger(row.quantity)])),
+        returnedRangesByOnlineUnit,
+        checkoutChargeAlreadyAuthorized: checkout.rows[0]?.present ?? false,
+      };
     },
     async lockIdentities(returnId, operationId) {
       for (const key of [...new Set([returnId, operationId])].sort()) {
@@ -215,14 +308,19 @@ export function createPostgresReturnsStore(queryable: Queryable): ReturnsStore {
     async insertDraft(input) {
       const inserted = await queryable.query<{ id: string }>(
         `INSERT INTO returns_return (
-           id, operation_id, source_sale_id, handling_branch_id, status, payload_fingerprint, draft_payload_fingerprint,
-           suggested_refund_piasters, authorized_refund_piasters, created_by_staff_id,
-           revision, updated_by_staff_id
-         ) VALUES ($1, $2, $3, $4, 'draft', $5, $5, $6, $7, $8, $9, $10)
+           id,operation_id,source_sale_id,source_online_order_id,handling_branch_id,status,
+           payload_fingerprint,draft_payload_fingerprint,suggested_refund_piasters,authorized_refund_piasters,
+           suggested_merchandise_refund_piasters,suggested_checkout_charge_refund_piasters,
+           authorized_merchandise_refund_piasters,authorized_checkout_charge_refund_piasters,
+           created_by_staff_id,revision,updated_by_staff_id
+         ) VALUES ($1,$2,$3,$4,$5,'draft',$6,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
          ON CONFLICT (id) DO NOTHING RETURNING id`,
-        [input.id, input.operationId, input.sourceSaleId, input.handlingBranchId, input.payloadFingerprint,
-          input.suggestedRefundPiasters, input.authorizedRefundPiasters, input.createdByStaffId,
-          input.revision, input.updatedByStaffId],
+        [input.id,input.operationId,input.source.kind === "physical_sale" ? input.source.id : null,
+          input.source.kind === "delivered_online_order" ? input.source.id : null,input.handlingBranchId,input.payloadFingerprint,
+          input.suggestedRefundPiasters,input.authorizedRefundPiasters,
+          input.suggestedRefund.merchandisePiasters,input.suggestedRefund.checkoutChargePiasters,
+          input.authorizedRefund.merchandisePiasters,input.authorizedRefund.checkoutChargePiasters,
+          input.createdByStaffId,input.revision,input.updatedByStaffId],
       );
       if (!inserted.rows[0]) {
         const existing = await loadReturn(queryable, input.id, false);
@@ -232,11 +330,12 @@ export function createPostgresReturnsStore(queryable: Queryable): ReturnsStore {
       for (const line of input.lines) {
         await queryable.query(
           `INSERT INTO returns_return_line (
-             id, return_id, source_sale_line_id, quantity, sellable_quantity,
+             id,return_id,source_sale_line_id,source_online_order_line_id,source_variant_id,quantity,sellable_quantity,
              suggested_refund_piasters, line_index
-           ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-          [line.id, input.id, line.sourceSaleLineId, line.quantity, line.sellableQuantity,
-            line.suggestedRefundPiasters, line.lineIndex],
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+          [line.id,input.id,input.source.kind === "physical_sale" ? line.sourceLineId : null,
+            input.source.kind === "delivered_online_order" ? line.sourceLineId : null,
+            line.variantId,line.quantity,line.sellableQuantity,line.suggestedRefundPiasters,line.lineIndex],
         );
       }
       const record = await loadReturn(queryable, input.id, false);
@@ -248,23 +347,33 @@ export function createPostgresReturnsStore(queryable: Queryable): ReturnsStore {
         `UPDATE returns_return
          SET handling_branch_id = $3, draft_payload_fingerprint = $4,
              suggested_refund_piasters = $5, authorized_refund_piasters = $6,
-             revision = revision + 1, updated_by_staff_id = $7, updated_at = $8
+             suggested_merchandise_refund_piasters=$7,suggested_checkout_charge_refund_piasters=$8,
+             authorized_merchandise_refund_piasters=$9,authorized_checkout_charge_refund_piasters=$10,
+             revision = revision + 1, updated_by_staff_id = $11, updated_at = $12
          WHERE id = $1 AND status = 'draft' AND revision = $2
          RETURNING id`,
         [input.returnId, input.expectedRevision, input.handlingBranchId, input.draftPayloadFingerprint,
-          input.suggestedRefundPiasters, input.authorizedRefundPiasters,
-          input.updatedByStaffId, input.updatedAt],
+          input.suggestedRefundPiasters,input.authorizedRefundPiasters,
+          input.suggestedRefund.merchandisePiasters,input.suggestedRefund.checkoutChargePiasters,
+          input.authorizedRefund.merchandisePiasters,input.authorizedRefund.checkoutChargePiasters,
+          input.updatedByStaffId,input.updatedAt],
       );
       if (!updated.rows[0]) throw new OperationConflictError("تغيرت المسودة أو تم ترحيلها. أعد تحميلها قبل التعديل.");
+      const sourceRow = await queryable.query<{ source_sale_id: string | null; source_online_order_id: string | null }>(
+        `SELECT source_sale_id,source_online_order_id FROM returns_return WHERE id=$1`,
+        [input.returnId],
+      );
+      const onlineSource = Boolean(sourceRow.rows[0]?.source_online_order_id);
       await queryable.query(`DELETE FROM returns_return_line WHERE return_id = $1`, [input.returnId]);
       for (const line of input.lines) {
         await queryable.query(
           `INSERT INTO returns_return_line (
-             id, return_id, source_sale_line_id, quantity, sellable_quantity,
+             id,return_id,source_sale_line_id,source_online_order_line_id,source_variant_id,quantity,sellable_quantity,
              suggested_refund_piasters, line_index
-           ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-          [line.id, input.returnId, line.sourceSaleLineId, line.quantity, line.sellableQuantity,
-            line.suggestedRefundPiasters, line.lineIndex],
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+          [line.id,input.returnId,onlineSource ? null : line.sourceLineId,
+            onlineSource ? line.sourceLineId : null,
+            line.variantId,line.quantity,line.sellableQuantity,line.suggestedRefundPiasters,line.lineIndex],
         );
       }
       const record = await loadReturn(queryable, input.returnId, false);
@@ -275,15 +384,19 @@ export function createPostgresReturnsStore(queryable: Queryable): ReturnsStore {
     getByOperationId: (operationId) => loadReturnByOperation(queryable, operationId),
     async listPage(input) {
       const result = await queryable.query<ReturnListRow>(
-        `SELECT r.id, r.status, r.revision, r.source_sale_id, r.source_sale_id::text AS source_reference,
+        `SELECT r.id,r.status,r.revision,r.source_sale_id,r.source_online_order_id,
+                CASE WHEN r.source_online_order_id IS NULL THEN 'physical' ELSE 'online' END AS channel,
+                COALESCE(online_source.reference,r.source_sale_id::text) AS source_reference,
                 original_branch.id AS original_branch_id, original_branch.code AS original_branch_code,
                 original_branch.name_ar AS original_branch_name_ar,
                 handling_branch.id AS handling_branch_id, handling_branch.code AS handling_branch_code,
                 handling_branch.name_ar AS handling_branch_name_ar,
-                r.authorized_refund_piasters, r.refund_status, r.created_at, r.posted_at
+                r.authorized_refund_piasters,r.authorized_merchandise_refund_piasters,
+                r.authorized_checkout_charge_refund_piasters,r.refund_status,r.created_at,r.posted_at
          FROM returns_return r
-         JOIN sales_sale source_sale ON source_sale.id = r.source_sale_id
-         JOIN branch original_branch ON original_branch.id = source_sale.branch_id
+         LEFT JOIN sales_sale source_sale ON source_sale.id = r.source_sale_id
+         LEFT JOIN online_order online_source ON online_source.id=r.source_online_order_id
+         LEFT JOIN branch original_branch ON original_branch.id = source_sale.branch_id
          JOIN branch handling_branch ON handling_branch.id = r.handling_branch_id
          WHERE ($2::uuid IS NULL OR (r.created_at, r.id) < (
            SELECT cursor_return.created_at, cursor_return.id FROM returns_return cursor_return WHERE cursor_return.id = $2
@@ -365,10 +478,12 @@ export function createPostgresReturnsStore(queryable: Queryable): ReturnsStore {
         await queryable.query(
           `INSERT INTO returns_return_unit (
              id, return_id, return_line_id, source_sale_unit_id, source_recording_sale_unit_id,
+             source_online_order_line_id,source_online_order_unit_index,
              start_offset, quantity, paid_unit_piasters
-           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
           [unit.id, input.returnId, unit.returnLineId, unit.sourceSaleUnitId,
-            unit.sourceRecordingSaleUnitId, unit.startOffset, unit.quantity, unit.paidUnitPiasters],
+            unit.sourceRecordingSaleUnitId,unit.sourceOnlineOrderLineId,unit.sourceOnlineOrderUnitIndex,
+            unit.startOffset,unit.quantity,unit.paidUnitPiasters],
         );
       }
       for (const item of input.restorations) {
@@ -430,6 +545,7 @@ export function createPostgresReturnsStore(queryable: Queryable): ReturnsStore {
 export function createPostgresReturnsUnitOfWork(
   pool: Pool,
   inventoryFor: (client: PoolClient) => InventoryTransaction,
+  onlineSourcesFor: (client: PoolClient) => DeliveredOnlineOrderSourceReader,
   correctionsFor: (client: PoolClient) => ReturnCorrectionStateReader,
   replacementSalesFor: (client: PoolClient, inventory: InventoryTransaction) => ReturnReplacementSaleWriter,
 ): ReturnsUnitOfWork {
@@ -444,6 +560,7 @@ export function createPostgresReturnsUnitOfWork(
             const value = await work({
               returns: createPostgresReturnsStore(client),
               inventory,
+              onlineSources: onlineSourcesFor(client),
               corrections: correctionsFor(client),
               replacementSales: replacementSalesFor(client, inventory),
             });
@@ -466,7 +583,7 @@ export function createPostgresReturnsUnitOfWork(
   };
 }
 
-async function loadSource(queryable: Queryable, saleId: string, lock: boolean): Promise<ReturnSourceRecord | null> {
+async function loadPhysicalSource(queryable: Queryable, saleId: string, lock: boolean): Promise<ReturnSourceRecord | null> {
   const result = await queryable.query<SourceRow>(
     `SELECT s.id, s.operation_id, s.branch_id, s.sold_by_staff_id, s.sold_by_display_name,
             s.occurred_at,
@@ -544,8 +661,9 @@ async function loadSource(queryable: Queryable, saleId: string, lock: boolean): 
   const unitsByLine = new Map<string, ReturnSourceUnit[]>();
   for (const unit of unitsResult.rows) {
     const list = unitsByLine.get(unit.line_id) ?? [];
-    const alreadyBefore = list.reduce((sum, item) => sum + item.alreadyReturnedQuantity, 0);
+    const alreadyBefore = list.reduce((sum, item) => sum + item.quantity, 0);
     const returnedForLine = returnedByLine.get(unit.line_id) ?? 0;
+    const alreadyReturnedQuantity = Math.min(unit.quantity, Math.max(0, returnedForLine - alreadyBefore));
     list.push({
       id: unit.id,
       sourceType: unit.source_type,
@@ -554,7 +672,8 @@ async function loadSource(queryable: Queryable, saleId: string, lock: boolean): 
       unitIndex: unit.unit_index,
       quantity: unit.quantity,
       paidPiasters: asSafeInteger(unit.paid_piasters),
-      alreadyReturnedQuantity: Math.min(unit.quantity, Math.max(0, returnedForLine - alreadyBefore)),
+      alreadyReturnedQuantity,
+      returnedRanges: alreadyReturnedQuantity > 0 ? [{ startOffset: 0, quantity: alreadyReturnedQuantity }] : [],
     });
     unitsByLine.set(unit.line_id, list);
   }
@@ -564,21 +683,29 @@ async function loadSource(queryable: Queryable, saleId: string, lock: boolean): 
     lineIndex: line.line_index,
     quantity: line.quantity,
     paidPiasters: asSafeInteger(line.paid_piasters),
+    acceptedNames: null,
     units: unitsByLine.get(line.id) ?? [],
   }));
   return {
-    saleId: row.id,
-    operationId: row.operation_id,
+    source: { kind: "physical_sale", id: row.id },
+    reference: row.id,
+    channel: "physical",
     branchId: row.branch_id,
-    soldByStaffId: row.sold_by_staff_id,
-    soldByDisplayName: row.sold_by_display_name,
-    occurredAt: row.occurred_at,
+    seller: { staffId: row.sold_by_staff_id, displayName: row.sold_by_display_name },
+    receivedAt: row.occurred_at,
     returnDeadlineAt: row.return_deadline_at,
-    finalTotalPiasters: asSafeInteger(row.final_total_piasters),
+    originalPayment: {
+      merchandisePiasters: asSafeInteger(row.final_total_piasters),
+      checkoutChargePiasters: 0,
+      totalPiasters: asSafeInteger(row.final_total_piasters),
+    },
+    availableCheckoutChargePiasters: 0,
     customerName: row.customer_name,
     customerPhone: row.customer_phone,
     lines,
     allocations: allocationsResult.rows.map((item) => ({
+      allocationId: null,
+      sourceLineId: null,
       batchId: item.batch_id,
       variantId: item.variant_id,
       quantity: item.quantity,
@@ -607,8 +734,8 @@ async function loadReturnByOperation(queryable: Queryable, operationId: string):
 async function toReturn(queryable: Queryable, row: ReturnRow): Promise<ReturnRecord> {
   const [lines, restorations, events] = await Promise.all([
     queryable.query<ReturnLineRow>(
-      `SELECT rl.*, sl.variant_id
-       FROM returns_return_line rl JOIN sales_sale_line sl ON sl.id = rl.source_sale_line_id
+      `SELECT rl.*,rl.source_variant_id AS variant_id
+       FROM returns_return_line rl
        WHERE rl.return_id = $1 ORDER BY rl.line_index`,
       [row.id],
     ),
@@ -629,7 +756,9 @@ async function toReturn(queryable: Queryable, row: ReturnRow): Promise<ReturnRec
   return {
     id: row.id,
     operationId: row.operation_id,
-    sourceSaleId: row.source_sale_id,
+    source: row.source_sale_id
+      ? { kind: "physical_sale", id: row.source_sale_id }
+      : { kind: "delivered_online_order", id: row.source_online_order_id! },
     handlingBranchId: row.handling_branch_id,
     status: row.status,
     revision: row.revision,
@@ -637,6 +766,16 @@ async function toReturn(queryable: Queryable, row: ReturnRow): Promise<ReturnRec
     draftPayloadFingerprint: row.draft_payload_fingerprint,
     suggestedRefundPiasters: asSafeInteger(row.suggested_refund_piasters),
     authorizedRefundPiasters: asSafeInteger(row.authorized_refund_piasters),
+    suggestedRefund: {
+      merchandisePiasters: asSafeInteger(row.suggested_merchandise_refund_piasters),
+      checkoutChargePiasters: asSafeInteger(row.suggested_checkout_charge_refund_piasters),
+      totalPiasters: asSafeInteger(row.suggested_refund_piasters),
+    },
+    authorizedRefund: {
+      merchandisePiasters: asSafeInteger(row.authorized_merchandise_refund_piasters),
+      checkoutChargePiasters: asSafeInteger(row.authorized_checkout_charge_refund_piasters),
+      totalPiasters: asSafeInteger(row.authorized_refund_piasters),
+    },
     createdByStaffId: row.created_by_staff_id,
     createdAt: row.created_at,
     updatedByStaffId: row.updated_by_staff_id,
@@ -701,23 +840,30 @@ function toExchangeQuote(row: ExchangeQuoteRow): ReturnExchangeQuoteRecord {
 }
 
 function toReturnListRecord(row: ReturnListRow): ReturnListRecord {
+  const originalBranch = row.original_branch_id && row.original_branch_code && row.original_branch_name_ar
+    ? { id: row.original_branch_id, code: row.original_branch_code, nameAr: row.original_branch_name_ar }
+    : null;
   return {
     id: row.id,
     status: row.status,
     revision: row.revision,
-    sourceSaleId: row.source_sale_id,
+    source: row.source_sale_id
+      ? { kind: "physical_sale", id: row.source_sale_id }
+      : { kind: "delivered_online_order", id: row.source_online_order_id! },
     sourceReference: row.source_reference,
-    originalBranch: {
-      id: row.original_branch_id,
-      code: row.original_branch_code,
-      nameAr: row.original_branch_name_ar,
-    },
+    channel: row.channel,
+    originalBranch,
     handlingBranch: {
       id: row.handling_branch_id,
       code: row.handling_branch_code,
       nameAr: row.handling_branch_name_ar,
     },
     authorizedRefundPiasters: asSafeInteger(row.authorized_refund_piasters),
+    authorizedRefund: {
+      merchandisePiasters: asSafeInteger(row.authorized_merchandise_refund_piasters),
+      checkoutChargePiasters: asSafeInteger(row.authorized_checkout_charge_refund_piasters),
+      totalPiasters: asSafeInteger(row.authorized_refund_piasters),
+    },
     refundStatus: row.refund_status,
     createdAt: row.created_at,
     postedAt: row.posted_at,
@@ -737,7 +883,7 @@ async function loadEventByOperation(queryable: Queryable, operationId: string): 
 function toReturnLine(row: ReturnLineRow): ReturnLineWrite {
   return {
     id: row.id,
-    sourceSaleLineId: row.source_sale_line_id,
+    sourceLineId: row.source_sale_line_id ?? row.source_online_order_line_id!,
     variantId: row.variant_id,
     quantity: row.quantity,
     sellableQuantity: row.sellable_quantity,

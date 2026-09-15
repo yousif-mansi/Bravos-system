@@ -1,6 +1,7 @@
-import type { AppliedAutomaticOfferDto, BranchDto, ReturnDto, ReturnExchangeQuoteDto, ReturnListPageDto, ReturnSourceDto, VariantIdentityDto } from "@bravos/contracts";
+import type { AppliedAutomaticOfferDto, BranchDto, ReturnDto, ReturnExchangeQuoteDto, ReturnListPageDto, ReturnRefundBreakdownDto, ReturnSourceDto, ReturnSourceKeyDto, VariantIdentityDto } from "@bravos/contracts";
 import type { AuthenticatedStaff, VerifiedAuth } from "@bravos/identity";
-import type { AllocationRecord, InventoryTransaction } from "@bravos/inventory";
+import type { AllocationRecord, InventoryReadStore, InventoryTransaction } from "@bravos/inventory";
+import type { DeliveredOnlineOrderSourceReader } from "@bravos/online-orders";
 
 export type { VerifiedAuth };
 
@@ -11,13 +12,14 @@ export type ReturnsActorPort = {
 
 export type ReturnSourceUnit = {
   id: string;
-  sourceType: "original" | "correction";
+  sourceType: "original" | "correction" | "online";
   lineId: string;
   variantId: string;
   unitIndex: number;
   quantity: number;
   paidPiasters: number;
   alreadyReturnedQuantity: number;
+  returnedRanges: Array<{ startOffset: number; quantity: number }>;
 };
 
 export type ReturnSourceLine = {
@@ -26,22 +28,33 @@ export type ReturnSourceLine = {
   lineIndex: number;
   quantity: number;
   paidPiasters: number;
+  acceptedNames: {
+    productNameAr: string;
+    sizeNameAr: string;
+    colorNameAr: string;
+  } | null;
   units: ReturnSourceUnit[];
 };
 
+export type ReturnSourceAllocation = AllocationRecord & {
+  allocationId: string | null;
+  sourceLineId: string | null;
+};
+
 export type ReturnSourceRecord = {
-  saleId: string;
-  operationId: string;
-  branchId: string;
-  soldByStaffId: string;
-  soldByDisplayName: string;
-  occurredAt: Date;
+  source: ReturnSourceKeyDto;
+  reference: string;
+  channel: "physical" | "online";
+  branchId: string | null;
+  seller: { staffId: string; displayName: string } | null;
+  receivedAt: Date;
   returnDeadlineAt: Date;
-  finalTotalPiasters: number;
+  originalPayment: ReturnRefundBreakdownDto;
+  availableCheckoutChargePiasters: number;
   customerName: string | null;
   customerPhone: string | null;
   lines: ReturnSourceLine[];
-  allocations: AllocationRecord[];
+  allocations: ReturnSourceAllocation[];
 };
 
 export type ReturnUnitWrite = {
@@ -49,6 +62,8 @@ export type ReturnUnitWrite = {
   returnLineId: string;
   sourceSaleUnitId: string | null;
   sourceRecordingSaleUnitId: string | null;
+  sourceOnlineOrderLineId: string | null;
+  sourceOnlineOrderUnitIndex: number | null;
   startOffset: number;
   quantity: number;
   paidUnitPiasters: number;
@@ -56,7 +71,7 @@ export type ReturnUnitWrite = {
 
 export type ReturnLineWrite = {
   id: string;
-  sourceSaleLineId: string;
+  sourceLineId: string;
   variantId: string;
   quantity: number;
   sellableQuantity: number;
@@ -85,7 +100,7 @@ export type RefundEventRecord = {
 export type ReturnRecord = {
   id: string;
   operationId: string;
-  sourceSaleId: string;
+  source: ReturnSourceKeyDto;
   handlingBranchId: string;
   status: "draft" | "posted";
   revision: number;
@@ -93,6 +108,8 @@ export type ReturnRecord = {
   draftPayloadFingerprint: string;
   suggestedRefundPiasters: number;
   authorizedRefundPiasters: number;
+  suggestedRefund: ReturnRefundBreakdownDto;
+  authorizedRefund: ReturnRefundBreakdownDto;
   createdByStaffId: string;
   createdAt: Date;
   updatedByStaffId: string;
@@ -175,10 +192,12 @@ export type ReturnListRecord = {
   id: string;
   status: "draft" | "posted";
   revision: number;
-  sourceSaleId: string;
+  source: ReturnSourceKeyDto;
   sourceReference: string;
-  originalBranch: BranchDto;
+  channel: "physical" | "online";
+  originalBranch: BranchDto | null;
   handlingBranch: BranchDto;
+  authorizedRefund: ReturnRefundBreakdownDto;
   authorizedRefundPiasters: number;
   refundStatus: "none" | "owed" | "paid";
   createdAt: Date;
@@ -189,6 +208,7 @@ export type EffectiveReturnState = {
   revision: number;
   status: "active" | "cancelled";
   authorizedRefundPiasters: number | null;
+  authorizedRefund: ReturnRefundBreakdownDto | null;
   paidPiasters: number;
   lines: Array<{ returnLineId: string; quantity: number; sellableQuantity: number }> | null;
 };
@@ -203,12 +223,20 @@ export type SourceSearch = {
   branchId?: string;
   item?: string;
   amountPiasters?: number;
+  channel?: "physical" | "online";
+};
+
+export type ReturnSourceUsage = {
+  returnedByLine: Map<string, number>;
+  returnedRangesByOnlineUnit: Map<string, Array<{ startOffset: number; quantity: number }>>;
+  checkoutChargeAlreadyAuthorized: boolean;
 };
 
 export type ReturnsStore = {
-  listSources(search: SourceSearch): Promise<ReturnSourceRecord[]>;
-  getSource(saleId: string, lock?: boolean): Promise<ReturnSourceRecord | null>;
-  getSourceSaleId(returnId: string): Promise<string | null>;
+  listPhysicalSources(search: SourceSearch): Promise<ReturnSourceRecord[]>;
+  getPhysicalSource(saleId: string, lock?: boolean): Promise<ReturnSourceRecord | null>;
+  getSourceKey(returnId: string): Promise<ReturnSourceKeyDto | null>;
+  getSourceUsage(source: ReturnSourceKeyDto, lineIds: string[]): Promise<ReturnSourceUsage>;
   lockIdentities(returnId: string, operationId: string): Promise<void>;
   insertDraft(input: Omit<ReturnRecord, "createdAt" | "updatedAt" | "postedByStaffId" | "postedAt" | "refundStatus" | "refundPaidPiasters" | "exchangeCreditAppliedPiasters" | "refundRecordedByStaffId" | "refundRecordedAt" | "restorations" | "refundEvents">): Promise<{ kind: "created" | "existing"; record: ReturnRecord }>;
   updateDraft(input: {
@@ -218,6 +246,8 @@ export type ReturnsStore = {
     draftPayloadFingerprint: string;
     suggestedRefundPiasters: number;
     authorizedRefundPiasters: number;
+    suggestedRefund: ReturnRefundBreakdownDto;
+    authorizedRefund: ReturnRefundBreakdownDto;
     updatedByStaffId: string;
     updatedAt: Date;
     lines: ReturnLineWrite[];
@@ -286,13 +316,16 @@ export type ReturnReplacementPricing = {
   quote(lines: Array<{ variantId: string; quantity: number }>, at: Date): Promise<ReturnReplacementAcceptedQuote>;
 };
 
+export type ReturnsTransaction = {
+  returns: ReturnsStore;
+  inventory: InventoryTransaction;
+  onlineSources: DeliveredOnlineOrderSourceReader;
+  corrections: ReturnCorrectionStateReader;
+  replacementSales: ReturnReplacementSaleWriter;
+};
+
 export type ReturnsUnitOfWork = {
-  run<T>(work: (tx: {
-    returns: ReturnsStore;
-    inventory: InventoryTransaction;
-    corrections: ReturnCorrectionStateReader;
-    replacementSales: ReturnReplacementSaleWriter;
-  }) => Promise<T>): Promise<T>;
+  run<T>(work: (tx: ReturnsTransaction) => Promise<T>): Promise<T>;
 };
 
 export type ReturnServices = {
@@ -305,4 +338,17 @@ export type ReturnServices = {
   exchange(auth: VerifiedAuth | null, id: string, input: unknown): Promise<{ value: ReturnDto; created: boolean }>;
   list(auth: VerifiedAuth | null, input: unknown): Promise<ReturnListPageDto>;
   get(auth: VerifiedAuth | null, id: string): Promise<ReturnDto>;
+};
+
+export type ReturnServiceDependencies = {
+  actors: ReturnsActorPort;
+  variants: ReturnVariantReader;
+  returns: ReturnsStore;
+  onlineSources: DeliveredOnlineOrderSourceReader;
+  inventoryReads: Pick<InventoryReadStore, "listProtectedOrderAllocations">;
+  corrections: ReturnCorrectionStateReader;
+  replacementSales: ReturnReplacementSaleReader;
+  replacementPricing: ReturnReplacementPricing;
+  uow: ReturnsUnitOfWork;
+  clock: { now(): Date };
 };

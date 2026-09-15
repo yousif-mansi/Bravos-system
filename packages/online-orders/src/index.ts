@@ -39,6 +39,7 @@ export type {
   CheckoutPricingResult,
   DeliveredOnlineOrderSource,
   DeliveredOnlineOrderSourceReader,
+  DeliveredOnlineOrderSourceSearch,
   OnlineOrderActorPort,
   OnlineOrderStore,
   OnlineOrderUnitOfWork,

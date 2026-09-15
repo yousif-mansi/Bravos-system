@@ -93,6 +93,7 @@ export function createPostgresInventoryStore(queryable: Queryable): InventoryRea
     },
     getBatchStates: (batchIds) => getBatchStates(queryable, batchIds),
     listAllocations: (operationId) => listAllocations(queryable, operationId),
+    listProtectedOrderAllocations: (orderId) => loadProtectedOrderAllocationProvenance(queryable, orderId, false),
     listDiscrepancies: (operationId) => listDiscrepancies(queryable, operationId),
     async getSettings() {
       return loadSettings(queryable);
@@ -434,6 +435,21 @@ export function createInventoryTransaction(client: PoolClient): InventoryTransac
     },
     lockProtectedOrderAllocations(orderId) {
       return loadProtectedOrderAllocationProvenance(client, orderId, true);
+    },
+    async listDeliveredReturnAllocationEffects(operationIds) {
+      if (operationIds.length === 0) return [];
+      const result = await client.query<{ operation_id: string; allocation_id: string; quantity_delta: number }>(
+        `SELECT operation_id,allocation_id,quantity_delta
+         FROM inventory_delivered_return_allocation_effect
+         WHERE operation_id=ANY($1::uuid[]) ORDER BY recorded_at,id`, [operationIds]);
+      return result.rows.map((row) => ({
+        operationId: row.operation_id,
+        allocationId: row.allocation_id,
+        quantityDelta: row.quantity_delta,
+      }));
+    },
+    adjustDeliveredReturnProtection(input) {
+      return adjustDeliveredReturnProtection(client, input);
     },
 
     async allocateFromOldestAvailable(input) {
@@ -855,7 +871,8 @@ async function loadProtectedOrderResult(
 }
 
 function activeProtectedQuantitySql(batchIdSql: string): string {
-  return `SELECT COALESCE(SUM(a.quantity - COALESCE(disposed.quantity, 0)), 0)::int
+  return `SELECT COALESCE(SUM(a.quantity - COALESCE(disposed.quantity, 0)
+            - COALESCE(customer_returned.quantity, 0)), 0)::int
           FROM inventory_protected_order_allocation pa
           JOIN inventory_allocation a ON a.id = pa.allocation_id
           LEFT JOIN LATERAL (
@@ -863,7 +880,83 @@ function activeProtectedQuantitySql(batchIdSql: string): string {
             FROM inventory_order_disposition_allocation d
             WHERE d.allocation_id = a.id
           ) disposed ON true
+          LEFT JOIN LATERAL (
+            SELECT SUM(effect.quantity_delta)::int AS quantity
+            FROM inventory_delivered_return_allocation_effect effect
+            WHERE effect.allocation_id = a.id
+          ) customer_returned ON true
           WHERE a.batch_id = ${batchIdSql}`;
+}
+
+async function adjustDeliveredReturnProtection(
+  client: PoolClient,
+  input: Parameters<InventoryTransaction["adjustDeliveredReturnProtection"]>[0],
+): Promise<void> {
+  if (input.effects.length === 0) return;
+  const byAllocation = new Map<string, number>();
+  for (const effect of input.effects) {
+    if (!Number.isSafeInteger(effect.quantityDelta) || effect.quantityDelta === 0) {
+      throw new InventoryValidationError("تأثير وحدات مرتجع الطلب غير صالح.");
+    }
+    byAllocation.set(effect.allocationId, (byAllocation.get(effect.allocationId) ?? 0) + effect.quantityDelta);
+  }
+  const operation = await client.query<{ kind: string }>(
+    `SELECT kind FROM inventory_operation WHERE id = $1`,
+    [input.operationId],
+  );
+  if (!operation.rows[0] || !["return", "correction"].includes(operation.rows[0].kind)) {
+    throw new OperationConflictError();
+  }
+  const rows = await client.query<{
+    allocation_id: string;
+    quantity: number;
+    disposed_quantity: number;
+    customer_returned_quantity: number;
+  }>(
+    `SELECT allocation.id AS allocation_id,allocation.quantity,
+            COALESCE((SELECT SUM(item.quantity)::int
+              FROM inventory_order_disposition_allocation item
+              WHERE item.allocation_id=allocation.id),0)::int AS disposed_quantity,
+            COALESCE((SELECT SUM(effect.quantity_delta)::int
+              FROM inventory_delivered_return_allocation_effect effect
+              WHERE effect.allocation_id=allocation.id),0)::int AS customer_returned_quantity
+     FROM inventory_protected_order_allocation protected
+     JOIN inventory_allocation allocation ON allocation.id=protected.allocation_id
+     WHERE protected.protected_order_id=$1
+       AND allocation.id=ANY($2::uuid[])
+     ORDER BY allocation.id
+     FOR UPDATE OF allocation`,
+    [input.orderId, [...byAllocation.keys()]],
+  );
+  if (rows.rows.length !== byAllocation.size) {
+    throw new InventoryValidationError("تخصيص مرتجع الطلب الأصلي غير موجود.");
+  }
+  for (const row of rows.rows) {
+    const quantityDelta = byAllocation.get(row.allocation_id) ?? 0;
+    if (quantityDelta === 0) continue;
+    const next = row.disposed_quantity + row.customer_returned_quantity + quantityDelta;
+    if (next < row.disposed_quantity || next > row.quantity) {
+      throw new InventoryValidationError("كمية مرتجع الطلب تتجاوز تخصيصه الأصلي.");
+    }
+    const inserted = await client.query<{ quantity_delta: number }>(
+      `INSERT INTO inventory_delivered_return_allocation_effect (
+         id,operation_id,order_id,allocation_id,quantity_delta,recorded_at
+       ) VALUES (gen_random_uuid(),$1,$2,$3,$4,$5)
+       ON CONFLICT (operation_id,allocation_id) DO NOTHING
+       RETURNING quantity_delta`,
+      [input.operationId, input.orderId, row.allocation_id, quantityDelta, input.recordedAt],
+    );
+    if (!inserted.rows[0]) {
+      const existing = await client.query<{ order_id: string; quantity_delta: number }>(
+        `SELECT order_id,quantity_delta
+         FROM inventory_delivered_return_allocation_effect
+         WHERE operation_id=$1 AND allocation_id=$2`,
+        [input.operationId, row.allocation_id],
+      );
+      if (existing.rows[0]?.order_id !== input.orderId
+        || existing.rows[0]?.quantity_delta !== quantityDelta) throw new OperationConflictError();
+    }
+  }
 }
 
 async function disposeProtectedOnlineOrder(
@@ -1065,6 +1158,7 @@ async function loadProtectedOrderAllocationProvenance(
     allocated_at: Date;
     sellable_restored_quantity: number;
     nonsellable_removed_quantity: number;
+    customer_returned_quantity: number;
   }>(
     `SELECT allocation.id AS allocation_id,protected.source_line_id,allocation.batch_id,
             allocation.variant_id,allocation.quantity,allocation.unit_cost_piasters,
@@ -1076,7 +1170,10 @@ async function loadProtectedOrderAllocationProvenance(
             COALESCE((SELECT SUM(item.quantity)::int
               FROM inventory_order_disposition_allocation item
               WHERE item.allocation_id=allocation.id AND item.disposition='nonsellable_removed'),0)::int
-              AS nonsellable_removed_quantity
+              AS nonsellable_removed_quantity,
+            COALESCE((SELECT SUM(effect.quantity_delta)::int
+              FROM inventory_delivered_return_allocation_effect effect
+              WHERE effect.allocation_id=allocation.id),0)::int AS customer_returned_quantity
      FROM inventory_protected_order_allocation protected
      JOIN inventory_allocation allocation ON allocation.id=protected.allocation_id
      JOIN inventory_batch batch ON batch.id=allocation.batch_id
@@ -1096,7 +1193,9 @@ async function loadProtectedOrderAllocationProvenance(
     allocatedAt: row.allocated_at,
     sellableRestoredQuantity: row.sellable_restored_quantity,
     nonsellableRemovedQuantity: row.nonsellable_removed_quantity,
-    undisposedQuantity: row.quantity - row.sellable_restored_quantity - row.nonsellable_removed_quantity,
+    customerReturnedQuantity: row.customer_returned_quantity,
+    undisposedQuantity: row.quantity - row.sellable_restored_quantity
+      - row.nonsellable_removed_quantity - row.customer_returned_quantity,
   }));
 }
 

@@ -1,4 +1,4 @@
-import type { ReturnCorrectionDetailDto, SaleCorrectionDetailDto } from "@bravos/contracts";
+import type { ReturnCorrectionDetailDto, ReturnRefundBreakdownDto, SaleCorrectionDetailDto } from "@bravos/contracts";
 import type { AuthenticatedStaff, VerifiedAuth } from "@bravos/identity";
 
 export type { VerifiedAuth };
@@ -20,6 +20,7 @@ export type SaleValueWrite = {
 } | null;
 export type ReturnValueWrite = {
   authorizedRefundPiasters: number;
+  authorizedRefund: ReturnRefundBreakdownDto;
   lines: Array<{ lineId: string; quantity: number; sellableQuantity: number }>;
 } | null;
 

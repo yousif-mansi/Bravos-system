@@ -233,6 +233,9 @@ importers:
       '@bravos/inventory':
         specifier: workspace:*
         version: link:../inventory
+      '@bravos/online-orders':
+        specifier: workspace:*
+        version: link:../online-orders
       pg:
         specifier: 8.16.3
         version: 8.16.3
@@ -449,6 +452,9 @@ importers:
       '@bravos/inventory':
         specifier: workspace:*
         version: link:../inventory
+      '@bravos/online-orders':
+        specifier: workspace:*
+        version: link:../online-orders
       pg:
         specifier: 8.16.3
         version: 8.16.3

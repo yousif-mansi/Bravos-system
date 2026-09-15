@@ -1,21 +1,22 @@
 import { createHash } from "node:crypto";
+import type { ReturnSourceKeyDto } from "@bravos/contracts";
 
 export type ReturnPayload = {
-  sourceSaleId: string;
+  source: ReturnSourceKeyDto;
   handlingBranchId: string;
-  authorizedRefundPiasters: number;
-  lines: Array<{ sourceSaleLineId: string; quantity: number; sellableQuantity: number }>;
+  authorizedRefund: { merchandisePiasters: number; checkoutChargePiasters: number };
+  lines: Array<{ sourceLineId: string; quantity: number; sellableQuantity: number }>;
 };
 
 export function fingerprintReturnPayload(input: ReturnPayload): string {
   const lines = [...input.lines]
     .map((line) => ({ ...line }))
-    .sort((left, right) => left.sourceSaleLineId.localeCompare(right.sourceSaleLineId));
+    .sort((left, right) => left.sourceLineId.localeCompare(right.sourceLineId));
   return createHash("sha256")
     .update(JSON.stringify({
-      sourceSaleId: input.sourceSaleId,
+      source: input.source,
       handlingBranchId: input.handlingBranchId,
-      authorizedRefundPiasters: input.authorizedRefundPiasters,
+      authorizedRefund: input.authorizedRefund,
       lines,
     }))
     .digest("hex");

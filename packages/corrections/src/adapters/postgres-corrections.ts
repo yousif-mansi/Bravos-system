@@ -3,6 +3,8 @@ import type {
   ReturnCorrectionLineDto, SaleCorrectionDetailDto, SaleCorrectionLineDto, VariantIdentityDto,
 } from "@bravos/contracts";
 import type { InventoryTransaction } from "@bravos/inventory";
+import type { ProtectedOrderAllocationProvenance, RecordedDeliveredReturnAllocationEffect } from "@bravos/inventory";
+import type { DeliveredOnlineOrderSource, DeliveredOnlineOrderSourceReader } from "@bravos/online-orders";
 import { InventoryValidationError, OperationConflictError } from "@bravos/inventory";
 import type { Pool, PoolClient } from "pg";
 import { CorrectionsValidationError } from "../domain/errors.ts";
@@ -41,7 +43,12 @@ type SaleRow = {
   cash_received_piasters: number | string;
   physically_completed: boolean;
 };
-type ReturnRow = { id: string; source_sale_id: string; status: "draft" | "posted"; authorized_refund_piasters: number | string; refund_paid_piasters: number | string; exchange_credit_applied_piasters: number | string };
+type ReturnRow = {
+  id: string; source_sale_id: string | null; source_online_order_id: string | null; status: "draft" | "posted";
+  authorized_refund_piasters: number | string; authorized_merchandise_refund_piasters: number | string;
+  authorized_checkout_charge_refund_piasters: number | string; refund_paid_piasters: number | string;
+  exchange_credit_applied_piasters: number | string;
+};
 type LineRow = {
   id: string; source_sale_line_id?: string; variant_id: string; quantity: number;
   paid_piasters?: number | string;
@@ -52,6 +59,8 @@ type CorrectionRow = {
   id: string; operation_id: string; target_type: Target; sale_id: string | null; return_id: string | null;
   change_type: "correction" | "cancellation"; revision: number; reason: string;
   effective_total_piasters: number | string | null; cash_direction: "paid_out" | "recovered" | null;
+  effective_refund_merchandise_piasters: number | string | null;
+  effective_refund_checkout_charge_piasters: number | string | null;
   cash_amount_piasters: number | string; changed_by_staff_id: string; changed_by_display_name: string; changed_at: Date;
   payload_fingerprint: string;
 };
@@ -65,12 +74,18 @@ type BatchBalance = { batch_id: string; variant_id: string; unit_cost_piasters: 
 export function createPostgresCorrectionsRepository(
   pool: Pool,
   inventoryFor: (client: PoolClient) => InventoryTransaction,
+  onlineSourcesFor?: (client: PoolClient) => DeliveredOnlineOrderSourceReader,
 ): CorrectionsRepository {
   return {
     getSale: (saleId, revision) => loadSale(pool, saleId, revision),
     getReturn: (returnId, revision) => loadReturn(pool, returnId, revision),
     changeSale: (input) => transaction(pool, async (client) => changeSale(client, inventoryFor(client), input)),
-    changeReturn: (input) => transaction(pool, async (client) => changeReturn(client, inventoryFor(client), input)),
+    changeReturn: (input) => transaction(pool, async (client) => changeReturn(
+      client,
+      inventoryFor(client),
+      onlineSourcesFor?.(client),
+      input,
+    )),
   };
 }
 
@@ -83,6 +98,7 @@ export function createPostgresReturnCorrectionStateReader(queryable: Queryable) 
         revision: detail.revision,
         status: detail.status,
         authorizedRefundPiasters: detail.effective?.authorizedRefundPiasters ?? null,
+        authorizedRefund: detail.effective?.authorizedRefund ?? null,
         paidPiasters: detail.actual.netRefundPaidPiasters,
         lines: detail.effective?.lines.map((line) => ({
           returnLineId: line.returnLineId,
@@ -168,13 +184,31 @@ async function changeSale(client: PoolClient, inventory: InventoryTransaction, i
   return { kind: "created", value: must(await loadSale(client, input.saleId, nextRevision)) };
 }
 
-async function changeReturn(client: PoolClient, inventory: InventoryTransaction, input: ReturnCorrectionWrite): Promise<ChangeResult<ReturnCorrectionDetailDto>> {
-  const locator = await client.query<{ source_sale_id: string }>(`SELECT source_sale_id FROM returns_return WHERE id = $1`, [input.returnId]);
-  const sourceSaleId = locator.rows[0]?.source_sale_id;
-  if (!sourceSaleId) return { kind: "not-found" };
+async function changeReturn(
+  client: PoolClient,
+  inventory: InventoryTransaction,
+  onlineSources: DeliveredOnlineOrderSourceReader | undefined,
+  input: ReturnCorrectionWrite,
+): Promise<ChangeResult<ReturnCorrectionDetailDto>> {
+  const locator = await client.query<{ operation_id: string; source_sale_id: string | null; source_online_order_id: string | null }>(
+    `SELECT operation_id,source_sale_id,source_online_order_id FROM returns_return WHERE id = $1`, [input.returnId]);
+  const sourceSaleId = locator.rows[0]?.source_sale_id ?? null;
+  const sourceOnlineOrderId = locator.rows[0]?.source_online_order_id ?? null;
+  if (!sourceSaleId && !sourceOnlineOrderId) return { kind: "not-found" };
   await inventory.lockStockClock("update");
-  await client.query(`SELECT id FROM sales_sale WHERE id = $1 FOR UPDATE`, [sourceSaleId]);
-  const locked = await client.query<ReturnRow>(`SELECT id, source_sale_id, status, authorized_refund_piasters, refund_paid_piasters, exchange_credit_applied_piasters FROM returns_return WHERE id = $1 FOR UPDATE`, [input.returnId]);
+  let onlineAllocations: ProtectedOrderAllocationProvenance[] = [];
+  let deliveredSource: DeliveredOnlineOrderSource | null = null;
+  if (sourceSaleId) await client.query(`SELECT id FROM sales_sale WHERE id = $1 FOR UPDATE`, [sourceSaleId]);
+  else {
+    deliveredSource = onlineSources ? await onlineSources.getDeliveredSource(sourceOnlineOrderId!, true) : null;
+    if (!deliveredSource) return { kind: "not-found" };
+    onlineAllocations = await inventory.lockProtectedOrderAllocations(sourceOnlineOrderId!);
+  }
+  const locked = await client.query<ReturnRow>(
+    `SELECT id,source_sale_id,source_online_order_id,status,authorized_refund_piasters,
+            authorized_merchandise_refund_piasters,authorized_checkout_charge_refund_piasters,
+            refund_paid_piasters,exchange_credit_applied_piasters
+     FROM returns_return WHERE id = $1 FOR UPDATE`, [input.returnId]);
   if (locked.rows[0]?.status !== "posted") return { kind: "not-found" };
   const existingOperation = await correctionByOperation(client, input.operationId);
   if (existingOperation) return replayReturn(client, input, existingOperation);
@@ -183,6 +217,12 @@ async function changeReturn(client: PoolClient, inventory: InventoryTransaction,
   if (!current) return { kind: "not-found" };
   if (current.revision !== input.expectedRevision) return { kind: "stale" };
   if (!current.effective) throw new CorrectionsValidationError("لا يمكن إضافة إجراء جديد إلى إرجاع أُلغي بالفعل.");
+  const currentAllocationEffects = sourceOnlineOrderId
+    ? await inventory.listDeliveredReturnAllocationEffects([
+        locator.rows[0]!.operation_id,
+        ...current.changes.map((change) => change.operationId),
+      ])
+    : [];
   const nextRevision = current.revision + 1;
   const originalIds = new Set(current.original.lines.map((line) => line.returnLineId));
   const merchandise = validateMerchandise(input.merchandise, originalIds);
@@ -199,10 +239,33 @@ async function changeReturn(client: PoolClient, inventory: InventoryTransaction,
       if ((adjustmentById.get(line.lineId) ?? 0) !== line.sellableQuantity - previous.sellableQuantity) {
         throw new CorrectionsValidationError("يجب أن تطابق حركة البضاعة الفعلية فرق الكمية القابلة للبيع.");
       }
-      const saleQuantity = await effectiveSaleQuantity(client, original.sourceSaleLineId);
-      const otherReturns = await effectiveReturnedForLine(client, original.sourceSaleLineId, input.returnId);
-      if (line.quantity + otherReturns > saleQuantity) throw new CorrectionsValidationError("الكمية المرتجعة تتجاوز كمية البيع الفعالة بعد احتساب المرتجعات السابقة.");
+      if (sourceSaleId) {
+        const saleQuantity = await effectiveSaleQuantity(client, original.sourceLineId);
+        const otherReturns = await effectiveReturnedForLine(client, original.sourceLineId, input.returnId);
+        if (line.quantity + otherReturns > saleQuantity) throw new CorrectionsValidationError("الكمية المرتجعة تتجاوز كمية البيع الفعالة بعد احتساب المرتجعات السابقة.");
+      } else {
+        const available = onlineAllocations.filter((allocation) => allocation.sourceLineId === original.sourceLineId)
+          .reduce((sum, allocation) => sum + allocation.quantity, 0);
+        const otherReturns = await effectiveReturnedForOnlineLine(client, sourceOnlineOrderId!, original.sourceLineId, input.returnId);
+        if (line.quantity + otherReturns > available) throw new CorrectionsValidationError("الكمية المرتجعة تتجاوز كمية الطلب المسلم بعد احتساب المرتجعات السابقة.");
+      }
     }
+  }
+  const onlineUnitPlan = sourceOnlineOrderId
+    ? await planEffectiveOnlineReturnUnits(
+        client, current, input, deliveredSource!, onlineAllocations, currentAllocationEffects,
+      )
+    : null;
+  const protectionEffects = onlineUnitPlan?.protectionEffects ?? [];
+  const currentReturnedByAllocation = new Map<string, number>();
+  for (const effect of currentAllocationEffects) {
+    currentReturnedByAllocation.set(effect.allocationId,
+      (currentReturnedByAllocation.get(effect.allocationId) ?? 0) + effect.quantityDelta);
+  }
+  const desiredReturnedByAllocation = new Map(currentReturnedByAllocation);
+  for (const effect of protectionEffects) {
+    desiredReturnedByAllocation.set(effect.allocationId,
+      (desiredReturnedByAllocation.get(effect.allocationId) ?? 0) + effect.quantityDelta);
   }
   const movementPlans = new Map<string, PlannedBatch[]>();
   for (const entry of merchandise) {
@@ -221,6 +284,10 @@ async function changeReturn(client: PoolClient, inventory: InventoryTransaction,
       entry.lineId,
       previous.sellableQuantity,
       targetSellable,
+      sourceOnlineOrderId ? {
+        allocations: onlineAllocations,
+        returnedByAllocation: entry.quantityDelta > 0 ? desiredReturnedByAllocation : currentReturnedByAllocation,
+      } : undefined,
     ));
   }
   if (input.cash?.direction === "recovered" && input.cash.amountPiasters > current.actual.netRefundPaidPiasters) {
@@ -228,6 +295,14 @@ async function changeReturn(client: PoolClient, inventory: InventoryTransaction,
   }
   const claimed = await inventory.claimCorrectionOperation({ operationId: input.operationId, payloadFingerprint: input.payloadFingerprint, actorStaffId: input.actorStaffId });
   if (claimed.kind === "replay") return replayReturn(client, input);
+  if (sourceOnlineOrderId && protectionEffects.length > 0) {
+    await inventory.adjustDeliveredReturnProtection({
+      orderId: sourceOnlineOrderId,
+      operationId: input.operationId,
+      recordedAt: claimed.recordedAt,
+      effects: protectionEffects,
+    });
+  }
   const facts = await applyReturnMovements(inventory, input.operationId, claimed.recordedAt, merchandise, movementPlans);
   await insertCorrection(client, input, nextRevision, input.effective?.authorizedRefundPiasters ?? null);
   if (input.effective) {
@@ -235,6 +310,16 @@ async function changeReturn(client: PoolClient, inventory: InventoryTransaction,
       `INSERT INTO recording_return_line_value (correction_id, return_line_id, quantity, sellable_quantity) VALUES ($1, $2, $3, $4)`,
       [input.correctionId, line.lineId, line.quantity, line.sellableQuantity],
     );
+    if (onlineUnitPlan) {
+      for (const span of onlineUnitPlan.spans) await client.query(
+        `INSERT INTO recording_online_return_unit_value (
+           correction_id,return_line_id,source_online_order_line_id,source_online_order_unit_index,
+           start_offset,quantity,paid_unit_piasters
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+        [input.correctionId,span.returnLineId,span.sourceLineId,span.unitIndex,
+          span.startOffset,span.quantity,span.paidUnitPiasters],
+      );
+    }
   }
   await insertFacts(client, input.correctionId, "return", facts);
   if (facts.length > 0) await inventory.bumpStockVersion();
@@ -305,7 +390,41 @@ async function exactReturnMovementBatches(
   returnLineId: string,
   fromSellable: number,
   toSellable: number,
+  online?: {
+    allocations: ProtectedOrderAllocationProvenance[];
+    returnedByAllocation: Map<string, number>;
+  },
 ): Promise<PlannedBatch[]> {
+  if (online) {
+    const line = await queryable.query<{ source_online_order_line_id: string; variant_id: string }>(
+      `SELECT source_online_order_line_id,source_variant_id AS variant_id
+       FROM returns_return_line WHERE id=$1 AND return_id=$2`, [returnLineId, returnId]);
+    const sourceLineId = line.rows[0]?.source_online_order_line_id;
+    if (!sourceLineId) throw new CorrectionsValidationError("تعذر ربط سطر الإرجاع بسطر الطلب الأصلي.");
+    const low = Math.min(fromSellable, toSellable);
+    const high = Math.max(fromSellable, toSellable);
+    let offset = 0;
+    let mapped = 0;
+    const totals = new Map<string, PlannedBatch>();
+    for (const allocation of online.allocations.filter((item) => item.sourceLineId === sourceLineId)) {
+      const start = offset;
+      const returnedQuantity = online.returnedByAllocation.get(allocation.allocationId) ?? 0;
+      const end = offset + returnedQuantity;
+      offset = end;
+      const quantity = Math.max(0, Math.min(high, end) - Math.max(low, start));
+      if (quantity === 0) continue;
+      const current = totals.get(allocation.batchId);
+      totals.set(allocation.batchId, {
+        batchId: allocation.batchId,
+        variantId: allocation.variantId,
+        quantity: (current?.quantity ?? 0) + quantity,
+        unitCostPiasters: allocation.unitCostPiasters,
+      });
+      mapped += quantity;
+    }
+    if (mapped !== high - low) throw new CorrectionsValidationError("لا يمكن ربط حركة مخزون الإرجاع بدفعات الطلب الأصلية المحتفظ بها.");
+    return [...totals.values()];
+  }
   const units = await queryable.query<{
     quantity: number;
     variant_id: string;
@@ -381,6 +500,146 @@ async function exactReturnMovementBatches(
     throw new CorrectionsValidationError("لا يمكن ربط حركة مخزون الإرجاع بدفعات البيع الأصلية المحتفظ بها.");
   }
   return [...totals.values()];
+}
+
+type OnlineReturnSpan = {
+  returnLineId: string;
+  sourceLineId: string;
+  unitIndex: number;
+  startOffset: number;
+  quantity: number;
+  paidUnitPiasters: number;
+};
+
+async function planEffectiveOnlineReturnUnits(
+  queryable: Queryable,
+  current: ReturnCorrectionDetailDto,
+  input: ReturnCorrectionWrite,
+  source: DeliveredOnlineOrderSource,
+  allocations: ProtectedOrderAllocationProvenance[],
+  recordedEffects: RecordedDeliveredReturnAllocationEffect[],
+) {
+  const effective = current.effective;
+  if (!effective) return { spans: [], protectionEffects: [] };
+  const [currentSpans, otherSpans] = await Promise.all([
+    effectiveOnlineReturnSpans(queryable, current.id),
+    activeOnlineSourceSpans(queryable, source.orderId, current.id),
+  ]);
+  const targetByLine = new Map((input.effective?.lines ?? []).map((line) => [line.lineId, line.quantity]));
+  const planned: OnlineReturnSpan[] = [];
+  for (const line of effective.lines) {
+    const target = input.type === "cancellation" ? 0 : targetByLine.get(line.returnLineId) ?? line.quantity;
+    let remaining = target;
+    const retained = currentSpans
+      .filter((span) => span.returnLineId === line.returnLineId)
+      .sort((left, right) => left.unitIndex - right.unitIndex || left.startOffset - right.startOffset);
+    for (const span of retained) {
+      if (remaining <= 0) break;
+      const quantity = Math.min(remaining, span.quantity);
+      planned.push({ ...span, quantity });
+      remaining -= quantity;
+    }
+    if (remaining <= 0) continue;
+    const quoteLine = source.confirmedQuote.lines.find((item) => item.id === line.sourceLineId);
+    if (!quoteLine) throw new CorrectionsValidationError("سطر الطلب الأصلي غير موجود.");
+    for (const unit of [...quoteLine.units].sort((left, right) => left.unitIndex - right.unitIndex)) {
+      if (remaining <= 0) break;
+      const occupied = [...otherSpans, ...planned]
+        .filter((span) => span.sourceLineId === line.sourceLineId && span.unitIndex === unit.unitIndex)
+        .map((span) => ({ start: span.startOffset, end: span.startOffset + span.quantity }))
+        .sort((left, right) => left.start - right.start);
+      let cursor = 0;
+      for (const range of [...occupied, { start: unit.quantity, end: unit.quantity }]) {
+        if (remaining <= 0) break;
+        if (range.start > cursor) {
+          const quantity = Math.min(remaining, range.start - cursor);
+          planned.push({
+            returnLineId: line.returnLineId,
+            sourceLineId: line.sourceLineId,
+            unitIndex: unit.unitIndex,
+            startOffset: cursor,
+            quantity,
+            paidUnitPiasters: unit.paidPiasters,
+          });
+          remaining -= quantity;
+        }
+        cursor = Math.max(cursor, range.end);
+      }
+    }
+    if (remaining > 0) throw new CorrectionsValidationError("الكمية المرتجعة تتجاوز الوحدات المتاحة من الطلب الأصلي.");
+  }
+
+  const currentByAllocation = new Map<string, number>();
+  for (const effect of recordedEffects) {
+    currentByAllocation.set(effect.allocationId, (currentByAllocation.get(effect.allocationId) ?? 0) + effect.quantityDelta);
+  }
+  const desiredByAllocation = new Map<string, number>();
+  for (const span of planned) {
+    const quoteLine = source.confirmedQuote.lines.find((line) => line.id === span.sourceLineId)!;
+    const ordinal = quoteLine.units
+      .filter((unit) => unit.unitIndex < span.unitIndex)
+      .reduce((sum, unit) => sum + unit.quantity, 0) + span.startOffset;
+    let remaining = span.quantity;
+    let cursor = ordinal;
+    let allocationOffset = 0;
+    for (const allocation of allocations.filter((item) => item.sourceLineId === span.sourceLineId)) {
+      const end = allocationOffset + allocation.quantity;
+      if (remaining > 0 && cursor >= allocationOffset && cursor < end) {
+        const quantity = Math.min(remaining, end - cursor);
+        desiredByAllocation.set(allocation.allocationId,
+          (desiredByAllocation.get(allocation.allocationId) ?? 0) + quantity);
+        cursor += quantity;
+        remaining -= quantity;
+      }
+      allocationOffset = end;
+    }
+    if (remaining > 0) throw new CorrectionsValidationError("تعذر ربط تصحيح الإرجاع بتخصيصات الطلب الأصلية.");
+  }
+  const protectionEffects = allocations.map((allocation) => ({
+    allocationId: allocation.allocationId,
+    quantityDelta: (desiredByAllocation.get(allocation.allocationId) ?? 0)
+      - (currentByAllocation.get(allocation.allocationId) ?? 0),
+  })).filter((effect) => effect.quantityDelta !== 0);
+  return { spans: planned, protectionEffects };
+}
+
+async function effectiveOnlineReturnSpans(queryable: Queryable, returnId: string): Promise<OnlineReturnSpan[]> {
+  const result = await queryable.query<{
+    return_line_id: string; source_line_id: string; unit_index: number; start_offset: number;
+    quantity: number; paid_unit_piasters: number | string;
+  }>(
+    `WITH latest AS (
+       SELECT correction.id,correction.change_type FROM recording_correction correction
+       WHERE correction.return_id=$1 ORDER BY correction.revision DESC LIMIT 1
+     )
+     SELECT unit.return_line_id,unit.source_online_order_line_id AS source_line_id,
+            unit.source_online_order_unit_index AS unit_index,unit.start_offset,unit.quantity,unit.paid_unit_piasters
+     FROM returns_return_unit unit
+     WHERE unit.return_id=$1 AND unit.source_online_order_line_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM latest)
+     UNION ALL
+     SELECT value.return_line_id,value.source_online_order_line_id,value.source_online_order_unit_index,
+            value.start_offset,value.quantity,value.paid_unit_piasters
+     FROM recording_online_return_unit_value value JOIN latest ON latest.id=value.correction_id
+     WHERE latest.change_type<>'cancellation'
+     ORDER BY return_line_id,unit_index,start_offset`, [returnId]);
+  return result.rows.map((row) => ({
+    returnLineId: row.return_line_id, sourceLineId: row.source_line_id, unitIndex: row.unit_index,
+    startOffset: row.start_offset, quantity: row.quantity, paidUnitPiasters: number(row.paid_unit_piasters),
+  }));
+}
+
+async function activeOnlineSourceSpans(
+  queryable: Queryable,
+  orderId: string,
+  excludeReturnId: string,
+): Promise<OnlineReturnSpan[]> {
+  const returns = await queryable.query<{ id: string }>(
+    `SELECT r.id FROM returns_return r
+     LEFT JOIN LATERAL (SELECT correction.change_type FROM recording_correction correction
+       WHERE correction.return_id=r.id ORDER BY correction.revision DESC LIMIT 1) latest ON true
+     WHERE r.source_online_order_id=$1 AND r.status='posted' AND r.id<>$2
+       AND COALESCE(latest.change_type,'correction')<>'cancellation'`, [orderId, excludeReturnId]);
+  return (await Promise.all(returns.rows.map((row) => effectiveOnlineReturnSpans(queryable, row.id)))).flat();
 }
 
 async function effectiveSaleAllocationRanges(queryable: Queryable, returnId: string, sourceRevision: number) {
@@ -472,12 +731,15 @@ async function insertCorrection(client: Queryable, input: SaleCorrectionWrite | 
     `INSERT INTO recording_correction (
        id, operation_id, target_type, sale_id, return_id, change_type, revision, reason,
        payload_fingerprint, effective_total_piasters, cash_direction, cash_amount_piasters,
-       changed_by_staff_id, changed_at
-     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+       changed_by_staff_id, changed_at,effective_refund_merchandise_piasters,
+       effective_refund_checkout_charge_piasters
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
     [input.correctionId, input.operationId, target, saleId,
       returnId, input.type, revision, input.reason,
       input.payloadFingerprint, total, input.cash?.direction ?? null, input.cash?.amountPiasters ?? 0,
-      input.actorStaffId, input.at],
+      input.actorStaffId, input.at,
+      "returnId" in input ? input.effective?.authorizedRefund.merchandisePiasters ?? null : null,
+      "returnId" in input ? input.effective?.authorizedRefund.checkoutChargePiasters ?? null : null],
   );
 }
 
@@ -549,26 +811,52 @@ async function loadSale(queryable: Queryable, saleId: string, upToRevision = 2_1
 }
 
 async function loadReturn(queryable: Queryable, returnId: string, upToRevision = 2_147_483_647): Promise<ReturnCorrectionDetailDto | null> {
-  const result = await queryable.query<ReturnRow>(`SELECT id, source_sale_id, status, authorized_refund_piasters, refund_paid_piasters, exchange_credit_applied_piasters FROM returns_return WHERE id = $1`, [returnId]);
+  const result = await queryable.query<ReturnRow>(
+    `SELECT id,source_sale_id,source_online_order_id,status,authorized_refund_piasters,
+            authorized_merchandise_refund_piasters,authorized_checkout_charge_refund_piasters,
+            refund_paid_piasters,exchange_credit_applied_piasters
+     FROM returns_return WHERE id = $1`, [returnId]);
   const row = result.rows[0];
   if (!row || row.status !== "posted") return null;
   const original = await returnLines(queryable, returnId);
   const corrections = await correctionHistory(queryable, "return", returnId, upToRevision);
   const latest = corrections.at(-1) ?? null;
-  let effective: ReturnCorrectionDetailDto["effective"] = { authorizedRefundPiasters: number(row.authorized_refund_piasters), paidPiasters: number(row.refund_paid_piasters), lines: original };
+  const originalAuthorizedRefund = {
+    merchandisePiasters: number(row.authorized_merchandise_refund_piasters),
+    checkoutChargePiasters: number(row.authorized_checkout_charge_refund_piasters),
+    totalPiasters: number(row.authorized_refund_piasters),
+  };
+  let effective: ReturnCorrectionDetailDto["effective"] = {
+    authorizedRefund: originalAuthorizedRefund,
+    authorizedRefundPiasters: originalAuthorizedRefund.totalPiasters,
+    paidPiasters: number(row.refund_paid_piasters), lines: original,
+  };
   if (latest?.change_type === "cancellation") effective = null;
   else if (latest) {
     const values = await queryable.query<{ return_line_id: string; quantity: number; sellable_quantity: number }>(`SELECT return_line_id, quantity, sellable_quantity FROM recording_return_line_value WHERE correction_id = $1`, [latest.id]);
     const byId = new Map(values.rows.map((value) => [value.return_line_id, value]));
-    effective = { authorizedRefundPiasters: number(latest.effective_total_piasters), paidPiasters: actualReturnCash(row, corrections), lines: original.map((line) => { const value = byId.get(line.returnLineId); return value ? { ...line, quantity: value.quantity, sellableQuantity: value.sellable_quantity } : line; }) };
+    const merchandisePiasters = number(latest.effective_refund_merchandise_piasters);
+    const checkoutChargePiasters = number(latest.effective_refund_checkout_charge_piasters);
+    effective = {
+      authorizedRefund: { merchandisePiasters, checkoutChargePiasters, totalPiasters: merchandisePiasters + checkoutChargePiasters },
+      authorizedRefundPiasters: number(latest.effective_total_piasters),
+      paidPiasters: actualReturnCash(row, corrections),
+      lines: original.map((line) => { const value = byId.get(line.returnLineId); return value ? { ...line, quantity: value.quantity, sellableQuantity: value.sellable_quantity } : line; }),
+    };
   }
   const changes = await changeDtos(queryable, corrections);
   const paidOut = corrections.filter((change) => change.cash_direction === "paid_out").reduce((sum, change) => sum + number(change.cash_amount_piasters), 0);
   const recovered = corrections.filter((change) => change.cash_direction === "recovered").reduce((sum, change) => sum + number(change.cash_amount_piasters), 0);
   const merchandise = changes.flatMap((change) => change.merchandise);
   return {
-    targetType: "return", id: row.id, reference: row.id, sourceSaleId: row.source_sale_id, revision: latest?.revision ?? 0,
-    status: effective ? "active" : "cancelled", original: { authorizedRefundPiasters: number(row.authorized_refund_piasters), paidPiasters: number(row.refund_paid_piasters), lines: original }, effective,
+    targetType: "return", id: row.id, reference: row.id,
+    source: row.source_sale_id
+      ? { kind: "physical_sale", id: row.source_sale_id }
+      : { kind: "delivered_online_order", id: row.source_online_order_id! },
+    ...(row.source_sale_id ? { sourceSaleId: row.source_sale_id } : {}),
+    revision: latest?.revision ?? 0,
+    status: effective ? "active" : "cancelled",
+    original: { authorizedRefund: originalAuthorizedRefund, authorizedRefundPiasters: originalAuthorizedRefund.totalPiasters, paidPiasters: number(row.refund_paid_piasters), lines: original }, effective,
     actual: {
       originalRefundPaidPiasters: number(row.refund_paid_piasters),
       exchangeCreditAppliedPiasters: number(row.exchange_credit_applied_piasters), correctionCashPaidOutPiasters: paidOut,
@@ -614,8 +902,23 @@ async function correctedSalePaidRanges(queryable: Queryable, correctionId: strin
   return byLine;
 }
 async function returnLines(queryable: Queryable, returnId: string): Promise<ReturnCorrectionLineDto[]> {
-  const result = await queryable.query<LineRow>(`${lineSelect("rl", "rl.source_sale_line_id, rl.sellable_quantity,")} FROM returns_return_line rl JOIN sales_sale_line sl ON sl.id = rl.source_sale_line_id ${variantJoins("sl")} WHERE rl.return_id = $1 ORDER BY rl.line_index`, [returnId]);
-  return result.rows.map((row) => ({ returnLineId: row.id, sourceSaleLineId: row.source_sale_line_id!, variantId: row.variant_id, variant: variant(row), quantity: row.quantity, sellableQuantity: row.sellable_quantity! }));
+  const result = await queryable.query<LineRow & { source_online_order_line_id: string | null }>(
+    `SELECT rl.id,rl.source_sale_line_id,rl.source_online_order_line_id,rl.sellable_quantity,
+            rl.source_variant_id AS variant_id,rl.quantity,
+            p.id AS product_id,p.code AS product_code,p.name_ar AS product_name_ar,
+            sz.id AS size_id,sz.name_ar AS size_name_ar,c.id AS color_id,c.name_ar AS color_name_ar
+     FROM returns_return_line rl
+     JOIN catalog_product_variant v ON v.id=rl.source_variant_id
+     JOIN catalog_product p ON p.id=v.product_id
+     JOIN catalog_size sz ON sz.id=v.size_id JOIN catalog_color c ON c.id=v.color_id
+     WHERE rl.return_id = $1 ORDER BY rl.line_index`, [returnId]);
+  return result.rows.map((row) => ({
+    returnLineId: row.id,
+    sourceLineId: row.source_sale_line_id ?? row.source_online_order_line_id!,
+    ...(row.source_sale_line_id ? { sourceSaleLineId: row.source_sale_line_id } : {}),
+    variantId: row.variant_id,
+    variant: variant(row), quantity: row.quantity, sellableQuantity: row.sellable_quantity!,
+  }));
 }
 function lineSelect(alias: string, extra = "") { return `SELECT ${alias}.id, ${extra} sl.variant_id, ${alias}.quantity, p.id AS product_id, p.code AS product_code, p.name_ar AS product_name_ar, sz.id AS size_id, sz.name_ar AS size_name_ar, c.id AS color_id, c.name_ar AS color_name_ar`; }
 function variantJoins(lineAlias: string) { return `JOIN catalog_product_variant v ON v.id = ${lineAlias}.variant_id JOIN catalog_product p ON p.id = v.product_id JOIN catalog_size sz ON sz.id = v.size_id JOIN catalog_color c ON c.id = v.color_id`; }
@@ -685,8 +988,26 @@ async function effectiveReturnedForLine(queryable: Queryable, saleLineId: string
   return number(result.rows[0]?.quantity ?? 0);
 }
 
+async function effectiveReturnedForOnlineLine(
+  queryable: Queryable,
+  orderId: string,
+  sourceLineId: string,
+  excludeReturnId: string,
+): Promise<number> {
+  const result = await queryable.query<{ quantity: number | string }>(
+    `SELECT COALESCE(SUM(CASE WHEN latest.change_type='cancellation' THEN 0
+              ELSE COALESCE(value.quantity,line.quantity) END),0)::int AS quantity
+     FROM returns_return_line line JOIN returns_return r ON r.id=line.return_id
+     LEFT JOIN LATERAL (SELECT correction.id,correction.change_type FROM recording_correction correction
+       WHERE correction.return_id=r.id ORDER BY correction.revision DESC LIMIT 1) latest ON true
+     LEFT JOIN recording_return_line_value value ON value.correction_id=latest.id AND value.return_line_id=line.id
+     WHERE r.status='posted' AND r.source_online_order_id=$1
+       AND line.source_online_order_line_id=$2 AND r.id<>$3`, [orderId, sourceLineId, excludeReturnId]);
+  return number(result.rows[0]?.quantity);
+}
+
 async function saleLineMap(queryable: Queryable, saleId: string) { const result = await queryable.query<{ id: string; variant_id: string }>(`SELECT id, variant_id FROM sales_sale_line WHERE sale_id = $1`, [saleId]); return new Map(result.rows.map((row) => [row.id, row])); }
-async function returnLineMap(queryable: Queryable, returnId: string) { const result = await queryable.query<{ id: string; variant_id: string }>(`SELECT rl.id, sl.variant_id FROM returns_return_line rl JOIN sales_sale_line sl ON sl.id = rl.source_sale_line_id WHERE rl.return_id = $1`, [returnId]); return new Map(result.rows.map((row) => [row.id, row])); }
+async function returnLineMap(queryable: Queryable, returnId: string) { const result = await queryable.query<{ id: string; variant_id: string }>(`SELECT rl.id,rl.source_variant_id AS variant_id FROM returns_return_line rl WHERE rl.return_id = $1`, [returnId]); return new Map(result.rows.map((row) => [row.id, row])); }
 function validateMerchandise(entries: MerchandiseAdjustmentWrite[], ids: Set<string>) { if (entries.some((entry) => !ids.has(entry.lineId))) throw new CorrectionsValidationError("حركة البضاعة تشير إلى سطر غير موجود في التسجيل الأصلي."); return entries; }
 function signedAdjustments(entries: MerchandiseAdjustmentWrite[]) { return new Map(entries.map((entry) => [entry.lineId, entry.quantityDelta])); }
 function assertExactLines(values: string[], expected: Set<string>, message: string) { if (values.length !== expected.size || new Set(values).size !== values.length || values.some((id) => !expected.has(id))) throw new CorrectionsValidationError(message); }

@@ -12,6 +12,7 @@
     "@bravos/contracts": "workspace:*",
     "@bravos/identity": "workspace:*",
     "@bravos/inventory": "workspace:*",
+    "@bravos/online-orders": "workspace:*",
     "pg": "8.16.3"
   },
   "devDependencies": {

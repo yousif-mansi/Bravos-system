@@ -49,6 +49,7 @@ test("apply, down the latest migration, and reapply works with multiple migratio
       "024_inventory_order_disposition.sql",
       "025_order_fulfillment.sql",
       "026_opening_import.sql",
+      "027_online_returns.sql",
     ]);
     expect(await listAppliedMigrations(pool)).toEqual(first);
     expect(await tableNames(pool)).toEqual(
@@ -100,6 +101,8 @@ test("apply, down the latest migration, and reapply works with multiple migratio
         "online_order_failed_return_inspection",
         "online_order_failed_return_inspection_line",
         "opening_import_preview",
+        "recording_online_return_unit_value",
+        "inventory_delivered_return_allocation_effect",
       ]),
     );
 
@@ -167,6 +170,11 @@ test("apply, down the latest migration, and reapply works with multiple migratio
     expect(afterDown).not.toContain("online_order_failed_return_inspection");
     expect(afterDown).not.toContain("online_order_failed_return_inspection_line");
     expect(afterDown).not.toContain("opening_import_preview");
+    expect(afterDown).not.toContain("recording_online_return_unit_value");
+    expect(afterDown).not.toContain("inventory_delivered_return_allocation_effect");
+    expect(await columnExists(pool, "returns_return", "source_online_order_id")).toBe(false);
+    expect(await constraintExists(pool, "returns_return_source_exact")).toBe(false);
+    expect(await constraintExists(pool, "returns_return_line_source_exact")).toBe(false);
     expect(await columnExists(pool, "sales_pos_snapshot", "pricing_version")).toBe(false);
     expect(await columnExists(pool, "sales_sale", "cash_received_piasters")).toBe(false);
     expect(await columnExists(pool, "inventory_batch", "effective_received_quantity")).toBe(false);
@@ -203,7 +211,11 @@ test("apply, down the latest migration, and reapply works with multiple migratio
       "online_order_fulfillment_event", "online_order_failed_return_inspection",
       "online_order_failed_return_inspection_line",
       "opening_import_preview",
+      "recording_online_return_unit_value", "inventory_delivered_return_allocation_effect",
     ]));
+    expect(await columnExists(pool, "returns_return", "source_online_order_id")).toBe(true);
+    expect(await constraintExists(pool, "returns_return_source_exact")).toBe(true);
+    expect(await constraintExists(pool, "returns_return_line_source_exact")).toBe(true);
     expect(await columnExists(pool, "sales_pos_snapshot", "pricing_version")).toBe(true);
     expect(await columnExists(pool, "sales_pos_snapshot", "coupon_accounted_operations")).toBe(true);
     expect(await columnExists(pool, "sales_sale", "cash_received_piasters")).toBe(true);
@@ -230,6 +242,10 @@ test("apply, down the latest migration, and reapply works with multiple migratio
     const restored = await applyMigrations(pool);
     expect(restored).toEqual(first);
     expect(await listAppliedMigrations(pool)).toEqual(first);
+    expect(await tableNames(pool)).toEqual(expect.arrayContaining([
+      "recording_online_return_unit_value",
+      "inventory_delivered_return_allocation_effect",
+    ]));
   } finally {
     await pool.end();
   }
@@ -371,6 +387,7 @@ test("008 down expands counted unit ranges into one legacy row per ordinal", asy
       "024_inventory_order_disposition.sql",
       "025_order_fulfillment.sql",
       "026_opening_import.sql",
+      "027_online_returns.sql",
     ]);
     const restored = await pool.query<{ unit_index: number; quantity: number; paid_piasters: number }>(
       `SELECT unit_index, quantity, paid_piasters FROM sales_sale_unit ORDER BY unit_index`,
@@ -437,6 +454,7 @@ test("020 backfills each legacy till from its latest snapshot without inventing 
       "024_inventory_order_disposition.sql",
       "025_order_fulfillment.sql",
       "026_opening_import.sql",
+      "027_online_returns.sql",
     ]);
     const knownTills = await pool.query<{
       device_id: string;
@@ -474,6 +492,83 @@ test("020 backfills each legacy till from its latest snapshot without inventing 
         synchronization_complete: false,
       },
     ]);
+  } finally {
+    await pool.end();
+  }
+});
+
+test("027 refuses to discard delivered online Return evidence during rollback", async () => {
+  const databaseName = `bravos_migrate_${crypto.randomUUID().replaceAll("-", "")}`;
+  await cluster.createDatabase(databaseName);
+  const pool = new Pool({ connectionString: cluster.connectionString(databaseName), max: 3 });
+  try {
+    await applyMigrations(pool);
+    await pool.query(`
+      INSERT INTO "user" (id, name, email, "emailVerified", "createdAt", "updatedAt")
+      VALUES ('staff-online-return', 'Online Return', 'online-return@bravos.test', true, now(), now());
+      INSERT INTO staff_profile (staff_id, display_name_ar, is_owner)
+      VALUES ('staff-online-return', 'موظف المرتجع الإلكتروني', true);
+      INSERT INTO delivery_area (id, name_ar, fee_piasters, changed_by_staff_id, changed_at)
+      VALUES (
+        '41414141-4141-4141-8141-414141414141', 'منطقة الاختبار', 0, 'staff-online-return', now()
+      );
+      INSERT INTO online_checkout_quote (
+        id, request_fingerprint, request_json, quote_json, created_at
+      ) VALUES (
+        '42424242-4242-4242-8242-424242424242', repeat('a', 64), '{}'::jsonb, '{}'::jsonb, now()
+      );
+      INSERT INTO online_order (
+        id, operation_id, payload_fingerprint, quote_id, reference, status,
+        customer_name, primary_phone, detailed_address, delivery_area_id,
+        requested_delivery_area_name_ar, requested_merchandise_original_piasters,
+        requested_automatic_offer_discount_piasters, requested_coupon_discount_piasters,
+        requested_merchandise_total_piasters, requested_delivery_fee_piasters,
+        requested_final_total_piasters, submitted_at, confirmed_by_staff_id, confirmed_at
+      ) VALUES (
+        '43434343-4343-4343-8343-434343434343',
+        '44444444-4444-4444-8444-444444444444',
+        repeat('b', 64),
+        '42424242-4242-4242-8242-424242424242',
+        'WEB-GUARD-027',
+        'delivered',
+        'عميل الاختبار',
+        '01000000000',
+        'عنوان الاختبار',
+        '41414141-4141-4141-8141-414141414141',
+        'منطقة الاختبار',
+        0, 0, 0, 0, 0, 0, now(), 'staff-online-return', now()
+      );
+      INSERT INTO returns_return (
+        id, operation_id, source_online_order_id, handling_branch_id, status,
+        payload_fingerprint, draft_payload_fingerprint, suggested_refund_piasters,
+        authorized_refund_piasters, created_by_staff_id, updated_by_staff_id
+      ) VALUES (
+        '45454545-4545-4545-8545-454545454545',
+        '46464646-4646-4646-8646-464646464646',
+        '43434343-4343-4343-8343-434343434343',
+        '11111111-1111-4111-8111-111111111111',
+        'draft',
+        'guard-027',
+        'guard-027-draft',
+        0,
+        0,
+        'staff-online-return',
+        'staff-online-return'
+      );
+    `);
+
+    await expect(revertLastMigration(pool)).rejects.toThrow(/Cannot downgrade migration 027/i);
+    expect((await listAppliedMigrations(pool)).at(-1)).toBe("027_online_returns.sql");
+    expect(await tableNames(pool)).toEqual(expect.arrayContaining([
+      "recording_online_return_unit_value",
+      "inventory_delivered_return_allocation_effect",
+    ]));
+
+    await pool.query(`DELETE FROM returns_return WHERE id = '45454545-4545-4545-8545-454545454545'`);
+    expect(await revertLastMigration(pool)).toBe("027_online_returns.sql");
+    const afterDown = await tableNames(pool);
+    expect(afterDown).not.toContain("recording_online_return_unit_value");
+    expect(afterDown).not.toContain("inventory_delivered_return_allocation_effect");
   } finally {
     await pool.end();
   }
@@ -539,4 +634,14 @@ async function columnType(pool: Pool, table: string, column: string): Promise<st
     [table, column],
   );
   return result.rows[0]?.data_type;
+}
+
+async function constraintExists(pool: Pool, constraintName: string): Promise<boolean> {
+  const result = await pool.query<{ exists: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1 FROM pg_constraint WHERE conname = $1
+     ) AS exists`,
+    [constraintName],
+  );
+  return result.rows[0]?.exists === true;
 }

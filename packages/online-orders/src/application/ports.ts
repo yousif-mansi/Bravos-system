@@ -184,11 +184,22 @@ export type AcceptedOrderWrite = {
 export type DeliveredOnlineOrderSource = {
   orderId: string;
   reference: string;
+  customerName: string;
+  primaryPhone: string;
   customerReceivedAt: Date;
+  returnDeadlineAt: Date;
   confirmedQuote: OnlineOrderAgreementQuoteDto;
 };
 
+export type DeliveredOnlineOrderSourceSearch = {
+  reference?: string;
+  date?: string;
+  item?: string;
+  amountPiasters?: number;
+};
+
 export type DeliveredOnlineOrderSourceReader = {
+  listDeliveredSources(search: DeliveredOnlineOrderSourceSearch): Promise<DeliveredOnlineOrderSource[]>;
   /** When lock=true, callers must already hold the inventory stock-clock lock. */
   getDeliveredSource(orderId: string, lock?: boolean): Promise<DeliveredOnlineOrderSource | null>;
 };

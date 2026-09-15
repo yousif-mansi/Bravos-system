@@ -158,7 +158,17 @@ export type ProtectedOrderAllocationProvenance = {
   allocatedAt: Date;
   sellableRestoredQuantity: number;
   nonsellableRemovedQuantity: number;
+  customerReturnedQuantity: number;
   undisposedQuantity: number;
+};
+
+export type DeliveredReturnAllocationEffect = {
+  allocationId: string;
+  quantityDelta: number;
+};
+
+export type RecordedDeliveredReturnAllocationEffect = DeliveredReturnAllocationEffect & {
+  operationId: string;
 };
 
 /**
@@ -248,6 +258,13 @@ export type InventoryTransaction = {
   }): Promise<OnlineOrderDispositionResult>;
   /** Call only after lockStockClock("update") when a caller will mutate these source allocations. */
   lockProtectedOrderAllocations(orderId: string): Promise<ProtectedOrderAllocationProvenance[]>;
+  listDeliveredReturnAllocationEffects(operationIds: string[]): Promise<RecordedDeliveredReturnAllocationEffect[]>;
+  adjustDeliveredReturnProtection(input: {
+    orderId: string;
+    operationId: string;
+    recordedAt: Date;
+    effects: DeliveredReturnAllocationEffect[];
+  }): Promise<void>;
   allocateFromOldestAvailable(input: {
     operationId: string;
     variantId: string;
@@ -335,6 +352,7 @@ export type InventoryReadStore = {
   listBatches(): Promise<BatchRecord[]>;
   getBatchStates(batchIds: string[]): Promise<BatchRecord[]>;
   listAllocations(operationId: string): Promise<AllocationRecord[]>;
+  listProtectedOrderAllocations(orderId: string): Promise<ProtectedOrderAllocationProvenance[]>;
   listDiscrepancies(operationId: string): Promise<DiscrepancyRecord[]>;
   getSettings(): Promise<SettingsRecord>;
   updateSettings(lowStockThreshold: number, actorStaffId: string): Promise<SettingsRecord>;

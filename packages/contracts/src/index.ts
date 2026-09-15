@@ -825,7 +825,9 @@ export type ExpenseTotalsDto = {
 };
 
 export type ReturnSourceLineDto = {
-  saleLineId: string;
+  sourceLineId: string;
+  /** Compatibility alias present only for physical-sale sources. */
+  saleLineId?: string;
   variantId: string;
   variant: VariantIdentityDto;
   purchasedQuantity: number;
@@ -836,15 +838,31 @@ export type ReturnSourceLineDto = {
   availablePaidRanges: Array<{ quantity: number; paidUnitPiasters: number }>;
 };
 
+export type ReturnSourceKeyDto =
+  | { kind: "physical_sale"; id: string }
+  | { kind: "delivered_online_order"; id: string };
+
+export type ReturnRefundBreakdownDto = {
+  merchandisePiasters: number;
+  checkoutChargePiasters: number;
+  totalPiasters: number;
+};
+
 export type ReturnSourceDto = {
-  saleId: string;
+  source: ReturnSourceKeyDto;
+  /** Compatibility alias present only for physical-sale sources. */
+  saleId?: string;
   reference: string;
-  channel: "physical";
-  originalBranch: BranchDto;
-  soldByStaffId: string;
-  soldByDisplayName: string;
+  channel: "physical" | "online";
+  originalBranch: BranchDto | null;
+  seller: { staffId: string; displayName: string } | null;
+  /** Compatibility aliases present only for physical-sale sources. */
+  soldByStaffId?: string;
+  soldByDisplayName?: string;
   receivedAt: string;
   returnDeadlineAt: string;
+  originalPayment: ReturnRefundBreakdownDto;
+  availableCheckoutChargePiasters: number;
   finalTotalPiasters: number;
   customerName: string | null;
   customerPhone: string | null;
@@ -853,7 +871,9 @@ export type ReturnSourceDto = {
 
 export type ReturnLineDto = {
   id: string;
-  sourceSaleLineId: string;
+  sourceLineId: string;
+  /** Compatibility alias present only for physical-sale sources. */
+  sourceSaleLineId?: string;
   variantId: string;
   variant: VariantIdentityDto;
   quantity: number;
@@ -894,6 +914,7 @@ export type ReturnExchangeDto = {
   };
   allocations: ManagerSaleAllocationDto[];
   completedByStaffId: string;
+  completedByDisplayName: string;
   completedAt: string;
 };
 
@@ -930,6 +951,9 @@ export type ReturnDto = {
   revision: number;
   source: ReturnSourceDto;
   handlingBranch: BranchDto;
+  suggestedRefund: ReturnRefundBreakdownDto;
+  authorizedRefund: ReturnRefundBreakdownDto;
+  originalAuthorizedRefund: ReturnRefundBreakdownDto;
   suggestedRefundPiasters: number;
   authorizedRefundPiasters: number;
   originalAuthorizedRefundPiasters: number;
@@ -950,6 +974,7 @@ export type ReturnDto = {
     overpaidPiasters: number;
     paidPiasters: number;
     recordedByStaffId: string | null;
+    recordedByDisplayName: string | null;
     recordedAt: string | null;
     events: ReturnRefundEventDto[];
   };
@@ -959,10 +984,14 @@ export type ReturnListItemDto = {
   id: string;
   status: "draft" | "posted";
   revision: number;
-  sourceSaleId: string;
+  source: ReturnSourceKeyDto;
+  /** Compatibility alias present only for physical-sale sources. */
+  sourceSaleId?: string;
   sourceReference: string;
-  originalBranch: BranchDto;
+  channel: "physical" | "online";
+  originalBranch: BranchDto | null;
   handlingBranch: BranchDto;
+  authorizedRefund: ReturnRefundBreakdownDto;
   authorizedRefundPiasters: number;
   originalAuthorizedRefundPiasters: number;
   effectiveStatus: "active" | "cancelled";
@@ -1006,7 +1035,9 @@ export type SaleCorrectionLineDto = {
 
 export type ReturnCorrectionLineDto = {
   returnLineId: string;
-  sourceSaleLineId: string;
+  sourceLineId: string;
+  /** Compatibility alias present only for physical-sale sources. */
+  sourceSaleLineId?: string;
   variantId: string;
   variant: VariantIdentityDto;
   quantity: number;
@@ -1053,11 +1084,23 @@ export type ReturnCorrectionDetailDto = {
   targetType: "return";
   id: string;
   reference: string;
-  sourceSaleId: string;
+  source: ReturnSourceKeyDto;
+  /** Compatibility alias present only for physical-sale sources. */
+  sourceSaleId?: string;
   revision: number;
   status: "active" | "cancelled";
-  original: { authorizedRefundPiasters: number; paidPiasters: number; lines: ReturnCorrectionLineDto[] };
-  effective: { authorizedRefundPiasters: number; paidPiasters: number; lines: ReturnCorrectionLineDto[] } | null;
+  original: {
+    authorizedRefund: ReturnRefundBreakdownDto;
+    authorizedRefundPiasters: number;
+    paidPiasters: number;
+    lines: ReturnCorrectionLineDto[];
+  };
+  effective: {
+    authorizedRefund: ReturnRefundBreakdownDto;
+    authorizedRefundPiasters: number;
+    paidPiasters: number;
+    lines: ReturnCorrectionLineDto[];
+  } | null;
   actual: {
     originalRefundPaidPiasters: number;
     exchangeCreditAppliedPiasters: number;

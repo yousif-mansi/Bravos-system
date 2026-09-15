@@ -40,6 +40,7 @@ try {
       "024_inventory_order_disposition.sql",
       "025_order_fulfillment.sql",
       "026_opening_import.sql",
+      "027_online_returns.sql",
     ];
     if (first.join(",") !== expectedMigrations.join(",") || afterApply.join(",") !== first.join(",")) {
       throw new Error(`Scratch apply did not record multiple migrations: ${first.join(",")}`);
@@ -211,6 +212,7 @@ try {
       throw new Error(`Scratch full down order was ${fullyReverted.join(",")}`);
     }
     const empty = await tableNames(pool);
+    await assertCurrentBatchStorage(pool, false);
     if (empty.includes("user") || empty.includes("catalog_product") || empty.includes("inventory_batch") || empty.includes("receiving_receipt") || empty.includes("sales_sale") || empty.includes("sales_pos_snapshot") || empty.includes("expense_record") || empty.includes("pricing_automatic_offer") || empty.includes("returns_return") || empty.includes("storefront_contacts")) {
       throw new Error("Scratch full down left feature tables.");
     }
@@ -219,6 +221,7 @@ try {
     if (restored.join(",") !== first.join(",")) {
       throw new Error("Scratch full reapply did not restore every migration.");
     }
+    await assertCurrentBatchStorage(pool, true);
 
     await expectFailedMigrationRollsBack(pool);
 
@@ -297,6 +300,7 @@ async function assertCurrentBatchStorage(pool: Pool, present: boolean): Promise<
     "online_order_fulfillment_event", "online_order_failed_return_inspection",
     "online_order_failed_return_inspection_line",
     "opening_import_preview",
+    "recording_online_return_unit_value", "inventory_delivered_return_allocation_effect",
   ]) {
     if (tables.includes(table) !== present) throw new Error(`Expected ${table} presence=${present}.`);
   }
@@ -308,9 +312,18 @@ async function assertCurrentBatchStorage(pool: Pool, present: boolean): Promise<
     ["sales_sale", "exchange_credit_applied_piasters"],
     ["inventory_batch", "effective_received_quantity"],
     ["inventory_batch", "effective_unit_cost_piasters"],
+    ["returns_return", "source_online_order_id"],
+    ["returns_return_line", "source_online_order_line_id"],
+    ["returns_return_unit", "source_online_order_line_id"],
+    ["recording_correction", "effective_refund_merchandise_piasters"],
   ] as const) {
     if (await columnExists(pool, table, column) !== present) {
       throw new Error(`Expected ${table}.${column} presence=${present}.`);
+    }
+  }
+  for (const constraint of ["returns_return_source_exact", "returns_return_line_source_exact"]) {
+    if (await constraintExists(pool, constraint) !== present) {
+      throw new Error(`Expected ${constraint} presence=${present}.`);
     }
   }
 }
