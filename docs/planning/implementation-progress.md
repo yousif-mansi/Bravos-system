@@ -29,11 +29,11 @@ Each item includes its necessary schema, business behavior, API, usable UI and b
 | [08](https://github.com/yousif-mansi/Bravos-system/issues/9) | Manage automatic offers and select the greatest eligible saving | 04 | 36, 37, 38, 39, 108, 112 / A08, A09, A10, A34 | Independently verified |
 | [09](https://github.com/yousif-mansi/Bravos-system/issues/10) | Price fixed bundles and cheapest eligible Buy-X-Get-Y rewards | 08 | 109 / A09, A10, A34, A36 | Independently verified |
 | [10](https://github.com/yousif-mansi/Bravos-system/issues/11) | Apply manager-configured coupons with atomic usage limits | 08 | 110, 111, 112, 113 / A08, A09, A10, A12, A34 | Independently verified |
-| [11](https://github.com/yousif-mansi/Bravos-system/issues/12) | Use cached promotions and reconcile offline coupon overuse | 06, 09, 10 | 44, 48, 113 / A10, A17, A20 | Queued |
+| [11](https://github.com/yousif-mansi/Bravos-system/issues/12) | Use cached promotions and reconcile offline coupon overuse | 06, 09, 10 | 44, 48, 113 / A10, A17, A20 | Implementing with Sol HIGH |
 | [12](https://github.com/yousif-mansi/Bravos-system/issues/13) | Process dedicated physical Returns with inspection and editable refunds | 04 | 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87 / A23, A24, A25 | Independently verified |
-| [13](https://github.com/yousif-mansi/Bravos-system/issues/14) | Complete exchanges with replacement stock and actual cash differences | 12, 09, 10 | 88 / A06, A25, A26, A36 | Queued |
+| [13](https://github.com/yousif-mansi/Bravos-system/issues/14) | Complete exchanges with replacement stock and actual cash differences | 12, 09, 10 | 88 / A06, A25, A26, A36 | Implementing with Sol HIGH |
 | [14](https://github.com/yousif-mansi/Bravos-system/issues/15) | Correct erroneous saved sales and Returns while preserving actual effects | 12 | 41, 79, 87 / A12, A24, A25 | Independently verified |
-| [15](https://github.com/yousif-mansi/Bravos-system/issues/16) | Correct receiving quantities and historical costs through linked records | 03, 12 | 26, 83, 95 / A22, A25 | Queued |
+| [15](https://github.com/yousif-mansi/Bravos-system/issues/16) | Correct receiving quantities and historical costs through linked records | 03, 12 | 26, 83, 95 / A22, A25 | Implementing with Sol HIGH |
 | [16](https://github.com/yousif-mansi/Bravos-system/issues/17) | Coordinate quantity corrections and reconcile late completed sales | 06, 15 | 27, 28, 48 / A20, A22 | Queued |
 | [17](https://github.com/yousif-mansi/Bravos-system/issues/18) | Manage product media and publication with a safe public catalog | 03 | 11, 16, 17, 18, 19, 50 / A02, A03, A04 | Independently verified |
 | [18](https://github.com/yousif-mansi/Bravos-system/issues/19) | Browse the Arabic storefront and maintain a valid guest cart | 17 | 51, 52, 53, 54, 60, 62, 105, 106 / A02, A04, A06, A33 | Independently verified |
@@ -123,3 +123,15 @@ Prerequisite commit6004d52 is pushed; issues9,13,19 are confirmed CLOSED. All th
 |14 linked sale/Returns corrections|.scratch/worktrees/14-corrections|016|55451|
 
 Root owns commits, integration and final verification. Agents coordinate shared browser/migration ports and public pricing contracts;09 retains counted automatic ranges while10 overlays separate coupon effects.14 preserves original/effective/actual facts and rejects invalid online corrections atomically. All three tickets are independently accepted. The implementation, repair decisions and exact verification results are recorded in [bundles, coupons and corrections review](../reviews/bundles-coupons-corrections-review.md). Later ticket scope remains queued as listed above.
+
+## Active batch 11, 13, 15 — 2026-09-15
+
+The user instructed continuation after accepted commit `1caace4`. All prerequisite issues were read back as closed. Three new GPT-5.6 Sol HIGH agents work from this baseline with separately installed dependencies:
+
+| Ticket | Worktree | Migration | HTTP port |
+| --- | --- | --- | --- |
+| 11 cached promotions and coupon discrepancies | .scratch/worktrees/11-offline-promotions | 017 | 55452 |
+| 13 exchanges and actual cash differences | .scratch/worktrees/13-exchanges | 018 | 55453 |
+| 15 receiving quantity/cost corrections | .scratch/worktrees/15-receiving-corrections | 019 | 55454 |
+
+Root coordinates public interfaces, reviews and integrates. Read/edit work is parallel; tests/builds use one runtime slot to avoid Windows memory contention. These three tickets are in progress and do not change the accepted count of 14/28. Ticket 19 public checkout is unblocked but follows this internal-operations batch.
