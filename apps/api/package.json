@@ -12,6 +12,7 @@
   "dependencies": {
     "@bravos/catalog": "workspace:*",
     "@bravos/contracts": "workspace:*",
+    "@bravos/expenses": "workspace:*",
     "@bravos/identity": "workspace:*",
     "@bravos/inventory": "workspace:*",
     "@bravos/persistence": "workspace:*",

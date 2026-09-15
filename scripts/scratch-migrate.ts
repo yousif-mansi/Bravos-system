@@ -47,6 +47,9 @@ try {
     ) {
       throw new Error("Scratch apply did not add the sale recovery fields and pairing constraint from migration 009.");
     }
+    if (!tablesAfterApply.includes("expense_record") || !tablesAfterApply.includes("expense_change") || !tablesAfterApply.includes("expense_operation")) {
+      throw new Error("Scratch apply did not create expense records, changes and operation receipts.");
+    }
 
     const reverted = await revertLastMigration(pool);
     if (reverted !== latest) {
@@ -76,12 +79,15 @@ try {
       throw new Error("Scratch down removed the sale-unit quantity column from migration 008.");
     }
     if (
-      tablesAfterDown.includes("inventory_stock_clock") ||
-      (await columnExists(pool, "sales_sale", "recovered_by_staff_id")) ||
-      (await columnExists(pool, "sales_sale", "recovered_at")) ||
-      (await constraintExists(pool, "sales_sale_recovery_pair"))
+      !tablesAfterDown.includes("inventory_stock_clock") ||
+      !(await columnExists(pool, "sales_sale", "recovered_by_staff_id")) ||
+      !(await columnExists(pool, "sales_sale", "recovered_at")) ||
+      !(await constraintExists(pool, "sales_sale_recovery_pair"))
     ) {
-      throw new Error("Scratch down did not remove the stock clock and sale recovery schema from migration 009.");
+      throw new Error("Scratch expense down removed the stock clock or sale recovery schema from migration 009.");
+    }
+    if (tablesAfterDown.includes("expense_record") || tablesAfterDown.includes("expense_change") || tablesAfterDown.includes("expense_operation")) {
+      throw new Error("Scratch expense down left expense tables behind.");
     }
 
     const reapplied = await applyMigrations(pool);
@@ -104,6 +110,9 @@ try {
     ) {
       throw new Error("Scratch reapply did not restore the stock clock and sale recovery schema from migration 009.");
     }
+    if (!tablesAfterReapply.includes("expense_record") || !tablesAfterReapply.includes("expense_change") || !tablesAfterReapply.includes("expense_operation")) {
+      throw new Error("Scratch reapply did not restore expense tables.");
+    }
 
     const fullyReverted: string[] = [];
     for (;;) {
@@ -117,7 +126,7 @@ try {
       throw new Error(`Scratch full down order was ${fullyReverted.join(",")}`);
     }
     const empty = await tableNames(pool);
-    if (empty.includes("user") || empty.includes("catalog_product") || empty.includes("inventory_batch") || empty.includes("receiving_receipt") || empty.includes("sales_sale") || empty.includes("sales_pos_snapshot")) {
+    if (empty.includes("user") || empty.includes("catalog_product") || empty.includes("inventory_batch") || empty.includes("receiving_receipt") || empty.includes("sales_sale") || empty.includes("sales_pos_snapshot") || empty.includes("expense_record")) {
       throw new Error("Scratch full down left feature tables.");
     }
 

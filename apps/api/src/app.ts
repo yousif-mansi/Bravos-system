@@ -1,6 +1,14 @@
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { Pool } from "pg";
 import {
+  ExpenseOperationConflictError,
+  ExpenseRevisionConflictError,
+  ExpensesValidationError,
+  createExpenseServices,
+  type ExpenseServices,
+} from "@bravos/expenses";
+import { createPostgresExpenseRepository } from "@bravos/expenses/node";
+import {
   CatalogValidationError,
   DuplicateProductCodeError,
   ReferencedVariantError,
@@ -69,6 +77,7 @@ export type BuiltApp = {
   inventory: InventoryServices;
   receiving: ReceivingServices;
   sales: SalesServices;
+  expenses: ExpenseServices;
   auth: ReturnType<typeof createBetterAuth>;
   identity: IdentityGateway;
   close: () => Promise<void>;
@@ -160,10 +169,14 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
       uow: createPostgresSalesUnitOfWork(pool, createInventoryTransaction),
       allocations: { listAllocations: (operationId) => inventoryStore.listAllocations(operationId) },
     });
+    const expenses = createExpenseServices({
+      actors,
+      expenses: createPostgresExpenseRepository(pool),
+    });
 
     const instance = Fastify({ logger: false });
     app = instance;
-    await registerRoutes(instance, config, auth, identity, services, catalog, inventory, receiving, sales);
+    await registerRoutes(instance, config, auth, identity, services, catalog, inventory, receiving, sales, expenses);
 
     return {
       app: instance,
@@ -173,6 +186,7 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
       inventory,
       receiving,
       sales,
+      expenses,
       auth,
       identity,
       async close() {
@@ -206,6 +220,7 @@ async function registerRoutes(
   inventory: InventoryServices,
   receiving: ReceivingServices,
   sales: SalesServices,
+  expenses: ExpenseServices,
 ) {
   app.addHook("onRequest", async (request, reply) => {
     if (isPrivilegedPath(request.url) && !isTrustedInternalOrigin(request, config)) {
@@ -519,6 +534,62 @@ async function registerRoutes(
     const params = request.params as { saleId: string };
     return handle(reply, async () => sales.get(await verifiedAuth(identity, request), params.saleId));
   });
+
+  app.get("/api/internal/expense-categories", async (request, reply) => {
+    return handle(reply, async () => expenses.listCategories(await verifiedAuth(identity, request)));
+  });
+
+  app.post("/api/internal/expense-categories", async (request, reply) => {
+    return handle(reply, async () => {
+      const category = await expenses.createCategory(await verifiedAuth(identity, request), request.body);
+      reply.status(201);
+      return category;
+    });
+  });
+
+  app.patch("/api/internal/expense-categories/:categoryId", async (request, reply) => {
+    const params = request.params as { categoryId: string };
+    return handle(reply, async () =>
+      expenses.updateCategory(await verifiedAuth(identity, request), params.categoryId, request.body),
+    );
+  });
+
+  app.post("/api/internal/expenses", async (request, reply) => {
+    return handle(reply, async () => {
+      const result = await expenses.create(await verifiedAuth(identity, request), request.body);
+      reply.status(result.created ? 201 : 200);
+      return result.expense;
+    });
+  });
+
+  app.get("/api/internal/expenses", async (request, reply) => {
+    return handle(reply, async () => expenses.list(await verifiedAuth(identity, request)));
+  });
+
+  app.get("/api/internal/expenses/totals", async (request, reply) => {
+    return handle(reply, async () => expenses.totals(await verifiedAuth(identity, request)));
+  });
+
+  app.get("/api/internal/expenses/operations/:operationId", async (request, reply) => {
+    const params = request.params as { operationId: string };
+    return handle(reply, async () =>
+      expenses.getByOperation(await verifiedAuth(identity, request), params.operationId),
+    );
+  });
+
+  app.post("/api/internal/expenses/:expenseId/changes", async (request, reply) => {
+    const params = request.params as { expenseId: string };
+    return handle(reply, async () => {
+      const result = await expenses.change(await verifiedAuth(identity, request), params.expenseId, request.body);
+      reply.status(result.created ? 201 : 200);
+      return result.expense;
+    });
+  });
+
+  app.get("/api/internal/expenses/:expenseId", async (request, reply) => {
+    const params = request.params as { expenseId: string };
+    return handle(reply, async () => expenses.get(await verifiedAuth(identity, request), params.expenseId));
+  });
 }
 
 function isPrivilegedPath(url: string): boolean {
@@ -652,12 +723,16 @@ function sendError(reply: FastifyReply, error: unknown) {
   if (error instanceof OperationConflictError) {
     return reply.status(409).send(errorBody(error.code, error.message));
   }
+  if (error instanceof ExpenseOperationConflictError || error instanceof ExpenseRevisionConflictError) {
+    return reply.status(409).send(errorBody(error.code, error.message));
+  }
   if (
     error instanceof IdentityValidationError ||
     error instanceof CatalogValidationError ||
     error instanceof InventoryValidationError ||
     error instanceof ReceivingValidationError ||
     error instanceof SalesValidationError
+    || error instanceof ExpensesValidationError
   ) {
     return reply.status(400).send(errorBody(error.code, error.message));
   }

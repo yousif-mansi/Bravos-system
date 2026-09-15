@@ -33,6 +33,7 @@ test("apply, down the latest migration, and reapply works with multiple migratio
       "007_sales_pos_snapshot.sql",
       "008_sales_money_ranges.sql",
       "009_sales_sync_ack.sql",
+      "010_expenses.sql",
     ]);
     expect(await listAppliedMigrations(pool)).toEqual(first);
     expect(await tableNames(pool)).toEqual(
@@ -45,11 +46,15 @@ test("apply, down the latest migration, and reapply works with multiple migratio
         "receiving_receipt",
         "inventory_allocation",
         "sales_sale",
+        "expense_category",
+        "expense_operation",
+        "expense_record",
+        "expense_change",
       ]),
     );
 
     const reverted = await revertLastMigration(pool);
-    expect(reverted).toBe("009_sales_sync_ack.sql");
+    expect(reverted).toBe("010_expenses.sql");
     expect(await listAppliedMigrations(pool)).toEqual([
       "001_identity.sql",
       "002_catalog.sql",
@@ -59,6 +64,7 @@ test("apply, down the latest migration, and reapply works with multiple migratio
       "006_sales.sql",
       "007_sales_pos_snapshot.sql",
       "008_sales_money_ranges.sql",
+      "009_sales_sync_ack.sql",
     ]);
     const afterDown = await tableNames(pool);
     expect(afterDown).toEqual(
@@ -75,14 +81,17 @@ test("apply, down the latest migration, and reapply works with multiple migratio
     );
     expect(await columnType(pool, "sales_sale", "final_total_piasters")).toBe("bigint");
     expect(await columnExists(pool, "sales_sale_unit", "quantity")).toBe(true);
-    expect(await columnExists(pool, "sales_sale", "recovered_by_staff_id")).toBe(false);
-    expect(afterDown).not.toContain("inventory_stock_clock");
+    expect(await columnExists(pool, "sales_sale", "recovered_by_staff_id")).toBe(true);
+    expect(afterDown).toContain("inventory_stock_clock");
+    expect(afterDown).not.toContain("expense_record");
+    expect(afterDown).not.toContain("expense_change");
+    expect(afterDown).not.toContain("expense_operation");
 
     const reapplied = await applyMigrations(pool);
-    expect(reapplied).toEqual(["009_sales_sync_ack.sql"]);
+    expect(reapplied).toEqual(["010_expenses.sql"]);
     expect(await listAppliedMigrations(pool)).toEqual(first);
     expect(await tableNames(pool)).toEqual(
-      expect.arrayContaining(["user", "staff_profile", "catalog_product", "inventory_batch", "receiving_receipt", "sales_sale", "sales_pos_snapshot"]),
+      expect.arrayContaining(["user", "staff_profile", "catalog_product", "inventory_batch", "receiving_receipt", "sales_sale", "sales_pos_snapshot", "expense_record", "expense_change", "expense_operation"]),
     );
     expect(await columnType(pool, "sales_sale", "final_total_piasters")).toBe("bigint");
     expect(await columnExists(pool, "sales_sale_unit", "quantity")).toBe(true);
@@ -98,6 +107,7 @@ test("apply, down the latest migration, and reapply works with multiple migratio
       fullyReverted.push(id);
     }
     expect(fullyReverted).toEqual([
+      "010_expenses.sql",
       "009_sales_sync_ack.sql",
       "008_sales_money_ranges.sql",
       "007_sales_pos_snapshot.sql",
@@ -221,7 +231,10 @@ test("008 down expands counted unit ranges into one legacy row per ordinal", asy
     );
     expect(before.rows).toEqual([{ unit_index: 0, quantity: 2, paid_piasters: 99 }]);
 
+    expect(await revertLastMigration(pool)).toBe("010_expenses.sql");
     expect(await revertLastMigration(pool)).toBe("009_sales_sync_ack.sql");
+    expect(await columnExists(pool, "sales_sale", "recovered_by_staff_id")).toBe(false);
+    expect(await tableNames(pool)).not.toContain("inventory_stock_clock");
     expect(await revertLastMigration(pool)).toBe("008_sales_money_ranges.sql");
     expect(await columnExists(pool, "sales_sale_unit", "quantity")).toBe(false);
     const expanded = await pool.query<{ unit_index: number; paid_piasters: number }>(
@@ -232,7 +245,7 @@ test("008 down expands counted unit ranges into one legacy row per ordinal", asy
       { unit_index: 1, paid_piasters: 99 },
     ]);
 
-    expect(await applyMigrations(pool)).toEqual(["008_sales_money_ranges.sql", "009_sales_sync_ack.sql"]);
+    expect(await applyMigrations(pool)).toEqual(["008_sales_money_ranges.sql", "009_sales_sync_ack.sql", "010_expenses.sql"]);
     const restored = await pool.query<{ unit_index: number; quantity: number; paid_piasters: number }>(
       `SELECT unit_index, quantity, paid_piasters FROM sales_sale_unit ORDER BY unit_index`,
     );

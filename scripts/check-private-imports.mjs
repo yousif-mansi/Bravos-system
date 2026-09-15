@@ -25,6 +25,11 @@ const forbidden = [
   },
   {
     from: ["apps/internal", "apps/storefront", "packages/contracts"],
+    pattern: /@bravos\/expenses(?:\/node)?/,
+    message: "Frontend/contracts cannot import the expenses package.",
+  },
+  {
+    from: ["apps/internal", "apps/storefront", "packages/contracts"],
     pattern: /@bravos\/sales(?!\/browser)/,
     message: "Frontend/contracts cannot import server sales adapters; use @bravos/sales/browser.",
   },
@@ -54,12 +59,17 @@ const forbidden = [
     message: "Deep sales imports are not part of the public interface.",
   },
   {
-    from: ["packages/identity/src/domain", "packages/identity/src/application", "packages/catalog/src/domain", "packages/catalog/src/application", "packages/inventory/src/domain", "packages/inventory/src/application", "packages/receiving/src/domain", "packages/receiving/src/application", "packages/sales/src/domain", "packages/sales/src/application"],
+    from: ["apps", "packages"],
+    pattern: /@bravos\/expenses\/src\//,
+    message: "Deep expenses imports are not part of the public interface.",
+  },
+  {
+    from: ["packages/identity/src/domain", "packages/identity/src/application", "packages/catalog/src/domain", "packages/catalog/src/application", "packages/inventory/src/domain", "packages/inventory/src/application", "packages/receiving/src/domain", "packages/receiving/src/application", "packages/sales/src/domain", "packages/sales/src/application", "packages/expenses/src/domain", "packages/expenses/src/application"],
     pattern: /from ["'](better-auth|fastify|pg|react|next|vite|dexie)/,
     message: "Inner feature layers cannot import infrastructure SDKs.",
   },
   {
-    from: ["packages/identity/src/domain", "packages/identity/src/application", "packages/catalog/src/domain", "packages/catalog/src/application", "packages/inventory/src/domain", "packages/inventory/src/application", "packages/receiving/src/domain", "packages/receiving/src/application", "packages/sales/src/domain", "packages/sales/src/application"],
+    from: ["packages/identity/src/domain", "packages/identity/src/application", "packages/catalog/src/domain", "packages/catalog/src/application", "packages/inventory/src/domain", "packages/inventory/src/application", "packages/receiving/src/domain", "packages/receiving/src/application", "packages/sales/src/domain", "packages/sales/src/application", "packages/expenses/src/domain", "packages/expenses/src/application"],
     pattern: /\bHeaders\b/,
     message: "Application/domain cannot depend on HTTP Headers.",
   },
@@ -85,28 +95,33 @@ const forbidden = [
   },
   {
     from: ["packages/identity"],
-    pattern: /@bravos\/(catalog|inventory|receiving|sales)/,
-    message: "Identity cannot import catalog, inventory, receiving or sales.",
+    pattern: /@bravos\/(catalog|inventory|receiving|sales|expenses)/,
+    message: "Identity cannot import catalog, inventory, receiving, sales or expenses.",
   },
   {
     from: ["packages/catalog"],
-    pattern: /@bravos\/(inventory|receiving|sales)/,
-    message: "Catalog cannot import inventory, receiving or sales.",
+    pattern: /@bravos\/(inventory|receiving|sales|expenses)/,
+    message: "Catalog cannot import inventory, receiving, sales or expenses.",
   },
   {
     from: ["packages/inventory"],
-    pattern: /@bravos\/(catalog|receiving|sales)/,
-    message: "Inventory cannot import catalog, receiving or sales.",
+    pattern: /@bravos\/(catalog|receiving|sales|expenses)/,
+    message: "Inventory cannot import catalog, receiving, sales or expenses.",
   },
   {
     from: ["packages/receiving"],
-    pattern: /@bravos\/catalog/,
-    message: "Receiving cannot import the catalog package.",
+    pattern: /@bravos\/(catalog|expenses)/,
+    message: "Receiving cannot import the catalog or expenses package.",
   },
   {
     from: ["packages/sales"],
-    pattern: /@bravos\/(catalog|receiving)/,
-    message: "Sales cannot import the catalog or receiving packages.",
+    pattern: /@bravos\/(catalog|receiving|expenses)/,
+    message: "Sales cannot import the catalog, receiving or expenses packages.",
+  },
+  {
+    from: ["packages/expenses"],
+    pattern: /@bravos\/(catalog|inventory|receiving|sales)/,
+    message: "Expenses cannot import catalog, inventory, receiving or sales.",
   },
 ];
 

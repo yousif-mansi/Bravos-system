@@ -251,6 +251,58 @@ export type ManagerSaleDto = SaleDto & {
   recoveredAt: string | null;
 };
 
+export type ExpenseCategoryDto = {
+  id: string;
+  nameAr: string;
+  active: boolean;
+  changedByStaffId: string;
+  changedAt: string;
+};
+
+export type ExpenseValueDto = {
+  amountPiasters: number;
+  expenseDate: string;
+  category: { id: string; nameAr: string };
+  description: string;
+};
+
+export type ExpenseChangeDto = {
+  id: string;
+  operationId: string;
+  type: "correction" | "cancellation";
+  revision: number;
+  reason: string;
+  changedByStaffId: string;
+  changedByDisplayName: string;
+  changedAt: string;
+  previous: ExpenseValueDto;
+  effective: ExpenseValueDto | null;
+};
+
+export type ExpenseDto = {
+  id: string;
+  operationId: string;
+  branch: BranchDto;
+  createdByStaffId: string;
+  createdByDisplayName: string;
+  recordedAt: string;
+  revision: number;
+  status: "active" | "cancelled";
+  original: ExpenseValueDto;
+  effective: ExpenseValueDto | null;
+  changes: ExpenseChangeDto[];
+};
+
+export type ExpenseTotalsDto = {
+  totalPiasters: number;
+  activeExpenseCount: number;
+  byBranch: Array<{
+    branch: BranchDto;
+    totalPiasters: number;
+    activeExpenseCount: number;
+  }>;
+};
+
 export type StaffChangeDto = {
   operation: "provision" | "reset_password" | "disable" | "replace_grants";
   actorStaffId: string | null;

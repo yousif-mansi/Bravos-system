@@ -148,6 +148,23 @@ button.danger { background: var(--danger); }
   padding: 0.9rem;
 }
 
+.expense-layout,
+.expense-details,
+.category-list {
+  margin-top: 1rem;
+}
+
+.expense-total {
+  font-size: 1.6rem;
+  font-weight: 800;
+}
+
+.history-item {
+  border-inline-start: 4px solid var(--accent);
+  padding-inline-start: 0.8rem;
+  margin-bottom: 0.8rem;
+}
+
 .checkboxes {
   display: flex;
   gap: 1rem;

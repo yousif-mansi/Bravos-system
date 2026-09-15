@@ -291,6 +291,9 @@ export function WorkspacePage({
           {workspace.activeBranch ? (
             <Link className="button secondary" to="/sales">المبيعات</Link>
           ) : null}
+          {online && workspace.activeBranch ? (
+            <Link className="button secondary" to="/expenses">المصروفات</Link>
+          ) : null}
           <button className="secondary" type="button" onClick={() => void logout()}>
             تسجيل الخروج
           </button>

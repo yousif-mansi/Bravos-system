@@ -21,6 +21,7 @@ const CatalogPage = lazy(() => import("./pages/CatalogPage.tsx"));
 const LookupPage = lazy(() => import("./pages/LookupPage.tsx"));
 const ReceivingPage = lazy(() => import("./pages/ReceivingPage.tsx"));
 const SalesPage = lazy(() => import("./pages/SalesPage.tsx"));
+const ExpensesPage = lazy(() => import("./pages/ExpensesPage.tsx"));
 
 export function App() {
   const location = useLocation();
@@ -415,6 +416,18 @@ export function App() {
             workspace?.activeBranch ? (
               <Suspense fallback={<main className="shell">جارٍ التحميل…</main>}>
                 <SalesPage workspace={workspace} onChanged={replaceWorkspace} />
+              </Suspense>
+            ) : (
+              <Navigate to={workspace ? "/select-branch" : "/login"} replace />
+            )
+          }
+        />
+        <Route
+          path="/expenses"
+          element={
+            workspace?.activeBranch ? (
+              <Suspense fallback={<main className="shell">جارٍ التحميل…</main>}>
+                <ExpensesPage workspace={workspace} onChanged={replaceWorkspace} />
               </Suspense>
             ) : (
               <Navigate to={workspace ? "/select-branch" : "/login"} replace />

@@ -54,12 +54,21 @@ module.exports = {
       },
     },
     {
+      name: "expenses-domain-inward-only",
+      comment: "Expenses domain must not import application, adapters, UI or infrastructure.",
+      severity: "error",
+      from: { path: "^packages/expenses/src/domain" },
+      to: {
+        path: "(packages/expenses/src/(application|adapters)|packages/(catalog|inventory|receiving|sales)|apps/|better-auth|fastify|react|next|vite|pg)",
+      },
+    },
+    {
       name: "application-inward-only",
       comment: "Application use cases depend inward, not on Fastify, pg, React or Better Auth.",
       severity: "error",
-      from: { path: "^packages/(identity|catalog|inventory|receiving|sales)/src/application" },
+      from: { path: "^packages/(identity|catalog|inventory|receiving|sales|expenses)/src/application" },
       to: {
-        path: "(packages/(identity|catalog|inventory|receiving|sales)/src/adapters|apps/|better-auth|fastify|react|next|vite|\\bpg\\b|dexie)",
+        path: "(packages/(identity|catalog|inventory|receiving|sales|expenses)/src/adapters|apps/|better-auth|fastify|react|next|vite|\\bpg\\b|dexie)",
       },
     },
     {
@@ -68,7 +77,7 @@ module.exports = {
       severity: "error",
       from: { path: "^packages/contracts" },
       to: {
-        path: "(packages/identity|packages/catalog|packages/inventory|packages/receiving|packages/sales|apps/|better-auth|fastify|pg|react|next)",
+        path: "(packages/identity|packages/catalog|packages/inventory|packages/receiving|packages/sales|packages/expenses|apps/|better-auth|fastify|pg|react|next)",
       },
     },
     {
@@ -77,7 +86,7 @@ module.exports = {
       severity: "error",
       from: { path: "^apps/internal" },
       to: {
-        path: "(packages/identity|packages/catalog|packages/inventory|packages/receiving|packages/sales/src/(index|node)\\.ts|packages/sales/src/application/sales\\.ts|packages/sales/src/adapters/postgres-sales\\.ts|packages/sales/src/domain/fingerprint\\.ts|packages/persistence|apps/api|better-auth|fastify|\\bpg\\b)",
+        path: "(packages/identity|packages/catalog|packages/inventory|packages/receiving|packages/expenses|packages/sales/src/(index|node)\\.ts|packages/sales/src/application/sales\\.ts|packages/sales/src/adapters/postgres-sales\\.ts|packages/sales/src/domain/fingerprint\\.ts|packages/persistence|apps/api|better-auth|fastify|\\bpg\\b)",
       },
     },
     {
@@ -125,6 +134,13 @@ module.exports = {
       to: { path: "^packages/sales/src/(domain|application|adapters)/" },
     },
     {
+      name: "no-private-expenses-imports",
+      comment: "Cross-package imports must use the expenses public interface.",
+      severity: "error",
+      from: { pathNot: "^packages/expenses/src" },
+      to: { path: "^packages/expenses/src/(domain|application|adapters)/" },
+    },
+    {
       name: "identity-does-not-import-catalog",
       comment: "Identity must not depend on catalog.",
       severity: "error",
@@ -136,35 +152,42 @@ module.exports = {
       comment: "Identity must not depend on inventory, receiving or sales.",
       severity: "error",
       from: { path: "^packages/identity" },
-      to: { path: "^packages/(inventory|receiving|sales)" },
+      to: { path: "^packages/(inventory|receiving|sales|expenses)" },
     },
     {
       name: "catalog-does-not-import-inventory-or-receiving",
       comment: "Catalog depends on availability/reference ports, not inventory or receiving packages.",
       severity: "error",
       from: { path: "^packages/catalog" },
-      to: { path: "^packages/(inventory|receiving|sales)" },
+      to: { path: "^packages/(inventory|receiving|sales|expenses)" },
     },
     {
       name: "inventory-does-not-import-receiving-or-catalog",
       comment: "Inventory must not depend on receiving or catalog packages.",
       severity: "error",
       from: { path: "^packages/inventory" },
-      to: { path: "^packages/(receiving|catalog|sales)" },
+      to: { path: "^packages/(receiving|catalog|sales|expenses)" },
     },
     {
       name: "receiving-does-not-import-catalog",
       comment: "Receiving uses a catalog identity port at composition, not the catalog package.",
       severity: "error",
       from: { path: "^packages/receiving" },
-      to: { path: "^packages/(catalog|sales)" },
+      to: { path: "^packages/(catalog|sales|expenses)" },
     },
     {
       name: "sales-does-not-import-catalog",
       comment: "Sales uses a listed-price port at composition, not the catalog package.",
       severity: "error",
       from: { path: "^packages/sales" },
-      to: { path: "^packages/(catalog|receiving)" },
+      to: { path: "^packages/(catalog|receiving|expenses)" },
+    },
+    {
+      name: "expenses-does-not-import-other-business-features",
+      comment: "Expenses uses identity and its own persistence port without reaching into other business features.",
+      severity: "error",
+      from: { path: "^packages/expenses" },
+      to: { path: "^packages/(catalog|inventory|receiving|sales)" },
     },
   ],
   options: {

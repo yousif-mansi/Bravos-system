@@ -32,7 +32,7 @@ export default defineConfig({
       },
       injectManifest: {
         globPatterns: ["**/*.{js,css,html,svg,ico,woff2,webmanifest}"],
-        globIgnores: ["**/staff-management-*.js", "**/catalog-maintenance-*.js", "**/receiving-stock-*.js"],
+        globIgnores: ["**/staff-management-*.js", "**/catalog-maintenance-*.js", "**/receiving-stock-*.js", "**/expenses-online-*.js"],
       },
       workbox: {
         skipWaiting: false,
@@ -70,6 +70,9 @@ export default defineConfig({
             }
             if (/SalesPage\.[cm]?[jt]sx?$/.test(chunk.facadeModuleId)) {
               return "assets/cashier-sales-[hash].js";
+            }
+            if (/ExpensesPage\.[cm]?[jt]sx?$/.test(chunk.facadeModuleId)) {
+              return "assets/expenses-online-[hash].js";
             }
           }
           return "assets/[name]-[hash].js";

@@ -2,6 +2,9 @@ import type {
   CashierProductLookupDto,
   CategoryDto,
   ColorDto,
+  ExpenseCategoryDto,
+  ExpenseDto,
+  ExpenseTotalsDto,
   InventoryBatchDto,
   InventorySettingsDto,
   LowStockVariantDto,
@@ -357,6 +360,76 @@ export async function lookupSaleOperation(operationId: string): Promise<SaleDto 
     if (caught instanceof ApiError && caught.status === 404) {
       return null;
     }
+    throw caught;
+  }
+}
+
+export function listExpenseCategories() {
+  return request<ExpenseCategoryDto[]>("/api/internal/expense-categories");
+}
+
+export function createExpenseCategory(nameAr: string) {
+  return request<ExpenseCategoryDto>("/api/internal/expense-categories", {
+    method: "POST",
+    body: JSON.stringify({ nameAr }),
+  });
+}
+
+export function updateExpenseCategory(categoryId: string, input: { nameAr: string; active: boolean }) {
+  return request<ExpenseCategoryDto>(`/api/internal/expense-categories/${categoryId}`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
+export type ExpenseWrite = {
+  operationId: string;
+  amountPiasters: number;
+  expenseDate: string;
+  categoryId: string;
+  description: string;
+};
+
+export function createExpense(input: ExpenseWrite) {
+  return request<ExpenseDto>("/api/internal/expenses", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function listExpenses() {
+  return request<ExpenseDto[]>("/api/internal/expenses");
+}
+
+export function getExpense(expenseId: string) {
+  return request<ExpenseDto>(`/api/internal/expenses/${expenseId}`);
+}
+
+export function getExpenseTotals() {
+  return request<ExpenseTotalsDto>("/api/internal/expenses/totals");
+}
+
+export function changeExpense(expenseId: string, input: {
+  operationId: string;
+  expectedRevision: number;
+  type: "correction" | "cancellation";
+  reason: string;
+  amountPiasters?: number;
+  expenseDate?: string;
+  categoryId?: string;
+  description?: string;
+}) {
+  return request<ExpenseDto>(`/api/internal/expenses/${expenseId}/changes`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function lookupExpenseOperation(operationId: string): Promise<ExpenseDto | null> {
+  try {
+    return await request<ExpenseDto>(`/api/internal/expenses/operations/${operationId}`);
+  } catch (caught) {
+    if (caught instanceof ApiError && caught.status === 404) return null;
     throw caught;
   }
 }
