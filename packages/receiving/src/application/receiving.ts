@@ -77,6 +77,7 @@ export function createReceivingServices(ports: {
       const command = parseReceiptWrite(input);
 
       const outcome = await ports.uow.run(async (tx) => {
+        await tx.inventory.lockStockClock("update");
         const claimed = await tx.inventory.claimReceiveOperation({
           operationId: command.operationId,
           payload: { receiptDate: command.receiptDate, lines: command.lines },
@@ -129,6 +130,7 @@ export function createReceivingServices(ports: {
           recordedAt: claimed.recordedAt,
           lines,
         });
+        await tx.inventory.bumpStockVersion();
         return { record, created: true };
       });
       return { receipt: await hydrate(outcome.record), created: outcome.created };

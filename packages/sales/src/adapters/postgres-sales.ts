@@ -1,3 +1,4 @@
+import type { CompletedOperationProofDto } from "@bravos/contracts";
 import type { Pool, PoolClient } from "pg";
 import { OperationConflictError, type InventoryTransaction } from "@bravos/inventory";
 import type {
@@ -12,6 +13,8 @@ import type {
 } from "../application/ports.ts";
 
 type Queryable = Pick<Pool, "query"> | PoolClient;
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 type SaleRow = {
   id: string;
@@ -31,6 +34,8 @@ type SaleRow = {
   payload_fingerprint: string;
   physically_completed: boolean;
   costs_incomplete: boolean;
+  recovered_by_staff_id: string | null;
+  recovered_at: Date | null;
 };
 
 type LineRow = {
@@ -75,9 +80,9 @@ export function createPostgresSaleStore(queryable: Queryable): SaleStore {
              id, operation_id, branch_id, sold_by_staff_id, sold_by_display_name, discounted_by_staff_id,
              occurred_at, recorded_at, customer_name, customer_phone, original_total_piasters,
              employee_discount_piasters, discount_reason, final_total_piasters, payload_fingerprint,
-             physically_completed, costs_incomplete
+             physically_completed, costs_incomplete, recovered_by_staff_id, recovered_at
            ) VALUES (
-             $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
+             $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19
            ) ON CONFLICT (id) DO NOTHING
            RETURNING id`,
           [
@@ -98,6 +103,8 @@ export function createPostgresSaleStore(queryable: Queryable): SaleStore {
             input.payloadFingerprint,
             input.physicallyCompleted,
             input.costsIncomplete,
+            input.recoveredByStaffId ?? null,
+            input.recoveredAt ?? null,
           ],
         );
         if (!inserted.rows[0]) {
@@ -127,9 +134,18 @@ export function createPostgresSaleStore(queryable: Queryable): SaleStore {
     async updateCompletion(input) {
       await queryable.query(
         `UPDATE sales_sale
-         SET occurred_at = $2, recorded_at = $3, physically_completed = true, costs_incomplete = $4
+         SET occurred_at = $2, recorded_at = $3, physically_completed = true, costs_incomplete = $4,
+             recovered_by_staff_id = COALESCE($5, recovered_by_staff_id),
+             recovered_at = COALESCE($6, recovered_at)
          WHERE id = $1`,
-        [input.id, input.occurredAt, input.recordedAt, input.costsIncomplete],
+        [
+          input.id,
+          input.occurredAt,
+          input.recordedAt,
+          input.costsIncomplete,
+          input.recoveredByStaffId ?? null,
+          input.recoveredAt ?? null,
+        ],
       );
       for (const line of input.lines) {
         await queryable.query(
@@ -148,6 +164,13 @@ export function createPostgresSaleStore(queryable: Queryable): SaleStore {
 
     getById: (id) => loadById(queryable, id),
     getByOperationId: (operationId) => loadByOperationId(queryable, operationId),
+    async listCompletedOperationProofs(operationIds) {
+      return loadCompletedProofs(queryable, operationIds);
+    },
+    async listCompletedOperationIds(operationIds) {
+      const proofs = await loadCompletedProofs(queryable, operationIds);
+      return proofs.map((proof) => proof.operationId);
+    },
     async listCompleted() {
       return loadMany(
         queryable,
@@ -250,6 +273,30 @@ async function insertUnit(queryable: Queryable, saleId: string, lineId: string, 
   );
 }
 
+async function loadCompletedProofs(queryable: Queryable, operationIds: string[]): Promise<CompletedOperationProofDto[]> {
+  const unique = [...new Set(operationIds.filter((id) => UUID_PATTERN.test(id)))];
+  if (unique.length === 0) {
+    return [];
+  }
+  const result = await queryable.query<{
+    id: string;
+    operation_id: string;
+    payload_fingerprint: string;
+  }>(
+    `SELECT id, operation_id, payload_fingerprint
+     FROM sales_sale
+     WHERE physically_completed = true AND operation_id = ANY($1::uuid[])`,
+    [unique],
+  );
+  return result.rows
+    .filter((row) => typeof row.payload_fingerprint === "string" && /^[0-9a-f]{64}$/i.test(row.payload_fingerprint))
+    .map((row) => ({
+      operationId: row.operation_id,
+      saleId: row.id,
+      contentDigest: row.payload_fingerprint,
+    }));
+}
+
 async function loadById(queryable: Queryable, id: string): Promise<SaleRecord | null> {
   const result = await queryable.query<SaleRow>(`SELECT * FROM sales_sale WHERE id = $1`, [id]);
   const row = result.rows[0];
@@ -344,6 +391,8 @@ function toSale(row: SaleRow, lines: SaleLineWrite[]): SaleRecord {
     payloadFingerprint: row.payload_fingerprint,
     physicallyCompleted: row.physically_completed,
     costsIncomplete: row.costs_incomplete,
+    recoveredByStaffId: row.recovered_by_staff_id,
+    recoveredAt: row.recovered_at,
     lines,
   };
 }

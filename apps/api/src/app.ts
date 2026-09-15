@@ -484,7 +484,15 @@ async function registerRoutes(
     return handle(reply, async () => {
       const result = await sales.acceptOffline(await verifiedAuth(identity, request), request.body);
       reply.status(result.created ? 201 : 200);
-      return result.sale;
+      return { ...result.sale, acknowledgement: result.acknowledgement };
+    });
+  });
+
+  app.post("/api/internal/sales/recover", async (request, reply) => {
+    return handle(reply, async () => {
+      const result = await sales.recoverOffline(await verifiedAuth(identity, request), request.body);
+      reply.status(result.created ? 201 : 200);
+      return { ...result.sale, acknowledgement: result.acknowledgement };
     });
   });
 
@@ -492,7 +500,7 @@ async function registerRoutes(
     return handle(reply, async () => {
       const result = await sales.complete(await verifiedAuth(identity, request), request.body);
       reply.status(result.created ? 201 : 200);
-      return result.sale;
+      return { ...result.sale, acknowledgement: result.acknowledgement };
     });
   });
 

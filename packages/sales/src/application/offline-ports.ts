@@ -1,4 +1,12 @@
-import type { BranchDto, CashierProductLookupDto, PosPriceSnapshotDto, SaleDto, WorkspaceDto } from "@bravos/contracts";
+import type {
+  BranchDto,
+  CashierProductLookupDto,
+  CompletedOperationProofDto,
+  PosPriceSnapshotDto,
+  SaleAcknowledgementDto,
+  SaleDto,
+  WorkspaceDto,
+} from "@bravos/contracts";
 
 export type OfflineSaleKind = "accepted" | "connected";
 
@@ -45,6 +53,7 @@ export type OfflineCompletedSale = {
   discountedByStaffId: string | null;
   finalTotalPiasters: number;
   physicallyCompleted: true;
+  payloadFingerprint: string | null;
   lines: OfflineSaleLine[];
 };
 
@@ -120,6 +129,25 @@ export type SessionTransition = {
   expectedRevision: string | null;
 };
 
+export type DeviceStockCache = {
+  version: number;
+  availability: Record<string, number>;
+  includedOperationIds: string[];
+};
+
+export type OfflineAcknowledgement = SaleAcknowledgementDto & {
+  sales?: Array<
+    Pick<SaleDto, "id" | "operationId" | "recordedAt" | "soldByStaffId" | "finalTotalPiasters" | "lines" | "discrepancy">
+  >;
+};
+
+export type { CompletedOperationProofDto };
+
+export type OtherPendingQueue = {
+  staffId: string;
+  pendingCount: number;
+};
+
 export type OfflinePosStore = {
   deviceId(): Promise<string>;
   rememberSession(workspace: WorkspaceDto, transition?: SessionTransition): Promise<boolean>;
@@ -137,6 +165,7 @@ export type OfflinePosStore = {
       lines: OfflineCompletedSale["lines"];
       originalTotalPiasters: number;
       finalTotalPiasters: number;
+      payloadFingerprint: string;
     },
   ): Promise<OfflineCompletedSale>;
   recordCompleted(
@@ -146,6 +175,12 @@ export type OfflinePosStore = {
   listUnsynced(staffId: string): Promise<OfflineCompletedSale[]>;
   listCompleted(staffId: string): Promise<OfflineCompletedSale[]>;
   markAcknowledged(staffId: string, saleId: string): Promise<void>;
+  applyAcknowledgement(input: OfflineAcknowledgement): Promise<void>;
+  countOtherPending(staffId: string): Promise<number>;
+  listPreservedPending(staffId: string): Promise<OfflineCompletedSale[]>;
+  listPendingOperationIds(): Promise<string[]>;
+  readStockVersion(): Promise<number>;
+  readStockCache(): Promise<DeviceStockCache>;
   loadPending(staffId: string): Promise<OfflinePendingSale | null>;
   listRecoverablePending(staffId: string): Promise<OfflinePendingSale[]>;
   savePending(pending: OfflinePendingSale): Promise<"assigned" | "blocked">;

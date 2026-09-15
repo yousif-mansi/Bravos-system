@@ -12,6 +12,7 @@ import {
   type OfflineSaleKind,
   type SessionTransition,
 } from "@bravos/sales/browser";
+import { ApiError, type SyncedSaleDto } from "./api.ts";
 
 const store = createDexiePosStore();
 export const pos: OfflinePosServices = createOfflinePosServices(store);
@@ -34,9 +35,17 @@ export function saleFromOffline(record: OfflineCompletedSale): SaleDto {
     discountedByStaffId: record.discountedByStaffId,
     finalTotalPiasters: record.finalTotalPiasters,
     physicallyCompleted: true,
-    discrepancy: null,
+    discrepancy: discrepancyFromLines(record.lines),
     lines: record.lines,
   };
+}
+
+function discrepancyFromLines(lines: OfflineCompletedSale["lines"]): SaleDto["discrepancy"] {
+  const unallocatedQuantity = lines.reduce((sum, line) => sum + line.unallocatedQuantity, 0);
+  if (unallocatedQuantity <= 0) {
+    return null;
+  }
+  return { unallocatedQuantity, messageAr: "لم تُخصص كل الكمية من المخزون المسجّل." };
 }
 
 export function offlineFromQuote(input: {
@@ -68,6 +77,7 @@ export function offlineFromQuote(input: {
     discountedByStaffId: input.quote.discountedByStaffId,
     finalTotalPiasters: input.quote.finalTotalPiasters,
     physicallyCompleted: true,
+    payloadFingerprint: null,
     lines: input.quote.lines.map((line) => ({
       id: line.id,
       variantId: line.variantId,
@@ -112,21 +122,74 @@ export async function cacheIssuedSnapshot(staffId: string, snapshot: PosPriceSna
   await pos.saveSnapshot(staffId, snapshot);
 }
 
+export function syncOutcomeMessage(error: unknown): string {
+  if (error instanceof ApiError && error.status === 401) {
+    return "انتهت الجلسة أو أُلغي الدخول. سجّل الدخول مجدداً. المبيعات المكتملة محفوظة.";
+  }
+  if (error instanceof ApiError && error.status === 403) {
+    return "لا يمكن بدء عمل متصل جديد بهذا الحساب. المبيعات المكتملة محفوظة ويمكن استردادها بمساعدة المدير.";
+  }
+  if (error instanceof PosStorageError) {
+    return error.message;
+  }
+  if (error instanceof ApiError) {
+    return error.messageAr;
+  }
+  return "تعذر مزامنة المبيعات. أعد المحاولة عند الاتصال.";
+}
+
+export async function applySyncedSale(local: OfflineCompletedSale, synced: SyncedSaleDto): Promise<void> {
+  if (
+    synced.id !== local.id ||
+    synced.finalTotalPiasters !== local.finalTotalPiasters ||
+    synced.soldByStaffId !== local.soldByStaffId
+  ) {
+    throw new PosStorageError("تعذر مطابقة البيع المزامن مع السجل المحلي.");
+  }
+  if (!synced.acknowledgement) {
+    throw new PosStorageError("تعذر تأكيد المزامنة.");
+  }
+  await pos.applyAcknowledgement({
+    acknowledgedOperationIds: synced.acknowledgement.acknowledgedOperationIds,
+    stockVersion: synced.acknowledgement.stockVersion,
+    includedOperationIds: synced.acknowledgement.includedOperationIds,
+    includedOperations: synced.acknowledgement.includedOperations ?? [],
+    availability: synced.acknowledgement.availability,
+    sales: [
+      {
+        id: synced.id,
+        operationId: synced.operationId,
+        recordedAt: synced.recordedAt,
+        soldByStaffId: synced.soldByStaffId,
+        finalTotalPiasters: synced.finalTotalPiasters,
+        discrepancy: synced.discrepancy,
+        lines: synced.lines,
+      },
+    ],
+  });
+}
+
+export async function pendingOperationIds(): Promise<string[]> {
+  return pos.listPendingOperationIds();
+}
+
 export async function retryUnsyncedSales(
   staffId: string,
   sync: {
-    accept: (sale: OfflineCompletedSale) => Promise<SaleDto>;
-    complete: (sale: OfflineCompletedSale) => Promise<SaleDto>;
+    accept: (sale: OfflineCompletedSale) => Promise<SyncedSaleDto>;
+    complete: (sale: OfflineCompletedSale) => Promise<SyncedSaleDto>;
   },
   stillCurrent?: () => boolean,
-): Promise<void> {
+): Promise<{ synced: number; remaining: number; error: string }> {
   if (stillCurrent && !stillCurrent()) {
-    return;
+    return { synced: 0, remaining: 0, error: "" };
   }
   const rows = await pos.listUnsynced(staffId);
+  let syncedCount = 0;
+  let error = "";
   for (const local of rows) {
     if (stillCurrent && !stillCurrent()) {
-      return;
+      break;
     }
     if (local.staffId !== staffId) {
       continue;
@@ -137,15 +200,109 @@ export async function retryUnsyncedSales(
           ? await sync.accept(local)
           : await sync.complete(local);
       if (stillCurrent && !stillCurrent()) {
-        return;
+        break;
       }
-      if (synced.id === local.id && synced.finalTotalPiasters === local.finalTotalPiasters && synced.soldByStaffId === local.soldByStaffId) {
-        await pos.markAcknowledged(staffId, local.id);
-      }
-    } catch {
-      /* retain unacknowledged */
+      await applySyncedSale(local, synced);
+      syncedCount += 1;
+    } catch (caught) {
+      error = syncOutcomeMessage(caught);
+      break;
     }
   }
+  const remaining = stillCurrent && !stillCurrent() ? rows.length - syncedCount : (await pos.listUnsynced(staffId)).length;
+  return { synced: syncedCount, remaining, error };
+}
+
+export async function recoverPreservedQueues(
+  managerStaffId: string,
+  recover: (sale: OfflineCompletedSale) => Promise<SyncedSaleDto>,
+  stillCurrent?: () => boolean,
+): Promise<{ recovered: number; remaining: number; error: string }> {
+  if (stillCurrent && !stillCurrent()) {
+    return { recovered: 0, remaining: 0, error: "" };
+  }
+  try {
+    const result = await pos.recoverPreservedQueues(managerStaffId, async (sale) => {
+      if (stillCurrent && !stillCurrent()) {
+        throw new Error("stale-account");
+      }
+      const synced = await recover(sale);
+      if (stillCurrent && !stillCurrent()) {
+        throw new Error("stale-account");
+      }
+      if (
+        synced.id !== sale.id ||
+        synced.finalTotalPiasters !== sale.finalTotalPiasters ||
+        synced.soldByStaffId !== sale.soldByStaffId
+      ) {
+        throw new PosStorageError("تعذر مطابقة البيع المزامن مع السجل المحلي.");
+      }
+      return {
+        id: synced.id,
+        operationId: synced.operationId,
+        recordedAt: synced.recordedAt,
+        soldByStaffId: synced.soldByStaffId,
+        finalTotalPiasters: synced.finalTotalPiasters,
+        discrepancy: synced.discrepancy,
+        lines: synced.lines,
+        acknowledgement: synced.acknowledgement,
+      };
+    }, stillCurrent);
+    return { recovered: result.recovered, remaining: result.remaining, error: "" };
+  } catch (caught) {
+    return {
+      recovered: 0,
+      remaining: await pos.countOtherPending(managerStaffId),
+      error: syncOutcomeMessage(caught),
+    };
+  }
+}
+
+export async function acceptedPayload(sale: OfflineCompletedSale) {
+  return {
+    saleId: sale.id,
+    operationId: sale.operationId,
+    deviceId: sale.deviceId,
+    snapshotId: sale.snapshotId ?? "",
+    occurredAt: sale.occurredAt,
+    customerName: sale.customerName,
+    customerPhone: sale.customerPhone,
+    employeeDiscountPiasters: sale.employeeDiscountPiasters,
+    discountReason: sale.discountReason,
+    pendingOperationIds: await pendingOperationIds(),
+    lines: sale.lines.map((line) => ({
+      variantId: line.variantId,
+      quantity: line.quantity,
+      listedUnitPricePiasters: line.listedUnitPricePiasters,
+    })),
+  };
+}
+
+export async function completedPayload(sale: OfflineCompletedSale) {
+  return {
+    saleId: sale.id,
+    operationId: sale.operationId,
+    occurredAt: sale.occurredAt,
+    customerName: sale.customerName,
+    customerPhone: sale.customerPhone,
+    employeeDiscountPiasters: sale.employeeDiscountPiasters,
+    discountReason: sale.discountReason,
+    pendingOperationIds: await pendingOperationIds(),
+    lines: sale.lines.map((line) => ({ variantId: line.variantId, quantity: line.quantity })),
+  };
+}
+
+export async function recoveryPayload(sale: OfflineCompletedSale) {
+  if (sale.kind === "accepted" && sale.snapshotId) {
+    return acceptedPayload(sale);
+  }
+  return {
+    saleId: sale.id,
+    operationId: sale.operationId,
+    deviceId: sale.deviceId,
+    occurredAt: sale.occurredAt,
+    pendingOperationIds: await pendingOperationIds(),
+  };
 }
 
 export { evaluatePosUpdate, isDeclaredSafeMigration, POS_SCHEMA_VERSION };

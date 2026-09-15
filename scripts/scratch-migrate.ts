@@ -35,7 +35,17 @@ try {
       throw new Error("Scratch apply did not create POS price snapshot tables.");
     }
     if (!(await columnExists(pool, "sales_sale_unit", "quantity"))) {
-      throw new Error("Scratch apply did not add the latest sale-unit quantity column.");
+      throw new Error("Scratch apply did not preserve the sale-unit quantity column from migration 008.");
+    }
+    if (!tablesAfterApply.includes("inventory_stock_clock")) {
+      throw new Error("Scratch apply did not create the inventory stock clock from migration 009.");
+    }
+    if (
+      !(await columnExists(pool, "sales_sale", "recovered_by_staff_id")) ||
+      !(await columnExists(pool, "sales_sale", "recovered_at")) ||
+      !(await constraintExists(pool, "sales_sale_recovery_pair"))
+    ) {
+      throw new Error("Scratch apply did not add the sale recovery fields and pairing constraint from migration 009.");
     }
 
     const reverted = await revertLastMigration(pool);
@@ -62,8 +72,16 @@ try {
     if (!tablesAfterDown.includes("receiving_receipt") || !tablesAfterDown.includes("inventory_allocation")) {
       throw new Error("Scratch down removed earlier receiving or allocation tables.");
     }
-    if (await columnExists(pool, "sales_sale_unit", "quantity")) {
-      throw new Error("Scratch down did not remove the latest sale-unit quantity column.");
+    if (!(await columnExists(pool, "sales_sale_unit", "quantity"))) {
+      throw new Error("Scratch down removed the sale-unit quantity column from migration 008.");
+    }
+    if (
+      tablesAfterDown.includes("inventory_stock_clock") ||
+      (await columnExists(pool, "sales_sale", "recovered_by_staff_id")) ||
+      (await columnExists(pool, "sales_sale", "recovered_at")) ||
+      (await constraintExists(pool, "sales_sale_recovery_pair"))
+    ) {
+      throw new Error("Scratch down did not remove the stock clock and sale recovery schema from migration 009.");
     }
 
     const reapplied = await applyMigrations(pool);
@@ -76,7 +94,15 @@ try {
       throw new Error("Scratch reapply did not restore snapshot and sales tables.");
     }
     if (!(await columnExists(pool, "sales_sale_unit", "quantity"))) {
-      throw new Error("Scratch reapply did not restore the latest sale-unit quantity column.");
+      throw new Error("Scratch reapply did not preserve the sale-unit quantity column from migration 008.");
+    }
+    if (
+      !tablesAfterReapply.includes("inventory_stock_clock") ||
+      !(await columnExists(pool, "sales_sale", "recovered_by_staff_id")) ||
+      !(await columnExists(pool, "sales_sale", "recovered_at")) ||
+      !(await constraintExists(pool, "sales_sale_recovery_pair"))
+    ) {
+      throw new Error("Scratch reapply did not restore the stock clock and sale recovery schema from migration 009.");
     }
 
     const fullyReverted: string[] = [];
@@ -157,6 +183,16 @@ async function columnExists(pool: Pool, tableName: string, columnName: string): 
        WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2
      ) AS exists`,
     [tableName, columnName],
+  );
+  return result.rows[0]?.exists === true;
+}
+
+async function constraintExists(pool: Pool, constraintName: string): Promise<boolean> {
+  const result = await pool.query<{ exists: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1 FROM pg_constraint WHERE conname = $1
+     ) AS exists`,
+    [constraintName],
   );
   return result.rows[0]?.exists === true;
 }

@@ -44,6 +44,7 @@ type SettingsRow = {
 export function createPostgresInventoryStore(queryable: Queryable): InventoryReadStore {
   return {
     quantitiesFor: (variantIds) => quantitiesFor(queryable, variantIds),
+    currentStockVersion: () => currentStockVersion(queryable),
     referencedVariantIds: (variantIds) => referencedVariantIds(queryable, variantIds),
     async listBatches() {
       const result = await queryable.query<BatchRow>(
@@ -235,6 +236,9 @@ export function createInventoryTransaction(client: PoolClient): InventoryTransac
       );
       return result.rows.map(toReceivedBatch);
     },
+    lockStockClock: (mode) => lockStockClock(client, mode),
+    bumpStockVersion: () => bumpStockVersion(client),
+    currentStockVersion: () => currentStockVersion(client),
   };
 }
 
@@ -384,6 +388,38 @@ async function listDiscrepancies(queryable: Queryable, operationId: string): Pro
     allocatedQuantity: row.allocated_quantity,
     unallocatedQuantity: row.unallocated_quantity,
   }));
+}
+
+async function lockStockClock(queryable: Queryable, mode: "share" | "update"): Promise<void> {
+  const locking = mode === "update" ? "FOR UPDATE" : "FOR SHARE";
+  const result = await queryable.query(
+    `SELECT version FROM inventory_stock_clock WHERE id = TRUE ${locking}`,
+  );
+  if (!result.rows[0]) {
+    throw new InventoryValidationError("ساعة المخزون غير موجودة.");
+  }
+}
+
+async function bumpStockVersion(queryable: Queryable): Promise<number> {
+  const result = await queryable.query<{ version: string | number }>(
+    `UPDATE inventory_stock_clock SET version = version + 1 WHERE id = TRUE RETURNING version`,
+  );
+  const row = result.rows[0];
+  if (!row) {
+    throw new InventoryValidationError("ساعة المخزون غير موجودة.");
+  }
+  return Number(row.version);
+}
+
+async function currentStockVersion(queryable: Queryable): Promise<number> {
+  const result = await queryable.query<{ version: string | number }>(
+    `SELECT version FROM inventory_stock_clock WHERE id = TRUE`,
+  );
+  const row = result.rows[0];
+  if (!row) {
+    throw new InventoryValidationError("ساعة المخزون غير موجودة.");
+  }
+  return Number(row.version);
 }
 
 async function quantitiesFor(queryable: Queryable, variantIds: string[]): Promise<Map<string, number>> {

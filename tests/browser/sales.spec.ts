@@ -661,14 +661,28 @@ test("two open tabs keep a physically completed marker and save that sale once",
   await page.getByRole("link", { name: "العودة لمساحة العمل" }).click();
   await expect.poll(() => retryStatuses.at(-1) ?? 0).toBe(200);
   await expect(page.getByTestId("unsynced-count")).toContainText("مبيعات غير مزامنة: 0");
-  expect(retryIds).toEqual([originalId]);
+  expect(retryIds.length).toBeGreaterThan(0);
+  expect(retryIds.every((saleId) => saleId === originalId)).toBe(true);
+  expect(retryStatuses.every((status) => status === 200)).toBe(true);
   const listed = await staffApi(page, "GET", "/api/internal/sales");
   const saved = listed.body.filter((sale: { id: string; lines: Array<{ variant: { product: { code: string } } }> }) =>
     sale.lines.some((line) => line.variant.product.code === "TWOTAB-E2E"),
   );
   expect(saved).toHaveLength(1);
   expect(saved[0].id).toBe(originalId);
+  expect(saved[0].operationId).toBe(originalLocal?.operationId);
   expect(saved[0].physicallyCompleted).toBe(true);
+  expect(saved[0].originalTotalPiasters).toBe(16000);
+  expect(saved[0].employeeDiscountPiasters).toBe(0);
+  expect(saved[0].finalTotalPiasters).toBe(16000);
+  expect(saved[0].discrepancy).toBeNull();
+  expect(saved[0].lines).toHaveLength(1);
+  expect(saved[0].lines[0]).toMatchObject({
+    quantity: 1,
+    paidPiasters: 16000,
+    allocatedQuantity: 1,
+    unallocatedQuantity: 0,
+  });
   const lookupAfter = await staffApi(page, "GET", `/api/internal/catalog/lookup?code=${encodeURIComponent("TWOTAB-E2E")}`);
   expect(lookupAfter.body.variants[0].availableQuantity).toBe(4);
   await page2.close();
@@ -817,7 +831,7 @@ test("cart edits during delayed prepare cannot complete a stale quote", async ({
     releasePrepare = resolve;
   });
   const prepareBodies: Array<{ quantity: number; discount: number }> = [];
-  const completeBodies: Array<{ quantity: number; discount: number }> = [];
+  const completeBodies: Array<{ saleId: string; operationId: string; quantity: number; discount: number }> = [];
   await page.route("**/api/internal/sales/prepare", async (route) => {
     if (route.request().method() === "POST") {
       const payload = route.request().postDataJSON() as {
@@ -836,10 +850,14 @@ test("cart edits during delayed prepare cannot complete a stale quote", async ({
     const url = new URL(route.request().url());
     if (route.request().method() === "POST" && url.pathname === "/api/internal/sales") {
       const payload = route.request().postDataJSON() as {
+        saleId: string;
+        operationId: string;
         employeeDiscountPiasters: number;
         lines: Array<{ quantity: number }>;
       };
       completeBodies.push({
+        saleId: payload.saleId,
+        operationId: payload.operationId,
         quantity: payload.lines[0]?.quantity ?? 0,
         discount: payload.employeeDiscountPiasters,
       });
@@ -867,15 +885,28 @@ test("cart edits during delayed prepare cannot complete a stale quote", async ({
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع النقدي.");
   expect(prepareBodies).toEqual([{ quantity: 1, discount: 0 }]);
-  expect(completeBodies).toEqual([{ quantity: 1, discount: 0 }]);
+  expect(completeBodies).toHaveLength(1);
+  expect(completeBodies[0]).toMatchObject({ quantity: 1, discount: 0 });
+  await expect.poll(async () => {
+    const listed = await staffApi(page, "GET", "/api/internal/sales");
+    return listed.body.filter((sale: { lines: Array<{ variant: { product: { code: string } } }> }) =>
+      sale.lines.some((line) => line.variant.product.code === "DURING-E2E"),
+    ).length;
+  }).toBe(1);
   const listed = await staffApi(page, "GET", "/api/internal/sales");
   const saved = listed.body.filter((sale: { lines: Array<{ quantity: number; variant: { product: { code: string } } }> }) =>
     sale.lines.some((line) => line.variant.product.code === "DURING-E2E"),
   );
   expect(saved).toHaveLength(1);
-  expect(saved[0].lines[0].quantity).toBe(1);
+  expect(saved[0].id).toBe(completeBodies[0].saleId);
+  expect(saved[0].operationId).toBe(completeBodies[0].operationId);
+  expect(saved[0].lines).toHaveLength(1);
+  expect(saved[0].lines[0]).toMatchObject({ quantity: 1, paidPiasters: 14000, allocatedQuantity: 1, unallocatedQuantity: 0 });
   expect(saved[0].employeeDiscountPiasters).toBe(0);
+  expect(saved[0].originalTotalPiasters).toBe(14000);
   expect(saved[0].finalTotalPiasters).toBe(14000);
+  expect(saved[0].physicallyCompleted).toBe(true);
+  expect(saved[0].discrepancy).toBeNull();
   const lookupAfter = await staffApi(page, "GET", `/api/internal/catalog/lookup?code=${encodeURIComponent("DURING-E2E")}`);
   expect(lookupAfter.body.variants[0].availableQuantity).toBe(5);
 });

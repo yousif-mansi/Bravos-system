@@ -2,9 +2,19 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import type { WorkspaceDto } from "@bravos/contracts";
 import { accountGeneration } from "../account-session.ts";
-import { acceptOfflineSale, completeSale, issuePosSnapshot } from "../api.ts";
+import { acceptOfflineSale, ApiError, completeSale, getWorkspace, issuePosSnapshot, recoverOfflineSale } from "../api.ts";
 import { posCodeIsCached } from "../offline-ready.ts";
-import { cacheIssuedSnapshot, POS_SCHEMA_VERSION, pos, readPosReadiness, retryUnsyncedSales } from "../pos.ts";
+import {
+  acceptedPayload,
+  cacheIssuedSnapshot,
+  completedPayload,
+  POS_SCHEMA_VERSION,
+  pos,
+  readPosReadiness,
+  recoverPreservedQueues,
+  recoveryPayload,
+  retryUnsyncedSales,
+} from "../pos.ts";
 import { signOutPreservingSales } from "../session.ts";
 
 export function WorkspacePage({
@@ -18,6 +28,10 @@ export function WorkspacePage({
   const [online, setOnline] = useState(typeof navigator === "undefined" ? true : navigator.onLine);
   const [ready, setReady] = useState(false);
   const [unsynced, setUnsynced] = useState(0);
+  const [otherPending, setOtherPending] = useState(0);
+  const [syncStatus, setSyncStatus] = useState("");
+  const [syncError, setSyncError] = useState("");
+  const [syncing, setSyncing] = useState(false);
   const [persistent, setPersistent] = useState<boolean | null>(null);
   const [updateDeferred, setUpdateDeferred] = useState(false);
 
@@ -47,65 +61,8 @@ export function WorkspacePage({
     const epoch = accountGeneration();
     const stillCurrent = () => !cancelled && workspace.staff.id === staffId && accountGeneration() === epoch;
     void (async () => {
-      if (workspace.capabilities.cashier && online) {
-        try {
-          const deviceId = await pos.deviceId();
-          if (!stillCurrent()) {
-            return;
-          }
-          const snapshot = await issuePosSnapshot(deviceId);
-          if (!stillCurrent()) {
-            return;
-          }
-          await cacheIssuedSnapshot(staffId, snapshot);
-          if (!stillCurrent()) {
-            return;
-          }
-          await retryUnsyncedSales(
-            staffId,
-            {
-              accept: (sale) => {
-                if (!stillCurrent() || sale.staffId !== staffId) {
-                  return Promise.reject(new Error("stale-account"));
-                }
-                return acceptOfflineSale({
-                  saleId: sale.id,
-                  operationId: sale.operationId,
-                  deviceId: sale.deviceId,
-                  snapshotId: sale.snapshotId ?? "",
-                  occurredAt: sale.occurredAt,
-                  customerName: sale.customerName,
-                  customerPhone: sale.customerPhone,
-                  employeeDiscountPiasters: sale.employeeDiscountPiasters,
-                  discountReason: sale.discountReason,
-                  lines: sale.lines.map((line) => ({
-                    variantId: line.variantId,
-                    quantity: line.quantity,
-                    listedUnitPricePiasters: line.listedUnitPricePiasters,
-                  })),
-                });
-              },
-              complete: (sale) => {
-                if (!stillCurrent() || sale.staffId !== staffId) {
-                  return Promise.reject(new Error("stale-account"));
-                }
-                return completeSale({
-                  saleId: sale.id,
-                  operationId: sale.operationId,
-                  occurredAt: sale.occurredAt,
-                  customerName: sale.customerName,
-                  customerPhone: sale.customerPhone,
-                  employeeDiscountPiasters: sale.employeeDiscountPiasters,
-                  discountReason: sale.discountReason,
-                  lines: sale.lines.map((line) => ({ variantId: line.variantId, quantity: line.quantity })),
-                });
-              },
-            },
-            stillCurrent,
-          );
-        } catch {
-          /* keep last issued snapshot and unacknowledged work */
-        }
+      if (online) {
+        await runSync(stillCurrent);
       }
       let codeReady = await posCodeIsCached();
       for (let attempt = 0; attempt < 20 && !codeReady && !cancelled; attempt += 1) {
@@ -114,10 +71,12 @@ export function WorkspacePage({
       }
       const data = await readPosReadiness(staffId);
       const schemaVersion = await pos.readSchemaVersion();
+      const other = await pos.countOtherPending(staffId);
       if (!stillCurrent()) {
         return;
       }
       setUnsynced(data.unsynced);
+      setOtherPending(other);
       setPersistent(data.persistent);
       if (schemaVersion < POS_SCHEMA_VERSION) {
         setUpdateDeferred(true);
@@ -129,6 +88,124 @@ export function WorkspacePage({
     };
   }, [workspace, online]);
 
+  async function runSync(stillCurrent: () => boolean) {
+    const staffId = workspace.staff.id;
+    setSyncing(true);
+    setSyncError("");
+    setSyncStatus("جاري مزامنة المبيعات…");
+    try {
+      try {
+        const fresh = await getWorkspace();
+        if (!stillCurrent()) {
+          return;
+        }
+        if (fresh.staff.id !== staffId) {
+          return;
+        }
+        if (
+          fresh.capabilities.cashier !== workspace.capabilities.cashier ||
+          fresh.staff.disabled !== workspace.staff.disabled
+        ) {
+          await onChanged(fresh);
+          return;
+        }
+        if (!fresh.capabilities.cashier) {
+          setSyncError("لا يمكن بدء عمل متصل جديد بهذا الحساب. المبيعات المكتملة محفوظة ويمكن استردادها بمساعدة المدير.");
+          setReady(false);
+        }
+      } catch (caught) {
+        if (!stillCurrent()) {
+          return;
+        }
+        if (caught instanceof ApiError && caught.status === 401) {
+          setSyncError("انتهت الجلسة أو أُلغي الدخول. سجّل الدخول مجدداً. المبيعات المكتملة محفوظة.");
+          setReady(false);
+          return;
+        }
+        if (caught instanceof ApiError && caught.status === 403) {
+          setSyncError("لا يمكن بدء عمل متصل جديد بهذا الحساب. المبيعات المكتملة محفوظة ويمكن استردادها بمساعدة المدير.");
+          setReady(false);
+          return;
+        }
+      }
+      if (workspace.capabilities.cashier) {
+        const result = await retryUnsyncedSales(
+          staffId,
+          {
+            accept: async (sale) => {
+              if (!stillCurrent() || sale.staffId !== staffId) {
+                return Promise.reject(new Error("stale-account"));
+              }
+              return acceptOfflineSale(await acceptedPayload(sale));
+            },
+            complete: async (sale) => {
+              if (!stillCurrent() || sale.staffId !== staffId) {
+                return Promise.reject(new Error("stale-account"));
+              }
+              return completeSale(await completedPayload(sale));
+            },
+          },
+          stillCurrent,
+        );
+        if (!stillCurrent()) {
+          return;
+        }
+        setUnsynced(result.remaining);
+        if (result.error) {
+          setSyncError(result.error);
+        }
+      }
+      const deviceId = await pos.deviceId();
+      if (!stillCurrent()) {
+        return;
+      }
+      if (workspace.capabilities.cashier) {
+        try {
+          const snapshot = await issuePosSnapshot(deviceId, await pos.listPendingOperationIds());
+          if (!stillCurrent()) {
+            return;
+          }
+          await cacheIssuedSnapshot(staffId, snapshot);
+        } catch (caught) {
+          if (!stillCurrent()) {
+            return;
+          }
+          if (caught instanceof ApiError && (caught.status === 401 || caught.status === 403) && !syncError) {
+            setSyncError(
+              caught.status === 401
+                ? "انتهت الجلسة أو أُلغي الدخول. سجّل الدخول مجدداً. المبيعات المكتملة محفوظة."
+                : "لا يمكن بدء عمل متصل جديد بهذا الحساب. المبيعات المكتملة محفوظة ويمكن استردادها بمساعدة المدير.",
+            );
+          }
+        }
+      }
+      if (stillCurrent()) {
+        setSyncStatus("");
+      }
+    } catch (caught) {
+      if (!stillCurrent()) {
+        return;
+      }
+      if (caught instanceof ApiError && caught.status === 401) {
+        setSyncError("انتهت الجلسة أو أُلغي الدخول. سجّل الدخول مجدداً. المبيعات المكتملة محفوظة.");
+      } else if (caught instanceof ApiError && caught.status === 403) {
+        setSyncError("لا يمكن بدء عمل متصل جديد بهذا الحساب. المبيعات المكتملة محفوظة ويمكن استردادها بمساعدة المدير.");
+      } else {
+        setSyncError("تعذر مزامنة المبيعات. أعد المحاولة عند الاتصال.");
+      }
+    } finally {
+      if (stillCurrent()) {
+        setSyncing(false);
+        const data = await readPosReadiness(staffId);
+        const other = await pos.countOtherPending(staffId);
+        if (stillCurrent()) {
+          setUnsynced(data.unsynced);
+          setOtherPending(other);
+        }
+      }
+    }
+  }
+
   async function logout() {
     const accepted = await signOutPreservingSales(workspace.staff.id);
     if (!accepted) {
@@ -136,6 +213,58 @@ export function WorkspacePage({
     }
     await onChanged(null);
     navigate("/login");
+  }
+
+  async function retryNow() {
+    const staffId = workspace.staff.id;
+    const epoch = accountGeneration();
+    const stillCurrent = () => workspace.staff.id === staffId && accountGeneration() === epoch;
+    await runSync(stillCurrent);
+  }
+
+  async function recoverNow() {
+    const staffId = workspace.staff.id;
+    const epoch = accountGeneration();
+    const stillCurrent = () => workspace.staff.id === staffId && accountGeneration() === epoch;
+    setSyncing(true);
+    setSyncError("");
+    setSyncStatus("جاري استرداد المبيعات المحفوظة…");
+    try {
+      const result = await recoverPreservedQueues(
+        staffId,
+        async (sale) => {
+          if (!stillCurrent()) {
+            return Promise.reject(new Error("stale-account"));
+          }
+          const recovered = await recoverOfflineSale(await recoveryPayload(sale));
+          if (!stillCurrent()) {
+            return Promise.reject(new Error("stale-account"));
+          }
+          return recovered;
+        },
+        stillCurrent,
+      );
+      if (!stillCurrent()) {
+        return;
+      }
+      setOtherPending(result.remaining);
+      if (result.error) {
+        setSyncError(result.error);
+      }
+      setSyncStatus("");
+    } catch {
+      if (stillCurrent()) {
+        setSyncError("تعذر استرداد المبيعات المحفوظة.");
+      }
+    } finally {
+      if (stillCurrent()) {
+        setSyncing(false);
+        const data = await readPosReadiness(staffId);
+        const other = await pos.countOtherPending(staffId);
+        setUnsynced(data.unsynced);
+        setOtherPending(other);
+      }
+    }
   }
 
   return (
@@ -171,6 +300,40 @@ export function WorkspacePage({
         الفرع النشط: {workspace.activeBranch?.nameAr}
       </div>
       <p data-testid="unsynced-count">مبيعات غير مزامنة: {unsynced}</p>
+      {syncStatus ? (
+        <p data-testid="sync-status" role="status">{syncStatus}</p>
+      ) : null}
+      {syncError ? (
+        <div className="error" data-testid="sync-error" role="alert">{syncError}</div>
+      ) : null}
+      <p className="muted" data-testid="sync-foreground-note">
+        إغلاق المتصفح لا يضمن إرسال المبيعات. أعد المحاولة عند الاتصال.
+      </p>
+      <div className="actions">
+        <button
+          className="secondary"
+          type="button"
+          data-testid="retry-sync"
+          disabled={!online || syncing}
+          onClick={() => void retryNow()}
+        >
+          إعادة المحاولة
+        </button>
+      </div>
+      {workspace.capabilities.manageStaff && otherPending > 0 ? (
+        <div className="notice" data-testid="foreign-queue">
+          <p>مبيعات محفوظة لحساب آخر: {otherPending}</p>
+          <button
+            className="secondary"
+            type="button"
+            data-testid="recover-queue"
+            disabled={!online || syncing}
+            onClick={() => void recoverNow()}
+          >
+            استرداد المبيعات المحفوظة
+          </button>
+        </div>
+      ) : null}
       {ready ? (
         <div className="notice" data-testid="offline-ready" role="status">
           جاهز للعمل دون اتصال

@@ -1,69 +1,21 @@
 import { createHash } from "node:crypto";
+import {
+  canonicalAcceptedSalePayloadJson,
+  canonicalSalePayloadJson,
+  normalizeAcceptedSalePayload,
+  normalizeSalePayload,
+  type AcceptedSalePayload,
+  type SalePayload,
+} from "./canonical-payload.ts";
 
-export type SalePayload = {
-  saleId: string;
-  customerName: string | null;
-  customerPhone: string | null;
-  employeeDiscountPiasters: number;
-  discountReason: string | null;
-  lines: Array<{ variantId: string; quantity: number }>;
-};
+export type { AcceptedSalePayload, SalePayload };
 
-export type AcceptedSalePayload = {
-  saleId: string;
-  snapshotId: string;
-  customerName: string | null;
-  customerPhone: string | null;
-  employeeDiscountPiasters: number;
-  discountReason: string | null;
-  lines: Array<{ variantId: string; quantity: number }>;
-};
-
-export function normalizeSalePayload(input: SalePayload): SalePayload {
-  const lines = [...input.lines]
-    .map((line) => ({ variantId: line.variantId, quantity: line.quantity }))
-    .sort((left, right) => {
-      if (left.variantId !== right.variantId) {
-        return left.variantId < right.variantId ? -1 : 1;
-      }
-      return left.quantity - right.quantity;
-    });
-  return {
-    saleId: input.saleId,
-    customerName: input.customerName,
-    customerPhone: input.customerPhone,
-    employeeDiscountPiasters: input.employeeDiscountPiasters,
-    discountReason: input.discountReason,
-    lines,
-  };
-}
+export { normalizeAcceptedSalePayload, normalizeSalePayload };
 
 export function fingerprintSalePayload(input: SalePayload): string {
-  const canonical = JSON.stringify(normalizeSalePayload(input));
-  return createHash("sha256").update(canonical).digest("hex");
-}
-
-export function normalizeAcceptedSalePayload(input: AcceptedSalePayload): AcceptedSalePayload {
-  const lines = [...input.lines]
-    .map((line) => ({ variantId: line.variantId, quantity: line.quantity }))
-    .sort((left, right) => {
-      if (left.variantId !== right.variantId) {
-        return left.variantId < right.variantId ? -1 : 1;
-      }
-      return left.quantity - right.quantity;
-    });
-  return {
-    saleId: input.saleId,
-    snapshotId: input.snapshotId,
-    customerName: input.customerName,
-    customerPhone: input.customerPhone,
-    employeeDiscountPiasters: input.employeeDiscountPiasters,
-    discountReason: input.discountReason,
-    lines,
-  };
+  return createHash("sha256").update(canonicalSalePayloadJson(input)).digest("hex");
 }
 
 export function fingerprintAcceptedSalePayload(input: AcceptedSalePayload): string {
-  const canonical = JSON.stringify(normalizeAcceptedSalePayload(input));
-  return createHash("sha256").update(canonical).digest("hex");
+  return createHash("sha256").update(canonicalAcceptedSalePayloadJson(input)).digest("hex");
 }

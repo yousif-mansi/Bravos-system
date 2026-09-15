@@ -1,4 +1,11 @@
-import type { BranchDto, ManagerSaleDto, PosPriceSnapshotDto, SaleDto, SaleLineDto } from "@bravos/contracts";
+import type {
+  BranchDto,
+  ManagerSaleDto,
+  PosPriceSnapshotDto,
+  SaleAcknowledgementDto,
+  SaleDto,
+  SaleLineDto,
+} from "@bravos/contracts";
 import {
   ForbiddenError,
   isManager,
@@ -12,6 +19,7 @@ import {
   assertQuantity,
   type AllocateResult,
   type AllocationRecord,
+  type InventoryTransaction,
 } from "@bravos/inventory";
 import { assertMergedSaleQuantities, mergeVariantQuantities, priceSaleLines } from "../domain/discount.ts";
 import { SalesValidationError } from "../domain/errors.ts";
@@ -46,17 +54,88 @@ const PREPARE_KEYS = new Set([
   "occurredAt",
   "lines",
 ]);
-const COMPLETE_KEYS = new Set([...PREPARE_KEYS, "physicallyCompleted"]);
+const COMPLETE_KEYS = new Set([...PREPARE_KEYS, "physicallyCompleted", "pendingOperationIds"]);
 const ACCEPTED_KEYS = new Set([
   ...COMPLETE_KEYS,
   "deviceId",
   "snapshotId",
 ]);
-const SNAPSHOT_KEYS = new Set(["deviceId"]);
+const RECOVER_KEYS = new Set([...ACCEPTED_KEYS]);
+const SNAPSHOT_KEYS = new Set(["deviceId", "pendingOperationIds"]);
 const LINE_KEYS = new Set(["variantId", "quantity"]);
 const ACCEPTED_LINE_KEYS = new Set(["variantId", "quantity", "listedUnitPricePiasters"]);
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DISCREPANCY_MESSAGE = "لم تُخصص كل الكمية من المخزون المسجّل.";
+
+async function attachAck(
+  tx: { inventory: InventoryTransaction; sales: SaleStore },
+  record: SaleRecord,
+  created: boolean,
+  coverageVariantIds: string[],
+  pendingOperationIds: string[],
+): Promise<{ record: SaleRecord; created: boolean; acknowledgement: SaleAcknowledgementDto }> {
+  const variantIds = [...new Set([...coverageVariantIds, ...record.lines.map((line) => line.variantId)])];
+  const stockVersion = created ? await tx.inventory.bumpStockVersion() : await tx.inventory.currentStockVersion();
+  const quantities = await tx.inventory.quantitiesFor(variantIds);
+  const includedOperations = await tx.sales.listCompletedOperationProofs([
+    ...pendingOperationIds,
+    record.operationId,
+  ]);
+  return {
+    record,
+    created,
+    acknowledgement: {
+      acknowledgedOperationIds: [record.operationId],
+      stockVersion,
+      includedOperationIds: includedOperations.map((proof) => proof.operationId),
+      includedOperations,
+      availability: variantIds.map((variantId) => ({
+        variantId,
+        availableQuantity: quantities.get(variantId) ?? 0,
+      })),
+    },
+  };
+}
+
+async function allocateSaleLines(
+  inventory: InventoryTransaction,
+  operationId: string,
+  recordedAt: Date,
+  sourceLines: Array<{ id: string; variantId: string; quantity: number }>,
+  allowPartial: boolean,
+): Promise<{ allocations: AllocateResult[]; costsIncomplete: boolean }> {
+  const order = sourceLines
+    .map((line, index) => ({ line, index }))
+    .sort((left, right) => {
+      if (left.line.variantId === right.line.variantId) {
+        return left.index - right.index;
+      }
+      return left.line.variantId < right.line.variantId ? -1 : 1;
+    });
+  const allocations: AllocateResult[] = new Array(sourceLines.length);
+  let costsIncomplete = false;
+  for (const item of order) {
+    const allocated = await inventory.allocateFromOldestAvailable({
+      operationId,
+      variantId: item.line.variantId,
+      quantity: item.line.quantity,
+      recordedAt,
+      allowPartial,
+    });
+    if (allocated.unallocatedQuantity > 0) {
+      costsIncomplete = true;
+      await inventory.recordDiscrepancy({
+        operationId,
+        variantId: item.line.variantId,
+        requestedQuantity: item.line.quantity,
+        allocatedQuantity: allocated.allocatedQuantity,
+        recordedAt,
+      });
+    }
+    allocations[item.index] = allocated;
+  }
+  return { allocations, costsIncomplete };
+}
 
 export type SalesServices = ReturnType<typeof createSalesServices>;
 
@@ -96,6 +175,14 @@ export function createSalesServices(ports: {
     const staff = await ports.actors.getStaff(auth.staffId);
     if (!staff || staff.disabled) {
       throw new UnauthenticatedError();
+    }
+    return staff;
+  }
+
+  async function requireManager(auth: VerifiedAuth | null) {
+    const staff = await requireStaff(auth);
+    if (!isManager(staff)) {
+      throw new ForbiddenError();
     }
     return staff;
   }
@@ -142,7 +229,13 @@ export function createSalesServices(ports: {
           unitCostPiasters: item.unitCostPiasters,
         }))
       : [];
-    return { ...sale, allocations, costsIncomplete: record.costsIncomplete };
+    return {
+      ...sale,
+      allocations,
+      costsIncomplete: record.costsIncomplete,
+      recoveredByStaffId: record.recoveredByStaffId,
+      recoveredAt: record.recoveredAt ? record.recoveredAt.toISOString() : null,
+    };
   }
 
   function canRead(staff: Awaited<ReturnType<typeof requireStaff>>, record: SaleRecord): boolean {
@@ -171,6 +264,141 @@ export function createSalesServices(ports: {
     }
   }
 
+  async function catalogCoverage(auth: VerifiedAuth): Promise<string[]> {
+    const products = await ports.cashierCatalog.listCashierProducts(auth);
+    return products.flatMap((product) => product.variants.map((variant) => variant.id));
+  }
+
+  async function commitSnapshotPricedSale(input: {
+    viewer: Awaited<ReturnType<typeof requireStaff>>;
+    seller: { id: string; displayName: string };
+    branch: BranchDto;
+    snapshot: NonNullable<Awaited<ReturnType<PriceSnapshotStore["getById"]>>>;
+    command: ParsedAcceptedSale;
+    fingerprint: string;
+    recoveredByStaffId: string | null;
+    recoveredAt: Date | null;
+    requireViewerRead: boolean;
+    coverageVariantIds: string[];
+  }): Promise<{ record: SaleRecord; created: boolean; acknowledgement: SaleAcknowledgementDto }> {
+    const snapshotPrices = new Map(input.snapshot.prices.map((item) => [item.variantId, item.listedUnitPricePiasters]));
+    for (const line of input.command.lines) {
+      const listed = snapshotPrices.get(line.variantId);
+      if (listed === undefined) {
+        throw new SalesValidationError("المتغير المحدد غير موجود.");
+      }
+      if (line.listedUnitPricePiasters !== null && line.listedUnitPricePiasters !== listed) {
+        throw new SalesValidationError("قيم البيع المقبولة غير متطابقة.");
+      }
+    }
+    return ports.uow.run(async (tx) => {
+      await tx.inventory.lockStockClock("update");
+      const finish = (record: SaleRecord, created: boolean) =>
+        attachAck(tx, record, created, input.coverageVariantIds, input.command.pendingOperationIds);
+      const existing = await loadLockedIdentity(tx.sales, input.command.saleId, input.command.operationId);
+      if (existing?.physicallyCompleted) {
+        replayOrConflict(existing, input.fingerprint, input.command.operationId);
+        if (input.requireViewerRead) {
+          assertCanRead(input.viewer, existing);
+        }
+        return finish(existing, false);
+      }
+      if (existing) {
+        replayOrConflict(existing, input.fingerprint, input.command.operationId);
+        throw new OperationConflictError();
+      }
+      const claimed = await tx.inventory.claimSaleOperation({
+        operationId: input.command.operationId,
+        payloadFingerprint: input.fingerprint,
+        actorStaffId: input.seller.id,
+      });
+      if (claimed.kind === "replay") {
+        const replayed = await tx.sales.getByOperationId(input.command.operationId);
+        if (!replayed) {
+          throw new SalesValidationError("تعذر العثور على البيع الأصلي.");
+        }
+        replayOrConflict(replayed, input.fingerprint, input.command.operationId);
+        if (input.requireViewerRead) {
+          assertCanRead(input.viewer, replayed);
+        }
+        return finish(replayed, false);
+      }
+      const quantities = assertMergedSaleQuantities(input.command.lines);
+      const priced = priceSaleLines(
+        quantities.map((line) => ({
+          variantId: line.variantId,
+          quantity: line.quantity,
+          listedUnitPricePiasters: snapshotPrices.get(line.variantId) ?? 0,
+        })),
+        input.command.employeeDiscountPiasters,
+      );
+      const sourceLines = priced.lines.map((line) => ({
+        id: crypto.randomUUID(),
+        variantId: line.variantId,
+        quantity: line.quantity,
+      }));
+      const allocated = await allocateSaleLines(
+        tx.inventory,
+        input.command.operationId,
+        claimed.recordedAt,
+        sourceLines,
+        true,
+      );
+      const completedLines: SaleLineWrite[] = priced.lines.map((line, index) => {
+        const row = allocated.allocations[index];
+        return {
+          id: sourceLines[index]?.id ?? crypto.randomUUID(),
+          variantId: line.variantId,
+          quantity: line.quantity,
+          listedUnitPricePiasters: line.listedUnitPricePiasters,
+          originalPiasters: line.originalPiasters,
+          discountPiasters: line.discountPiasters,
+          paidPiasters: line.paidPiasters,
+          allocatedQuantity: row?.allocatedQuantity ?? 0,
+          unallocatedQuantity: row?.unallocatedQuantity ?? line.quantity,
+          lineIndex: index,
+          units: toUnitWrites(line.units),
+        };
+      });
+      const inserted = await tx.sales.insert(
+        toInsert(
+          {
+            saleId: input.command.saleId,
+            operationId: input.command.operationId,
+            physicallyCompleted: true,
+            customerName: input.command.customerName,
+            customerPhone: input.command.customerPhone,
+            employeeDiscountPiasters: input.command.employeeDiscountPiasters,
+            discountReason: input.command.discountReason,
+            occurredAt: input.command.occurredAt,
+            lines: input.command.lines,
+            pendingOperationIds: [],
+          },
+          { staff: input.seller, branch: input.branch },
+          priced.lines,
+          input.fingerprint,
+          {
+            physicallyCompleted: true,
+            recordedAt: claimed.recordedAt,
+            costsIncomplete: allocated.costsIncomplete,
+            completedLines,
+            occurredAt: input.command.occurredAt,
+            recoveredByStaffId: input.recoveredByStaffId,
+            recoveredAt: input.recoveredAt,
+          },
+        ),
+      );
+      if (inserted.kind === "existing") {
+        replayOrConflict(inserted.record, input.fingerprint, input.command.operationId);
+        if (input.requireViewerRead) {
+          assertCanRead(input.viewer, inserted.record);
+        }
+        return finish(inserted.record, false);
+      }
+      return finish(inserted.record, true);
+    });
+  }
+
   return {
     async prepare(auth: VerifiedAuth | null, input: unknown): Promise<PrepareSaleResult> {
       const current = await requireCashier(auth);
@@ -179,6 +407,7 @@ export function createSalesServices(ports: {
       const quantities = mergeVariantQuantities(command.lines);
       const listed = await ports.prices.getListedPrices(quantities.map((item) => item.variantId));
       const outcome = await ports.uow.run(async (tx) => {
+        await tx.inventory.lockStockClock("share");
         const existing = await loadLockedIdentity(tx.sales, command.saleId, command.operationId);
         if (existing) {
           replayOrConflict(existing, fingerprint, command.operationId);
@@ -220,12 +449,17 @@ export function createSalesServices(ports: {
       const fingerprint = fingerprintSalePayload(toPayload(command));
       const quantities = mergeVariantQuantities(command.lines);
       const listed = await ports.prices.getListedPrices(quantities.map((item) => item.variantId));
+      const catalog = await ports.cashierCatalog.listCashierProducts(auth);
+      const coverageVariantIds = catalog.flatMap((product) => product.variants.map((variant) => variant.id));
       const outcome = await ports.uow.run(async (tx) => {
+        await tx.inventory.lockStockClock("update");
+        const finish = (record: SaleRecord, created: boolean) =>
+          attachAck(tx, record, created, coverageVariantIds, command.pendingOperationIds);
         const existing = await loadLockedIdentity(tx.sales, command.saleId, command.operationId);
         if (existing?.physicallyCompleted) {
           replayOrConflict(existing, fingerprint, command.operationId);
           assertCanRead(actor, existing);
-          return { record: existing, created: false };
+          return finish(existing, false);
         }
         if (existing) {
           replayOrConflict(existing, fingerprint, command.operationId);
@@ -260,7 +494,7 @@ export function createSalesServices(ports: {
           }
           replayOrConflict(replayed, fingerprint, command.operationId);
           assertCanRead(actor, replayed);
-          return { record: replayed, created: false };
+          return finish(replayed, false);
         }
 
         if (!prepared) {
@@ -282,28 +516,15 @@ export function createSalesServices(ports: {
                 quantity: line.quantity,
               }));
         const occurredAt = command.occurredAt ?? claimed.recordedAt;
-        let costsIncomplete = false;
-        const allocations: AllocateResult[] = [];
-        for (const line of sourceLines) {
-          const allocated = await tx.inventory.allocateFromOldestAvailable({
-            operationId: command.operationId,
-            variantId: line.variantId,
-            quantity: line.quantity,
-            recordedAt: claimed.recordedAt,
-            allowPartial,
-          });
-          if (allocated.unallocatedQuantity > 0) {
-            costsIncomplete = true;
-            await tx.inventory.recordDiscrepancy({
-              operationId: command.operationId,
-              variantId: line.variantId,
-              requestedQuantity: line.quantity,
-              allocatedQuantity: allocated.allocatedQuantity,
-              recordedAt: claimed.recordedAt,
-            });
-          }
-          allocations.push(allocated);
-        }
+        const allocated = await allocateSaleLines(
+          tx.inventory,
+          command.operationId,
+          claimed.recordedAt,
+          sourceLines,
+          allowPartial,
+        );
+        const costsIncomplete = allocated.costsIncomplete;
+        const allocations = allocated.allocations;
         const priced = prepared && existing
           ? {
               lines: existing.lines.map((line) => ({
@@ -348,7 +569,7 @@ export function createSalesServices(ports: {
             costsIncomplete,
             lines: completedLines,
           });
-          return { record, created: true };
+          return finish(record, true);
         }
         const inserted = await tx.sales.insert(
           toInsert(
@@ -368,11 +589,15 @@ export function createSalesServices(ports: {
         if (inserted.kind === "existing") {
           replayOrConflict(inserted.record, fingerprint, command.operationId);
           assertCanRead(actor, inserted.record);
-          return { record: inserted.record, created: false };
+          return finish(inserted.record, false);
         }
-        return { record: inserted.record, created: true };
+        return finish(inserted.record, true);
       });
-      return { sale: await hydrate(outcome.record, isManager(actor)), created: outcome.created };
+      return {
+        sale: await hydrate(outcome.record, isManager(actor)),
+        created: outcome.created,
+        acknowledgement: outcome.acknowledgement,
+      };
     },
 
     async issuePriceSnapshot(auth: VerifiedAuth | null, input: unknown): Promise<PosPriceSnapshotDto> {
@@ -380,7 +605,7 @@ export function createSalesServices(ports: {
       if (!auth) {
         throw new UnauthenticatedError();
       }
-      const deviceId = parseDeviceId(input);
+      const request = parseSnapshotRequest(input);
       const products = await ports.cashierCatalog.listCashierProducts(auth);
       const ids = products.flatMap((product) => product.variants.map((variant) => variant.id));
       const listed = await ports.prices.getListedPrices(ids);
@@ -393,25 +618,36 @@ export function createSalesServices(ports: {
         return { variantId, listedUnitPricePiasters };
       });
       const issuedAt = new Date();
-      const record = await ports.snapshots.insert({
-        id: crypto.randomUUID(),
-        staffId: current.staff.id,
-        branchId: current.branch.id,
-        deviceId,
-        issuedAt,
-        prices,
+      const stock = await ports.uow.run(async (tx) => {
+        await tx.inventory.lockStockClock("share");
+        const stockVersion = await tx.inventory.currentStockVersion();
+        const quantities = await tx.inventory.quantitiesFor(ids);
+        const includedOperations = await tx.sales.listCompletedOperationProofs(request.pendingOperationIds);
+        const record = await tx.snapshots.insert({
+          id: crypto.randomUUID(),
+          staffId: current.staff.id,
+          branchId: current.branch.id,
+          deviceId: request.deviceId,
+          issuedAt,
+          prices,
+        });
+        return { record, stockVersion, quantities, includedOperations };
       });
       return {
-        snapshotId: record.id,
-        staffId: record.staffId,
+        snapshotId: stock.record.id,
+        staffId: stock.record.staffId,
         branch: current.branch,
-        deviceId: record.deviceId,
-        issuedAt: record.issuedAt.toISOString(),
+        deviceId: stock.record.deviceId,
+        issuedAt: stock.record.issuedAt.toISOString(),
+        stockVersion: stock.stockVersion,
+        includedOperationIds: stock.includedOperations.map((proof) => proof.operationId),
+        includedOperations: stock.includedOperations,
         products: products.map((product) => ({
           ...product,
           variants: product.variants.map((variant) => ({
             ...variant,
             sellingPricePiasters: byId.get(variant.id) ?? variant.sellingPricePiasters,
+            availableQuantity: stock.quantities.get(variant.id) ?? 0,
           })),
         })),
       };
@@ -419,6 +655,9 @@ export function createSalesServices(ports: {
 
     async acceptOffline(auth: VerifiedAuth | null, input: unknown): Promise<CompleteSaleResult> {
       const actor = await requireStaff(auth);
+      if (!auth) {
+        throw new UnauthenticatedError();
+      }
       const command = parseAcceptedSale(input);
       const snapshot = await ports.snapshots.getById(command.snapshotId);
       if (!snapshot) {
@@ -438,16 +677,6 @@ export function createSalesServices(ports: {
       if (!branch) {
         throw new ForbiddenError();
       }
-      const snapshotPrices = new Map(snapshot.prices.map((item) => [item.variantId, item.listedUnitPricePiasters]));
-      for (const line of command.lines) {
-        const listed = snapshotPrices.get(line.variantId);
-        if (listed === undefined) {
-          throw new SalesValidationError("المتغير المحدد غير موجود.");
-        }
-        if (line.listedUnitPricePiasters !== null && line.listedUnitPricePiasters !== listed) {
-          throw new SalesValidationError("قيم البيع المقبولة غير متطابقة.");
-        }
-      }
       const fingerprint = fingerprintAcceptedSalePayload({
         saleId: command.saleId,
         snapshotId: command.snapshotId,
@@ -457,116 +686,136 @@ export function createSalesServices(ports: {
         discountReason: command.discountReason,
         lines: command.lines.map((line) => ({ variantId: line.variantId, quantity: line.quantity })),
       });
-      const outcome = await ports.uow.run(async (tx) => {
-        const existing = await loadLockedIdentity(tx.sales, command.saleId, command.operationId);
-        if (existing?.physicallyCompleted) {
-          replayOrConflict(existing, fingerprint, command.operationId);
-          assertCanRead(actor, existing);
-          return { record: existing, created: false };
-        }
-        if (existing) {
-          replayOrConflict(existing, fingerprint, command.operationId);
-          throw new OperationConflictError();
-        }
-        const claimed = await tx.inventory.claimSaleOperation({
-          operationId: command.operationId,
-          payloadFingerprint: fingerprint,
-          actorStaffId: actor.id,
-        });
-        if (claimed.kind === "replay") {
-          const replayed = await tx.sales.getByOperationId(command.operationId);
-          if (!replayed) {
-            throw new SalesValidationError("تعذر العثور على البيع الأصلي.");
-          }
-          replayOrConflict(replayed, fingerprint, command.operationId);
-          assertCanRead(actor, replayed);
-          return { record: replayed, created: false };
-        }
-        const quantities = assertMergedSaleQuantities(command.lines);
-        const priced = priceSaleLines(
-          quantities.map((line) => ({
-            variantId: line.variantId,
-            quantity: line.quantity,
-            listedUnitPricePiasters: snapshotPrices.get(line.variantId) ?? 0,
-          })),
-          command.employeeDiscountPiasters,
-        );
-        const sourceLines = priced.lines.map((line) => ({
-          id: crypto.randomUUID(),
-          variantId: line.variantId,
-          quantity: line.quantity,
-        }));
-        let costsIncomplete = false;
-        const allocations: AllocateResult[] = [];
-        for (const line of sourceLines) {
-          const allocated = await tx.inventory.allocateFromOldestAvailable({
-            operationId: command.operationId,
-            variantId: line.variantId,
-            quantity: line.quantity,
-            recordedAt: claimed.recordedAt,
-            allowPartial: true,
-          });
-          if (allocated.unallocatedQuantity > 0) {
-            costsIncomplete = true;
-            await tx.inventory.recordDiscrepancy({
-              operationId: command.operationId,
-              variantId: line.variantId,
-              requestedQuantity: line.quantity,
-              allocatedQuantity: allocated.allocatedQuantity,
-              recordedAt: claimed.recordedAt,
-            });
-          }
-          allocations.push(allocated);
-        }
-        const completedLines: SaleLineWrite[] = priced.lines.map((line, index) => {
-          const allocated = allocations[index];
-          return {
-            id: sourceLines[index]?.id ?? crypto.randomUUID(),
-            variantId: line.variantId,
-            quantity: line.quantity,
-            listedUnitPricePiasters: line.listedUnitPricePiasters,
-            originalPiasters: line.originalPiasters,
-            discountPiasters: line.discountPiasters,
-            paidPiasters: line.paidPiasters,
-            allocatedQuantity: allocated?.allocatedQuantity ?? 0,
-            unallocatedQuantity: allocated?.unallocatedQuantity ?? line.quantity,
-            lineIndex: index,
-            units: toUnitWrites(line.units),
-          };
-        });
-        const inserted = await tx.sales.insert(
-          toInsert(
-            {
-              saleId: command.saleId,
-              operationId: command.operationId,
-              physicallyCompleted: true,
-              customerName: command.customerName,
-              customerPhone: command.customerPhone,
-              employeeDiscountPiasters: command.employeeDiscountPiasters,
-              discountReason: command.discountReason,
-              occurredAt: command.occurredAt,
-              lines: command.lines,
-            },
-            { staff: actor, branch },
-            priced.lines,
-            fingerprint,
-            {
-              physicallyCompleted: true,
-              recordedAt: claimed.recordedAt,
-              costsIncomplete,
-              completedLines,
-              occurredAt: command.occurredAt,
-            },
-          ),
-        );
-        if (inserted.kind === "existing") {
-          replayOrConflict(inserted.record, fingerprint, command.operationId);
-          assertCanRead(actor, inserted.record);
-          return { record: inserted.record, created: false };
-        }
-        return { record: inserted.record, created: true };
+      const coverageVariantIds = [...new Set([...snapshot.prices.map((item) => item.variantId), ...(await catalogCoverage(auth))])];
+      const outcome = await commitSnapshotPricedSale({
+        viewer: actor,
+        seller: actor,
+        branch,
+        snapshot,
+        command,
+        fingerprint,
+        recoveredByStaffId: null,
+        recoveredAt: null,
+        requireViewerRead: true,
+        coverageVariantIds,
       });
-      return { sale: await hydrate(outcome.record, isManager(actor)), created: outcome.created };
+      return {
+        sale: await hydrate(outcome.record, isManager(actor)),
+        created: outcome.created,
+        acknowledgement: outcome.acknowledgement,
+      };
+    },
+
+    async recoverOffline(auth: VerifiedAuth | null, input: unknown): Promise<CompleteSaleResult> {
+      const manager = await requireManager(auth);
+      if (!auth) {
+        throw new UnauthenticatedError();
+      }
+      const recovered = parseRecoverCommand(input);
+      const coverageVariantIds = await catalogCoverage(auth);
+      if (recovered.kind === "prepared") {
+        const outcome = await ports.uow.run(async (tx) => {
+          await tx.inventory.lockStockClock("update");
+          const existing = await loadLockedIdentity(tx.sales, recovered.saleId, recovered.operationId);
+          if (!existing) {
+            throw new NotFoundError("لم يُحفظ البيع بعد.");
+          }
+          const finish = (record: SaleRecord, created: boolean) =>
+            attachAck(tx, record, created, coverageVariantIds, recovered.pendingOperationIds);
+          if (existing.physicallyCompleted) {
+            return finish(existing, false);
+          }
+          const claimed = await tx.inventory.claimSaleOperation({
+            operationId: existing.operationId,
+            payloadFingerprint: existing.payloadFingerprint,
+            actorStaffId: existing.soldByStaffId,
+          });
+          if (claimed.kind === "replay") {
+            const replayed = await tx.sales.getByOperationId(existing.operationId);
+            if (!replayed?.physicallyCompleted) {
+              throw new SalesValidationError("تعذر العثور على البيع الأصلي.");
+            }
+            return finish(replayed, false);
+          }
+          const sourceLines = existing.lines.map((line) => ({
+            id: line.id,
+            variantId: line.variantId,
+            quantity: line.quantity,
+          }));
+          const allocated = await allocateSaleLines(
+            tx.inventory,
+            existing.operationId,
+            claimed.recordedAt,
+            sourceLines,
+            true,
+          );
+          const completedLines: SaleLineWrite[] = existing.lines.map((line, index) => {
+            const row = allocated.allocations[index];
+            return {
+              ...line,
+              allocatedQuantity: row?.allocatedQuantity ?? 0,
+              unallocatedQuantity: row?.unallocatedQuantity ?? line.quantity,
+            };
+          });
+          const record = await tx.sales.updateCompletion({
+            id: existing.id,
+            occurredAt: recovered.occurredAt ?? existing.occurredAt,
+            recordedAt: claimed.recordedAt,
+            costsIncomplete: allocated.costsIncomplete,
+            lines: completedLines,
+            recoveredByStaffId: manager.id,
+            recoveredAt: new Date(),
+          });
+          return finish(record, true);
+        });
+        return {
+          sale: await hydrate(outcome.record, true),
+          created: outcome.created,
+          acknowledgement: outcome.acknowledgement,
+        };
+      }
+      const snapshot = await ports.snapshots.getById(recovered.command.snapshotId);
+      if (!snapshot) {
+        throw new NotFoundError("لقطة الأسعار غير موجودة.");
+      }
+      if (snapshot.deviceId !== recovered.command.deviceId) {
+        throw new SalesValidationError("معرّف الجهاز غير صالح.");
+      }
+      const original = await ports.actors.getStaff(snapshot.staffId);
+      if (!original) {
+        throw new NotFoundError("الموظف الأصلي غير موجود.");
+      }
+      const branches = await ports.actors.listBranches();
+      const branch = branches.find((item) => item.id === snapshot.branchId);
+      if (!branch) {
+        throw new ForbiddenError();
+      }
+      const fingerprint = fingerprintAcceptedSalePayload({
+        saleId: recovered.command.saleId,
+        snapshotId: recovered.command.snapshotId,
+        customerName: recovered.command.customerName,
+        customerPhone: recovered.command.customerPhone,
+        employeeDiscountPiasters: recovered.command.employeeDiscountPiasters,
+        discountReason: recovered.command.discountReason,
+        lines: recovered.command.lines.map((line) => ({ variantId: line.variantId, quantity: line.quantity })),
+      });
+      const outcome = await commitSnapshotPricedSale({
+        viewer: manager,
+        seller: original,
+        branch,
+        snapshot,
+        command: recovered.command,
+        fingerprint,
+        recoveredByStaffId: manager.id,
+        recoveredAt: new Date(),
+        requireViewerRead: false,
+        coverageVariantIds: [...new Set([...snapshot.prices.map((item) => item.variantId), ...coverageVariantIds])],
+      });
+      return {
+        sale: await hydrate(outcome.record, true),
+        created: outcome.created,
+        acknowledgement: outcome.acknowledgement,
+      };
     },
 
     async list(auth: VerifiedAuth | null): Promise<Array<SaleDto | ManagerSaleDto>> {
@@ -656,6 +905,8 @@ function toInsert(
     costsIncomplete: boolean;
     completedLines?: SaleLineWrite[];
     occurredAt?: Date;
+    recoveredByStaffId?: string | null;
+    recoveredAt?: Date | null;
   },
 ): SaleInsert {
   const originalTotalPiasters = pricedLines.reduce((sum, line) => addMoney(sum, line.originalPiasters), 0);
@@ -692,6 +943,8 @@ function toInsert(
     payloadFingerprint: fingerprint,
     physicallyCompleted: options.physicallyCompleted,
     costsIncomplete: options.costsIncomplete,
+    recoveredByStaffId: options.recoveredByStaffId ?? null,
+    recoveredAt: options.recoveredAt ?? null,
     lines,
   };
 }
@@ -741,6 +994,7 @@ type ParsedSale = {
   employeeDiscountPiasters: number;
   discountReason: string | null;
   occurredAt: Date | null;
+  pendingOperationIds: string[];
   lines: Array<{ variantId: string; quantity: number }>;
 };
 
@@ -754,13 +1008,31 @@ type ParsedAcceptedSale = {
   employeeDiscountPiasters: number;
   discountReason: string | null;
   occurredAt: Date;
+  pendingOperationIds: string[];
   lines: Array<{ variantId: string; quantity: number; listedUnitPricePiasters: number | null }>;
 };
 
-function parseDeviceId(input: unknown): string {
+function parsePendingOperationIds(value: unknown): string[] {
+  if (value === undefined || value === null) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    throw new SalesValidationError("بيانات البيع غير صالحة.");
+  }
+  if (value.length > 500) {
+    throw new SalesValidationError("بيانات البيع غير صالحة.");
+  }
+  const ids = value.map((item) => assertUuid(item, "معرّف العملية غير صالح."));
+  return [...new Set(ids)];
+}
+
+function parseSnapshotRequest(input: unknown): { deviceId: string; pendingOperationIds: string[] } {
   const body = expectObject(input, "بيانات اللقطة غير صالحة.");
   assertAllowedKeys(body, SNAPSHOT_KEYS, "بيانات اللقطة غير صالحة.");
-  return assertUuid(body.deviceId, "معرّف الجهاز غير صالح.");
+  return {
+    deviceId: assertUuid(body.deviceId, "معرّف الجهاز غير صالح."),
+    pendingOperationIds: parsePendingOperationIds(body.pendingOperationIds),
+  };
 }
 
 function parseAcceptedSale(input: unknown): ParsedAcceptedSale {
@@ -786,6 +1058,7 @@ function parseAcceptedSale(input: unknown): ParsedAcceptedSale {
     employeeDiscountPiasters: assertDiscountPiasters(body.employeeDiscountPiasters),
     discountReason: parseOptionalText(body.discountReason, 200, "سبب الخصم غير صالح."),
     occurredAt,
+    pendingOperationIds: parsePendingOperationIds(body.pendingOperationIds),
     lines: body.lines.map((item) => {
       const line = expectObject(item, "بيانات صنف البيع غير صالحة.");
       assertAllowedKeys(line, ACCEPTED_LINE_KEYS, "بيانات صنف البيع غير صالحة.");
@@ -799,6 +1072,28 @@ function parseAcceptedSale(input: unknown): ParsedAcceptedSale {
       };
     }),
   };
+}
+
+function parseRecoverCommand(
+  input: unknown,
+):
+  | { kind: "snapshot"; command: ParsedAcceptedSale }
+  | { kind: "prepared"; saleId: string; operationId: string; pendingOperationIds: string[]; occurredAt: Date | null } {
+  const body = expectObject(input, "بيانات البيع غير صالحة.");
+  assertAllowedKeys(body, RECOVER_KEYS, "بيانات البيع غير صالحة.");
+  if (body.physicallyCompleted !== true) {
+    throw new SalesValidationError("يجب تأكيد تسليم البضاعة والدفع.");
+  }
+  if (body.snapshotId === undefined || body.snapshotId === null || body.snapshotId === "") {
+    return {
+      kind: "prepared",
+      saleId: assertUuid(body.saleId, "معرّف البيع غير صالح."),
+      operationId: assertUuid(body.operationId, "معرّف العملية غير صالح."),
+      pendingOperationIds: parsePendingOperationIds(body.pendingOperationIds),
+      occurredAt: parseOptionalTime(body.occurredAt),
+    };
+  }
+  return { kind: "snapshot", command: parseAcceptedSale(input) };
 }
 
 function parseSaleWrite(input: unknown, complete: boolean): ParsedSale {
@@ -819,6 +1114,7 @@ function parseSaleWrite(input: unknown, complete: boolean): ParsedSale {
     employeeDiscountPiasters: assertDiscountPiasters(body.employeeDiscountPiasters),
     discountReason: parseOptionalText(body.discountReason, 200, "سبب الخصم غير صالح."),
     occurredAt: parseOptionalTime(body.occurredAt),
+    pendingOperationIds: complete ? parsePendingOperationIds(body.pendingOperationIds) : [],
     lines: body.lines.map((item) => {
       const line = expectObject(item, "بيانات صنف البيع غير صالحة.");
       assertAllowedKeys(line, LINE_KEYS, "بيانات صنف البيع غير صالحة.");

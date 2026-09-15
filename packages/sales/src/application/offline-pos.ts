@@ -1,6 +1,13 @@
+import type { SaleAcknowledgementDto, SaleDto } from "@bravos/contracts";
 import { assertMergedSaleQuantities, priceSaleLines } from "../domain/discount.ts";
 import { SalesValidationError } from "../domain/errors.ts";
+import { digestOfflineSale } from "../domain/offline-digest.ts";
 import type { CompleteOfflineSaleInput, OfflineCompletedSale, OfflinePosStore } from "./offline-ports.ts";
+
+export type RecoveredSaleAck = Pick<
+  SaleDto,
+  "id" | "operationId" | "recordedAt" | "soldByStaffId" | "finalTotalPiasters" | "lines" | "discrepancy"
+> & { acknowledgement: SaleAcknowledgementDto };
 
 export function createOfflinePosServices(store: OfflinePosStore) {
   return {
@@ -17,6 +24,39 @@ export function createOfflinePosServices(store: OfflinePosStore) {
     listUnsynced: store.listUnsynced.bind(store),
     listCompleted: store.listCompleted.bind(store),
     markAcknowledged: store.markAcknowledged.bind(store),
+    applyAcknowledgement: store.applyAcknowledgement.bind(store),
+    countOtherPending: store.countOtherPending.bind(store),
+    listPendingOperationIds: store.listPendingOperationIds.bind(store),
+    readStockVersion: store.readStockVersion.bind(store),
+    readStockCache: store.readStockCache.bind(store),
+    async recoverPreservedQueues(
+      staffId: string,
+      submit: (sale: OfflineCompletedSale) => Promise<RecoveredSaleAck>,
+      stillCurrent?: () => boolean,
+    ) {
+      const rows = await store.listPreservedPending(staffId);
+      let recovered = 0;
+      for (const local of rows) {
+        if (stillCurrent && !stillCurrent()) {
+          break;
+        }
+        const synced = await submit(local);
+        if (stillCurrent && !stillCurrent()) {
+          break;
+        }
+        const { acknowledgement, ...sale } = synced;
+        await store.applyAcknowledgement({
+          acknowledgedOperationIds: acknowledgement.acknowledgedOperationIds,
+          stockVersion: acknowledgement.stockVersion,
+          includedOperationIds: acknowledgement.includedOperationIds,
+          includedOperations: acknowledgement.includedOperations ?? [],
+          availability: acknowledgement.availability,
+          sales: [sale],
+        });
+        recovered += 1;
+      }
+      return { recovered, remaining: await store.countOtherPending(staffId) };
+    },
     loadPending: store.loadPending.bind(store),
     listRecoverablePending: store.listRecoverablePending.bind(store),
     savePending: store.savePending.bind(store),
@@ -29,13 +69,37 @@ export function createOfflinePosServices(store: OfflinePosStore) {
       return priceOfflineCart(input);
     },
 
-    recordCompleted: store.recordCompleted.bind(store),
+    async recordCompleted(sale: OfflineCompletedSale, cachedByVariant: Map<string, number>) {
+      const payloadFingerprint = await digestOfflineSale({
+        id: sale.id,
+        kind: sale.kind,
+        snapshotId: sale.snapshotId,
+        customerName: sale.customerName,
+        customerPhone: sale.customerPhone,
+        employeeDiscountPiasters: sale.employeeDiscountPiasters,
+        discountReason: sale.discountReason,
+        lines: sale.lines,
+        payloadFingerprint: null,
+      });
+      return store.recordCompleted({ ...sale, payloadFingerprint }, cachedByVariant);
+    },
 
     async completeSale(input: CompleteOfflineSaleInput): Promise<OfflineCompletedSale> {
       const priced = priceOfflineCart(input);
+      const payloadFingerprint = await digestOfflineSale({
+        id: input.saleId,
+        kind: input.kind,
+        snapshotId: input.kind === "accepted" ? input.snapshot.snapshotId : null,
+        customerName: input.customerName,
+        customerPhone: input.customerPhone,
+        employeeDiscountPiasters: input.employeeDiscountPiasters,
+        discountReason: input.discountReason,
+        lines: input.lines,
+      });
       return store.completeSale(input, {
         originalTotalPiasters: priced.originalTotalPiasters,
         finalTotalPiasters: priced.finalTotalPiasters,
+        payloadFingerprint,
         lines: priced.lines.map((line) => {
           const source = input.lines.find((item) => item.variantId === line.variantId);
           if (!source) {

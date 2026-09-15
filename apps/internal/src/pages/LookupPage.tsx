@@ -2,9 +2,18 @@ import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import type { CashierProductLookupDto, CashierVariantDto, PosPriceSnapshotDto, SaleDto, WorkspaceDto } from "@bravos/contracts";
 import { SaleSummary } from "./SaleSummary.tsx";
-import { ApiError, acceptOfflineSale, completeSale, issuePosSnapshot, lookupProductByCode, lookupSaleOperation, prepareSale } from "../api.ts";
+import { ApiError, acceptOfflineSale, completeSale, getWorkspace, issuePosSnapshot, lookupProductByCode, lookupSaleOperation, prepareSale } from "../api.ts";
 import { egpInputToPiasters, formatEgpFromPiasters } from "../money.ts";
-import { cacheIssuedSnapshot, offlineFromQuote, pos, PosStorageError, saleFromOffline } from "../pos.ts";
+import {
+  acceptedPayload,
+  applySyncedSale,
+  cacheIssuedSnapshot,
+  completedPayload,
+  offlineFromQuote,
+  pos,
+  PosStorageError,
+  saleFromOffline,
+} from "../pos.ts";
 import { mergeVariantQuantities, SalesValidationError } from "@bravos/sales/browser";
 import { accountGeneration, subscribeAccount } from "../account-session.ts";
 import { isNetworkFailure, signOutPreservingSales } from "../session.ts";
@@ -202,6 +211,18 @@ export default function LookupPage({
             return;
           }
           if (found?.physicallyCompleted) {
+            const unsynced = (await pos.listUnsynced(workspace.staff.id)).find((row) => row.id === found.id);
+            if (unsynced) {
+              try {
+                const synced =
+                  unsynced.kind === "accepted" && unsynced.snapshotId
+                    ? await acceptOfflineSale(await acceptedPayload(unsynced))
+                    : await completeSale(await completedPayload(unsynced));
+                await applySyncedSale(unsynced, synced);
+              } catch {
+                /* keep unacknowledged until retry */
+              }
+            }
             await acceptSale(found, "تم العثور على البيع المحفوظ.");
             return;
           }
@@ -269,7 +290,7 @@ export default function LookupPage({
         if (cancelled || accountGeneration() !== epoch) {
           return;
         }
-        const snapshot = await issuePosSnapshot(deviceId);
+        const snapshot = await issuePosSnapshot(deviceId, await pos.listPendingOperationIds());
         if (cancelled || accountGeneration() !== epoch) {
           return;
         }
@@ -617,45 +638,11 @@ export default function LookupPage({
       return;
     }
     try {
-      if (local.kind === "accepted" && local.snapshotId) {
-        const synced = await acceptOfflineSale({
-          saleId: local.id,
-          operationId: local.operationId,
-          deviceId: local.deviceId,
-          snapshotId: local.snapshotId,
-          occurredAt: local.occurredAt,
-          customerName: local.customerName,
-          customerPhone: local.customerPhone,
-          employeeDiscountPiasters: local.employeeDiscountPiasters,
-          discountReason: local.discountReason,
-          lines: local.lines.map((line) => ({
-            variantId: line.variantId,
-            quantity: line.quantity,
-            listedUnitPricePiasters: line.listedUnitPricePiasters,
-          })),
-        });
-        if (
-          synced.id === local.id &&
-          synced.finalTotalPiasters === local.finalTotalPiasters &&
-          synced.soldByStaffId === local.soldByStaffId
-        ) {
-          await pos.markAcknowledged(workspace.staff.id, local.id);
-        }
-        return;
-      }
-      const synced = await completeSale({
-        saleId: local.id,
-        operationId: local.operationId,
-        occurredAt: local.occurredAt,
-        customerName: local.customerName,
-        customerPhone: local.customerPhone,
-        employeeDiscountPiasters: local.employeeDiscountPiasters,
-        discountReason: local.discountReason,
-        lines: local.lines.map((line) => ({ variantId: line.variantId, quantity: line.quantity })),
-      });
-      if (synced.id === local.id && synced.finalTotalPiasters === local.finalTotalPiasters) {
-        await pos.markAcknowledged(workspace.staff.id, local.id);
-      }
+      const synced =
+        local.kind === "accepted" && local.snapshotId
+          ? await acceptOfflineSale(await acceptedPayload(local))
+          : await completeSale(await completedPayload(local));
+      await applySyncedSale(local, synced);
     } catch {
       /* keep unacknowledged */
     }
@@ -671,7 +658,51 @@ export default function LookupPage({
     setNotice("");
     const epoch = revisionEpochRef.current;
     submitEpochRef.current = epoch;
+    const generation = accountGeneration();
     const physical = kind === "complete";
+    if (typeof navigator !== "undefined" && navigator.onLine && !pendingSaleRef.current?.physicallyCompleted) {
+      try {
+        const fresh = await getWorkspace();
+        if (accountGeneration() !== generation || revisionEpochRef.current !== epoch) {
+          inFlightRef.current = false;
+          setPending("");
+          return;
+        }
+        const pinnedBranchId = quoteSnapshotRef.current?.branch.id ?? workspace.activeBranch?.id;
+        if (
+          fresh.staff.id !== workspace.staff.id ||
+          !fresh.capabilities.cashier ||
+          !fresh.activeBranch ||
+          !pinnedBranchId ||
+          fresh.activeBranch.id !== pinnedBranchId
+        ) {
+          inFlightRef.current = false;
+          setPending("");
+          setError("لا يمكن بدء عمل متصل جديد بهذا الحساب. المبيعات المكتملة محفوظة ويمكن استردادها بمساعدة المدير.");
+          await onChanged(fresh.staff.id === workspace.staff.id ? fresh : null);
+          return;
+        }
+      } catch (caught) {
+        if (accountGeneration() !== generation || revisionEpochRef.current !== epoch) {
+          inFlightRef.current = false;
+          setPending("");
+          return;
+        }
+        if (caught instanceof ApiError && caught.status === 401) {
+          inFlightRef.current = false;
+          setPending("");
+          setError("انتهت الجلسة أو أُلغي الدخول. سجّل الدخول مجدداً. المبيعات المكتملة محفوظة.");
+          await onChanged(null);
+          return;
+        }
+        if (caught instanceof ApiError && caught.status === 403) {
+          inFlightRef.current = false;
+          setPending("");
+          setError("لا يمكن بدء عمل متصل جديد بهذا الحساب. المبيعات المكتملة محفوظة ويمكن استردادها بمساعدة المدير.");
+          return;
+        }
+      }
+    }
     if (physical && revisionBlockRef.current && !pendingSaleRef.current?.physicallyCompleted) {
       inFlightRef.current = false;
       setPending("");

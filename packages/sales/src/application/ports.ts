@@ -1,8 +1,10 @@
 import type {
   BranchDto,
   CashierProductLookupDto,
+  CompletedOperationProofDto,
   ManagerSaleDto,
   PosPriceSnapshotDto,
+  SaleAcknowledgementDto,
   SaleDto,
   VariantIdentityDto,
 } from "@bravos/contracts";
@@ -91,6 +93,8 @@ export type SaleRecord = {
   payloadFingerprint: string;
   physicallyCompleted: boolean;
   costsIncomplete: boolean;
+  recoveredByStaffId: string | null;
+  recoveredAt: Date | null;
   lines: SaleLineWrite[];
 };
 
@@ -112,6 +116,8 @@ export type SaleInsert = {
   payloadFingerprint: string;
   physicallyCompleted: boolean;
   costsIncomplete: boolean;
+  recoveredByStaffId?: string | null;
+  recoveredAt?: Date | null;
   lines: SaleLineWrite[];
 };
 
@@ -128,9 +134,13 @@ export type SaleStore = {
     recordedAt: Date;
     costsIncomplete: boolean;
     lines: SaleLineWrite[];
+    recoveredByStaffId?: string | null;
+    recoveredAt?: Date | null;
   }): Promise<SaleRecord>;
   getById(id: string): Promise<SaleRecord | null>;
   getByOperationId(operationId: string): Promise<SaleRecord | null>;
+  listCompletedOperationProofs(operationIds: string[]): Promise<CompletedOperationProofDto[]>;
+  listCompletedOperationIds(operationIds: string[]): Promise<string[]>;
   listCompleted(): Promise<SaleRecord[]>;
   listCompletedForStaff(staffId: string, branchIds: string[]): Promise<SaleRecord[]>;
   referencedVariantIds(variantIds: string[]): Promise<string[]>;
@@ -153,6 +163,7 @@ export type PricedCommandLines = VariantLineAllocation[];
 export type CompleteSaleResult = {
   sale: SaleDto | ManagerSaleDto;
   created: boolean;
+  acknowledgement: SaleAcknowledgementDto;
 };
 
 export type PrepareSaleResult = {

@@ -8,6 +8,7 @@ import type {
   ManagerProductDto,
   PosPriceSnapshotDto,
   ReceiptDto,
+  SaleAcknowledgementDto,
   SaleDto,
   SizeDto,
   StaffAccountDto,
@@ -294,6 +295,7 @@ export type SaleWrite = {
   employeeDiscountPiasters: number;
   discountReason?: string | null;
   occurredAt?: string | null;
+  pendingOperationIds?: string[];
   lines: Array<{ variantId: string; quantity: number; listedUnitPricePiasters?: number }>;
 };
 
@@ -301,15 +303,26 @@ export function listCashierCatalog() {
   return request<CashierProductLookupDto[]>("/api/internal/catalog/pos-snapshot");
 }
 
-export function issuePosSnapshot(deviceId: string) {
+export function issuePosSnapshot(deviceId: string, pendingOperationIds: string[] = []) {
   return request<PosPriceSnapshotDto>("/api/internal/sales/pos-snapshots", {
     method: "POST",
-    body: JSON.stringify({ deviceId }),
+    body: JSON.stringify({ deviceId, pendingOperationIds }),
   });
 }
 
+export type SyncedSaleDto = SaleDto & { acknowledgement: SaleAcknowledgementDto };
+
 export function acceptOfflineSale(input: SaleWrite & { deviceId: string; snapshotId: string }) {
-  return request<SaleDto>("/api/internal/sales/accepted", {
+  return request<SyncedSaleDto>("/api/internal/sales/accepted", {
+    method: "POST",
+    body: JSON.stringify({ ...input, physicallyCompleted: true }),
+  });
+}
+
+export function recoverOfflineSale(
+  input: Partial<SaleWrite> & { saleId: string; operationId: string; deviceId?: string; snapshotId?: string },
+) {
+  return request<SyncedSaleDto>("/api/internal/sales/recover", {
     method: "POST",
     body: JSON.stringify({ ...input, physicallyCompleted: true }),
   });
@@ -323,7 +336,7 @@ export function prepareSale(input: SaleWrite) {
 }
 
 export function completeSale(input: SaleWrite) {
-  return request<SaleDto>("/api/internal/sales", {
+  return request<SyncedSaleDto>("/api/internal/sales", {
     method: "POST",
     body: JSON.stringify({ ...input, physicallyCompleted: true }),
   });

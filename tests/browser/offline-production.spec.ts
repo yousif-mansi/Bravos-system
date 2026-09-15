@@ -155,6 +155,102 @@ test("production precache serves first offline POS navigation and survives a sam
   }
 });
 
+test("production offline queue survives restart then automatically syncs after reconnect", async ({
+  playwright,
+}) => {
+  const profileParent = await mkdtemp(path.join(tmpdir(), "bravos-offline-ack-"));
+  const userDataDir = path.join(profileParent, "profile");
+  await mkdir(userDataDir, { recursive: true });
+  let context: Awaited<ReturnType<typeof playwright.chromium.launchPersistentContext>> | undefined;
+  let restarted: Awaited<ReturnType<typeof playwright.chromium.launchPersistentContext>> | undefined;
+  try {
+    context = await playwright.chromium.launchPersistentContext(userDataDir, {
+      locale: "ar-EG",
+      viewport: { width: 1280, height: 720 },
+    });
+    const page = context.pages()[0] ?? (await context.newPage());
+    await page.goto(`${PREVIEW_ORIGIN}/login`);
+    await page.getByLabel("اسم الدخول").fill("owner");
+    await page.getByLabel("كلمة المرور").fill("e2e-owner-pass");
+    await page.getByRole("button", { name: "دخول" }).click();
+    await page.getByRole("button", { name: "أبشواي" }).click();
+    const category = await staffApi(page, "POST", "/api/internal/catalog/categories", { nameAr: "إنتاج مزامنة" });
+    const size = await staffApi(page, "POST", "/api/internal/catalog/sizes", { nameAr: "مقاس مزامنة" });
+    const color = await staffApi(page, "POST", "/api/internal/catalog/colors", { nameAr: "لون مزامنة" });
+    const product = await staffApi(page, "POST", "/api/internal/catalog/products", {
+      code: "OFF-ACK",
+      nameAr: "قميص المزامنة",
+      descriptionAr: "قطن",
+      categoryId: category.body.id,
+      defaultSellingPricePiasters: 15000,
+      publication: "hidden",
+      imageRefs: [],
+      variants: [{ sizeId: size.body.id, colorId: color.body.id, sellingPricePiastersOverride: null }],
+    });
+    await staffApi(page, "POST", "/api/internal/receiving/receipts", {
+      operationId: crypto.randomUUID(),
+      receiptDate: "2026-09-11",
+      lines: [{ variantId: product.body.variants[0].id, quantity: 2, unitCostPiasters: 4000 }],
+    });
+    await page.getByRole("button", { name: "تسجيل الخروج" }).click();
+    await page.getByLabel("اسم الدخول").fill("cashier");
+    await page.getByLabel("كلمة المرور").fill("e2e-cashier-pass");
+    await page.getByRole("button", { name: "دخول" }).click();
+    await page.getByRole("button", { name: "أبشواي" }).click();
+    await expect(page.getByTestId("offline-ready")).toBeVisible({ timeout: 45_000 });
+    await context.setOffline(true);
+    await page.getByRole("link", { name: "البحث عن منتج" }).click();
+    const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
+    await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill("OFF-ACK");
+    await lookup.getByRole("button", { name: "بحث" }).click();
+    await page.getByLabel("المقاس").selectOption({ label: "مقاس مزامنة" });
+    await page.getByLabel("اللون").selectOption({ label: "لون مزامنة" });
+    await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
+    const checkout = page.getByRole("form", { name: "إتمام البيع النقدي" });
+    await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
+    await checkout.getByLabel("استلم الزبون البضاعة ودفع نقداً").check();
+    await checkout.getByRole("button", { name: "إتمام البيع" }).click();
+    await expect(page.getByRole("status")).toContainText("تم حفظ البيع النقدي.");
+    const original = await readPosSales(page);
+    expect(original).toHaveLength(1);
+    expect(original[0]?.syncStatus).toBe("pending");
+    expect(original[0]?.finalTotalPiasters).toBe(15000);
+    const originalId = original[0]?.id;
+    await page.close();
+    await context.close();
+    context = undefined;
+
+    const relaunched = await relaunchSameProfileOffline(playwright, userDataDir);
+    restarted = relaunched.context;
+    const again = relaunched.page;
+    await again.goto(`${PREVIEW_ORIGIN}/workspace`);
+    await expect(again.getByTestId("unsynced-count")).toContainText("مبيعات غير مزامنة: 1", { timeout: 45_000 });
+    const restored = await readPosSales(again);
+    expect(restored).toHaveLength(1);
+    expect(restored[0]?.id).toBe(originalId);
+    expect(restored[0]?.syncStatus).toBe("pending");
+    await restarted.setOffline(false);
+    await expect(again.getByTestId("unsynced-count")).toContainText("مبيعات غير مزامنة: 0", { timeout: 45_000 });
+    await expect.poll(async () => (await readPosSales(again))[0]?.syncStatus).toBe("acknowledged");
+    const listed = await staffApi(again, "GET", "/api/internal/sales");
+    expect(listed.body.some((sale: { id: string }) => sale.id === originalId)).toBe(true);
+    const lookupAfter = await staffApi(again, "GET", `/api/internal/catalog/lookup?code=${encodeURIComponent("OFF-ACK")}`);
+    expect(lookupAfter.body.variants[0].availableQuantity).toBe(1);
+  } finally {
+    if (context) {
+      await context.close().catch(() => undefined);
+    }
+    if (restarted) {
+      await restarted.close().catch(() => undefined);
+    }
+    const resolvedParent = await realpath(profileParent);
+    const resolvedProfile = await realpath(userDataDir).catch(() => userDataDir);
+    if (resolvedProfile === resolvedParent || resolvedProfile.startsWith(`${resolvedParent}${path.sep}`)) {
+      await rm(profileParent, { recursive: true, force: true });
+    }
+  }
+});
+
 test("incomplete production cache is not advertised ready", async ({ page }) => {
   await page.goto(`${PREVIEW_ORIGIN}/login`);
   await page.getByLabel("اسم الدخول").fill("cashier");
@@ -1267,6 +1363,7 @@ async function readPosSales(page: import("@playwright/test").Page) {
         originalTotalPiasters: number;
         employeeDiscountPiasters: number;
         finalTotalPiasters: number;
+        syncStatus?: string;
         branch: { code: string };
       }>
     >((resolve, reject) => {

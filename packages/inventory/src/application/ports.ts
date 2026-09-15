@@ -120,10 +120,14 @@ export type InventoryTransaction = {
   quantitiesFor(variantIds: string[]): Promise<Map<string, number>>;
   referencedVariantIds(variantIds: string[]): Promise<string[]>;
   listAvailableBatchesFifo(variantId: string): Promise<ReceivedBatchRecord[]>;
+  lockStockClock(mode: "share" | "update"): Promise<void>;
+  bumpStockVersion(): Promise<number>;
+  currentStockVersion(): Promise<number>;
 };
 
 export type InventoryReadStore = {
   quantitiesFor(variantIds: string[]): Promise<Map<string, number>>;
+  currentStockVersion(): Promise<number>;
   referencedVariantIds(variantIds: string[]): Promise<string[]>;
   listBatches(): Promise<BatchRecord[]>;
   listAllocations(operationId: string): Promise<AllocationRecord[]>;

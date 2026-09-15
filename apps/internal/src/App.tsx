@@ -7,7 +7,13 @@ import { RecoveryPage } from "./pages/RecoveryPage.tsx";
 import { BranchPage } from "./pages/BranchPage.tsx";
 import { WorkspacePage } from "./pages/WorkspacePage.tsx";
 import { accountGeneration, publishAccount, subscribeAccount } from "./account-session.ts";
-import { pos, prepareOfflineWorkspace, retryUnsyncedSales, type OfflineCompletedSale } from "./pos.ts";
+import {
+  acceptedPayload,
+  completedPayload,
+  pos,
+  prepareOfflineWorkspace,
+  retryUnsyncedSales,
+} from "./pos.ts";
 import { isNetworkFailure } from "./session.ts";
 
 const StaffPage = lazy(() => import("./pages/StaffPage.tsx"));
@@ -195,45 +201,47 @@ export function App() {
     const epoch = accountGeneration();
     const stillCurrent = () => accountGeneration() === epoch && staffIdRef.current === staffId;
     const sync = {
-      accept: (sale: OfflineCompletedSale) => {
+      accept: async (sale: Parameters<typeof acceptedPayload>[0]) => {
         if (!stillCurrent() || sale.staffId !== staffId) {
           return Promise.reject(new Error("stale-account"));
         }
-        return acceptOfflineSale({
-          saleId: sale.id,
-          operationId: sale.operationId,
-          deviceId: sale.deviceId,
-          snapshotId: sale.snapshotId ?? "",
-          occurredAt: sale.occurredAt,
-          customerName: sale.customerName,
-          customerPhone: sale.customerPhone,
-          employeeDiscountPiasters: sale.employeeDiscountPiasters,
-          discountReason: sale.discountReason,
-          lines: sale.lines.map((line) => ({
-            variantId: line.variantId,
-            quantity: line.quantity,
-            listedUnitPricePiasters: line.listedUnitPricePiasters,
-          })),
-        });
+        return acceptOfflineSale(await acceptedPayload(sale));
       },
-      complete: (sale: OfflineCompletedSale) => {
+      complete: async (sale: Parameters<typeof completedPayload>[0]) => {
         if (!stillCurrent() || sale.staffId !== staffId) {
           return Promise.reject(new Error("stale-account"));
         }
-        return completeSale({
-          saleId: sale.id,
-          operationId: sale.operationId,
-          occurredAt: sale.occurredAt,
-          customerName: sale.customerName,
-          customerPhone: sale.customerPhone,
-          employeeDiscountPiasters: sale.employeeDiscountPiasters,
-          discountReason: sale.discountReason,
-          lines: sale.lines.map((line) => ({ variantId: line.variantId, quantity: line.quantity })),
-        });
+        return completeSale(await completedPayload(sale));
       },
     };
     function onOnline() {
-      void retryUnsyncedSales(staffId, sync, stillCurrent);
+      void (async () => {
+        if (!stillCurrent()) {
+          return;
+        }
+        try {
+          const value = await getWorkspace();
+          if (!stillCurrent()) {
+            return;
+          }
+          if (value.staff.id !== staffId) {
+            return;
+          }
+          setWorkspace(value);
+          if (!value.capabilities.cashier) {
+            return;
+          }
+          await retryUnsyncedSales(staffId, sync, stillCurrent);
+        } catch (caught: unknown) {
+          if (!stillCurrent()) {
+            return;
+          }
+          if (caught instanceof ApiError && caught.status === 401) {
+            staffIdRef.current = null;
+            setWorkspace(null);
+          }
+        }
+      })();
     }
     window.addEventListener("online", onOnline);
     return () => {

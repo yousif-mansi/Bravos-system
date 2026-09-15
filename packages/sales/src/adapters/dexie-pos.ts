@@ -1,11 +1,15 @@
-import type { PosPriceSnapshotDto, WorkspaceDto } from "@bravos/contracts";
+import type { CompletedOperationProofDto, PosPriceSnapshotDto, WorkspaceDto } from "@bravos/contracts";
 import { Dexie, type EntityTable, type Transaction } from "dexie";
 import { isDeclaredSafeMigration, POS_SCHEMA_VERSION } from "../domain/pos-update.ts";
 import { mergeVariantQuantities } from "../domain/discount.ts";
 import { SalesValidationError } from "../domain/errors.ts";
+import { canonicalOfflineSaleFactsJson } from "../domain/canonical-payload.ts";
+import { digestOfflineSale } from "../domain/offline-digest.ts";
 import {
   PosStorageError,
   type CompleteOfflineSaleInput,
+  type DeviceStockCache,
+  type OfflineAcknowledgement,
   type OfflineCompletedSale,
   type OfflinePendingSale,
   type OfflinePosStore,
@@ -119,6 +123,10 @@ function tryNormalizeLineUnits(
 function normalizeCompletedSale(sale: OfflineCompletedSale): OfflineCompletedSale {
   return {
     ...sale,
+    payloadFingerprint:
+      typeof sale.payloadFingerprint === "string" && /^[0-9a-f]{64}$/i.test(sale.payloadFingerprint)
+        ? sale.payloadFingerprint.toLowerCase()
+        : null,
     lines: sale.lines.map((line) => {
       const units = tryNormalizeLineUnits(line);
       return units ? { ...line, units } : line;
@@ -237,6 +245,246 @@ async function writeIfCurrentRevision(
     await db.meta.put({ key: "sessionRevision", value: transition.revision });
   }
   return true;
+}
+
+function emptyStockCache(): DeviceStockCache {
+  return { version: 0, availability: {}, includedOperationIds: [] };
+}
+
+async function readStockCacheRecord(db: BravosPosDatabase): Promise<DeviceStockCache> {
+  const stored = await db.meta.get("stockCache");
+  if (!stored?.value) {
+    const version = await readAppliedStockVersion(db);
+    return { version, availability: {}, includedOperationIds: [] };
+  }
+  try {
+    const parsed = JSON.parse(stored.value) as DeviceStockCache;
+    if (!parsed || typeof parsed !== "object" || !Number.isSafeInteger(parsed.version) || parsed.version < 0) {
+      return emptyStockCache();
+    }
+    return {
+      version: parsed.version,
+      availability: parsed.availability && typeof parsed.availability === "object" ? parsed.availability : {},
+      includedOperationIds: Array.isArray(parsed.includedOperationIds)
+        ? parsed.includedOperationIds.filter((id) => typeof id === "string")
+        : [],
+    };
+  } catch {
+    return emptyStockCache();
+  }
+}
+
+async function writeStockCacheRecord(db: BravosPosDatabase, cache: DeviceStockCache) {
+  await db.meta.put({ key: "stockCache", value: JSON.stringify(cache) });
+  await db.meta.put({ key: "stockVersion", value: String(cache.version) });
+}
+
+async function readAppliedStockVersion(db: BravosPosDatabase): Promise<number> {
+  const cache = await db.meta.get("stockCache");
+  if (cache?.value) {
+    try {
+      const parsed = JSON.parse(cache.value) as { version?: number };
+      if (Number.isSafeInteger(parsed.version) && (parsed.version ?? 0) >= 0) {
+        return parsed.version ?? 0;
+      }
+    } catch {
+      /* fall through */
+    }
+  }
+  const stored = await db.meta.get("stockVersion");
+  const parsed = stored?.value ? Number(stored.value) : 0;
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
+}
+
+function overlaySnapshot(snapshot: PosPriceSnapshotDto, cache: DeviceStockCache): PosPriceSnapshotDto {
+  return {
+    ...snapshot,
+    stockVersion: cache.version,
+    includedOperationIds: cache.includedOperationIds,
+    includedOperations: [],
+    products: snapshot.products.map((product) => ({
+      ...product,
+      variants: product.variants.map((variant) => ({
+        ...variant,
+        availableQuantity:
+          variant.id in cache.availability ? cache.availability[variant.id] ?? 0 : variant.availableQuantity,
+      })),
+    })),
+  };
+}
+
+async function overlayAllSnapshots(db: BravosPosDatabase, cache: DeviceStockCache) {
+  const snapshots = await db.snapshots.toArray();
+  for (const row of snapshots) {
+    await db.snapshots.put({
+      staffId: row.staffId,
+      snapshot: overlaySnapshot(row.snapshot, cache),
+    });
+  }
+}
+
+type PreparedLocalDigest = {
+  digest: string;
+  canonical: string;
+};
+
+function saleFacts(local: OfflineCompletedSale) {
+  return {
+    id: local.id,
+    kind: local.kind,
+    snapshotId: local.snapshotId,
+    customerName: local.customerName,
+    customerPhone: local.customerPhone,
+    employeeDiscountPiasters: local.employeeDiscountPiasters,
+    discountReason: local.discountReason,
+    lines: local.lines,
+  };
+}
+
+async function prepareLocalDigests(
+  db: BravosPosDatabase,
+  proofs: CompletedOperationProofDto[],
+): Promise<Map<string, PreparedLocalDigest>> {
+  const prepared = new Map<string, PreparedLocalDigest>();
+  const operationIds = [
+    ...new Set(proofs.map((proof) => proof.operationId).filter((id) => typeof id === "string")),
+  ];
+  for (const operationId of operationIds) {
+    const locals = await db.sales.where("operationId").equals(operationId).toArray();
+    for (const local of locals) {
+      const canonical = canonicalOfflineSaleFactsJson(saleFacts(local));
+      const digest = await digestOfflineSale({ ...saleFacts(local), payloadFingerprint: null });
+      prepared.set(local.id, { digest, canonical });
+    }
+  }
+  return prepared;
+}
+
+function localMatchesProof(
+  local: OfflineCompletedSale,
+  proof: CompletedOperationProofDto,
+  contentDigest: string,
+): boolean {
+  if (local.id !== proof.saleId || local.operationId !== proof.operationId) {
+    return false;
+  }
+  if (typeof proof.contentDigest !== "string" || !/^[0-9a-f]{64}$/i.test(proof.contentDigest)) {
+    return false;
+  }
+  if (typeof contentDigest !== "string" || !/^[0-9a-f]{64}$/i.test(contentDigest)) {
+    return false;
+  }
+  return contentDigest.toLowerCase() === proof.contentDigest.toLowerCase();
+}
+
+async function remainingKnownStock(db: BravosPosDatabase, variantId: string, pinned: number): Promise<number> {
+  const cache = await readStockCacheRecord(db);
+  const included = new Set(cache.includedOperationIds);
+  const base = Object.prototype.hasOwnProperty.call(cache.availability, variantId)
+    ? cache.availability[variantId] ?? 0
+    : pinned;
+  const outstanding = await db.effects.where("variantId").equals(variantId).toArray();
+  const used = outstanding
+    .filter((effect) => !included.has(effect.operationId))
+    .reduce((sum, effect) => sum + effect.quantity, 0);
+  return base - used;
+}
+
+async function acknowledgeMatchingOperations(
+  db: BravosPosDatabase,
+  proofs: CompletedOperationProofDto[],
+  sales: OfflineAcknowledgement["sales"],
+  prepared: Map<string, PreparedLocalDigest>,
+): Promise<string[]> {
+  const byId = new Map((sales ?? []).map((sale) => [sale.id, sale]));
+  const acked: string[] = [];
+  for (const proof of proofs) {
+    if (typeof proof.operationId !== "string" || typeof proof.saleId !== "string") {
+      continue;
+    }
+    const locals = await db.sales.where("operationId").equals(proof.operationId).toArray();
+    if (locals.length === 0) {
+      continue;
+    }
+    for (const local of locals) {
+      const known = prepared.get(local.id);
+      if (!known) {
+        continue;
+      }
+      if (canonicalOfflineSaleFactsJson(saleFacts(local)) !== known.canonical) {
+        continue;
+      }
+      const digest = known.digest;
+      if (!localMatchesProof(local, proof, digest)) {
+        continue;
+      }
+      const remote = byId.get(local.id);
+      const next: OfflineCompletedSale = {
+        ...local,
+        payloadFingerprint: digest,
+        syncStatus: "acknowledged",
+        recordedAt: remote?.recordedAt ?? local.recordedAt,
+        lines: local.lines.map((line) => {
+          const remoteLine =
+            remote?.lines.find((item) => item.id === line.id) ??
+            remote?.lines.find((item) => item.variantId === line.variantId);
+          if (!remoteLine) {
+            return line;
+          }
+          return {
+            ...line,
+            allocatedQuantity: remoteLine.allocatedQuantity,
+            unallocatedQuantity: remoteLine.unallocatedQuantity,
+          };
+        }),
+      };
+      await db.sales.put(normalizeCompletedSale(next));
+      await db.effects.where("operationId").equals(local.operationId).delete();
+      acked.push(local.operationId);
+    }
+  }
+  return [...new Set(acked)];
+}
+
+async function applyAcknowledgementRecord(
+  db: BravosPosDatabase,
+  input: OfflineAcknowledgement,
+  prepared: Map<string, PreparedLocalDigest>,
+) {
+  if (!Number.isSafeInteger(input.stockVersion) || input.stockVersion < 0) {
+    throw new SalesValidationError("تعذر تأكيد المزامنة.");
+  }
+  const proofs = Array.isArray(input.includedOperations) ? input.includedOperations : [];
+  const cache = await readStockCacheRecord(db);
+  const acked = await acknowledgeMatchingOperations(db, proofs, input.sales, prepared);
+  if (input.stockVersion < cache.version) {
+    const next = {
+      ...cache,
+      includedOperationIds: [...new Set([...cache.includedOperationIds, ...acked])],
+    };
+    await writeStockCacheRecord(db, next);
+    await overlayAllSnapshots(db, next);
+    return;
+  }
+  const availability = { ...cache.availability };
+  if (input.stockVersion > cache.version) {
+    for (const item of input.availability) {
+      availability[item.variantId] = item.availableQuantity;
+    }
+  } else {
+    for (const item of input.availability) {
+      if (!(item.variantId in availability)) {
+        availability[item.variantId] = item.availableQuantity;
+      }
+    }
+  }
+  const next: DeviceStockCache = {
+    version: input.stockVersion > cache.version ? input.stockVersion : cache.version,
+    availability,
+    includedOperationIds: [...new Set([...cache.includedOperationIds, ...acked])],
+  };
+  await writeStockCacheRecord(db, next);
+  await overlayAllSnapshots(db, next);
 }
 
 function canonicalLines(lines: Array<{ variantId: string; quantity: number }>) {
@@ -468,12 +716,66 @@ export function createDexiePosStore(options?: { databaseName?: string }): Offlin
       if (!current || current.staffId !== staffId) {
         return;
       }
-      await db.snapshots.put({ staffId, snapshot });
+      try {
+        const incomingProofs = Array.isArray(snapshot.includedOperations) ? snapshot.includedOperations : [];
+        const prepared = await prepareLocalDigests(db, incomingProofs);
+        await db.transaction("rw", db.snapshots, db.meta, db.sales, db.effects, async () => {
+          const cache = await readStockCacheRecord(db);
+          const incomingVersion =
+            typeof snapshot.stockVersion === "number" && Number.isSafeInteger(snapshot.stockVersion)
+              ? snapshot.stockVersion
+              : 0;
+          let next = cache;
+          if (incomingVersion > cache.version) {
+            const availability = { ...cache.availability };
+            for (const product of snapshot.products) {
+              for (const variant of product.variants) {
+                availability[variant.id] = variant.availableQuantity;
+              }
+            }
+            const acked = await acknowledgeMatchingOperations(db, incomingProofs, undefined, prepared);
+            next = {
+              version: incomingVersion,
+              availability,
+              includedOperationIds: [...new Set([...cache.includedOperationIds, ...acked])],
+            };
+            await writeStockCacheRecord(db, next);
+            await overlayAllSnapshots(db, next);
+          } else if (incomingVersion === cache.version && incomingProofs.length > 0) {
+            const acked = await acknowledgeMatchingOperations(db, incomingProofs, undefined, prepared);
+            next = {
+              ...cache,
+              includedOperationIds: [...new Set([...cache.includedOperationIds, ...acked])],
+            };
+            await writeStockCacheRecord(db, next);
+          } else if (incomingVersion < cache.version && incomingProofs.length > 0) {
+            const acked = await acknowledgeMatchingOperations(db, incomingProofs, undefined, prepared);
+            next = {
+              ...cache,
+              includedOperationIds: [...new Set([...cache.includedOperationIds, ...acked])],
+            };
+            await writeStockCacheRecord(db, next);
+          }
+          await db.snapshots.put({
+            staffId,
+            snapshot: overlaySnapshot(snapshot, next),
+          });
+        });
+      } catch (error) {
+        if (error instanceof PosStorageError || error instanceof SalesValidationError) {
+          throw error;
+        }
+        throw new PosStorageError();
+      }
     },
 
     async loadSnapshot(staffId) {
       await ensureOpen();
-      return (await db.snapshots.get(staffId))?.snapshot ?? null;
+      const row = await db.snapshots.get(staffId);
+      if (!row) {
+        return null;
+      }
+      return overlaySnapshot(row.snapshot, await readStockCacheRecord(db));
     },
 
     async lookupProduct(staffId, code) {
@@ -487,14 +789,32 @@ export function createDexiePosStore(options?: { databaseName?: string }): Offlin
 
     async availableQuantity(variantId, cachedAvailable) {
       await ensureOpen();
+      const cache = await readStockCacheRecord(db);
+      const included = new Set(cache.includedOperationIds);
+      const base = variantId in cache.availability ? cache.availability[variantId] ?? 0 : cachedAvailable;
       const outstanding = await db.effects.where("variantId").equals(variantId).toArray();
-      const used = outstanding.reduce((sum, effect) => sum + effect.quantity, 0);
-      return cachedAvailable - used;
+      const used = outstanding
+        .filter((effect) => !included.has(effect.operationId))
+        .reduce((sum, effect) => sum + effect.quantity, 0);
+      return base - used;
     },
 
     async completeSale(input: CompleteOfflineSaleInput, priced) {
       await ensureOpen();
       try {
+        if (typeof priced.payloadFingerprint !== "string" || !/^[0-9a-f]{64}$/i.test(priced.payloadFingerprint)) {
+          throw new SalesValidationError("تعذر حفظ البيع محلياً.");
+        }
+        const expectedCanonical = canonicalOfflineSaleFactsJson({
+          id: input.saleId,
+          kind: input.kind,
+          snapshotId: input.kind === "accepted" ? input.snapshot.snapshotId : null,
+          customerName: input.customerName,
+          customerPhone: input.customerPhone,
+          employeeDiscountPiasters: input.employeeDiscountPiasters,
+          discountReason: input.discountReason,
+          lines: input.lines,
+        });
         return await db.transaction("rw", db.sales, db.effects, db.pending, db.sessions, db.meta, async () => {
           await assertCurrentActor(db, input.staffId);
           const existing = await db.sales.get(input.saleId);
@@ -507,10 +827,9 @@ export function createDexiePosStore(options?: { databaseName?: string }): Offlin
           const quantities = mergeVariantQuantities(input.lines);
           for (const item of quantities) {
             const variant = input.lines.find((line) => line.variantId === item.variantId)?.variant;
-            const cached = variant?.availableQuantity ?? 0;
-            const outstanding = await db.effects.where("variantId").equals(item.variantId).toArray();
-            const used = outstanding.reduce((sum, effect) => sum + effect.quantity, 0);
-            if (cached - used < item.quantity) {
+            const pinned = variant?.availableQuantity ?? 0;
+            const remaining = await remainingKnownStock(db, item.variantId, pinned);
+            if (remaining < item.quantity) {
               throw new SalesValidationError("الكمية المتاحة غير كافية.");
             }
           }
@@ -535,8 +854,12 @@ export function createDexiePosStore(options?: { databaseName?: string }): Offlin
             discountedByStaffId: input.employeeDiscountPiasters > 0 ? input.staffId : null,
             finalTotalPiasters: priced.finalTotalPiasters,
             physicallyCompleted: true,
+            payloadFingerprint: priced.payloadFingerprint.toLowerCase(),
             lines: priced.lines,
           };
+          if (canonicalOfflineSaleFactsJson(saleFacts(sale)) !== expectedCanonical) {
+            throw new SalesValidationError("تعذر حفظ البيع محلياً.");
+          }
           await db.sales.add(sale);
           for (const item of quantities) {
             await db.effects.add({
@@ -564,6 +887,15 @@ export function createDexiePosStore(options?: { databaseName?: string }): Offlin
     async recordCompleted(sale, cachedByVariant) {
       await ensureOpen();
       try {
+        const expectedCanonical = canonicalOfflineSaleFactsJson(saleFacts(sale));
+        const payloadFingerprint = await digestOfflineSale({ ...saleFacts(sale), payloadFingerprint: null });
+        if (
+          sale.payloadFingerprint &&
+          /^[0-9a-f]{64}$/i.test(sale.payloadFingerprint) &&
+          sale.payloadFingerprint.toLowerCase() !== payloadFingerprint
+        ) {
+          throw new SalesValidationError("تعذر حفظ البيع محلياً.");
+        }
         return await db.transaction("rw", db.sales, db.effects, db.pending, db.sessions, db.meta, async () => {
           await assertCurrentActor(db, sale.staffId);
           const existing = await db.sales.get(sale.id);
@@ -575,14 +907,17 @@ export function createDexiePosStore(options?: { databaseName?: string }): Offlin
           }
           const quantities = mergeVariantQuantities(sale.lines);
           for (const item of quantities) {
-            const cached = cachedByVariant.get(item.variantId) ?? 0;
-            const outstanding = await db.effects.where("variantId").equals(item.variantId).toArray();
-            const used = outstanding.reduce((sum, effect) => sum + effect.quantity, 0);
-            if (cached - used < item.quantity) {
+            const pinned = cachedByVariant.get(item.variantId) ?? 0;
+            const remaining = await remainingKnownStock(db, item.variantId, pinned);
+            if (remaining < item.quantity) {
               throw new SalesValidationError("الكمية المتاحة غير كافية.");
             }
           }
-          await db.sales.add(sale);
+          if (canonicalOfflineSaleFactsJson(saleFacts(sale)) !== expectedCanonical) {
+            throw new SalesValidationError("تعذر حفظ البيع محلياً.");
+          }
+          const stored = normalizeCompletedSale({ ...sale, payloadFingerprint });
+          await db.sales.add(stored);
           for (const item of quantities) {
             await db.effects.add({
               id: `${sale.operationId}:${item.variantId}`,
@@ -596,7 +931,7 @@ export function createDexiePosStore(options?: { databaseName?: string }): Offlin
           if (pending && pending.saleId === sale.id) {
             await db.pending.delete(sale.staffId);
           }
-          return sale;
+          return stored;
         });
       } catch (error) {
         if (error instanceof SalesValidationError || error instanceof PosStorageError) {
@@ -612,7 +947,15 @@ export function createDexiePosStore(options?: { databaseName?: string }): Offlin
         return [];
       }
       const rows = await db.sales.toArray();
-      return rows.filter((row) => row.staffId === staffId && row.syncStatus === "pending").map(normalizeCompletedSale);
+      return rows
+        .filter((row) => row.staffId === staffId && row.syncStatus === "pending")
+        .map(normalizeCompletedSale)
+        .sort((left, right) => {
+          if (left.occurredAt === right.occurredAt) {
+            return left.id < right.id ? -1 : 1;
+          }
+          return left.occurredAt < right.occurredAt ? -1 : 1;
+        });
     },
 
     async listCompleted(staffId) {
@@ -635,6 +978,70 @@ export function createDexiePosStore(options?: { databaseName?: string }): Offlin
         await db.sales.update(saleId, { syncStatus: "acknowledged" });
         await db.effects.where("operationId").equals(sale.operationId).delete();
       });
+    },
+
+    async applyAcknowledgement(input) {
+      await ensureOpen();
+      try {
+        const proofs = Array.isArray(input.includedOperations) ? input.includedOperations : [];
+        const prepared = await prepareLocalDigests(db, proofs);
+        await db.transaction("rw", db.sales, db.effects, db.snapshots, db.meta, async () => {
+          await applyAcknowledgementRecord(db, input, prepared);
+        });
+      } catch (error) {
+        if (error instanceof PosStorageError || error instanceof SalesValidationError) {
+          throw error;
+        }
+        throw new PosStorageError();
+      }
+    },
+
+    async countOtherPending(staffId) {
+      await ensureOpen();
+      if (!(await matchesCurrentActor(db, staffId))) {
+        return 0;
+      }
+      const rows = await db.sales.toArray();
+      return rows.filter((row) => row.staffId !== staffId && row.syncStatus === "pending").length;
+    },
+
+    async listPreservedPending(staffId) {
+      await ensureOpen();
+      const current = await currentSignedIn(db);
+      if (!current || current.staffId !== staffId) {
+        return [];
+      }
+      if (current.workspace.staff.role !== "manager" || current.workspace.staff.id !== staffId) {
+        return [];
+      }
+      const rows = await db.sales.toArray();
+      return rows
+        .filter((row) => row.staffId !== staffId && row.syncStatus === "pending")
+        .map(normalizeCompletedSale)
+        .sort((left, right) => {
+          if (left.occurredAt === right.occurredAt) {
+            return left.id < right.id ? -1 : 1;
+          }
+          return left.occurredAt < right.occurredAt ? -1 : 1;
+        });
+    },
+
+    async listPendingOperationIds() {
+      await ensureOpen();
+      const rows = await db.sales.toArray();
+      return [
+        ...new Set(rows.filter((row) => row.syncStatus === "pending").map((row) => row.operationId)),
+      ];
+    },
+
+    async readStockVersion() {
+      await ensureOpen();
+      return readAppliedStockVersion(db);
+    },
+
+    async readStockCache() {
+      await ensureOpen();
+      return readStockCacheRecord(db);
     },
 
     async loadPending(staffId) {

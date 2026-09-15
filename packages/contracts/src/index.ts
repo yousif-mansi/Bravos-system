@@ -192,7 +192,29 @@ export type PosPriceSnapshotDto = {
   branch: BranchDto;
   deviceId: string;
   issuedAt: string;
+  stockVersion: number;
+  includedOperationIds: string[];
+  includedOperations: CompletedOperationProofDto[];
   products: CashierProductLookupDto[];
+};
+
+export type StockAvailabilityDto = {
+  variantId: string;
+  availableQuantity: number;
+};
+
+export type CompletedOperationProofDto = {
+  operationId: string;
+  saleId: string;
+  contentDigest: string;
+};
+
+export type SaleAcknowledgementDto = {
+  acknowledgedOperationIds: string[];
+  stockVersion: number;
+  includedOperationIds: string[];
+  includedOperations: CompletedOperationProofDto[];
+  availability: StockAvailabilityDto[];
 };
 
 export type SaleDto = {
@@ -225,6 +247,8 @@ export type ManagerSaleAllocationDto = {
 export type ManagerSaleDto = SaleDto & {
   allocations: ManagerSaleAllocationDto[];
   costsIncomplete: boolean;
+  recoveredByStaffId: string | null;
+  recoveredAt: string | null;
 };
 
 export type StaffChangeDto = {
