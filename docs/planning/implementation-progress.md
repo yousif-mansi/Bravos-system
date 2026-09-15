@@ -2,7 +2,7 @@
 
 Updated: 2026-09-15 (Cairo). The user authorized the full 28-ticket queue and now requests parallel native GPT-5.6 Sol agents at HIGH effort. Root guides, reviews, independently verifies and commits accepted slices. Internal operations launch before the public store. No hosting or domain purchase is authorized now.
 
-Current work: Eight of 28 tickets are independently accepted: 01-07 and catalog/media17. Root integrated the three parallel candidates, repaired review findings and passed all68 browser tests together. Native GPT-5.6 Sol agents at HIGH effort are implementing automatic offers08 and dedicated physical Returns12 in isolated worktrees. Storefront browsing/cart18 is now dependency-ready and is the next parallel lane. Root owns integration and acceptance; conflicting test ports are coordinated. No important features have been removed.
+Current work: Eight of 28 tickets are independently accepted: 01-07 and catalog/media 17. The three reviewed candidates are committed and pushed; all 68 browser tests pass together. Three native GPT-5.6 Sol agents at HIGH effort now implement automatic offers (08), physical Returns (12), and Arabic storefront browsing/guest cart (18) in isolated worktrees. Root owns review, integration and acceptance. Shared browser/migration tests run in the order Returns, offers, then storefront; independent feature HTTP tests may use separate ports. No important features have been removed.
 
 ## Source and delivery status
 
@@ -36,7 +36,7 @@ Each item includes its necessary schema, business behavior, API, usable UI and b
 | [15](https://github.com/yousif-mansi/Bravos-system/issues/16) | Correct receiving quantities and historical costs through linked records | 03, 12 | 26, 83, 95 / A22, A25 | Queued |
 | [16](https://github.com/yousif-mansi/Bravos-system/issues/17) | Coordinate quantity corrections and reconcile late completed sales | 06, 15 | 27, 28, 48 / A20, A22 | Queued |
 | [17](https://github.com/yousif-mansi/Bravos-system/issues/18) | Manage product media and publication with a safe public catalog | 03 | 11, 16, 17, 18, 19, 50 / A02, A03, A04 | Independently verified |
-| [18](https://github.com/yousif-mansi/Bravos-system/issues/19) | Browse the Arabic storefront and maintain a valid guest cart | 17 | 51, 52, 53, 54, 60, 62, 105, 106 / A02, A04, A06, A33 | Ready for next parallel lane |
+| [18](https://github.com/yousif-mansi/Bravos-system/issues/19) | Browse the Arabic storefront and maintain a valid guest cart | 17 | 51, 52, 53, 54, 60, 62, 105, 106 / A02, A04, A06, A33 | Implementing with Sol HIGH |
 | [19](https://github.com/yousif-mansi/Bravos-system/issues/20) | Configure delivery areas and submit validated guest COD requests | 18, 09, 10 | 55, 56, 57, 58, 59, 61, 64, 111, 114 / A06, A10, A13, A29, A35 | Queued |
 | [20](https://github.com/yousif-mansi/Bravos-system/issues/21) | Confirm WhatsApp-agreed online orders with protected FIFO allocations | 19, 06 | 63, 65, 66, 67, 71, 72, 73 / A01, A10, A11, A13, A14, A16 | Queued |
 | [21](https://github.com/yousif-mansi/Bravos-system/issues/22) | Fulfill online orders and close inspected failed deliveries | 20 | 68, 69, 70, 74, 113 / A10, A14, A15, A16, A36 | Queued |
@@ -98,3 +98,13 @@ Native GPT-5.6 Sol agents write application code; the orchestrator reviews the a
 - Ticket07 accepted on 2026-09-15 after independent Standards and Spec repairs/recheck. Integrated onto2650a40 with migration010 preserving009. Root passed typecheck, eight expense/migration HTTP tests, scratch001-010 roundtrip/rollback, expense browser1/1, production builds, bundle separation and architecture. See [expense review](../reviews/expenses-review.md).
 
 - Ticket17 accepted on 2026-09-15 after independent Standards/Spec findings were repaired and root integrated onto844c4e0. Root passed typecheck,14catalog HTTP tests, production builds, architecture, zero-vulnerability audit and the complete expanded browser suite68/68 in3.1minutes. No new migration. See [catalog/media review](../reviews/catalog-media-review.md).
+
+## Active parallel implementation lanes — 2026-09-15
+
+| Ticket | Agent | Worktree | Starting commit |
+| --- | --- | --- | --- |
+| 08 automatic offers | sol08_offers_high | .scratch/worktrees/08-automatic-offers | 2650a40 |
+| 12 physical Returns | sol12_returns_high | .scratch/worktrees/12-physical-returns | 2650a40 |
+| 18 storefront browsing/cart | sol18_storefront_high | .scratch/worktrees/18-storefront-cart | 06aa67b |
+
+Each lane uses GPT-5.6 Sol at HIGH effort. Reserved migration numbers are 011 for offers, 012 for Returns, and 013 for storefront configuration if required. Implementers own only their worktree and do not commit; root reviews and verifies integrated code before acceptance. Returns reached runtime verification first and owns the shared test slot, followed by offers and storefront. No approval is needed for routine local checks within the assigned scope.
