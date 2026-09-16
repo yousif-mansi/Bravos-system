@@ -24,6 +24,7 @@
   "devDependencies": {
     "@ayocore/exceljs": "5.0.4",
     "@bravos/analytics": "workspace:*",
+    "@bravos/backup": "workspace:*",
     "@bravos/identity": "workspace:*",
     "@bravos/persistence": "workspace:*",
     "@bravos/report-export": "workspace:*",

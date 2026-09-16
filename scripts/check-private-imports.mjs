@@ -115,6 +115,26 @@ const forbidden = [
   },
   {
     from: ["apps", "packages"],
+    pattern: /@bravos\/backup\/src\//,
+    message: "Deep backup imports are not part of the public interface.",
+  },
+  {
+    from: ["apps/internal", "apps/storefront", "packages/contracts"],
+    pattern: /@bravos\/backup(?:\/node)?/,
+    message: "Frontend/contracts cannot import the backup server package.",
+  },
+  {
+    from: ["packages/backup/src/domain", "packages/backup/src/application"],
+    pattern: /from ["'](better-auth|fastify|pg|react|next|vite|dexie|node:crypto)|\bHeaders\b/,
+    message: "Backup inner layers cannot import infrastructure SDKs, crypto adapters or HTTP Headers.",
+  },
+  {
+    from: ["packages/backup"],
+    pattern: /@bravos\/(catalog|inventory|receiving|pricing|sales|expenses|returns|corrections|storefront-config|opening-import|online-orders|analytics|reporting|report-export|persistence)/,
+    message: "Backup must read feature data through readers supplied at composition.",
+  },
+  {
+    from: ["apps", "packages"],
     pattern: /@bravos\/analytics\/src\//,
     message: "Deep analytics imports are not part of the public interface.",
   },

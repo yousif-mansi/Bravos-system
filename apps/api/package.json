@@ -12,6 +12,7 @@
   "dependencies": {
     "@ayocore/exceljs": "5.0.4",
     "@bravos/analytics": "workspace:*",
+    "@bravos/backup": "workspace:*",
     "@bravos/catalog": "workspace:*",
     "@bravos/contracts": "workspace:*",
     "@bravos/corrections": "workspace:*",

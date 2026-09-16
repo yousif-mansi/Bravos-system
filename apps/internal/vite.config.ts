@@ -32,7 +32,7 @@ export default defineConfig({
       },
       injectManifest: {
         globPatterns: ["**/*.{js,css,html,svg,ico,woff2,webmanifest}"],
-        globIgnores: ["**/staff-management-*.js", "**/catalog-maintenance-*.js", "**/receiving-stock-*.js", "**/expenses-online-*.js", "**/offer-management-*.js", "**/physical-returns-*.js", "**/recording-corrections-*.js", "**/storefront-settings-*.js", "**/online-order-operations-*.js", "**/opening-import-*.js", "**/management-reports-*.js", "**/storefront-analytics-*.js"],
+        globIgnores: ["**/staff-management-*.js", "**/catalog-maintenance-*.js", "**/receiving-stock-*.js", "**/expenses-online-*.js", "**/offer-management-*.js", "**/physical-returns-*.js", "**/recording-corrections-*.js", "**/storefront-settings-*.js", "**/online-order-operations-*.js", "**/opening-import-*.js", "**/management-reports-*.js", "**/storefront-analytics-*.js", "**/manager-backup-*.js"],
       },
       workbox: {
         skipWaiting: false,
@@ -97,6 +97,9 @@ export default defineConfig({
             }
             if (/AnalyticsPage\.[cm]?[jt]sx?$/.test(chunk.facadeModuleId)) {
               return "assets/storefront-analytics-[hash].js";
+            }
+            if (/BackupPage\.[cm]?[jt]sx?$/.test(chunk.facadeModuleId)) {
+              return "assets/manager-backup-[hash].js";
             }
           }
           return "assets/[name]-[hash].js";

@@ -17,6 +17,9 @@ importers:
       '@bravos/analytics':
         specifier: workspace:*
         version: link:packages/analytics
+      '@bravos/backup':
+        specifier: workspace:*
+        version: link:packages/backup
       '@bravos/identity':
         specifier: workspace:*
         version: link:packages/identity
@@ -71,6 +74,9 @@ importers:
       '@bravos/analytics':
         specifier: workspace:*
         version: link:../../packages/analytics
+      '@bravos/backup':
+        specifier: workspace:*
+        version: link:../../packages/backup
       '@bravos/catalog':
         specifier: workspace:*
         version: link:../../packages/catalog
@@ -229,6 +235,28 @@ importers:
         version: 5.9.2
 
   packages/analytics:
+    dependencies:
+      '@bravos/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@bravos/identity':
+        specifier: workspace:*
+        version: link:../identity
+      pg:
+        specifier: 8.16.3
+        version: 8.16.3
+    devDependencies:
+      '@types/node':
+        specifier: 22.18.6
+        version: 22.18.6
+      '@types/pg':
+        specifier: 8.15.5
+        version: 8.15.5
+      typescript:
+        specifier: 5.9.2
+        version: 5.9.2
+
+  packages/backup:
     dependencies:
       '@bravos/contracts':
         specifier: workspace:*

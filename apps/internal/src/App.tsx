@@ -33,6 +33,7 @@ const OnlineOrdersPage = lazy(() => import("./pages/OnlineOrdersPage.tsx"));
 const OpeningImportPage = lazy(() => import("./pages/OpeningImportPage.tsx"));
 const AnalyticsPage = lazy(() => import("./pages/AnalyticsPage.tsx"));
 const ReportsPage = lazy(() => import("./pages/ReportsPage.tsx"));
+const BackupPage = lazy(() => import("./pages/BackupPage.tsx"));
 
 export function App() {
   const location = useLocation();
@@ -569,6 +570,18 @@ export function App() {
             workspace?.staff.role === "manager" ? (
               <Suspense fallback={<main className="shell">جارٍ التحميل…</main>}>
                 <ReportsPage key={workspace.staff.id} workspace={workspace} />
+              </Suspense>
+            ) : (
+              <Navigate to={workspace?.activeBranch ? "/workspace" : workspace ? "/select-branch" : "/login"} replace />
+            )
+          }
+        />
+        <Route
+          path="/backup"
+          element={
+            workspace?.staff.role === "manager" ? (
+              <Suspense fallback={<main className="shell">جارٍ التحميل…</main>}>
+                <BackupPage key={workspace.staff.id} workspace={workspace} />
               </Suspense>
             ) : (
               <Navigate to={workspace?.activeBranch ? "/workspace" : workspace ? "/select-branch" : "/login"} replace />

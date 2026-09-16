@@ -93,9 +93,9 @@ module.exports = {
       name: "application-inward-only",
       comment: "Application use cases depend inward, not on Fastify, pg, React or Better Auth.",
       severity: "error",
-      from: { path: "^packages/(identity|catalog|inventory|receiving|pricing|sales|expenses|returns|corrections|storefront-config|opening-import|reporting)/src/application" },
+      from: { path: "^packages/(identity|catalog|inventory|receiving|pricing|sales|expenses|returns|corrections|storefront-config|opening-import|backup|reporting)/src/application" },
       to: {
-        path: "(packages/(identity|catalog|inventory|receiving|pricing|sales|expenses|returns|corrections|storefront-config|opening-import|reporting)/src/adapters|apps/|better-auth|fastify|react|next|vite|\\bpg\\b|dexie)",
+        path: "(packages/(identity|catalog|inventory|receiving|pricing|sales|expenses|returns|corrections|storefront-config|opening-import|backup|reporting)/src/adapters|apps/|better-auth|fastify|react|next|vite|\\bpg\\b|dexie)",
       },
     },
     {
@@ -336,6 +336,34 @@ module.exports = {
       severity: "error",
       from: { path: "^packages/opening-import/src/domain" },
       to: { path: "(packages/opening-import/src/(application|adapters)|apps/|better-auth|fastify|react|next|vite|\\bpg\\b|dexie)" },
+    },
+    {
+      name: "backup-domain-inward-only",
+      comment: "Backup domain code cannot depend on its use cases, persistence, crypto or UI infrastructure.",
+      severity: "error",
+      from: { path: "^packages/backup/src/domain" },
+      to: { path: "(packages/backup/src/(application|adapters)|apps/|better-auth|fastify|react|next|vite|\\bpg\\b|node:crypto|dexie)" },
+    },
+    {
+      name: "backup-server-only",
+      comment: "Backup business data and cryptography are available only through authenticated server operations.",
+      severity: "error",
+      from: { path: "^(apps/internal|apps/storefront|packages/contracts)" },
+      to: { path: "^packages/backup" },
+    },
+    {
+      name: "no-private-backup-imports",
+      comment: "Cross-package imports must use the backup public interface.",
+      severity: "error",
+      from: { pathNot: "^packages/backup/src" },
+      to: { path: "^packages/backup/src/(domain|application|adapters)/" },
+    },
+    {
+      name: "backup-isolated-by-ports",
+      comment: "Backup reads each feature's data through readers supplied at the API composition root.",
+      severity: "error",
+      from: { path: "^packages/backup" },
+      to: { path: "^packages/(catalog|inventory|receiving|pricing|sales|expenses|returns|corrections|storefront-config|opening-import|online-orders|analytics|reporting|report-export|persistence)" },
     },
     {
       name: "opening-import-server-only",

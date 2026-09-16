@@ -161,6 +161,21 @@ import {
   type ReportExportServices,
 } from "@bravos/report-export";
 import { createLazyReportRenderer } from "@bravos/report-export/node";
+import { BackupInProgressError, BackupValidationError, createBackupServices, type BackupServices } from "@bravos/backup";
+import { createNodeBackupCrypto, createPostgresBackupUnitOfWork } from "@bravos/backup/node";
+import { createPostgresIdentityBackupReader } from "@bravos/identity/node";
+import { createPostgresCatalogBackupReader } from "@bravos/catalog/node";
+import { createPostgresInventoryBackupReader } from "@bravos/inventory/node";
+import { createPostgresReceivingBackupReader } from "@bravos/receiving/node";
+import { createPostgresSalesBackupReader } from "@bravos/sales/node";
+import { createPostgresExpensesBackupReader } from "@bravos/expenses/node";
+import { createPostgresPricingBackupReader } from "@bravos/pricing/node";
+import { createPostgresReturnsBackupReader } from "@bravos/returns/node";
+import { createPostgresCorrectionsBackupReader } from "@bravos/corrections/node";
+import { createPostgresOnlineOrdersBackupReader } from "@bravos/online-orders/node";
+import { createPostgresStorefrontConfigBackupReader } from "@bravos/storefront-config/node";
+import { createPostgresOpeningImportBackupReader } from "@bravos/opening-import/node";
+import { createPostgresAnalyticsBackupReader } from "@bravos/analytics/node";
 import type { AppConfig } from "./config.ts";
 
 const ALLOWED_AUTH_ROUTES = new Set([
@@ -185,6 +200,7 @@ export type BuiltApp = {
   storefrontConfig: StorefrontConfigServices;
   onlineOrders: OnlineOrderServices;
   openingImport: OpeningImportServices;
+  backup: BackupServices;
   analytics: AnalyticsServices;
   reporting: ReportingServices;
   reportExport: ReportExportServices;
@@ -379,6 +395,25 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
       })),
       clock: { now: config.businessClock ?? (() => new Date()) },
     });
+    const backup = createBackupServices({
+      actors,
+      crypto: createNodeBackupCrypto(),
+      unitOfWork: createPostgresBackupUnitOfWork(pool, (client) => ({
+        identity: createPostgresIdentityBackupReader(client),
+        catalog: createPostgresCatalogBackupReader(client),
+        inventory: createPostgresInventoryBackupReader(client),
+        receiving: createPostgresReceivingBackupReader(client),
+        sales: createPostgresSalesBackupReader(client),
+        expenses: createPostgresExpensesBackupReader(client),
+        pricing: createPostgresPricingBackupReader(client),
+        returns: createPostgresReturnsBackupReader(client),
+        corrections: createPostgresCorrectionsBackupReader(client),
+        onlineOrders: createPostgresOnlineOrdersBackupReader(client),
+        storefrontConfiguration: createPostgresStorefrontConfigBackupReader(client),
+        openingImport: createPostgresOpeningImportBackupReader(client),
+        analytics: createPostgresAnalyticsBackupReader(client),
+      })),
+    });
     const analytics = createAnalyticsServices({
       actors: { getStaff: (staffId) => directory.getStaff(staffId) },
       catalog: { getPublicProduct: (productId) => catalog.getPublicProduct(productId) },
@@ -412,7 +447,7 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
 
     const instance = Fastify({ logger: false });
     app = instance;
-    await registerRoutes(instance, config, auth, identity, services, catalog, inventory, receiving, pricing, sales, expenses, returns, corrections, storefrontConfig, onlineOrders, openingImport, analytics, reporting, reportExport);
+    await registerRoutes(instance, config, auth, identity, services, catalog, inventory, receiving, pricing, sales, expenses, returns, corrections, storefrontConfig, onlineOrders, openingImport, backup, analytics, reporting, reportExport);
 
     return {
       app: instance,
@@ -429,6 +464,7 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
       storefrontConfig,
       onlineOrders,
       openingImport,
+      backup,
       analytics,
       reporting,
       reportExport,
@@ -472,6 +508,7 @@ async function registerRoutes(
   storefrontConfig: StorefrontConfigServices,
   onlineOrders: OnlineOrderServices,
   openingImport: OpeningImportServices,
+  backup: BackupServices,
   analytics: AnalyticsServices,
   reporting: ReportingServices,
   reportExport: ReportExportServices,
@@ -592,6 +629,33 @@ async function registerRoutes(
       reply.header("content-type", file.contentType);
       reply.header("content-disposition", `attachment; filename="${file.fileName}"`);
       return reply.send(Buffer.from(file.bytes));
+    });
+  });
+
+  app.get("/api/internal/backups/readiness", async (request, reply) => {
+    reply.header("cache-control", "no-store");
+    return handle(reply, async () => backup.readiness(await verifiedAuth(identity, request)));
+  });
+
+  app.post("/api/internal/backups", { bodyLimit: 16_384 }, async (request, reply) => {
+    reply.header("cache-control", "no-store");
+    reply.header("x-content-type-options", "nosniff");
+    return handle(reply, async () => {
+      const result = await backup.create(await verifiedAuth(identity, request), request.body);
+      reply.status(201);
+      reply.header("content-type", "application/vnd.bravos.backup");
+      reply.header("content-disposition", `attachment; filename="${result.fileName}"`);
+      reply.header("x-bravos-backup-id", result.manifest.backupId);
+      reply.header("x-bravos-backup-format-version", String(result.manifest.formatVersion));
+      reply.header("x-bravos-backup-created-at", result.manifest.createdAt);
+      reply.header("x-bravos-backup-schema-version", result.manifest.schemaVersion);
+      reply.header("x-bravos-backup-total-record-count", String(result.manifest.totalRecordCount));
+      reply.header("x-bravos-backup-section-counts", Buffer.from(JSON.stringify(result.sectionCounts), "utf8").toString("base64url"));
+      reply.header("x-bravos-backup-known-unsynchronized-till-count", String(result.manifest.knownUnsynchronizedTills.length));
+      reply.header("x-bravos-backup-includes-unsent-browser-records", "false");
+      reply.header("x-bravos-backup-includes-image-binaries", "false");
+      reply.header("x-bravos-backup-sha256", result.archiveSha256);
+      return reply.send(Buffer.from(result.bytes.buffer, result.bytes.byteOffset, result.bytes.byteLength));
     });
   });
 
@@ -1515,6 +1579,9 @@ function sendError(reply: FastifyReply, error: unknown) {
   if (error instanceof OperationConflictError) {
     return reply.status(409).send(errorBody(error.code, error.message));
   }
+  if (error instanceof BackupInProgressError) {
+    return reply.status(409).send(errorBody(error.code, error.message));
+  }
   if (error instanceof AnalyticsOperationConflictError) {
     return reply.status(409).send(errorBody(error.code, error.message));
   }
@@ -1561,6 +1628,7 @@ function sendError(reply: FastifyReply, error: unknown) {
     error instanceof StorefrontConfigValidationError
     || error instanceof OnlineOrderValidationError
     || error instanceof OpeningImportValidationError
+    || error instanceof BackupValidationError
     || error instanceof AnalyticsValidationError
     || error instanceof ReportingValidationError
     || error instanceof ReportingExportLimitError

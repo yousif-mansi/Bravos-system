@@ -1230,6 +1230,53 @@ export type OpeningImportAcceptRequest = {
   previewFingerprint: string;
 };
 
+export const BACKUP_SECTION_NAMES = [
+  "identity",
+  "catalog",
+  "inventory",
+  "receiving",
+  "sales",
+  "expenses",
+  "pricing",
+  "returns",
+  "corrections",
+  "online_orders",
+  "storefront_configuration",
+  "opening_import",
+  "analytics",
+] as const;
+
+export type BackupSectionName = (typeof BACKUP_SECTION_NAMES)[number];
+
+export type BackupCreateRequest = {
+  password: string;
+};
+
+export type BackupKnownUnsynchronizedTillDto = {
+  deviceId: string;
+  staffId: string;
+  latestSnapshotId: string;
+  latestSnapshotAt: string;
+  stockVersion: string | null;
+  pendingOperationIds: string[];
+  pendingOperationCount: number;
+};
+
+export type BackupReadinessDto = {
+  knownUnsynchronizedTills: BackupKnownUnsynchronizedTillDto[];
+  knownUnsynchronizedTillCount: number;
+  includesUnsentBrowserRecords: false;
+  imageBinariesIncluded: false;
+  imageReferencesPreserved: true;
+};
+
+export type BackupTableSnapshot = {
+  tableName: string;
+  rows: Array<Record<string, unknown>>;
+};
+
+export type BackupSectionCounts = Record<BackupSectionName, number>;
+
 export type AnalyticsMetricDto = {
   count: number;
   definitionAr: string;
