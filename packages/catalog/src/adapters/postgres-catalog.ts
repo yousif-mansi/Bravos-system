@@ -232,21 +232,7 @@ export function createPostgresCatalogStore(pool: Pool): CatalogStore {
     },
 
     async getVariants(ids) {
-      if (ids.length === 0) {
-        return [];
-      }
-      const result = await pool.query<VariantIdentityRow>(
-        `SELECT v.id, p.id AS product_id, p.code AS product_code, p.name_ar AS product_name_ar,
-                s.id AS size_id, s.name_ar AS size_name_ar,
-                col.id AS color_id, col.name_ar AS color_name_ar
-         FROM catalog_product_variant v
-         JOIN catalog_product p ON p.id = v.product_id
-         JOIN catalog_size s ON s.id = v.size_id
-         JOIN catalog_color col ON col.id = v.color_id
-         WHERE v.id = ANY($1::uuid[])`,
-        [ids],
-      );
-      return result.rows.map(toVariantIdentity);
+      return getVariantIdentities(pool, ids);
     },
 
     async getListedPrices(ids) {
@@ -254,10 +240,7 @@ export function createPostgresCatalogStore(pool: Pool): CatalogStore {
     },
 
     async listVariantIds() {
-      const result = await pool.query<{ id: string }>(
-        `SELECT id FROM catalog_product_variant ORDER BY id`,
-      );
-      return result.rows.map((row) => row.id);
+      return listVariantIdentityIds(pool);
     },
 
     async createProduct(input) {
@@ -351,6 +334,34 @@ export function createPostgresCatalogStore(pool: Pool): CatalogStore {
       }
     },
   };
+}
+
+export function createPostgresCatalogReportingReader(queryable: Queryable): Pick<CatalogStore, "getVariants" | "listVariantIds"> {
+  return {
+    getVariants: (ids) => getVariantIdentities(queryable, ids),
+    listVariantIds: () => listVariantIdentityIds(queryable),
+  };
+}
+
+async function getVariantIdentities(queryable: Queryable, ids: string[]) {
+  if (ids.length === 0) return [];
+  const result = await queryable.query<VariantIdentityRow>(
+    `SELECT v.id, p.id AS product_id, p.code AS product_code, p.name_ar AS product_name_ar,
+            s.id AS size_id, s.name_ar AS size_name_ar,
+            col.id AS color_id, col.name_ar AS color_name_ar
+     FROM catalog_product_variant v
+     JOIN catalog_product p ON p.id = v.product_id
+     JOIN catalog_size s ON s.id = v.size_id
+     JOIN catalog_color col ON col.id = v.color_id
+     WHERE v.id = ANY($1::uuid[])`,
+    [ids],
+  );
+  return result.rows.map(toVariantIdentity);
+}
+
+async function listVariantIdentityIds(queryable: Queryable) {
+  const result = await queryable.query<{ id: string }>(`SELECT id FROM catalog_product_variant ORDER BY id`);
+  return result.rows.map((row) => row.id);
 }
 
 export function createPostgresListedPriceReader(queryable: Queryable): Pick<CatalogStore, "getListedPrices"> {

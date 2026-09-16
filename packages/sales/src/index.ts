@@ -31,6 +31,8 @@ export type {
   ListedPriceReader,
   PrepareSaleResult,
   SaleStore,
+  SaleRecord,
+  PhysicalSaleReportingReader,
   SalesActorPort,
   SalesUnitOfWork,
   VerifiedAuth,

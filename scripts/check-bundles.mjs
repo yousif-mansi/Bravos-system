@@ -56,6 +56,10 @@ const openingImportChunk = internalFiles.find((file) => path.basename(file).incl
 if (!openingImportChunk) {
   throw new Error("Opening import was not split into its own chunk.");
 }
+const managementReportsChunk = internalFiles.find((file) => path.basename(file).includes("management-reports"));
+if (!managementReportsChunk) {
+  throw new Error("Management reports were not split into their own chunk.");
+}
 
 const loginHtml = await readFile(path.join(internalDist, "index.html"), "utf8");
 const referenced = [...loginHtml.matchAll(/assets\/[^\s"]+\.js/g)].map((match) => match[0]);
@@ -74,6 +78,9 @@ for (const file of staticGraph) {
   }
   if (file === onlineOrdersChunk) {
     throw new Error("Login entry statically imports online order operations.");
+  }
+  if (file === managementReportsChunk) {
+    throw new Error("Login entry statically imports management reports.");
   }
   const source = await readFile(file, "utf8");
   if (source.includes("إنشاء حساب موظف") || source.includes("StaffPage")) {
@@ -102,6 +109,7 @@ const dynamicCorrections = [];
 const dynamicStorefrontSettings = [];
 const dynamicOnlineOrders = [];
 const dynamicOpeningImport = [];
+const dynamicManagementReports = [];
 for (const file of staticGraph) {
   const source = await readFile(file, "utf8");
   const specifiers = dynamicImportSpecifiers(source);
@@ -117,6 +125,7 @@ for (const file of staticGraph) {
   dynamicStorefrontSettings.push(...specifiers.filter((specifier) => specifier.includes("storefront-settings")));
   dynamicOnlineOrders.push(...specifiers.filter((specifier) => specifier.includes("online-order-operations")));
   dynamicOpeningImport.push(...specifiers.filter((specifier) => specifier.includes("opening-import")));
+  dynamicManagementReports.push(...specifiers.filter((specifier) => specifier.includes("management-reports")));
 }
 if (dynamicStaff.length === 0) {
   throw new Error("Staff management chunk is not loaded through a dynamic import from the login graph.");
@@ -154,6 +163,9 @@ if (dynamicOnlineOrders.length === 0) {
 if (dynamicOpeningImport.length === 0) {
   throw new Error("Opening import is not loaded through a dynamic import from the login graph.");
 }
+if (dynamicManagementReports.length === 0) {
+  throw new Error("Management reports are not loaded through a dynamic import from the login graph.");
+}
 
 const swFile = internalFiles.find((file) => /(^|\/)sw\.js$/.test(file.replaceAll("\\", "/")));
 if (!swFile) {
@@ -165,6 +177,9 @@ if (swSource.includes("opening-import")) {
 }
 if (swSource.includes("online-order-operations")) {
   throw new Error("Service worker precaches online-only order operations.");
+}
+if (swSource.includes("management-reports")) {
+  throw new Error("Service worker precaches manager-only reports.");
 }
 if (!swSource.includes("cashier-lookup")) {
   throw new Error("Service worker does not precache the essential POS lookup chunk.");

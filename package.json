@@ -24,6 +24,7 @@
   "devDependencies": {
     "@bravos/identity": "workspace:*",
     "@bravos/persistence": "workspace:*",
+    "@bravos/reporting": "workspace:*",
     "@bravos/testkit": "workspace:*",
     "@playwright/test": "1.55.1",
     "@types/node": "22.18.6",

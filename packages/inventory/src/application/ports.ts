@@ -148,6 +148,7 @@ export type OnlineOrderDispositionResult = {
 };
 
 export type ProtectedOrderAllocationProvenance = {
+  protectedOrderId: string;
   allocationId: string;
   sourceLineId: string;
   batchId: string;
@@ -161,6 +162,9 @@ export type ProtectedOrderAllocationProvenance = {
   customerReturnedQuantity: number;
   undisposedQuantity: number;
 };
+
+export type ReportingAllocationRecord = AllocationRecord & { operationId: string };
+export type ReportingDiscrepancyRecord = DiscrepancyRecord & { operationId: string };
 
 export type DeliveredReturnAllocationEffect = {
   allocationId: string;
@@ -325,7 +329,10 @@ export type InventoryTransaction = {
     allocatedQuantity: number;
   }): Promise<DiscrepancyRecord | null>;
   listAllocations(operationId: string): Promise<AllocationRecord[]>;
+  listAllocationsForOperations(operationIds: string[]): Promise<ReportingAllocationRecord[]>;
   listDiscrepancies(operationId: string): Promise<DiscrepancyRecord[]>;
+  listDiscrepanciesForOperations(operationIds: string[]): Promise<ReportingDiscrepancyRecord[]>;
+  unresolvedDiscrepancyQuantity(): Promise<number>;
   quantitiesFor(variantIds: string[]): Promise<Map<string, number>>;
   referencedVariantIds(variantIds: string[]): Promise<string[]>;
   listAvailableBatchesFifo(variantId: string): Promise<ReceivedBatchRecord[]>;
@@ -352,8 +359,14 @@ export type InventoryReadStore = {
   listBatches(): Promise<BatchRecord[]>;
   getBatchStates(batchIds: string[]): Promise<BatchRecord[]>;
   listAllocations(operationId: string): Promise<AllocationRecord[]>;
+  listAllocationsForOperations(operationIds: string[]): Promise<ReportingAllocationRecord[]>;
   listProtectedOrderAllocations(orderId: string): Promise<ProtectedOrderAllocationProvenance[]>;
   listDiscrepancies(operationId: string): Promise<DiscrepancyRecord[]>;
+  listDiscrepanciesForOperations(operationIds: string[]): Promise<ReportingDiscrepancyRecord[]>;
+  unresolvedDiscrepancyQuantity(): Promise<number>;
+  listProtectedOrderAllocationProvenance(orderIds: string[]): Promise<ProtectedOrderAllocationProvenance[]>;
+  summarizeAuthoritativeAvailableInventory(): Promise<{ quantity: number; valuePiasters: number }>;
+  summarizeProtectedOrderInventory(orderIds: string[]): Promise<{ quantity: number; valuePiasters: number }>;
   getSettings(): Promise<SettingsRecord>;
   updateSettings(lowStockThreshold: number, actorStaffId: string): Promise<SettingsRecord>;
   upsertVariantThreshold(

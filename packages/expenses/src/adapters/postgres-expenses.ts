@@ -7,8 +7,113 @@ import type {
   ExpenseScope,
   ExpenseValueRecord,
 } from "../application/ports.ts";
+import type { ExpenseReportingReader } from "../application/ports.ts";
 
 type Queryable = Pick<Pool, "query"> | PoolClient;
+
+export function createPostgresExpenseReportingReader(queryable: Queryable): ExpenseReportingReader {
+  return {
+    async countEffectiveFacts(input) {
+      const result = await queryable.query<{ count: number | string }>(
+        `SELECT COUNT(*)::bigint AS count
+         FROM expense_record e
+         LEFT JOIN LATERAL (
+           SELECT c.change_type,c.result_revision
+           FROM expense_change c WHERE c.expense_id=e.id ORDER BY c.result_revision DESC LIMIT 1
+         ) latest ON true
+         LEFT JOIN LATERAL (
+           SELECT c.effective_expense_date FROM expense_change c
+           WHERE c.expense_id=e.id AND c.change_type='correction'
+           ORDER BY c.result_revision DESC LIMIT 1
+         ) value ON true
+         WHERE COALESCE(value.effective_expense_date,e.expense_date) >= $1::date
+           AND COALESCE(value.effective_expense_date,e.expense_date) <= $2::date
+           AND ($3::uuid IS NULL OR e.branch_id=$3)
+           AND ($4::text IS NULL OR e.created_by_staff_id=$4)`,
+        [input.fromDate, input.toDateInclusive, input.branchId ?? null, input.employeeId ?? null],
+      );
+      return safeNumber(result.rows[0]?.count ?? 0);
+    },
+    async listEffectiveFactsPage(input) {
+      const result = await queryable.query<{
+        expense_id: string;
+        branch_id: string;
+        created_by_staff_id: string;
+        amount_piasters: number | string;
+        expense_date: string;
+        category_name_ar: string;
+        description: string;
+        effective_status: "active" | "cancelled";
+        result_revision: number | null;
+      }>(
+        `SELECT e.id AS expense_id,e.branch_id,e.created_by_staff_id,
+                CASE WHEN latest.change_type='cancellation' THEN 0
+                     ELSE COALESCE(value.effective_amount_piasters,e.amount_piasters) END AS amount_piasters,
+                COALESCE(value.effective_expense_date,e.expense_date)::text AS expense_date,
+                COALESCE(value.effective_category_name_ar,e.category_name_ar) AS category_name_ar,
+                COALESCE(value.effective_description,e.description) AS description,
+                CASE WHEN latest.change_type='cancellation' THEN 'cancelled' ELSE 'active' END AS effective_status,
+                latest.result_revision
+         FROM expense_record e
+         LEFT JOIN LATERAL (
+           SELECT c.change_type,c.result_revision
+           FROM expense_change c WHERE c.expense_id=e.id ORDER BY c.result_revision DESC LIMIT 1
+         ) latest ON true
+         LEFT JOIN LATERAL (
+           SELECT c.effective_amount_piasters,c.effective_expense_date,
+                  c.effective_category_name_ar,c.effective_description
+           FROM expense_change c WHERE c.expense_id=e.id AND c.change_type='correction'
+           ORDER BY c.result_revision DESC LIMIT 1
+         ) value ON true
+         WHERE COALESCE(value.effective_expense_date,e.expense_date) >= $1::date
+           AND COALESCE(value.effective_expense_date,e.expense_date) <= $2::date
+           AND ($3::uuid IS NULL OR e.branch_id=$3)
+           AND ($4::text IS NULL OR e.created_by_staff_id=$4)
+           AND ($5::date IS NULL OR (COALESCE(value.effective_expense_date,e.expense_date),e.id) < ($5::date,$6::uuid))
+         ORDER BY expense_date DESC,e.id DESC LIMIT $7`,
+        [input.fromDate, input.toDateInclusive, input.branchId ?? null, input.employeeId ?? null,
+          input.after?.expenseDate ?? null, input.after?.id ?? null, input.limit],
+      );
+      const ids = result.rows.map((row) => row.expense_id);
+      const changes = ids.length === 0 ? { rows: [] as Array<{
+        id: string; expense_id: string; change_type: "correction" | "cancellation";
+        result_revision: number; reason: string; changed_by_staff_id: string; changed_at: Date;
+      }> } : await queryable.query<{
+        id: string; expense_id: string; change_type: "correction" | "cancellation";
+        result_revision: number; reason: string; changed_by_staff_id: string; changed_at: Date;
+      }>(
+        `SELECT id,expense_id,change_type,result_revision,reason,changed_by_staff_id,changed_at
+         FROM expense_change WHERE expense_id=ANY($1::uuid[]) ORDER BY expense_id,result_revision`,
+        [ids],
+      );
+      const changesByExpense = new Map<string, typeof changes.rows>();
+      for (const change of changes.rows) {
+        const rows = changesByExpense.get(change.expense_id) ?? [];
+        rows.push(change);
+        changesByExpense.set(change.expense_id, rows);
+      }
+      return result.rows.map((row) => ({
+        expenseId: row.expense_id,
+        branchId: row.branch_id,
+        createdByStaffId: row.created_by_staff_id,
+        expenseDate: row.expense_date,
+        amountPiasters: safeNumber(row.amount_piasters),
+        categoryNameAr: row.category_name_ar,
+        description: row.description,
+        effectiveStatus: row.effective_status,
+        correctionRevision: row.result_revision ?? 0,
+        corrections: (changesByExpense.get(row.expense_id) ?? []).map((change) => ({
+          id: change.id,
+          type: change.change_type,
+          revision: change.result_revision,
+          reason: change.reason,
+          changedByStaffId: change.changed_by_staff_id,
+          changedAt: change.changed_at,
+        })),
+      }));
+    },
+  };
+}
 
 type BaseRow = {
   id: string;
@@ -426,7 +531,7 @@ function categoryDto(row: { id: string; name_ar: string; active: boolean; change
   return { id: row.id, nameAr: row.name_ar, active: row.active, changedByStaffId: row.changed_by_staff_id, changedAt: row.changed_at.toISOString() };
 }
 
-function safeNumber(value: string): number {
+function safeNumber(value: number | string): number {
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed)) throw new Error("Expense piaster total exceeds the safe integer range.");
   return parsed;

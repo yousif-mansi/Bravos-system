@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { accountGeneration, subscribeAccount } from "../account-session.ts";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import type { ManagerSaleDto, SaleDto, WorkspaceDto } from "@bravos/contracts";
 import { ApiError, getSale, listSales } from "../api.ts";
 import { pos, saleFromOffline } from "../pos.ts";
@@ -16,6 +16,8 @@ export default function SalesPage({
   onChanged: (workspace: WorkspaceDto | null) => void;
 }) {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const requestedSaleId = searchParams.get("saleId");
   const [error, setError] = useState("");
   const [sales, setSales] = useState<SaleDto[]>([]);
   const [selected, setSelected] = useState<SaleDto | ManagerSaleDto | null>(null);
@@ -42,46 +44,54 @@ export default function SalesPage({
   }, [workspace.staff.id]);
 
   useEffect(() => {
+    let cancelled = false;
     const generation = accountGeneration();
     generationRef.current = generation;
     const staffId = workspace.staff.id;
     const role = workspace.staff.role;
+    const stillCurrent = () => !cancelled && generationRef.current === generation;
     setSales([]);
     setSelected(null);
     setError("");
     void (async () => {
-      const local = (await pos.listCompleted(staffId)).map(saleFromOffline);
-      if (generationRef.current !== generation) {
+      const [localResult, remoteResult, requestedResult] = await Promise.allSettled([
+        pos.listCompleted(staffId),
+        listSales(),
+        requestedSaleId ? getSale(requestedSaleId) : Promise.resolve(null),
+      ]);
+      if (!stillCurrent()) {
         return;
       }
-      try {
-        const remote = await listSales();
-        if (generationRef.current !== generation) {
-          return;
-        }
-        const byId = new Map(local.map((sale) => [sale.id, sale]));
+      const local = localResult.status === "fulfilled" ? localResult.value.map(saleFromOffline) : [];
+      const byId = new Map(local.map((sale) => [sale.id, sale]));
+      if (remoteResult.status === "fulfilled") {
+        const remote = remoteResult.value;
         for (const sale of remote) {
           if (role !== "manager" && sale.soldByStaffId !== staffId) {
             continue;
           }
           byId.set(sale.id, sale);
         }
-        const rows = [...byId.values()];
-        setSales(rows);
-        setSelected(rows[0] ?? null);
-      } catch (caught: unknown) {
-        if (generationRef.current !== generation) {
-          return;
-        }
-        if (local.length > 0) {
-          setSales(local);
-          setSelected(local[0] ?? null);
-          return;
-        }
+      }
+      const rows = [...byId.values()];
+      setSales(rows);
+      if (requestedResult.status === "fulfilled" && requestedResult.value) {
+        setSelected(requestedResult.value);
+      } else {
+        setSelected((requestedSaleId ? rows.find((sale) => sale.id === requestedSaleId) : rows[0]) ?? null);
+      }
+      if (requestedSaleId && requestedResult.status === "rejected") {
+        const caught = requestedResult.reason;
+        setError(caught instanceof ApiError ? caught.messageAr : "تعذر فتح البيع المطلوب.");
+      } else if (remoteResult.status === "rejected" && local.length === 0 && !requestedSaleId) {
+        const caught = remoteResult.reason;
         setError(caught instanceof ApiError ? caught.messageAr : "تعذر تحميل المبيعات.");
       }
     })();
-  }, [workspace.staff.id, workspace.staff.role]);
+    return () => {
+      cancelled = true;
+    };
+  }, [requestedSaleId, workspace.staff.id, workspace.staff.role]);
 
   async function openSale(id: string) {
     const generation = generationRef.current;

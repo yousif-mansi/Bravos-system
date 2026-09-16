@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
+import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -10,11 +11,13 @@ import { applyMigrations } from "@bravos/persistence";
 
 class ManagedEmbeddedPostgres extends EmbeddedPostgres {
   private readonly databaseDir: string;
+  private readonly port: number;
   private stopPromise: Promise<void> | null = null;
 
-  constructor(databaseDir: string, options: ConstructorParameters<typeof EmbeddedPostgres>[0]) {
+  constructor(databaseDir: string, port: number, options: ConstructorParameters<typeof EmbeddedPostgres>[0]) {
     super(options);
     this.databaseDir = databaseDir;
+    this.port = port;
   }
 
   override stop(): Promise<void> {
@@ -29,11 +32,9 @@ class ManagedEmbeddedPostgres extends EmbeddedPostgres {
     }
     try {
       await stopWindowsPostgres(this.databaseDir);
-      return;
     } catch (gracefulError) {
       try {
         await super.stop();
-        return;
       } catch (fallbackError) {
         throw new AggregateError(
           [gracefulError, fallbackError],
@@ -41,6 +42,7 @@ class ManagedEmbeddedPostgres extends EmbeddedPostgres {
         );
       }
     }
+    await waitForPortToClose(this.port);
   }
 }
 
@@ -64,7 +66,7 @@ export async function startPostgresCluster(options?: {
     : await mkdtemp(path.join(tmpdir(), "bravos-pg-"));
   const user = "bravos";
   const password = "bravos-test";
-  const pg = new ManagedEmbeddedPostgres(databaseDir, {
+  const pg = new ManagedEmbeddedPostgres(databaseDir, port, {
     databaseDir,
     user,
     password,
@@ -73,6 +75,7 @@ export async function startPostgresCluster(options?: {
     // handles when the dependency observes the parent process exit.
     persistent: true,
     initdbFlags: ["--encoding=UTF8", "--locale=C"],
+    postgresFlags: process.platform === "win32" ? ["-c", "io_method=sync"] : [],
     onLog: (message) => {
       if (process.env.BRAVOS_PG_LOG === "1") {
         console.log(message);
@@ -142,6 +145,54 @@ async function stopWindowsPostgres(databaseDir: string): Promise<void> {
         reject(new Error(`pg_ctl could not stop the embedded Postgres cluster: ${detail}`, { cause: error }));
       },
     );
+  });
+}
+
+async function waitForPortToClose(port: number): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  do {
+    const open = await Promise.all([
+      listenerMayBeOpen("127.0.0.1", port),
+      listenerMayBeOpen("::1", port),
+    ]);
+    if (open.every((value) => !value)) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  } while (Date.now() < deadline);
+  throw new Error(`Embedded Postgres stopped but its owned port ${port} is still listening.`);
+}
+
+async function listenerMayBeOpen(host: string, port: number): Promise<boolean> {
+  return await new Promise<boolean>((resolve, reject) => {
+    const socket = connect({ host, port });
+    let settled = false;
+    const finish = (open: boolean) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      socket.destroy();
+      resolve(open);
+    };
+    const fail = (error: Error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      socket.destroy();
+      reject(error);
+    };
+    socket.setTimeout(250);
+    socket.once("connect", () => finish(true));
+    socket.once("error", (error: NodeJS.ErrnoException) => {
+      if (["ECONNREFUSED", "EADDRNOTAVAIL", "EHOSTUNREACH", "ENETUNREACH"].includes(error.code ?? "")) {
+        finish(false);
+        return;
+      }
+      fail(error);
+    });
+    socket.once("timeout", () => finish(true));
   });
 }
 

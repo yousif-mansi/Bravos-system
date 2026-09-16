@@ -41,6 +41,7 @@ export type {
   DeliveredOnlineOrderSourceReader,
   DeliveredOnlineOrderSourceSearch,
   OnlineOrderActorPort,
+  OnlineOrderReportingReader,
   OnlineOrderStore,
   OnlineOrderUnitOfWork,
   OpeningOnlineOrderTransaction,

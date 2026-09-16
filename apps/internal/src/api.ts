@@ -15,6 +15,7 @@ import type {
   InventoryBatchDto,
   InventorySettingsDto,
   LowStockVariantDto,
+  ManagementReportDto,
   ManagerProductDto,
   OnlineOrderAgreementQuoteDto,
   OnlineOrderDto,
@@ -88,6 +89,36 @@ export function signOut() {
 
 export function getWorkspace() {
   return request<WorkspaceDto>("/api/internal/workspace");
+}
+
+export type ManagementReportQuery =
+  & (
+    | { period: "today" }
+    | { period: "day"; date: string }
+    | { period: "month"; month: string }
+  )
+  & {
+    branchId?: string;
+    channel?: "physical" | "online";
+    employeeId?: string;
+    detailPage?: number;
+    detailPageSize?: number;
+  };
+
+export function getManagementReport(query: ManagementReportQuery, signal?: AbortSignal) {
+  const params = new URLSearchParams({ period: query.period });
+  if (query.period === "day") params.set("date", query.date);
+  if (query.period === "month") params.set("month", query.month);
+  if (query.branchId) params.set("branchId", query.branchId);
+  if (query.channel) params.set("channel", query.channel);
+  if (query.employeeId) params.set("employeeId", query.employeeId);
+  if (query.detailPage) params.set("detailPage", String(query.detailPage));
+  if (query.detailPageSize) params.set("detailPageSize", String(query.detailPageSize));
+  const init: RequestInit = signal ? { signal, cache: "no-store" } : { cache: "no-store" };
+  return request<ManagementReportDto>(
+    `/api/internal/reports/management?${params.toString()}`,
+    init,
+  );
 }
 
 export function selectBranch(branchId: string) {

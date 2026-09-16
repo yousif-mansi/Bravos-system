@@ -1,5 +1,6 @@
 export {
   createPostgresPriceSnapshotStore,
+  createPostgresPhysicalSaleReportingReader,
   createPostgresPricingQuoteReader,
   createPostgresSaleStore,
   createPostgresSalesUnitOfWork,

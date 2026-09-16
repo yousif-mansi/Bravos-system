@@ -13,6 +13,7 @@ import type {
   PricingQuoteReader,
   PriceSnapshotRecord,
   PriceSnapshotStore,
+  PhysicalSaleReportingReader,
   SaleInsert,
   SaleLineWrite,
   SaleRecord,
@@ -279,6 +280,51 @@ export function createPostgresSaleStore(queryable: Queryable): SaleStore {
         [variantIds],
       );
       return result.rows.map((row) => row.variant_id);
+    },
+  };
+}
+
+export function createPostgresPhysicalSaleReportingReader(queryable: Queryable): PhysicalSaleReportingReader {
+  return {
+    async countCompletedFacts(input) {
+      const result = await queryable.query<{ count: number | string }>(
+        `SELECT COUNT(*)::bigint AS count FROM sales_sale
+         WHERE physically_completed = true
+           AND occurred_at >= $1 AND occurred_at < $2
+           AND ($3::uuid IS NULL OR branch_id = $3)
+           AND ($4::text IS NULL OR sold_by_staff_id = $4)`,
+        [input.from, input.to, input.branchId ?? null, input.employeeId ?? null],
+      );
+      return asSafeInteger(result.rows[0]?.count ?? 0);
+    },
+    listCompletedFactsPage(input) {
+      return loadMany(
+        queryable,
+        `SELECT * FROM sales_sale
+         WHERE physically_completed = true
+           AND occurred_at >= $1 AND occurred_at < $2
+           AND ($3::uuid IS NULL OR branch_id = $3)
+           AND ($4::text IS NULL OR sold_by_staff_id = $4)
+           AND ($5::timestamptz IS NULL OR (occurred_at,id) < ($5,$6::uuid))
+         ORDER BY occurred_at DESC, id DESC
+         LIMIT $7`,
+        [input.from, input.to, input.branchId ?? null, input.employeeId ?? null,
+          input.after?.occurredAt ?? null, input.after?.id ?? null, input.limit],
+      );
+    },
+    async getCompletedAttributionsByIds(ids) {
+      if (ids.length === 0) return Promise.resolve([]);
+      const result = await queryable.query<{
+        id: string; branch_id: string; sold_by_staff_id: string; sold_by_display_name: string;
+        final_total_piasters: number | string;
+      }>(
+        `SELECT id,branch_id,sold_by_staff_id,sold_by_display_name,final_total_piasters
+         FROM sales_sale WHERE physically_completed = true AND id = ANY($1::uuid[])`,
+        [ids],
+      );
+      return result.rows.map((row) => ({ id: row.id, branchId: row.branch_id,
+        soldByStaffId: row.sold_by_staff_id, soldByDisplayName: row.sold_by_display_name,
+        finalTotalPiasters: asSafeInteger(row.final_total_piasters) }));
     },
   };
 }

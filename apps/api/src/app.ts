@@ -134,6 +134,20 @@ import { createPostgresOpeningExpenseTransaction } from "@bravos/expenses/node";
 import { createPostgresOpeningPricingTransaction } from "@bravos/pricing/node";
 import { createPostgresOpeningStorefrontConfigTransaction } from "@bravos/storefront-config/node";
 import { createPostgresOpeningOnlineOrderTransaction } from "@bravos/online-orders/node";
+import {
+  ReportingExportLimitError,
+  ReportingValidationError,
+  createReportingServices,
+  type ReportingServices,
+} from "@bravos/reporting";
+import { createPostgresReportingReadUnitOfWork } from "@bravos/reporting/node";
+import { createPostgresCatalogReportingReader } from "@bravos/catalog/node";
+import { createPostgresReturnCorrectionReportingReader, createPostgresSaleCorrectionReportingReader } from "@bravos/corrections/node";
+import { createPostgresExpenseReportingReader } from "@bravos/expenses/node";
+import { createPostgresOnlineOrderReportingReader } from "@bravos/online-orders/node";
+import { createPostgresPurchaseReportingReader } from "@bravos/receiving/node";
+import { createPostgresReturnReportingFactsReader } from "@bravos/returns/node";
+import { createPostgresPhysicalSaleReportingReader } from "@bravos/sales/node";
 import type { AppConfig } from "./config.ts";
 
 const ALLOWED_AUTH_ROUTES = new Set([
@@ -158,6 +172,7 @@ export type BuiltApp = {
   storefrontConfig: StorefrontConfigServices;
   onlineOrders: OnlineOrderServices;
   openingImport: OpeningImportServices;
+  reporting: ReportingServices;
   auth: ReturnType<typeof createBetterAuth>;
   identity: IdentityGateway;
   close: () => Promise<void>;
@@ -349,10 +364,29 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
       })),
       clock: { now: config.businessClock ?? (() => new Date()) },
     });
+    const reporting = createReportingServices({
+      actors: {
+        getStaff: (staffId) => directory.getStaff(staffId),
+        listBranches: () => directory.listBranches(),
+        listStaff: () => directory.listStaff(),
+      },
+      uow: createPostgresReportingReadUnitOfWork(pool, (client) => ({
+        sales: createPostgresPhysicalSaleReportingReader(client),
+        saleCorrections: createPostgresSaleCorrectionReportingReader(client),
+        returnCorrections: createPostgresReturnCorrectionReportingReader(client),
+        inventory: createPostgresInventoryStore(client),
+        orders: createPostgresOnlineOrderReportingReader(client),
+        returns: createPostgresReturnReportingFactsReader(client),
+        purchases: createPostgresPurchaseReportingReader(client),
+        expenses: createPostgresExpenseReportingReader(client),
+        catalog: createPostgresCatalogReportingReader(client),
+      })),
+      clock: { now: config.businessClock ?? (() => new Date()) },
+    });
 
     const instance = Fastify({ logger: false });
     app = instance;
-    await registerRoutes(instance, config, auth, identity, services, catalog, inventory, receiving, pricing, sales, expenses, returns, corrections, storefrontConfig, onlineOrders, openingImport);
+    await registerRoutes(instance, config, auth, identity, services, catalog, inventory, receiving, pricing, sales, expenses, returns, corrections, storefrontConfig, onlineOrders, openingImport, reporting);
 
     return {
       app: instance,
@@ -369,6 +403,7 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
       storefrontConfig,
       onlineOrders,
       openingImport,
+      reporting,
       auth,
       identity,
       async close() {
@@ -409,6 +444,7 @@ async function registerRoutes(
   storefrontConfig: StorefrontConfigServices,
   onlineOrders: OnlineOrderServices,
   openingImport: OpeningImportServices,
+  reporting: ReportingServices,
 ) {
   app.addHook("onRequest", async (request, reply) => {
     if (isPrivilegedPath(request.url) && !isTrustedInternalOrigin(request, config)) {
@@ -497,6 +533,11 @@ async function registerRoutes(
 
   app.get("/api/internal/workspace", async (request, reply) => {
     return handle(reply, async () => services.workspace(await verifiedAuth(identity, request)));
+  });
+
+  app.get("/api/internal/reports/management", async (request, reply) => {
+    reply.header("cache-control", "no-store");
+    return handle(reply, async () => reporting.getManagementReport(await verifiedAuth(identity, request), request.query));
   });
 
   app.get("/api/internal/opening-import/templates/:fileName", async (request, reply) => {
@@ -1462,6 +1503,8 @@ function sendError(reply: FastifyReply, error: unknown) {
     error instanceof StorefrontConfigValidationError
     || error instanceof OnlineOrderValidationError
     || error instanceof OpeningImportValidationError
+    || error instanceof ReportingValidationError
+    || error instanceof ReportingExportLimitError
   ) {
     return reply.status(400).send(errorBody(error.code, error.message));
   }

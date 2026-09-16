@@ -14,6 +14,9 @@ importers:
       '@bravos/persistence':
         specifier: workspace:*
         version: link:packages/persistence
+      '@bravos/reporting':
+        specifier: workspace:*
+        version: link:packages/reporting
       '@bravos/testkit':
         specifier: workspace:*
         version: link:packages/testkit
@@ -83,6 +86,9 @@ importers:
       '@bravos/receiving':
         specifier: workspace:*
         version: link:../../packages/receiving
+      '@bravos/reporting':
+        specifier: workspace:*
+        version: link:../../packages/reporting
       '@bravos/returns':
         specifier: workspace:*
         version: link:../../packages/returns
@@ -427,6 +433,49 @@ importers:
       '@bravos/inventory':
         specifier: workspace:*
         version: link:../inventory
+      pg:
+        specifier: 8.16.3
+        version: 8.16.3
+    devDependencies:
+      '@types/node':
+        specifier: 22.18.6
+        version: 22.18.6
+      '@types/pg':
+        specifier: 8.15.5
+        version: 8.15.5
+      typescript:
+        specifier: 5.9.2
+        version: 5.9.2
+
+  packages/reporting:
+    dependencies:
+      '@bravos/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@bravos/corrections':
+        specifier: workspace:*
+        version: link:../corrections
+      '@bravos/expenses':
+        specifier: workspace:*
+        version: link:../expenses
+      '@bravos/identity':
+        specifier: workspace:*
+        version: link:../identity
+      '@bravos/inventory':
+        specifier: workspace:*
+        version: link:../inventory
+      '@bravos/online-orders':
+        specifier: workspace:*
+        version: link:../online-orders
+      '@bravos/receiving':
+        specifier: workspace:*
+        version: link:../receiving
+      '@bravos/returns':
+        specifier: workspace:*
+        version: link:../returns
+      '@bravos/sales':
+        specifier: workspace:*
+        version: link:../sales
       pg:
         specifier: 8.16.3
         version: 8.16.3

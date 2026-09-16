@@ -1230,6 +1230,242 @@ export type OpeningImportAcceptRequest = {
   previewFingerprint: string;
 };
 
+export type ManagementReportPeriodDto = {
+  kind: "today" | "day" | "month";
+  labelAr: string;
+  fromCairoDate: string;
+  toCairoDateInclusive: string;
+};
+
+export type ManagementReportFiltersDto = {
+  branchId: string | null;
+  channel: "all" | "physical" | "online";
+  employeeId: string | null;
+};
+
+export type ReportCompletedSaleLineDto = {
+  sourceLineId: string;
+  variantId: string;
+  productId: string;
+  productCode: string;
+  productNameAr: string;
+  variant: VariantIdentityDto;
+  quantity: number;
+  paidPiasters: number;
+};
+
+export type ReportCompletedSaleDto = {
+  source: {
+    kind: "physical_sale" | "delivered_online_order";
+    id: string;
+    reference: string;
+  };
+  channel: "physical" | "online";
+  occurredAt: string;
+  branch: BranchDto | null;
+  employee: { staffId: string; displayName: string } | null;
+  effectiveStatus: "active" | "cancelled";
+  correctionRevision: number;
+  corrections: Array<{
+    id: string;
+    type: "correction" | "cancellation";
+    revision: number;
+    reason: string;
+    changedByStaffId: string;
+    changedByDisplayName: string;
+    changedAt: string;
+  }>;
+  accepted: {
+    originalPiasters: number;
+    automaticOfferDiscountPiasters: number;
+    couponDiscountPiasters: number;
+    employeeDiscountPiasters: number;
+    employeeDiscountedByStaffId: string | null;
+    employeeDiscountReason: string | null;
+  };
+  effectiveMerchandisePiasters: number;
+  deliveryChargePiasters: number;
+  effectiveFinalPiasters: number;
+  knownCostPiasters: number;
+  unresolvedCostQuantity: number;
+  costsIncomplete: boolean;
+  lines: ReportCompletedSaleLineDto[];
+};
+
+export type ReportRefundDto = {
+  returnId: string;
+  postedAt: string;
+  source: ReturnSourceKeyDto;
+  channel: "physical" | "online";
+  originalBranchId: string | null;
+  handlingBranchId: string;
+  effectiveStatus: "active" | "cancelled";
+  correctionRevision: number;
+  corrections: Array<{
+    id: string;
+    type: "correction" | "cancellation";
+    revision: number;
+    reason: string;
+    changedByStaffId: string;
+    changedByDisplayName: string;
+    changedAt: string;
+  }>;
+  authorizedRefund: ReturnRefundBreakdownDto;
+  sellableRestoredCostPiasters: number;
+  actualRefundPaidPiasters: number;
+  cashRefundStatus: "none" | "owed" | "paid" | "overpaid" | "cancelled";
+  cashRefundOwedPiasters: number;
+  refundCashEvents: Array<{
+    direction: "paid_out" | "recovered";
+    amountPiasters: number;
+    recordedAt: string;
+  }>;
+  exchange: {
+    replacementSaleId: string;
+    replacementMerchandisePiasters: number;
+    creditAppliedPiasters: number;
+    cashCollectedPiasters: number;
+    cashRefundPaidPiasters: number;
+    cashRefundOwedPiasters: number;
+  } | null;
+};
+
+export type ReportPurchaseReceiptDto = {
+  receiptId: string;
+  receiptDate: string;
+  receivedByStaffId: string;
+  effectiveQuantity: number;
+  effectiveCostPiasters: number;
+  lines: Array<{
+    lineId: string;
+    variant: VariantIdentityDto;
+    effectiveQuantity: number;
+    effectiveUnitCostPiasters: number;
+    effectiveCostPiasters: number;
+  }>;
+  corrections: Array<{
+    id: string;
+    revision: number;
+    reason: string;
+    changedByStaffId: string;
+    changedByDisplayName: string;
+    changedAt: string;
+  }>;
+};
+
+export type ReportExpenseDto = {
+  expenseId: string;
+  branch: BranchDto;
+  createdByStaffId: string;
+  createdByDisplayName: string;
+  expenseDate: string;
+  amountPiasters: number;
+  categoryNameAr: string;
+  description: string;
+  effectiveStatus: "active" | "cancelled";
+  correctionRevision: number;
+  corrections: Array<{
+    id: string;
+    type: "correction" | "cancellation";
+    revision: number;
+    reason: string;
+    changedByStaffId: string;
+    changedByDisplayName: string;
+    changedAt: string;
+  }>;
+};
+
+export type ReportBestSellerDto = {
+  productId: string;
+  productCode: string;
+  productNameAr: string;
+  grossEffectiveSoldQuantity: number;
+  returnedQuantity: number;
+};
+
+export type ReportChannelBreakdownDto = {
+  channel: "physical" | "online";
+  completedCount: number;
+  grossFinalSalesPiasters: number;
+  grossMerchandiseSalesPiasters: number;
+  merchandiseRefundPiasters: number;
+  netMerchandiseSalesPiasters: number;
+  knownNetMerchandiseCostPiasters: number;
+  grossProfitPiasters: number | null;
+  costsIncomplete: boolean;
+};
+
+export type ReportBranchBreakdownDto = Omit<ReportChannelBreakdownDto, "channel"> & {
+  branch: BranchDto;
+  effectiveExpensesPiasters: number;
+  operatingProfitPiasters: number | null;
+};
+
+export type ReportEmployeeBreakdownDto = {
+  staffId: string;
+  displayName: string;
+  completedCount: number;
+  grossFinalSalesPiasters: number;
+  grossMerchandiseSalesPiasters: number;
+  employeeDiscountPiasters: number;
+  merchandiseRefundPiasters: number;
+  effectiveExpensesPiasters: number;
+};
+
+export type ManagementReportDto = {
+  period: ManagementReportPeriodDto;
+  filters: ManagementReportFiltersDto;
+  pageInfo: {
+    page: number;
+    pageSize: number;
+    totalCompletedSales: number;
+    totalRefunds: number;
+    totalPurchases: number;
+    totalExpenses: number;
+    hasMore: boolean;
+  };
+  summary: {
+    completedCount: number;
+    grossFinalSalesPiasters: number;
+    grossMerchandiseSalesPiasters: number;
+    deliveryChargesPiasters: number;
+    merchandiseRefundPiasters: number;
+    checkoutChargeRefundPiasters: number;
+    netFinalSalesPiasters: number;
+    netMerchandiseSalesPiasters: number;
+    knownNetMerchandiseCostPiasters: number;
+    merchandiseGrossProfitPiasters: number | null;
+    effectiveExpensesPiasters: number;
+    operatingProfitPiasters: number | null;
+    purchaseCostPiasters: number;
+    costsIncomplete: boolean;
+    unresolvedCostQuantity: number;
+  };
+  byChannel: ReportChannelBreakdownDto[];
+  byBranch: ReportBranchBreakdownDto[];
+  byEmployee: ReportEmployeeBreakdownDto[];
+  completedSales: ReportCompletedSaleDto[];
+  refunds: ReportRefundDto[];
+  purchases: { totalPiasters: number; receipts: ReportPurchaseReceiptDto[] };
+  expenses: { totalPiasters: number; items: ReportExpenseDto[] };
+  bestSellers: ReportBestSellerDto[];
+  inventory: {
+    availableQuantity: number;
+    availableValuePiasters: number;
+    protectedQuantity: number;
+    protectedValuePiasters: number;
+    unresolvedCostQuantity: number;
+    costsIncomplete: boolean;
+  };
+  onlineOrderOperations: {
+    pendingCount: number;
+    confirmedCount: number;
+    shippedCount: number;
+    deliveryFailedCount: number;
+  };
+  lowStock: LowStockVariantDto[];
+};
+
 export type ApiErrorCode =
   | "UNAUTHENTICATED"
   | "FORBIDDEN"

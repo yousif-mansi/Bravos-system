@@ -44,6 +44,43 @@ export type ExpenseRecord = {
 
 export type ExpenseScope = { manager: true } | { manager: false; staffId: string; branchId: string };
 
+export type ExpenseReportingFact = {
+  expenseId: string;
+  branchId: string;
+  createdByStaffId: string;
+  expenseDate: string;
+  amountPiasters: number;
+  categoryNameAr: string;
+  description: string;
+  effectiveStatus: "active" | "cancelled";
+  correctionRevision: number;
+  corrections: Array<{
+    id: string;
+    type: "correction" | "cancellation";
+    revision: number;
+    reason: string;
+    changedByStaffId: string;
+    changedAt: Date;
+  }>;
+};
+
+export type ExpenseReportingReader = {
+  countEffectiveFacts(input: {
+    fromDate: string;
+    toDateInclusive: string;
+    branchId?: string | null;
+    employeeId?: string | null;
+  }): Promise<number>;
+  listEffectiveFactsPage(input: {
+    fromDate: string;
+    toDateInclusive: string;
+    branchId?: string | null;
+    employeeId?: string | null;
+    limit: number;
+    after?: { expenseDate: string; id: string } | null;
+  }): Promise<ExpenseReportingFact[]>;
+};
+
 export type ExpenseRepository = {
   listCategories(includeInactive: boolean): Promise<ExpenseCategoryDto[]>;
   createCategory(input: { id: string; nameAr: string; normalizedNameAr: string; actorStaffId: string; at: Date }): Promise<ExpenseCategoryDto | null>;

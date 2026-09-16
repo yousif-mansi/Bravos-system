@@ -63,6 +63,19 @@ export type ReceiptCorrectionRecord = {
   lines: ReceiptCorrectionLineRecord[];
 };
 
+export type PurchaseReportingFact = {
+  receipt: ReceiptRecord;
+  corrections: Array<Pick<ReceiptCorrectionRecord, "id" | "revision" | "reason" | "changedByStaffId" | "changedAt">>;
+};
+
+export type PurchaseReportingReader = {
+  countReceiptFacts(input: { fromDate: string; toDateInclusive: string }): Promise<number>;
+  listReceiptFactsPage(input: {
+    fromDate: string; toDateInclusive: string; limit: number;
+    after?: { receiptDate: string; id: string } | null;
+  }): Promise<PurchaseReportingFact[]>;
+};
+
 export type ReceiptCorrectionStore = {
   insert(input: ReceiptCorrectionRecord): Promise<ReceiptCorrectionRecord>;
   getByOperationId(operationId: string): Promise<ReceiptCorrectionRecord | null>;

@@ -93,9 +93,9 @@ module.exports = {
       name: "application-inward-only",
       comment: "Application use cases depend inward, not on Fastify, pg, React or Better Auth.",
       severity: "error",
-      from: { path: "^packages/(identity|catalog|inventory|receiving|pricing|sales|expenses|returns|corrections|storefront-config|opening-import)/src/application" },
+      from: { path: "^packages/(identity|catalog|inventory|receiving|pricing|sales|expenses|returns|corrections|storefront-config|opening-import|reporting)/src/application" },
       to: {
-        path: "(packages/(identity|catalog|inventory|receiving|pricing|sales|expenses|returns|corrections|storefront-config|opening-import)/src/adapters|apps/|better-auth|fastify|react|next|vite|\\bpg\\b|dexie)",
+        path: "(packages/(identity|catalog|inventory|receiving|pricing|sales|expenses|returns|corrections|storefront-config|opening-import|reporting)/src/adapters|apps/|better-auth|fastify|react|next|vite|\\bpg\\b|dexie)",
       },
     },
     {
@@ -104,7 +104,7 @@ module.exports = {
       severity: "error",
       from: { path: "^packages/contracts" },
       to: {
-        path: "(packages/identity|packages/catalog|packages/inventory|packages/receiving|packages/pricing|packages/sales|packages/expenses|packages/returns|packages/corrections|packages/storefront-config|apps/|better-auth|fastify|pg|react|next)",
+        path: "(packages/identity|packages/catalog|packages/inventory|packages/receiving|packages/pricing|packages/sales|packages/expenses|packages/returns|packages/corrections|packages/storefront-config|packages/reporting|apps/|better-auth|fastify|pg|react|next)",
       },
     },
     {
@@ -113,7 +113,7 @@ module.exports = {
       severity: "error",
       from: { path: "^apps/internal" },
       to: {
-        path: "(packages/identity|packages/catalog|packages/inventory|packages/receiving|packages/expenses|packages/sales/src/(index|node)\\.ts|packages/sales/src/application/sales\\.ts|packages/sales/src/adapters/postgres-sales\\.ts|packages/sales/src/domain/fingerprint\\.ts|packages/persistence|apps/api|better-auth|fastify|\\bpg\\b)",
+        path: "(packages/identity|packages/catalog|packages/inventory|packages/receiving|packages/expenses|packages/reporting|packages/sales/src/(index|node)\\.ts|packages/sales/src/application/sales\\.ts|packages/sales/src/adapters/postgres-sales\\.ts|packages/sales/src/domain/fingerprint\\.ts|packages/persistence|apps/api|better-auth|fastify|\\bpg\\b)",
       },
     },
     {
@@ -122,7 +122,7 @@ module.exports = {
       severity: "error",
       from: { path: "^apps/storefront" },
       to: {
-        path: "(apps/internal|packages/identity|packages/catalog|packages/inventory|packages/receiving|packages/pricing|packages/sales|packages/expenses|packages/returns|packages/corrections|packages/storefront-config|packages/persistence|apps/api|better-auth)",
+        path: "(apps/internal|packages/identity|packages/catalog|packages/inventory|packages/receiving|packages/pricing|packages/sales|packages/expenses|packages/returns|packages/corrections|packages/storefront-config|packages/reporting|packages/persistence|apps/api|better-auth)",
       },
     },
     {
@@ -308,6 +308,20 @@ module.exports = {
       severity: "error",
       from: { pathNot: "^packages/opening-import/src" },
       to: { path: "^packages/opening-import/src/(domain|application|adapters)/" },
+    },
+    {
+      name: "reporting-domain-inward-only",
+      comment: "Reporting domain code cannot depend on its use cases, persistence or UI infrastructure.",
+      severity: "error",
+      from: { path: "^packages/reporting/src/domain" },
+      to: { path: "(packages/reporting/src/(application|adapters)|apps/|better-auth|fastify|react|next|vite|\\bpg\\b|dexie)" },
+    },
+    {
+      name: "no-private-reporting-imports",
+      comment: "Cross-package imports must use the reporting public interface.",
+      severity: "error",
+      from: { pathNot: "^packages/reporting/src" },
+      to: { path: "^packages/reporting/src/(domain|application|adapters)/" },
     },
     {
       name: "online-orders-isolated-by-ports",

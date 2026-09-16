@@ -391,6 +391,9 @@ export function WorkspacePage({
             && workspace.capabilities.manageCatalog ? (
               <Link className="button secondary" to="/opening-import">استيراد بيانات البداية</Link>
             ) : null}
+          {online && workspace.staff.role === "manager" ? (
+            <Link className="button secondary" to="/reports">التقارير</Link>
+          ) : null}
           {workspace.capabilities.cashier ? (
             <Link className="button secondary" to="/lookup">البحث عن منتج</Link>
           ) : null}

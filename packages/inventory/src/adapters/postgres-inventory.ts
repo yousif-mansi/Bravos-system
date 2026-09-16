@@ -93,8 +93,61 @@ export function createPostgresInventoryStore(queryable: Queryable): InventoryRea
     },
     getBatchStates: (batchIds) => getBatchStates(queryable, batchIds),
     listAllocations: (operationId) => listAllocations(queryable, operationId),
+    listAllocationsForOperations: (operationIds) => listAllocationsForOperations(queryable, operationIds),
     listProtectedOrderAllocations: (orderId) => loadProtectedOrderAllocationProvenance(queryable, orderId, false),
     listDiscrepancies: (operationId) => listDiscrepancies(queryable, operationId),
+    listDiscrepanciesForOperations: (operationIds) => listDiscrepanciesForOperations(queryable, operationIds),
+    async unresolvedDiscrepancyQuantity() {
+      const result = await queryable.query<{ quantity: number | string }>(
+        `SELECT COALESCE(SUM(unallocated_quantity),0)::bigint AS quantity FROM inventory_discrepancy`,
+      );
+      return asSafeInteger(result.rows[0]?.quantity ?? 0);
+    },
+    async listProtectedOrderAllocationProvenance(orderIds) {
+      return loadProtectedOrderAllocationProvenanceForOrders(queryable, orderIds);
+    },
+    async summarizeAuthoritativeAvailableInventory() {
+      const result = await queryable.query<{ quantity: number | string; value_piasters: number | string }>(
+        `SELECT COALESCE(SUM(b.remaining_quantity),0)::bigint AS quantity,
+                COALESCE(SUM(b.remaining_quantity::bigint * b.effective_unit_cost_piasters::bigint),0)::bigint AS value_piasters
+         FROM inventory_batch b
+         WHERE b.remaining_quantity > 0
+           AND NOT EXISTS (
+             SELECT 1 FROM inventory_discrepancy d
+             WHERE d.variant_id=b.variant_id AND d.unallocated_quantity > 0
+           )`,
+      );
+      return { quantity: asSafeInteger(result.rows[0]?.quantity ?? 0),
+        valuePiasters: asSafeInteger(result.rows[0]?.value_piasters ?? 0) };
+    },
+    async summarizeProtectedOrderInventory(orderIds) {
+      if (orderIds.length === 0) return { quantity: 0, valuePiasters: 0 };
+      const result = await queryable.query<{ quantity: number | string; value_piasters: number | string }>(
+        `SELECT COALESCE(SUM(GREATEST(a.quantity
+                  - COALESCE(disposed.sellable_restored,0)
+                  - COALESCE(disposed.nonsellable_removed,0)
+                  - COALESCE(disposed.customer_returned,0),0)),0)::bigint AS quantity,
+                COALESCE(SUM(GREATEST(a.quantity
+                  - COALESCE(disposed.sellable_restored,0)
+                  - COALESCE(disposed.nonsellable_removed,0)
+                  - COALESCE(disposed.customer_returned,0),0)::bigint * b.effective_unit_cost_piasters::bigint),0)::bigint AS value_piasters
+         FROM inventory_protected_order_allocation protected
+         JOIN inventory_allocation a ON a.id=protected.allocation_id
+         JOIN inventory_batch b ON b.id=a.batch_id
+         LEFT JOIN LATERAL (
+           SELECT COALESCE((SELECT SUM(quantity) FROM inventory_order_disposition_allocation d
+                    WHERE d.allocation_id=a.id AND d.disposition='sellable_restored'),0)::int AS sellable_restored,
+                  COALESCE((SELECT SUM(quantity) FROM inventory_order_disposition_allocation d
+                    WHERE d.allocation_id=a.id AND d.disposition='nonsellable_removed'),0)::int AS nonsellable_removed,
+                  COALESCE((SELECT SUM(quantity_delta) FROM inventory_delivered_return_allocation_effect e
+                    WHERE e.allocation_id=a.id),0)::int AS customer_returned
+         ) disposed ON true
+         WHERE protected.protected_order_id=ANY($1::uuid[])`,
+        [orderIds],
+      );
+      return { quantity: asSafeInteger(result.rows[0]?.quantity ?? 0),
+        valuePiasters: asSafeInteger(result.rows[0]?.value_piasters ?? 0) };
+    },
     async getSettings() {
       return loadSettings(queryable);
     },
@@ -644,7 +697,15 @@ export function createInventoryTransaction(client: PoolClient): InventoryTransac
       };
     },
     listAllocations: (operationId) => listAllocations(client, operationId),
+    listAllocationsForOperations: (operationIds) => listAllocationsForOperations(client, operationIds),
     listDiscrepancies: (operationId) => listDiscrepancies(client, operationId),
+    listDiscrepanciesForOperations: (operationIds) => listDiscrepanciesForOperations(client, operationIds),
+    async unresolvedDiscrepancyQuantity() {
+      const result = await client.query<{ quantity: number | string }>(
+        `SELECT COALESCE(SUM(unallocated_quantity),0)::bigint AS quantity FROM inventory_discrepancy`,
+      );
+      return asSafeInteger(result.rows[0]?.quantity ?? 0);
+    },
     quantitiesFor: (variantIds) => quantitiesFor(client, variantIds),
     referencedVariantIds: (variantIds) => referencedVariantIds(client, variantIds),
     async listAvailableBatchesFifo(variantId) {
@@ -1183,6 +1244,7 @@ async function loadProtectedOrderAllocationProvenance(
     [orderId],
   );
   return result.rows.map((row) => ({
+    protectedOrderId: orderId,
     allocationId: row.allocation_id,
     sourceLineId: row.source_line_id,
     batchId: row.batch_id,
@@ -1196,6 +1258,53 @@ async function loadProtectedOrderAllocationProvenance(
     customerReturnedQuantity: row.customer_returned_quantity,
     undisposedQuantity: row.quantity - row.sellable_restored_quantity
       - row.nonsellable_removed_quantity - row.customer_returned_quantity,
+  }));
+}
+
+async function loadProtectedOrderAllocationProvenanceForOrders(queryable: Queryable, orderIds: string[]) {
+  if (orderIds.length === 0) return [];
+  const result = await queryable.query<{
+    protected_order_id: string; allocation_id: string; source_line_id: string; batch_id: string;
+    variant_id: string; quantity: number; unit_cost_piasters: number | string;
+    effective_unit_cost_piasters: number | string; allocated_at: Date;
+    sellable_restored_quantity: number; nonsellable_removed_quantity: number; customer_returned_quantity: number;
+  }>(
+    `SELECT protected.protected_order_id,allocation.id AS allocation_id,protected.source_line_id,
+            allocation.batch_id,allocation.variant_id,allocation.quantity,allocation.unit_cost_piasters,
+            batch.effective_unit_cost_piasters,allocation.recorded_at AS allocated_at,
+            COALESCE(disposed.sellable,0)::int AS sellable_restored_quantity,
+            COALESCE(disposed.nonsellable,0)::int AS nonsellable_removed_quantity,
+            COALESCE(customer_returned.quantity,0)::int AS customer_returned_quantity
+     FROM inventory_protected_order_allocation protected
+     JOIN inventory_allocation allocation ON allocation.id=protected.allocation_id
+     JOIN inventory_batch batch ON batch.id=allocation.batch_id
+     LEFT JOIN LATERAL (
+       SELECT SUM(item.quantity) FILTER (WHERE item.disposition='sellable_restored') AS sellable,
+              SUM(item.quantity) FILTER (WHERE item.disposition='nonsellable_removed') AS nonsellable
+       FROM inventory_order_disposition_allocation item WHERE item.allocation_id=allocation.id
+     ) disposed ON true
+     LEFT JOIN LATERAL (
+       SELECT SUM(effect.quantity_delta) AS quantity
+       FROM inventory_delivered_return_allocation_effect effect WHERE effect.allocation_id=allocation.id
+     ) customer_returned ON true
+     WHERE protected.protected_order_id=ANY($1::uuid[])
+     ORDER BY protected.protected_order_id,allocation.variant_id,batch.recorded_at,batch.id,allocation.id`,
+    [orderIds],
+  );
+  return result.rows.map((row) => ({
+    protectedOrderId: row.protected_order_id,
+    allocationId: row.allocation_id,
+    sourceLineId: row.source_line_id,
+    batchId: row.batch_id,
+    variantId: row.variant_id,
+    quantity: row.quantity,
+    unitCostPiasters: asSafeInteger(row.unit_cost_piasters),
+    effectiveUnitCostPiasters: asSafeInteger(row.effective_unit_cost_piasters),
+    allocatedAt: row.allocated_at,
+    sellableRestoredQuantity: row.sellable_restored_quantity,
+    nonsellableRemovedQuantity: row.nonsellable_removed_quantity,
+    customerReturnedQuantity: row.customer_returned_quantity,
+    undisposedQuantity: row.quantity - row.sellable_restored_quantity - row.nonsellable_removed_quantity - row.customer_returned_quantity,
   }));
 }
 
@@ -1334,6 +1443,24 @@ async function listAllocations(queryable: Queryable, operationId: string): Promi
   }));
 }
 
+async function listAllocationsForOperations(queryable: Queryable, operationIds: string[]) {
+  if (operationIds.length === 0) return [];
+  const result = await queryable.query<{
+    operation_id: string; batch_id: string; variant_id: string; quantity: number;
+    unit_cost_piasters: number | string; effective_unit_cost_piasters: number | string; recorded_at: Date;
+  }>(
+    `SELECT a.operation_id,a.batch_id,a.variant_id,a.quantity,a.unit_cost_piasters,
+            b.effective_unit_cost_piasters,a.recorded_at
+     FROM inventory_allocation a JOIN inventory_batch b ON b.id=a.batch_id
+     WHERE a.operation_id=ANY($1::uuid[])
+     ORDER BY a.operation_id,a.recorded_at,a.batch_id`,
+    [operationIds],
+  );
+  return result.rows.map((row) => ({ operationId: row.operation_id, batchId: row.batch_id,
+    variantId: row.variant_id, quantity: row.quantity, unitCostPiasters: asSafeInteger(row.unit_cost_piasters),
+    effectiveUnitCostPiasters: asSafeInteger(row.effective_unit_cost_piasters), recordedAt: row.recorded_at }));
+}
+
 async function listDiscrepancies(queryable: Queryable, operationId: string): Promise<DiscrepancyRecord[]> {
   const result = await queryable.query<{
     variant_id: string;
@@ -1353,6 +1480,22 @@ async function listDiscrepancies(queryable: Queryable, operationId: string): Pro
     allocatedQuantity: row.allocated_quantity,
     unallocatedQuantity: row.unallocated_quantity,
   }));
+}
+
+async function listDiscrepanciesForOperations(queryable: Queryable, operationIds: string[]) {
+  if (operationIds.length === 0) return [];
+  const result = await queryable.query<{
+    operation_id: string; variant_id: string; requested_quantity: number;
+    allocated_quantity: number; unallocated_quantity: number;
+  }>(
+    `SELECT operation_id,variant_id,requested_quantity,allocated_quantity,unallocated_quantity
+     FROM inventory_discrepancy WHERE operation_id=ANY($1::uuid[])
+     ORDER BY operation_id,variant_id`,
+    [operationIds],
+  );
+  return result.rows.map((row) => ({ operationId: row.operation_id, variantId: row.variant_id,
+    requestedQuantity: row.requested_quantity, allocatedQuantity: row.allocated_quantity,
+    unallocatedQuantity: row.unallocated_quantity }));
 }
 
 async function lockStockClock(queryable: Queryable, mode: "share" | "update"): Promise<void> {

@@ -21,6 +21,7 @@
     "@bravos/persistence": "workspace:*",
     "@bravos/pricing": "workspace:*",
     "@bravos/receiving": "workspace:*",
+    "@bravos/reporting": "workspace:*",
     "@bravos/returns": "workspace:*",
     "@bravos/sales": "workspace:*",
     "@bravos/storefront-config": "workspace:*",

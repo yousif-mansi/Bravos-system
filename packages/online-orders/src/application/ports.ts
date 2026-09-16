@@ -204,6 +204,20 @@ export type DeliveredOnlineOrderSourceReader = {
   getDeliveredSource(orderId: string, lock?: boolean): Promise<DeliveredOnlineOrderSource | null>;
 };
 
+export type OnlineOrderReportingReader = {
+  countDeliveredFacts(input: { from: Date; to: Date }): Promise<number>;
+  listDeliveredFactsPage(input: {
+    from: Date; to: Date; limit: number; after?: { deliveredAt: Date; id: string } | null;
+  }): Promise<CompletedOnlineOrderDto[]>;
+  currentStatusCounts(): Promise<{
+    pendingCount: number;
+    confirmedCount: number;
+    shippedCount: number;
+    deliveryFailedCount: number;
+  }>;
+  currentProtectedOrderIdsPage(input: { limit: number; afterId?: string | null }): Promise<string[]>;
+};
+
 export type OnlineOrderStore = DeliveredOnlineOrderSourceReader & {
   listPublicAreas(): Promise<PublicDeliveryAreaDto[]>;
   listAreas(): Promise<DeliveryAreaDto[]>;

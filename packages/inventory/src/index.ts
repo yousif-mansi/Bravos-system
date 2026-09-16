@@ -44,6 +44,8 @@ export type {
   ProtectedOrderAllocationProvenance,
   DeliveredReturnAllocationEffect,
   RecordedDeliveredReturnAllocationEffect,
+  ReportingAllocationRecord,
+  ReportingDiscrepancyRecord,
   ProtectOnlineOrderResult,
   StockCoordinationStore,
   StockCorrectionRecord,

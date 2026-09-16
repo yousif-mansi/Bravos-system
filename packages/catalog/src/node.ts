@@ -1,5 +1,6 @@
 export {
   createPostgresCatalogStore,
+  createPostgresCatalogReportingReader,
   createPostgresCheckoutCatalogReader,
   createPostgresListedPriceReader,
 } from "./adapters/postgres-catalog.ts";

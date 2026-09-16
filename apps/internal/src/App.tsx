@@ -31,6 +31,7 @@ const StorefrontSettingsPage = lazy(() => import("./pages/StorefrontSettingsPage
 const DeliveryAreasPage = lazy(() => import("./pages/DeliveryAreasPage.tsx"));
 const OnlineOrdersPage = lazy(() => import("./pages/OnlineOrdersPage.tsx"));
 const OpeningImportPage = lazy(() => import("./pages/OpeningImportPage.tsx"));
+const ReportsPage = lazy(() => import("./pages/ReportsPage.tsx"));
 
 export function App() {
   const location = useLocation();
@@ -547,6 +548,18 @@ export function App() {
               ) : (
                 <Navigate to={workspace?.activeBranch ? "/workspace" : workspace ? "/select-branch" : "/login"} replace />
               )
+          }
+        />
+        <Route
+          path="/reports"
+          element={
+            workspace?.staff.role === "manager" ? (
+              <Suspense fallback={<main className="shell">جارٍ التحميل…</main>}>
+                <ReportsPage key={workspace.staff.id} workspace={workspace} />
+              </Suspense>
+            ) : (
+              <Navigate to={workspace?.activeBranch ? "/workspace" : workspace ? "/select-branch" : "/login"} replace />
+            )
           }
         />
         <Route path="*" element={<Navigate to={workspace ? "/workspace" : "/login"} replace />} />

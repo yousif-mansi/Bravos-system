@@ -119,9 +119,24 @@ const forbidden = [
     message: "Frontend/contracts cannot import the opening-import server package.",
   },
   {
+    from: ["apps/internal", "apps/storefront", "packages/contracts"],
+    pattern: /@bravos\/reporting(?:\/node)?/,
+    message: "Frontend/contracts cannot import the reporting server package.",
+  },
+  {
+    from: ["apps", "packages"],
+    pattern: /@bravos\/reporting\/src\//,
+    message: "Deep reporting imports are not part of the public interface.",
+  },
+  {
     from: ["packages/opening-import/src/domain", "packages/opening-import/src/application"],
     pattern: /from ["'](better-auth|fastify|pg|react|next|vite|dexie)|\bHeaders\b/,
     message: "Opening import inner layers cannot import infrastructure SDKs or HTTP Headers.",
+  },
+  {
+    from: ["packages/reporting/src/domain", "packages/reporting/src/application"],
+    pattern: /from ["'](better-auth|fastify|pg|react|next|vite|dexie)|\bHeaders\b/,
+    message: "Reporting inner layers cannot import infrastructure SDKs or HTTP Headers.",
   },
   {
     from: ["packages/online-orders/src/domain", "packages/online-orders/src/application"],

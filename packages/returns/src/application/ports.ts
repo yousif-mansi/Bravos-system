@@ -352,3 +352,35 @@ export type ReturnServiceDependencies = {
   uow: ReturnsUnitOfWork;
   clock: { now(): Date };
 };
+
+export type ReturnReportingFact = {
+  returnId: string;
+  postedAt: Date;
+  source: ReturnSourceKeyDto;
+  channel: "physical" | "online";
+  handlingBranchId: string;
+  authorizedRefund: ReturnRefundBreakdownDto;
+  refundPaidPiasters: number;
+  refundCashEvents: Array<{ amountPiasters: number; recordedAt: Date }>;
+  exchange: null | {
+    replacementSaleId: string;
+    creditAppliedPiasters: number;
+    cashCollectedPiasters: number;
+    cashRefundPaidPiasters: number;
+    completedAt: Date;
+  };
+  lines: Array<{ returnLineId: string; sourceLineId: string; variantId: string; quantity: number; sellableQuantity: number }>;
+  restorations: Array<{ batchId: string; variantId: string; quantity: number; unitCostPiasters: number }>;
+};
+
+export type ReturnReportingHeader = Pick<ReturnReportingFact,
+  "returnId" | "postedAt" | "source" | "channel" | "handlingBranchId">;
+
+export type ReturnReportingFactsReader = {
+  listPostedHeadersPage(input: {
+    from: Date; to: Date; limit: number; after?: { postedAt: Date; id: string } | null;
+  }): Promise<ReturnReportingHeader[]>;
+  listPostedFactsPage(input: {
+    from: Date; to: Date; limit: number; after?: { postedAt: Date; id: string } | null;
+  }): Promise<ReturnReportingFact[]>;
+};

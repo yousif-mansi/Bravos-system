@@ -178,6 +178,25 @@ export type SaleRecord = {
   lines: SaleLineWrite[];
 };
 
+export type PhysicalSaleReportingReader = {
+  countCompletedFacts(input: {
+    from: Date;
+    to: Date;
+    branchId?: string | null;
+    employeeId?: string | null;
+  }): Promise<number>;
+  listCompletedFactsPage(input: {
+    from: Date;
+    to: Date;
+    branchId?: string | null;
+    employeeId?: string | null;
+    limit: number;
+    after?: { occurredAt: Date; id: string } | null;
+  }): Promise<SaleRecord[]>;
+  getCompletedAttributionsByIds(ids: string[]): Promise<Array<Pick<SaleRecord,
+    "id" | "branchId" | "soldByStaffId" | "soldByDisplayName" | "finalTotalPiasters">>>;
+};
+
 export type SaleInsert = {
   id: string;
   operationId: string;
