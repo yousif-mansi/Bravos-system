@@ -2,6 +2,7 @@
 
 import { createContext, type ReactNode, useContext, useEffect, useRef, useState } from "react";
 import type { AddCartLine, CartLine } from "./cart-types";
+import { recordPublicAnalyticsEvent } from "../analytics-events";
 
 const STORAGE_KEY = "bravos-guest-cart-v1";
 const STORAGE_VERSION = 1;
@@ -157,7 +158,7 @@ export function CartProvider({ children }: { children: ReactNode }) {
     itemCount: items.reduce((sum, item) => sum + item.quantity, 0),
     async add(line) {
       const quantity = line.quantity ?? 1;
-      return mutateCart((current) => {
+      const added = await mutateCart((current) => {
         const match = current.items.find((item) => item.variantId === line.variantId);
         if (!line.orderable || !Number.isInteger(quantity) || quantity < 1 || quantity + (match?.quantity ?? 0) > line.knownAvailableQuantity) return null;
         return {
@@ -167,6 +168,16 @@ export function CartProvider({ children }: { children: ReactNode }) {
             : [...current.items, { ...line, quantity }],
         };
       });
+      if (added) {
+        void recordPublicAnalyticsEvent({
+          operationId: crypto.randomUUID(),
+          eventType: "cart_addition",
+          productId: line.productId,
+          variantId: line.variantId,
+          quantity,
+        });
+      }
+      return added;
     },
     async setQuantity(variantId, quantity, maximum) {
       if (!Number.isInteger(quantity) || quantity < 1 || quantity > maximum) return false;

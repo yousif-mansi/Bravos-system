@@ -41,6 +41,7 @@ try {
       "025_order_fulfillment.sql",
       "026_opening_import.sql",
       "027_online_returns.sql",
+      "028_aggregate_analytics.sql",
     ];
     if (first.join(",") !== expectedMigrations.join(",") || afterApply.join(",") !== first.join(",")) {
       throw new Error(`Scratch apply did not record multiple migrations: ${first.join(",")}`);
@@ -301,6 +302,7 @@ async function assertCurrentBatchStorage(pool: Pool, present: boolean): Promise<
     "online_order_failed_return_inspection_line",
     "opening_import_preview",
     "recording_online_return_unit_value", "inventory_delivered_return_allocation_effect",
+    "public_analytics_event",
   ]) {
     if (tables.includes(table) !== present) throw new Error(`Expected ${table} presence=${present}.`);
   }

@@ -1230,6 +1230,25 @@ export type OpeningImportAcceptRequest = {
   previewFingerprint: string;
 };
 
+export type AnalyticsMetricDto = {
+  count: number;
+  definitionAr: string;
+};
+
+export type AnalyticsSummaryDto = {
+  period: {
+    fromCairoDate: string;
+    toCairoDateInclusive: string;
+  };
+  metrics: {
+    visits: AnalyticsMetricDto;
+    productViews: AnalyticsMetricDto;
+    successfulCartAdditions: AnalyticsMetricDto;
+    acceptedOrderSubmissions: AnalyticsMetricDto;
+    completedOnlineSales: AnalyticsMetricDto;
+  };
+};
+
 export type ManagementReportPeriodDto = {
   kind: "today" | "day" | "month";
   labelAr: string;

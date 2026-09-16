@@ -17,6 +17,14 @@ export function createPostgresOnlineOrderReportingReader(queryable: Queryable): 
       );
       return integer(result.rows[0]?.count ?? 0);
     },
+    async countAcceptedSubmissions(input) {
+      const result = await queryable.query<{ count: number | string }>(
+        `SELECT COUNT(DISTINCT operation_id)::bigint AS count
+         FROM online_order WHERE submitted_at >= $1 AND submitted_at < $2`,
+        [input.from, input.to],
+      );
+      return integer(result.rows[0]?.count ?? 0);
+    },
     async listDeliveredFactsPage(input) {
       const result = await queryable.query<{
         id: string; reference: string; delivered_at: Date; confirmed_quote_json: OnlineOrderAgreementQuoteDto;

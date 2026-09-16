@@ -3,6 +3,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { availabilityLabel, getPublicProduct, productMediaUrl } from "../../public-catalog";
 import { ProductPurchasePanel } from "./product-purchase-panel";
+import { ProductViewAnalytics } from "../../storefront-analytics";
 
 export const dynamic = "force-dynamic";
 
@@ -13,6 +14,7 @@ export default async function ProductPage({ params }: { params: Promise<{ produc
 
   return (
     <main id="main-content" className="product-page">
+      <ProductViewAnalytics productId={product.id} />
       <nav className="breadcrumbs" aria-label="مسار الصفحة">
         <Link href="/">المتجر</Link><span aria-hidden="true">/</span><span>{product.category.nameAr}</span>
       </nav>

@@ -206,6 +206,7 @@ export type DeliveredOnlineOrderSourceReader = {
 
 export type OnlineOrderReportingReader = {
   countDeliveredFacts(input: { from: Date; to: Date }): Promise<number>;
+  countAcceptedSubmissions(input: { from: Date; to: Date }): Promise<number>;
   listDeliveredFactsPage(input: {
     from: Date; to: Date; limit: number; after?: { deliveredAt: Date; id: string } | null;
   }): Promise<CompletedOnlineOrderDto[]>;

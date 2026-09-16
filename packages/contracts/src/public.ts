@@ -113,3 +113,29 @@ export type PublicOrderSubmissionRequest = CheckoutQuoteRequest & {
   landmark?: string | null;
   notes?: string | null;
 };
+
+export type PublicAnalyticsEventType = "visit" | "product_view" | "cart_addition";
+
+export type PublicAnalyticsEventRequest =
+  | {
+      operationId: string;
+      eventType: "visit";
+    }
+  | {
+      operationId: string;
+      eventType: "product_view";
+      productId: string;
+    }
+  | {
+      operationId: string;
+      eventType: "cart_addition";
+      productId: string;
+      variantId: string;
+      quantity: number;
+    };
+
+export type PublicAnalyticsEventReceiptDto = {
+  operationId: string;
+  eventType: PublicAnalyticsEventType;
+  recordedAt: string;
+};

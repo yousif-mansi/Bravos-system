@@ -403,6 +403,9 @@ export function WorkspacePage({
           {online && workspace.activeBranch ? (
             <Link className="button secondary" to="/expenses">المصروفات</Link>
           ) : null}
+          {online && workspace.staff.role === "manager" ? (
+            <Link className="button secondary" to="/analytics">تحليلات المتجر</Link>
+          ) : null}
           <button className="secondary" type="button" onClick={() => void logout()}>
             تسجيل الخروج
           </button>

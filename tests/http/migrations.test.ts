@@ -50,6 +50,7 @@ test("apply, down the latest migration, and reapply works with multiple migratio
       "025_order_fulfillment.sql",
       "026_opening_import.sql",
       "027_online_returns.sql",
+      "028_aggregate_analytics.sql",
     ]);
     expect(await listAppliedMigrations(pool)).toEqual(first);
     expect(await tableNames(pool)).toEqual(
@@ -103,6 +104,7 @@ test("apply, down the latest migration, and reapply works with multiple migratio
         "opening_import_preview",
         "recording_online_return_unit_value",
         "inventory_delivered_return_allocation_effect",
+        "public_analytics_event",
       ]),
     );
 
@@ -175,6 +177,7 @@ test("apply, down the latest migration, and reapply works with multiple migratio
     expect(await columnExists(pool, "returns_return", "source_online_order_id")).toBe(false);
     expect(await constraintExists(pool, "returns_return_source_exact")).toBe(false);
     expect(await constraintExists(pool, "returns_return_line_source_exact")).toBe(false);
+    expect(afterDown).not.toContain("public_analytics_event");
     expect(await columnExists(pool, "sales_pos_snapshot", "pricing_version")).toBe(false);
     expect(await columnExists(pool, "sales_sale", "cash_received_piasters")).toBe(false);
     expect(await columnExists(pool, "inventory_batch", "effective_received_quantity")).toBe(false);
@@ -212,6 +215,7 @@ test("apply, down the latest migration, and reapply works with multiple migratio
       "online_order_failed_return_inspection_line",
       "opening_import_preview",
       "recording_online_return_unit_value", "inventory_delivered_return_allocation_effect",
+      "public_analytics_event",
     ]));
     expect(await columnExists(pool, "returns_return", "source_online_order_id")).toBe(true);
     expect(await constraintExists(pool, "returns_return_source_exact")).toBe(true);
@@ -388,6 +392,7 @@ test("008 down expands counted unit ranges into one legacy row per ordinal", asy
       "025_order_fulfillment.sql",
       "026_opening_import.sql",
       "027_online_returns.sql",
+      "028_aggregate_analytics.sql",
     ]);
     const restored = await pool.query<{ unit_index: number; quantity: number; paid_piasters: number }>(
       `SELECT unit_index, quantity, paid_piasters FROM sales_sale_unit ORDER BY unit_index`,
@@ -396,6 +401,32 @@ test("008 down expands counted unit ranges into one legacy row per ordinal", asy
       { unit_index: 0, quantity: 1, paid_piasters: 99 },
       { unit_index: 1, quantity: 1, paid_piasters: 99 },
     ]);
+  } finally {
+    await pool.end();
+  }
+});
+
+test("028 refuses to discard retained analytics events during rollback", async () => {
+  const databaseName = `bravos_migrate_${crypto.randomUUID().replaceAll("-", "")}`;
+  await cluster.createDatabase(databaseName);
+  const pool = new Pool({ connectionString: cluster.connectionString(databaseName), max: 3 });
+  try {
+    await applyMigrations(pool);
+    await pool.query(
+      `INSERT INTO public_analytics_event
+         (operation_id,payload_fingerprint,event_type,product_id,variant_id,quantity,recorded_at)
+       VALUES ($1,repeat('a',64),'visit',NULL,NULL,NULL,'2026-09-16T10:00:00Z')`,
+      [crypto.randomUUID()],
+    );
+
+    await expect(revertLastMigration(pool)).rejects.toThrow(/Cannot remove aggregate analytics/);
+    expect((await listAppliedMigrations(pool)).at(-1)).toBe("028_aggregate_analytics.sql");
+    expect(await tableNames(pool)).toContain("public_analytics_event");
+
+    await pool.query("DELETE FROM public_analytics_event");
+    expect(await revertLastMigration(pool)).toBe("028_aggregate_analytics.sql");
+    expect(await tableNames(pool)).not.toContain("public_analytics_event");
+    expect(await applyMigrations(pool)).toEqual(["028_aggregate_analytics.sql"]);
   } finally {
     await pool.end();
   }
@@ -455,6 +486,7 @@ test("020 backfills each legacy till from its latest snapshot without inventing 
       "025_order_fulfillment.sql",
       "026_opening_import.sql",
       "027_online_returns.sql",
+      "028_aggregate_analytics.sql",
     ]);
     const knownTills = await pool.query<{
       device_id: string;
@@ -503,6 +535,7 @@ test("027 refuses to discard delivered online Return evidence during rollback", 
   const pool = new Pool({ connectionString: cluster.connectionString(databaseName), max: 3 });
   try {
     await applyMigrations(pool);
+    expect(await revertLastMigration(pool)).toBe("028_aggregate_analytics.sql");
     await pool.query(`
       INSERT INTO "user" (id, name, email, "emailVerified", "createdAt", "updatedAt")
       VALUES ('staff-online-return', 'Online Return', 'online-return@bravos.test', true, now(), now());

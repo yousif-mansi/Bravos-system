@@ -3,6 +3,7 @@ import Link from "next/link";
 import { CartLink } from "./cart/cart-link";
 import { CartProvider } from "./cart/cart-provider";
 import { getPublicContacts } from "./public-catalog";
+import { StorefrontVisitAnalytics } from "./storefront-analytics";
 import "./globals.css";
 
 export const metadata = {
@@ -23,6 +24,7 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
     <html lang="ar" dir="rtl" data-scroll-behavior="smooth">
       <body>
         <CartProvider>
+          <StorefrontVisitAnalytics />
           <a className="skip-link" href="#main-content">انتقل إلى المحتوى</a>
           <div className="store-shell">
             <header className="store-header">

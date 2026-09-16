@@ -1,6 +1,13 @@
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { Pool } from "pg";
 import {
+  AnalyticsOperationConflictError,
+  AnalyticsValidationError,
+  createAnalyticsServices,
+  type AnalyticsServices,
+} from "@bravos/analytics";
+import { createPostgresAnalyticsStore } from "@bravos/analytics/node";
+import {
   ExpenseOperationConflictError,
   ExpenseRevisionConflictError,
   ExpensesValidationError,
@@ -148,6 +155,12 @@ import { createPostgresOnlineOrderReportingReader } from "@bravos/online-orders/
 import { createPostgresPurchaseReportingReader } from "@bravos/receiving/node";
 import { createPostgresReturnReportingFactsReader } from "@bravos/returns/node";
 import { createPostgresPhysicalSaleReportingReader } from "@bravos/sales/node";
+import {
+  ReportExportValidationError,
+  createReportExportServices,
+  type ReportExportServices,
+} from "@bravos/report-export";
+import { createLazyReportRenderer } from "@bravos/report-export/node";
 import type { AppConfig } from "./config.ts";
 
 const ALLOWED_AUTH_ROUTES = new Set([
@@ -172,7 +185,9 @@ export type BuiltApp = {
   storefrontConfig: StorefrontConfigServices;
   onlineOrders: OnlineOrderServices;
   openingImport: OpeningImportServices;
+  analytics: AnalyticsServices;
   reporting: ReportingServices;
+  reportExport: ReportExportServices;
   auth: ReturnType<typeof createBetterAuth>;
   identity: IdentityGateway;
   close: () => Promise<void>;
@@ -364,6 +379,13 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
       })),
       clock: { now: config.businessClock ?? (() => new Date()) },
     });
+    const analytics = createAnalyticsServices({
+      actors: { getStaff: (staffId) => directory.getStaff(staffId) },
+      catalog: { getPublicProduct: (productId) => catalog.getPublicProduct(productId) },
+      orders: createPostgresOnlineOrderReportingReader(pool),
+      store: createPostgresAnalyticsStore(pool),
+      clock: { now: config.businessClock ?? (() => new Date()) },
+    });
     const reporting = createReportingServices({
       actors: {
         getStaff: (staffId) => directory.getStaff(staffId),
@@ -383,10 +405,14 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
       })),
       clock: { now: config.businessClock ?? (() => new Date()) },
     });
+    const reportExport = createReportExportServices({
+      reports: reporting,
+      renderer: createLazyReportRenderer(),
+    });
 
     const instance = Fastify({ logger: false });
     app = instance;
-    await registerRoutes(instance, config, auth, identity, services, catalog, inventory, receiving, pricing, sales, expenses, returns, corrections, storefrontConfig, onlineOrders, openingImport, reporting);
+    await registerRoutes(instance, config, auth, identity, services, catalog, inventory, receiving, pricing, sales, expenses, returns, corrections, storefrontConfig, onlineOrders, openingImport, analytics, reporting, reportExport);
 
     return {
       app: instance,
@@ -403,7 +429,9 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
       storefrontConfig,
       onlineOrders,
       openingImport,
+      analytics,
       reporting,
+      reportExport,
       auth,
       identity,
       async close() {
@@ -444,7 +472,9 @@ async function registerRoutes(
   storefrontConfig: StorefrontConfigServices,
   onlineOrders: OnlineOrderServices,
   openingImport: OpeningImportServices,
+  analytics: AnalyticsServices,
   reporting: ReportingServices,
+  reportExport: ReportExportServices,
 ) {
   app.addHook("onRequest", async (request, reply) => {
     if (isPrivilegedPath(request.url) && !isTrustedInternalOrigin(request, config)) {
@@ -474,6 +504,15 @@ async function registerRoutes(
     ok: true,
     application: "bravos-public",
   }));
+
+  app.post("/api/public/analytics/events", async (request, reply) => {
+    reply.header("cache-control", "no-store");
+    return handle(reply, async () => {
+      const result = await analytics.recordPublicEvent(request.body);
+      reply.status(result.created ? 201 : 200);
+      return result.event;
+    });
+  });
 
   app.get("/api/public/catalog/products", async (_request, reply) => {
     reply.header("cache-control", "no-store");
@@ -535,9 +574,25 @@ async function registerRoutes(
     return handle(reply, async () => services.workspace(await verifiedAuth(identity, request)));
   });
 
+  app.get("/api/internal/analytics", async (request, reply) => {
+    reply.header("cache-control", "no-store");
+    return handle(reply, async () => analytics.summary(await verifiedAuth(identity, request), request.query));
+  });
+
   app.get("/api/internal/reports/management", async (request, reply) => {
     reply.header("cache-control", "no-store");
     return handle(reply, async () => reporting.getManagementReport(await verifiedAuth(identity, request), request.query));
+  });
+
+  app.get("/api/internal/reports/management/export", async (request, reply) => {
+    reply.header("cache-control", "no-store");
+    reply.header("x-content-type-options", "nosniff");
+    return handle(reply, async () => {
+      const file = await reportExport.management(await verifiedAuth(identity, request), request.query);
+      reply.header("content-type", file.contentType);
+      reply.header("content-disposition", `attachment; filename="${file.fileName}"`);
+      return reply.send(Buffer.from(file.bytes));
+    });
   });
 
   app.get("/api/internal/opening-import/templates/:fileName", async (request, reply) => {
@@ -1460,6 +1515,9 @@ function sendError(reply: FastifyReply, error: unknown) {
   if (error instanceof OperationConflictError) {
     return reply.status(409).send(errorBody(error.code, error.message));
   }
+  if (error instanceof AnalyticsOperationConflictError) {
+    return reply.status(409).send(errorBody(error.code, error.message));
+  }
   if (error instanceof StockMutationPausedError || error instanceof CoordinationStaleError) {
     return reply.status(409).send(errorBody(error.code, error.message));
   }
@@ -1503,8 +1561,10 @@ function sendError(reply: FastifyReply, error: unknown) {
     error instanceof StorefrontConfigValidationError
     || error instanceof OnlineOrderValidationError
     || error instanceof OpeningImportValidationError
+    || error instanceof AnalyticsValidationError
     || error instanceof ReportingValidationError
     || error instanceof ReportingExportLimitError
+    || error instanceof ReportExportValidationError
   ) {
     return reply.status(400).send(errorBody(error.code, error.message));
   }

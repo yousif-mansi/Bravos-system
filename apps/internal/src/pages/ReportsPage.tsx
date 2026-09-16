@@ -10,6 +10,7 @@ import type {
 import { ApiError, getManagementReport, listStaff, type ManagementReportQuery } from "../api.ts";
 import { accountGeneration } from "../account-session.ts";
 import { formatEgpFromPiasters } from "../money.ts";
+import { ReportExportActions } from "./ReportExportActions.tsx";
 
 type PeriodKind = "today" | "day" | "month";
 type ChannelFilter = "all" | "physical" | "online";
@@ -184,12 +185,15 @@ export default function ReportsPage({ workspace }: { workspace: WorkspaceDto }) 
       ) : null}
       {loading && !report ? <p role="status">جارٍ تحميل التقرير…</p> : null}
       {report ? (
-        <ReportContents
-          report={report}
-          loading={loading}
-          workspace={workspace}
-          onPageChange={(detailPage) => setQuery((current) => ({ ...current, detailPage }))}
-        />
+        <>
+          <ReportExportActions query={query} staffId={workspace.staff.id} />
+          <ReportContents
+            report={report}
+            loading={loading}
+            workspace={workspace}
+            onPageChange={(detailPage) => setQuery((current) => ({ ...current, detailPage }))}
+          />
+        </>
       ) : null}
     </main>
   );

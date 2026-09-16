@@ -1,4 +1,5 @@
 import type {
+  AnalyticsSummaryDto,
   CashierProductLookupDto,
   AutomaticOfferDto,
   AutomaticOfferWriteDto,
@@ -91,6 +92,17 @@ export function getWorkspace() {
   return request<WorkspaceDto>("/api/internal/workspace");
 }
 
+export type AnalyticsQuery = {
+  from: string;
+  to: string;
+};
+
+export function getAnalytics(query: AnalyticsQuery, signal?: AbortSignal) {
+  const search = new URLSearchParams({ from: query.from, to: query.to });
+  const init: RequestInit = signal ? { signal, cache: "no-store" } : { cache: "no-store" };
+  return request<AnalyticsSummaryDto>(`/api/internal/analytics?${search.toString()}`, init);
+}
+
 export type ManagementReportQuery =
   & (
     | { period: "today" }
@@ -105,15 +117,20 @@ export type ManagementReportQuery =
     detailPageSize?: number;
   };
 
-export function getManagementReport(query: ManagementReportQuery, signal?: AbortSignal) {
+export function managementReportSearchParams(query: ManagementReportQuery, includeDetailPagination = true) {
   const params = new URLSearchParams({ period: query.period });
   if (query.period === "day") params.set("date", query.date);
   if (query.period === "month") params.set("month", query.month);
   if (query.branchId) params.set("branchId", query.branchId);
   if (query.channel) params.set("channel", query.channel);
   if (query.employeeId) params.set("employeeId", query.employeeId);
-  if (query.detailPage) params.set("detailPage", String(query.detailPage));
-  if (query.detailPageSize) params.set("detailPageSize", String(query.detailPageSize));
+  if (includeDetailPagination && query.detailPage) params.set("detailPage", String(query.detailPage));
+  if (includeDetailPagination && query.detailPageSize) params.set("detailPageSize", String(query.detailPageSize));
+  return params;
+}
+
+export function getManagementReport(query: ManagementReportQuery, signal?: AbortSignal) {
+  const params = managementReportSearchParams(query);
   const init: RequestInit = signal ? { signal, cache: "no-store" } : { cache: "no-store" };
   return request<ManagementReportDto>(
     `/api/internal/reports/management?${params.toString()}`,

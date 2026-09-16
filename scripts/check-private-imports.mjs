@@ -114,6 +114,21 @@ const forbidden = [
     message: "Deep opening-import imports are not part of the public interface.",
   },
   {
+    from: ["apps", "packages"],
+    pattern: /@bravos\/analytics\/src\//,
+    message: "Deep analytics imports are not part of the public interface.",
+  },
+  {
+    from: ["apps", "packages"],
+    pattern: /@bravos\/report-export\/src\//,
+    message: "Deep report-export imports are not part of the public interface.",
+  },
+  {
+    from: ["apps/internal", "apps/storefront", "packages/contracts"],
+    pattern: /@bravos\/report-export(?:\/node)?/,
+    message: "Report export renderers are server-only.",
+  },
+  {
     from: ["apps/internal", "apps/storefront", "packages/contracts"],
     pattern: /@bravos\/opening-import(?:\/node)?/,
     message: "Frontend/contracts cannot import the opening-import server package.",
@@ -147,6 +162,16 @@ const forbidden = [
     from: ["packages/online-orders"],
     pattern: /@bravos\/(catalog|inventory|receiving|pricing|sales|expenses|returns|corrections|storefront-config|persistence)/,
     message: "Online orders must coordinate other features through its own declared ports.",
+  },
+  {
+    from: ["packages/analytics"],
+    pattern: /@bravos\/(catalog|inventory|online-orders|sales|reporting|report-export|persistence)/,
+    message: "Analytics must coordinate catalog and business facts through declared ports.",
+  },
+  {
+    from: ["packages/report-export/src/domain", "packages/report-export/src/application"],
+    pattern: /from ["'](better-auth|fastify|pg|react|next|vite|@ayocore\/exceljs|@react-pdf\/renderer)/,
+    message: "Report export inner layers cannot import rendering or infrastructure SDKs.",
   },
   {
     from: ["packages/identity/src/domain", "packages/identity/src/application", "packages/catalog/src/domain", "packages/catalog/src/application", "packages/inventory/src/domain", "packages/inventory/src/application", "packages/receiving/src/domain", "packages/receiving/src/application", "packages/pricing/src/domain", "packages/pricing/src/application", "packages/sales/src/domain", "packages/sales/src/application", "packages/expenses/src/domain", "packages/expenses/src/application", "packages/returns/src/domain", "packages/returns/src/application", "packages/corrections/src/domain", "packages/corrections/src/application", "packages/storefront-config/src/domain", "packages/storefront-config/src/application"],

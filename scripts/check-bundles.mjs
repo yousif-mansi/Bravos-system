@@ -8,6 +8,13 @@ const internalFiles = await collect(internalDist, /\.(js|css|html)$/);
 if (internalFiles.length === 0) {
   throw new Error("Internal production build is missing.");
 }
+const serverOnlyExportTokens = ["@react-pdf/renderer", "@ayocore/exceljs", "Cairo-Regular", "BravosArabic"];
+for (const file of internalFiles) {
+  const source = await readFile(file, "utf8");
+  if (serverOnlyExportTokens.some((token) => source.includes(token))) {
+    throw new Error(`Internal browser build contains server-only report export runtime: ${file}`);
+  }
+}
 const staffChunk = internalFiles.find((file) => path.basename(file).includes("staff-management"));
 if (!staffChunk) {
   throw new Error("Staff management was not split into its own chunk.");
@@ -60,6 +67,10 @@ const managementReportsChunk = internalFiles.find((file) => path.basename(file).
 if (!managementReportsChunk) {
   throw new Error("Management reports were not split into their own chunk.");
 }
+const storefrontAnalyticsChunk = internalFiles.find((file) => path.basename(file).includes("storefront-analytics"));
+if (!storefrontAnalyticsChunk) {
+  throw new Error("Storefront analytics were not split into their own chunk.");
+}
 
 const loginHtml = await readFile(path.join(internalDist, "index.html"), "utf8");
 const referenced = [...loginHtml.matchAll(/assets\/[^\s"]+\.js/g)].map((match) => match[0]);
@@ -81,6 +92,9 @@ for (const file of staticGraph) {
   }
   if (file === managementReportsChunk) {
     throw new Error("Login entry statically imports management reports.");
+  }
+  if (file === storefrontAnalyticsChunk) {
+    throw new Error("Login entry statically imports storefront analytics.");
   }
   const source = await readFile(file, "utf8");
   if (source.includes("إنشاء حساب موظف") || source.includes("StaffPage")) {
@@ -110,6 +124,7 @@ const dynamicStorefrontSettings = [];
 const dynamicOnlineOrders = [];
 const dynamicOpeningImport = [];
 const dynamicManagementReports = [];
+const dynamicStorefrontAnalytics = [];
 for (const file of staticGraph) {
   const source = await readFile(file, "utf8");
   const specifiers = dynamicImportSpecifiers(source);
@@ -126,6 +141,7 @@ for (const file of staticGraph) {
   dynamicOnlineOrders.push(...specifiers.filter((specifier) => specifier.includes("online-order-operations")));
   dynamicOpeningImport.push(...specifiers.filter((specifier) => specifier.includes("opening-import")));
   dynamicManagementReports.push(...specifiers.filter((specifier) => specifier.includes("management-reports")));
+  dynamicStorefrontAnalytics.push(...specifiers.filter((specifier) => specifier.includes("storefront-analytics")));
 }
 if (dynamicStaff.length === 0) {
   throw new Error("Staff management chunk is not loaded through a dynamic import from the login graph.");
@@ -166,12 +182,18 @@ if (dynamicOpeningImport.length === 0) {
 if (dynamicManagementReports.length === 0) {
   throw new Error("Management reports are not loaded through a dynamic import from the login graph.");
 }
+if (dynamicStorefrontAnalytics.length === 0) {
+  throw new Error("Storefront analytics are not loaded through a dynamic import from the login graph.");
+}
 
 const swFile = internalFiles.find((file) => /(^|\/)sw\.js$/.test(file.replaceAll("\\", "/")));
 if (!swFile) {
   throw new Error("Production service worker is missing.");
 }
 const swSource = await readFile(swFile, "utf8");
+if (serverOnlyExportTokens.some((token) => swSource.includes(token))) {
+  throw new Error("Service worker contains server-only report export runtime.");
+}
 if (swSource.includes("opening-import")) {
   throw new Error("Service worker precaches online-only opening import.");
 }
@@ -180,6 +202,9 @@ if (swSource.includes("online-order-operations")) {
 }
 if (swSource.includes("management-reports")) {
   throw new Error("Service worker precaches manager-only reports.");
+}
+if (swSource.includes("storefront-analytics")) {
+  throw new Error("Service worker precaches manager-only storefront analytics.");
 }
 if (!swSource.includes("cashier-lookup")) {
   throw new Error("Service worker does not precache the essential POS lookup chunk.");
@@ -206,6 +231,9 @@ if (storefrontFiles.length === 0) {
 }
 for (const file of storefrontFiles) {
   const source = await readFile(file, "utf8");
+  if (serverOnlyExportTokens.some((token) => source.includes(token))) {
+    throw new Error(`Public build contains server-only report export runtime: ${file}`);
+  }
   if (source.includes("@bravos/opening-import") || source.includes("OpeningImportPage") || source.includes("مراجعة واستيراد البيانات الافتتاحية")) {
     throw new Error(`Public build leaked opening import: ${file}`);
   }
