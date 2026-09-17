@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import type { PosPriceSnapshotDto, WorkspaceDto } from "@bravos/contracts";
 import { accountGeneration } from "../account-session.ts";
@@ -13,6 +13,7 @@ import {
   recoverOfflineSale,
 } from "../api.ts";
 import { posCodeIsCached } from "../offline-ready.ts";
+import { acknowledgeRestoreDevice, getRestorePause } from "../restore-api.ts";
 import {
   acceptedPayload,
   cacheIssuedSnapshot,
@@ -46,6 +47,15 @@ export function WorkspacePage({
   const [pauseSnapshot, setPauseSnapshot] = useState<PosPriceSnapshotDto | null>(null);
   const [pauseAcknowledged, setPauseAcknowledged] = useState(false);
   const [observedPause, setObservedPause] = useState<PosPriceSnapshotDto["stockPause"]>(null);
+  const [restorePauseSnapshot, setRestorePauseSnapshot] = useState<PosPriceSnapshotDto | null>(null);
+  const [observedRestorePause, setObservedRestorePause] = useState<PosPriceSnapshotDto["restorePause"]>(null);
+  const [restorePauseAcknowledged, setRestorePauseAcknowledged] = useState(false);
+  const [restoreCustodyComplete, setRestoreCustodyComplete] = useState(false);
+  const [restorePauseSnapshotPendingKey, setRestorePauseSnapshotPendingKey] = useState<string | null>(null);
+  const syncingRef = useRef(false);
+  const restoreAcknowledgementRef = useRef<{ previewId: string; pendingKey: string } | null>(null);
+  const restoreSyncRef = useRef<{ previewId: string; pendingKey: string } | null>(null);
+  const restoreGenerationRef = useRef<number | null>(null);
 
   useEffect(() => {
     function syncOnline() {
@@ -137,7 +147,58 @@ export function WorkspacePage({
     };
   }, [workspace.staff.id, observedPause?.coordinationId, observedPause?.expiresAt]);
 
+  useEffect(() => {
+    if (!workspace.capabilities.cashier || !online) return;
+    let cancelled = false;
+    const staffId = workspace.staff.id;
+    const epoch = accountGeneration();
+    const stillCurrent = () => !cancelled && workspace.staff.id === staffId && accountGeneration() === epoch;
+    // Polls the read-only restore pause. A POS snapshot is issued only once per observed pause and
+    // queue state, or once after the restore generation changes, never on every poll.
+    const observe = async () => {
+      if (!stillCurrent() || syncingRef.current) return;
+      try {
+        const state = await getRestorePause();
+        if (!stillCurrent()) return;
+        const previousGeneration = restoreGenerationRef.current;
+        restoreGenerationRef.current = state.currentGeneration;
+        if (state.pause) {
+          setObservedRestorePause(state.pause);
+          const pendingKey = operationSetKey(await pos.listPendingOperationIds());
+          const acknowledged = restoreAcknowledgementRef.current;
+          if (acknowledged?.previewId === state.pause.previewId && acknowledged.pendingKey === pendingKey) return;
+          const synchronized = restoreSyncRef.current;
+          if (synchronized?.previewId === state.pause.previewId && synchronized.pendingKey === pendingKey) return;
+          restoreAcknowledgementRef.current = null;
+          setRestorePauseAcknowledged(false);
+          restoreSyncRef.current = { previewId: state.pause.previewId, pendingKey };
+          await runSync(stillCurrent);
+          return;
+        }
+        restoreAcknowledgementRef.current = null;
+        restoreSyncRef.current = null;
+        setObservedRestorePause(null);
+        setRestorePauseSnapshot(null);
+        setRestorePauseSnapshotPendingKey(null);
+        setRestorePauseAcknowledged(false);
+        setRestoreCustodyComplete(false);
+        if (previousGeneration !== null && previousGeneration !== state.currentGeneration) await runSync(stillCurrent);
+      } catch {
+        /* keep the last observed restore pause until a later refresh */
+      }
+    };
+    const interval = window.setInterval(() => void observe(), 5_000);
+    window.addEventListener("focus", observe);
+    void observe();
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+      window.removeEventListener("focus", observe);
+    };
+  }, [workspace.staff.id, workspace.capabilities.cashier, online]);
+
   async function runSync(stillCurrent: () => boolean) {
+    syncingRef.current = true;
     const staffId = workspace.staff.id;
     setSyncing(true);
     setSyncError("");
@@ -218,6 +279,22 @@ export function WorkspacePage({
           setPauseSnapshot(snapshot.stockPause ? snapshot : null);
           setObservedPause(snapshot.stockPause);
           setPauseAcknowledged(false);
+          setObservedRestorePause(snapshot.restorePause);
+          if (snapshot.restorePause) {
+            // Sales still queued after applying this snapshot must be held by the server as retained sales.
+            const remainingKey = operationSetKey(await pos.listPendingOperationIds());
+            const acknowledged = restoreAcknowledgementRef.current;
+            setRestorePauseSnapshot(snapshot);
+            setRestorePauseSnapshotPendingKey(remainingKey);
+            setRestoreCustodyComplete(pendingCustodiedByServer(snapshot, remainingKey ? remainingKey.split(",") : []));
+            setRestorePauseAcknowledged(acknowledged?.previewId === snapshot.restorePause.previewId && acknowledged.pendingKey === remainingKey);
+          } else {
+            restoreAcknowledgementRef.current = null;
+            setRestorePauseSnapshot(null);
+            setRestorePauseSnapshotPendingKey(null);
+            setRestorePauseAcknowledged(false);
+            setRestoreCustodyComplete(false);
+          }
         } catch (caught) {
           if (!stillCurrent()) {
             return;
@@ -246,15 +323,59 @@ export function WorkspacePage({
         setSyncError("تعذر مزامنة المبيعات. أعد المحاولة عند الاتصال.");
       }
     } finally {
-      if (stillCurrent()) {
-        setSyncing(false);
-        const data = await readPosReadiness(staffId);
-        const other = await pos.countOtherPending(staffId);
+      try {
         if (stillCurrent()) {
-          setUnsynced(data.unsynced);
-          setOtherPending(other);
+          setSyncing(false);
+          const data = await readPosReadiness(staffId);
+          const other = await pos.countOtherPending(staffId);
+          if (stillCurrent()) {
+            setUnsynced(data.unsynced);
+            setOtherPending(other);
+          }
         }
+      } finally {
+        syncingRef.current = false;
       }
+    }
+  }
+
+  async function acknowledgeRestorePause() {
+    const snapshot = restorePauseSnapshot;
+    if (!snapshot?.restorePause || syncingRef.current) return;
+    syncingRef.current = true;
+    setSyncing(true);
+    setSyncError("");
+    const staffId = workspace.staff.id;
+    const epoch = accountGeneration();
+    const stillCurrent = () => workspace.staff.id === staffId && accountGeneration() === epoch;
+    try {
+      const pendingOperationIds = await pos.listPendingOperationIds();
+      if (restorePauseSnapshotPendingKey !== operationSetKey(pendingOperationIds)) {
+        setRestoreCustodyComplete(false);
+        setSyncError("تغير طابور المبيعات بعد اللقطة. أعد المزامنة قبل تأكيد التوقف.");
+        return;
+      }
+      if (!pendingCustodiedByServer(snapshot, pendingOperationIds)) {
+        setRestoreCustodyComplete(false);
+        setSyncError("لم يثبت الخادم حفظ كل المبيعات المكتملة بعد. أعد المزامنة قبل تأكيد التوقف.");
+        return;
+      }
+      await acknowledgeRestoreDevice(snapshot.restorePause.previewId, {
+        deviceId: snapshot.deviceId,
+        snapshotId: snapshot.snapshotId,
+      });
+      if (stillCurrent()) {
+        restoreAcknowledgementRef.current = {
+          previewId: snapshot.restorePause.previewId,
+          pendingKey: operationSetKey(pendingOperationIds),
+        };
+        setRestorePauseAcknowledged(true);
+      }
+    } catch (caught) {
+      if (stillCurrent()) setSyncError(caught instanceof ApiError ? caught.messageAr : "تعذر تأكيد توقف نقطة البيع للاستعادة.");
+    } finally {
+      syncingRef.current = false;
+      if (stillCurrent()) setSyncing(false);
     }
   }
 
@@ -409,6 +530,9 @@ export function WorkspacePage({
           {online && workspace.staff.role === "manager" ? (
             <Link className="button secondary" to="/backup">نسخة احتياطية</Link>
           ) : null}
+          {online && workspace.staff.role === "manager" ? (
+            <Link className="button secondary" to="/restore">استعادة البيانات</Link>
+          ) : null}
           <button className="secondary" type="button" onClick={() => void logout()}>
             تسجيل الخروج
           </button>
@@ -434,6 +558,27 @@ export function WorkspacePage({
               تأكيد مزامنة هذا الجهاز والتوقف
             </button> : <p className="muted">أعد مزامنة المبيعات لإصدار لقطة مرتبطة بهذا التوقف قبل التأكيد.</p>
           )}
+        </div>
+      ) : null}
+      {observedRestorePause ? (
+        <div className="error" data-testid="restore-pause" role="alert">
+          <p>العمل متوقف مؤقتاً لمراجعة استعادة نسخة البيانات.</p>
+          <p>لا تبدأ بيعاً جديداً ولا تسلّم بضاعة حتى انتهاء التوقف.</p>
+          {restorePauseAcknowledged ? (
+            <p data-testid="restore-pause-acknowledged">تم تأكيد حفظ مبيعات هذا الجهاز والتوقف.</p>
+          ) : restorePauseSnapshot?.restorePause?.previewId === observedRestorePause.previewId ? (
+            <>
+              {unsynced > 0 && restoreCustodyComplete ? <p>المبيعات غير المطبقة محفوظة لدى الخادم وستبقى ظاهرة لاسترداد المدير.</p> : null}
+              <button
+                type="button"
+                data-testid="acknowledge-restore-pause"
+                disabled={syncing || !restoreCustodyComplete}
+                onClick={() => void acknowledgeRestorePause()}
+              >
+                تأكيد مزامنة هذا الجهاز والتوقف للاستعادة
+              </button>
+            </>
+          ) : <p className="muted">أعد مزامنة المبيعات لإصدار لقطة مرتبطة بهذه الاستعادة قبل التأكيد.</p>}
         </div>
       ) : null}
       {syncStatus ? (
@@ -495,4 +640,14 @@ export function WorkspacePage({
       </section>
     </main>
   );
+}
+
+function pendingCustodiedByServer(snapshot: PosPriceSnapshotDto, pendingOperationIds: string[]) {
+  const deferred = Array.isArray(snapshot.deferredCompletionProofs) ? snapshot.deferredCompletionProofs : [];
+  const custodied = new Set(deferred.map((proof) => proof.operationId));
+  return pendingOperationIds.every((operationId) => custodied.has(operationId));
+}
+
+function operationSetKey(operationIds: string[]) {
+  return [...new Set(operationIds)].sort().join(",");
 }

@@ -13,3 +13,4 @@ export {
   createUnavailableRecoveryOutbox,
 } from "./adapters/local-recovery-outbox.ts";
 export { createPostgresIdentityBackupReader } from "./adapters/postgres-backup.ts";
+export { createPostgresIdentityRestorePort } from "./adapters/postgres-restore.ts";

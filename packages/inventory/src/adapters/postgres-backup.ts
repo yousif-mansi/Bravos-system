@@ -42,8 +42,12 @@ export function createPostgresInventoryBackupReader(queryable: Queryable) {
     async readBackupTables(): Promise<BackupTableSnapshot[]> {
       const result: BackupTableSnapshot[] = [];
       for (const table of TABLES) {
+        // A known till's restore generation belongs to the destination database, so it is not archived.
+        const columns = table.tableName === "inventory_known_till"
+          ? "device_id, staff_id, latest_snapshot_id, latest_snapshot_at, stock_version, pending_operation_ids, included_operation_ids, synchronization_complete"
+          : "*";
         const rows = await queryable.query<Record<string, unknown>>(
-          `SELECT * FROM ${table.tableName} ORDER BY ${table.orderBy}`,
+          `SELECT ${columns} FROM ${table.tableName} ORDER BY ${table.orderBy}`,
         );
         result.push({ tableName: table.tableName, rows: rows.rows });
       }

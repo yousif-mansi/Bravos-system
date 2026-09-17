@@ -7,3 +7,4 @@ export {
 export { createPostgresOpeningCatalogTransaction } from "./adapters/postgres-opening-import.ts";
 export { createLocalProductMediaStorage } from "./adapters/local-product-media.ts";
 export { createPostgresCatalogBackupReader } from "./adapters/postgres-backup.ts";
+export { createPostgresCatalogRestorePort } from "./adapters/postgres-restore.ts";

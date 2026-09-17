@@ -329,6 +329,7 @@ async function runWrite<T>(pool: Pool, work: (client: PoolClient) => Promise<T>)
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    await client.query("SELECT restore_enter_business_write()");
     const result = await work(client);
     await client.query("COMMIT");
     return result;

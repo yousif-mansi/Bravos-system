@@ -34,6 +34,7 @@ const OpeningImportPage = lazy(() => import("./pages/OpeningImportPage.tsx"));
 const AnalyticsPage = lazy(() => import("./pages/AnalyticsPage.tsx"));
 const ReportsPage = lazy(() => import("./pages/ReportsPage.tsx"));
 const BackupPage = lazy(() => import("./pages/BackupPage.tsx"));
+const RestorePage = lazy(() => import("./pages/RestorePage.tsx"));
 
 export function App() {
   const location = useLocation();
@@ -582,6 +583,18 @@ export function App() {
             workspace?.staff.role === "manager" ? (
               <Suspense fallback={<main className="shell">جارٍ التحميل…</main>}>
                 <BackupPage key={workspace.staff.id} workspace={workspace} />
+              </Suspense>
+            ) : (
+              <Navigate to={workspace?.activeBranch ? "/workspace" : workspace ? "/select-branch" : "/login"} replace />
+            )
+          }
+        />
+        <Route
+          path="/restore"
+          element={
+            workspace?.staff.role === "manager" ? (
+              <Suspense fallback={<main className="shell">جارٍ التحميل…</main>}>
+                <RestorePage key={workspace.staff.id} workspace={workspace} onChanged={replaceWorkspace} />
               </Suspense>
             ) : (
               <Navigate to={workspace?.activeBranch ? "/workspace" : workspace ? "/select-branch" : "/login"} replace />

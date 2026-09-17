@@ -142,6 +142,7 @@ export function createPostgresReceivingUnitOfWork(
       const client = await pool.connect();
       try {
         await client.query("BEGIN");
+        await client.query("SELECT restore_enter_business_write()");
         const result = await work({
           receipts: createPostgresReceiptStore(client),
           corrections: createPostgresReceiptCorrectionStore(client),

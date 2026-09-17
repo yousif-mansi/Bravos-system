@@ -733,8 +733,8 @@ export function createInventoryTransaction(client: PoolClient): InventoryTransac
       await client.query(
         `INSERT INTO inventory_known_till (
            device_id, staff_id, latest_snapshot_id, latest_snapshot_at, stock_version,
-           pending_operation_ids, included_operation_ids, synchronization_complete
-         ) VALUES ($1, $2, $3, $4, $5, $6::uuid[], $7::uuid[], $8)
+           pending_operation_ids, included_operation_ids, synchronization_complete, restore_generation
+         ) VALUES ($1, $2, $3, $4, $5, $6::uuid[], $7::uuid[], $8, $9)
          ON CONFLICT (device_id) DO UPDATE SET
            staff_id = EXCLUDED.staff_id,
            latest_snapshot_id = EXCLUDED.latest_snapshot_id,
@@ -742,8 +742,9 @@ export function createInventoryTransaction(client: PoolClient): InventoryTransac
            stock_version = EXCLUDED.stock_version,
            pending_operation_ids = EXCLUDED.pending_operation_ids,
            included_operation_ids = EXCLUDED.included_operation_ids,
-           synchronization_complete = EXCLUDED.synchronization_complete`,
-        [input.deviceId, input.staffId, input.snapshotId, input.issuedAt, input.stockVersion, pending, included, synchronizationComplete],
+           synchronization_complete = EXCLUDED.synchronization_complete,
+           restore_generation = EXCLUDED.restore_generation`,
+        [input.deviceId, input.staffId, input.snapshotId, input.issuedAt, input.stockVersion, pending, included, synchronizationComplete, input.restoreGeneration],
       );
       const active = await client.query<{
         id: string;

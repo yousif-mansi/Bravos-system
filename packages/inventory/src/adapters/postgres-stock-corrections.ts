@@ -99,6 +99,7 @@ export function createPostgresStockCoordinationStore(
 
     start(input) {
       return transaction(pool, async (client) => {
+        await client.query("SELECT restore_enter_business_write()");
         const inventory = inventoryFor(client);
         await inventory.lockStockClock("update");
         await expireCoordination(client);
@@ -137,6 +138,7 @@ export function createPostgresStockCoordinationStore(
 
     acknowledge(input) {
       return transaction(pool, async (client) => {
+        await client.query("SELECT restore_enter_business_write()");
         const inventory = inventoryFor(client);
         await inventory.lockStockClock("share");
         await expireCoordination(client);
@@ -191,6 +193,7 @@ export function createPostgresStockCoordinationStore(
 
     cancel(input) {
       return transaction(pool, async (client) => {
+        await client.query("SELECT restore_enter_business_write()");
         const inventory = inventoryFor(client);
         await inventory.lockStockClock("update");
         await expireCoordination(client);
@@ -218,6 +221,7 @@ export function createPostgresStockCoordinationStore(
 
     finalize(input) {
       return transaction(pool, async (client) => {
+        await client.query("SELECT restore_enter_business_write()");
         const inventory = inventoryFor(client);
         await inventory.lockStockClock("update");
         const replay = await correctionByOperation(client, input.operationId);
@@ -416,6 +420,7 @@ export function createPostgresStockCoordinationStore(
 
     reconcile(input) {
       return transaction(pool, async (client) => {
+        await client.query("SELECT restore_enter_business_write()");
         const inventory = inventoryFor(client);
         const sales = salesFor(client);
         const downstreamFacts = downstreamFactsFor(client);

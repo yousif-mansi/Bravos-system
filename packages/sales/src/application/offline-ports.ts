@@ -45,6 +45,7 @@ export type OfflineCompletedSale = {
   deviceId: string;
   snapshotId: string | null;
   pricingVersion?: 1 | null;
+  restoreGeneration?: number;
   kind: OfflineSaleKind;
   syncStatus: OfflineSyncStatus;
   branch: BranchDto;
@@ -149,6 +150,7 @@ export type SessionTransition = {
 
 export type DeviceStockCache = {
   version: number;
+  restoreGeneration: number;
   availability: Record<string, number>;
   includedOperationIds: string[];
 };

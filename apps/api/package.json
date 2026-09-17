@@ -26,6 +26,7 @@
     "@bravos/receiving": "workspace:*",
     "@bravos/report-export": "workspace:*",
     "@bravos/reporting": "workspace:*",
+    "@bravos/restore": "workspace:*",
     "@bravos/returns": "workspace:*",
     "@bravos/sales": "workspace:*",
     "@bravos/storefront-config": "workspace:*",

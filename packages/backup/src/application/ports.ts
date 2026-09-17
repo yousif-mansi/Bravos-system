@@ -26,6 +26,10 @@ export type BackupOnlineOrdersReader = BackupTableReader & {
   readReferenceSequence(): Promise<{ lastValue: string; isCalled: boolean }>;
 };
 
+export type BackupRestoreGenerationReader = {
+  readRestoreGeneration(): Promise<number>;
+};
+
 export type BackupReaderSet = {
   identity: BackupTableReader;
   catalog: BackupTableReader;
@@ -40,6 +44,7 @@ export type BackupReaderSet = {
   storefrontConfiguration: BackupTableReader;
   openingImport: BackupTableReader;
   analytics: BackupTableReader;
+  restore: BackupRestoreGenerationReader;
 };
 
 export type BackupSnapshotMetadata = {
@@ -47,6 +52,7 @@ export type BackupSnapshotMetadata = {
   schemaVersion: string;
   stockVersion: string;
   onlineOrderReferenceSequence: { lastValue: string; isCalled: boolean };
+  sourceGeneration: number;
 };
 
 export type BackupSnapshotTransaction = {
@@ -71,7 +77,7 @@ export type BackupManifest = {
   backupId: string;
   createdAt: string;
   schemaVersion: string;
-  sourceGeneration: null;
+  sourceGeneration: number | null;
   createdByStaffId: string;
   stockVersion: string;
   onlineOrderReferenceSequence: { lastValue: string; isCalled: boolean };

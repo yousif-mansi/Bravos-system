@@ -72,6 +72,7 @@ export function createPostgresStaffDirectory(pool: Pool): StaffDirectory {
       const client = await pool.connect();
       try {
         await client.query("BEGIN");
+        await client.query("SELECT restore_enter_business_write()");
         await lockStaff(client, staffId);
         await replaceGrantsOn(client, staffId, grants);
         await insertOperation(client, staffId, actorStaffId, "replace_grants");
@@ -94,13 +95,9 @@ export function createPostgresStaffDirectory(pool: Pool): StaffDirectory {
       const timestamp = new Date();
       try {
         await client.query("BEGIN");
+        await client.query("SELECT restore_enter_business_write()");
         await lockStaff(client, staffId);
-        await client.query(
-          `UPDATE account
-           SET password = $2, "updatedAt" = $3
-           WHERE "userId" = $1 AND "providerId" = 'credential'`,
-          [staffId, passwordHash, timestamp],
-        );
+        await upsertCredential(client, staffId, passwordHash, timestamp);
         await client.query(`DELETE FROM session WHERE "userId" = $1`, [staffId]);
         await insertOperation(client, staffId, actorStaffId, "reset_password");
         await client.query("COMMIT");
@@ -116,6 +113,7 @@ export function createPostgresStaffDirectory(pool: Pool): StaffDirectory {
       const client = await pool.connect();
       try {
         await client.query("BEGIN");
+        await client.query("SELECT restore_enter_business_write()");
         await lockStaff(client, staffId);
         await client.query(
           `UPDATE "user" SET banned = TRUE, "banReason" = 'disabled-by-manager' WHERE id = $1`,
@@ -196,12 +194,7 @@ export function createPostgresStaffDirectory(pool: Pool): StaffDirectory {
            WHERE staff_id = $1 AND consumed_at IS NULL`,
           [ownerId, input.now],
         );
-        await client.query(
-          `UPDATE account
-           SET password = $2, "updatedAt" = $3
-           WHERE "userId" = $1 AND "providerId" = 'credential'`,
-          [ownerId, input.passwordHash, input.now],
-        );
+        await upsertCredential(client, ownerId, input.passwordHash, input.now);
         await client.query(`DELETE FROM session WHERE "userId" = $1`, [ownerId]);
         await client.query("COMMIT");
         return { staffId: ownerId };
@@ -233,6 +226,7 @@ export async function provisionStaffGraph(
   const timestamp = new Date();
   try {
     await client.query("BEGIN");
+    await client.query("SELECT restore_enter_business_write()");
     await client.query(
       `INSERT INTO "user" (
          id, name, email, "emailVerified", "createdAt", "updatedAt",
@@ -360,6 +354,22 @@ async function insertOperation(
      SET last_changed_by_staff_id = $2, last_changed_at = now()
      WHERE staff_id = $1`,
     [staffId, actorStaffId],
+  );
+}
+
+async function upsertCredential(
+  client: Queryable,
+  staffId: string,
+  passwordHash: string,
+  at: Date,
+) {
+  await client.query(
+    `INSERT INTO account (
+       id, "accountId", "providerId", "userId", password, "createdAt", "updatedAt"
+     ) VALUES ($1, $2, 'credential', $2, $3, $4, $4)
+     ON CONFLICT ("userId", "providerId") WHERE "providerId" = 'credential'
+     DO UPDATE SET password = EXCLUDED.password, "updatedAt" = EXCLUDED."updatedAt"`,
+    [crypto.randomUUID(), staffId, passwordHash, at],
   );
 }
 

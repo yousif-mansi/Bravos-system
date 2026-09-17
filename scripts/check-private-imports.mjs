@@ -135,6 +135,26 @@ const forbidden = [
   },
   {
     from: ["apps", "packages"],
+    pattern: /@bravos\/restore\/src\//,
+    message: "Deep restore imports are not part of the public interface.",
+  },
+  {
+    from: ["apps/internal", "apps/storefront", "packages/contracts"],
+    pattern: /@bravos\/restore(?:\/node)?/,
+    message: "Frontend/contracts cannot import the restore server package.",
+  },
+  {
+    from: ["packages/restore/src/domain", "packages/restore/src/application"],
+    pattern: /from ["'](better-auth|fastify|pg|react|next|vite|dexie|node:crypto)|\bHeaders\b|\bBuffer\b/,
+    message: "Restore inner layers cannot import infrastructure SDKs, crypto adapters or HTTP Headers.",
+  },
+  {
+    from: ["packages/restore"],
+    pattern: /@bravos\/(catalog|inventory|receiving|pricing|sales|expenses|returns|corrections|storefront-config|opening-import|online-orders|analytics|reporting|report-export|persistence)/,
+    message: "Restore must load feature data through restore ports supplied at composition.",
+  },
+  {
+    from: ["apps", "packages"],
     pattern: /@bravos\/analytics\/src\//,
     message: "Deep analytics imports are not part of the public interface.",
   },

@@ -10,7 +10,7 @@ export type {
   SaleUnitDto,
   StockAvailabilityDto,
 } from "@bravos/contracts";
-export { SalesValidationError } from "./domain/errors.ts";
+export { SaleRestoreGenerationChangedError, SaleRetainedForRestoreError, SalesValidationError } from "./domain/errors.ts";
 export { allocateEmployeeDiscount, assertMergedSaleQuantities, priceSaleLines } from "./domain/discount.ts";
 export { evaluatePosUpdate, isDeclaredSafeMigration, POS_SCHEMA_VERSION } from "./domain/pos-update.ts";
 export type { PosUpdateDecision } from "./domain/pos-update.ts";
@@ -25,6 +25,8 @@ export { createExchangeReplacementPricing, createExchangeReplacementSaleWriter }
 export type {
   AutomaticPricingPort,
   CompleteSaleResult,
+  DeferredCompletedSalePort,
+  RestoreRuntimePort,
   ExchangeReplacementAcceptedQuote,
   ExchangeReplacementPricing,
   ExchangeReplacementSaleWriter,

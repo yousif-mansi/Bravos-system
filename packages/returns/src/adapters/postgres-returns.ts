@@ -556,6 +556,7 @@ export function createPostgresReturnsUnitOfWork(
         for (let attempt = 0; attempt < 3; attempt += 1) {
           try {
             await client.query("BEGIN");
+            await client.query("SELECT restore_enter_business_write()");
             const inventory = inventoryFor(client);
             const value = await work({
               returns: createPostgresReturnsStore(client),

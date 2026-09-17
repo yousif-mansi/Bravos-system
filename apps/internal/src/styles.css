@@ -300,6 +300,32 @@ button.danger { background: var(--danger); }
   overflow-wrap: anywhere;
 }
 
+.restore-page { display: grid; gap: 1rem; }
+.restore-page > .brand, .restore-page > .error, .restore-page > .notice { margin-bottom: 0; }
+.restore-warning { border-color: #f59e0b; }
+.restore-operation-warning { background: #fffbeb; border: 1px solid #fcd34d; border-radius: 10px; color: #92400e; padding: 0.75rem; }
+.restore-preview-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; }
+.restore-metadata { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.65rem; margin: 1rem 0; }
+.restore-metadata div, .restore-difference, .restore-device, .restore-deferred-sale {
+  border: 1px solid var(--line); border-radius: 10px; padding: 0.75rem; background: #f8fafc;
+}
+.restore-metadata dt { color: var(--muted); }
+.restore-metadata dd { margin: 0; font-weight: 700; overflow-wrap: anywhere; }
+.restore-differences { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 0.65rem; margin-bottom: 1rem; }
+.restore-difference, .restore-device, .restore-deferred-sale { display: grid; gap: 0.25rem; }
+.restore-devices, .restore-deferred-list, .restore-history { display: grid; gap: 0.65rem; margin-bottom: 1rem; }
+.restore-device.acknowledged { border-color: #6ee7b7; background: #ecfdf5; }
+.restore-checkpoint, .restore-activation { border-top: 1px dashed var(--line); margin-top: 1rem; padding-top: 1rem; }
+.restore-checkpoint bdi, .restore-activation bdi { display: block; overflow-wrap: anywhere; direction: ltr; text-align: left; }
+.restore-deferred-sale { grid-template-columns: minmax(0, 2fr) repeat(2, minmax(0, 1fr)) auto; align-items: center; }
+.restore-deferred-sale bdi { overflow-wrap: anywhere; }
+.restore-history-item { display: grid; grid-template-columns: 1fr 2fr 1fr; gap: 0.75rem; text-align: right; background: #f8fafc; color: var(--ink); border: 1px solid var(--line); }
+.restore-history-item bdi { overflow-wrap: anywhere; }
+
+@media (max-width: 700px) {
+  .restore-preview-heading, .restore-deferred-sale, .restore-history-item { display: flex; flex-direction: column; align-items: stretch; }
+}
+
 .opening-import-section {
   border-top: 1px dashed var(--line);
   margin-top: 1.25rem;

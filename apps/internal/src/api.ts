@@ -750,6 +750,7 @@ export type SaleWrite = {
   discountReason?: string | null;
   occurredAt?: string | null;
   pendingOperationIds?: string[];
+  restoreGeneration?: number;
   lines: Array<{ variantId: string; quantity: number; listedUnitPricePiasters?: number }>;
 };
 

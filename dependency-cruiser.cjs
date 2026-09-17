@@ -93,9 +93,9 @@ module.exports = {
       name: "application-inward-only",
       comment: "Application use cases depend inward, not on Fastify, pg, React or Better Auth.",
       severity: "error",
-      from: { path: "^packages/(identity|catalog|inventory|receiving|pricing|sales|expenses|returns|corrections|storefront-config|opening-import|backup|reporting)/src/application" },
+      from: { path: "^packages/(identity|catalog|inventory|receiving|pricing|sales|expenses|returns|corrections|storefront-config|opening-import|backup|restore|reporting)/src/application" },
       to: {
-        path: "(packages/(identity|catalog|inventory|receiving|pricing|sales|expenses|returns|corrections|storefront-config|opening-import|backup|reporting)/src/adapters|apps/|better-auth|fastify|react|next|vite|\\bpg\\b|dexie)",
+        path: "(packages/(identity|catalog|inventory|receiving|pricing|sales|expenses|returns|corrections|storefront-config|opening-import|backup|restore|reporting)/src/adapters|apps/|better-auth|fastify|react|next|vite|\\bpg\\b|dexie)",
       },
     },
     {
@@ -363,6 +363,34 @@ module.exports = {
       comment: "Backup reads each feature's data through readers supplied at the API composition root.",
       severity: "error",
       from: { path: "^packages/backup" },
+      to: { path: "^packages/(catalog|inventory|receiving|pricing|sales|expenses|returns|corrections|storefront-config|opening-import|online-orders|analytics|reporting|report-export|persistence)" },
+    },
+    {
+      name: "restore-domain-inward-only",
+      comment: "Restore domain code cannot depend on its use cases, persistence, crypto or UI infrastructure.",
+      severity: "error",
+      from: { path: "^packages/restore/src/domain" },
+      to: { path: "(packages/restore/src/(application|adapters)|apps/|better-auth|fastify|react|next|vite|\\bpg\\b|node:crypto|dexie)" },
+    },
+    {
+      name: "restore-server-only",
+      comment: "Restore staging, activation and archive contents are available only through authenticated server operations.",
+      severity: "error",
+      from: { path: "^(apps/internal|apps/storefront|packages/contracts)" },
+      to: { path: "^packages/restore" },
+    },
+    {
+      name: "no-private-restore-imports",
+      comment: "Cross-package imports must use the restore public interface.",
+      severity: "error",
+      from: { pathNot: "^packages/restore/src" },
+      to: { path: "^packages/restore/src/(domain|application|adapters)/" },
+    },
+    {
+      name: "restore-isolated-by-ports",
+      comment: "Restore loads each feature's tables through restore ports supplied at the API composition root.",
+      severity: "error",
+      from: { path: "^packages/restore" },
       to: { path: "^packages/(catalog|inventory|receiving|pricing|sales|expenses|returns|corrections|storefront-config|opening-import|online-orders|analytics|reporting|report-export|persistence)" },
     },
     {

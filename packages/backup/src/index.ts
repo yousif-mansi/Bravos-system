@@ -15,8 +15,10 @@ export type {
   BackupManifest,
   BackupOnlineOrdersReader,
   BackupReaderSet,
+  BackupRestoreGenerationReader,
   BackupServices,
   BackupTableReader,
+  BackupUnitOfWork,
   CreatedBackup,
   DecodedBackupArchive,
 } from "./application/ports.ts";

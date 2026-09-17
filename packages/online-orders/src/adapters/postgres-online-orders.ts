@@ -618,6 +618,7 @@ export function createPostgresOnlineOrderUnitOfWork(
         for (let attempt = 0; attempt < 3; attempt += 1) {
           try {
             await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ");
+            await client.query("SELECT restore_enter_business_write()");
             const result = await work({ ...dependenciesFor(client), store: createPostgresOnlineOrderStore(client) });
             await client.query("COMMIT");
             return result;

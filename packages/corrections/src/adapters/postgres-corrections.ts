@@ -1027,6 +1027,6 @@ async function cashForSaleReturns(queryable: Queryable, saleId: string) {
 }
 function actualReturnCash(row: ReturnRow, corrections: CorrectionRow[]) { return number(row.refund_paid_piasters) + corrections.reduce((sum, change) => sum + (change.cash_direction === "paid_out" ? number(change.cash_amount_piasters) : change.cash_direction === "recovered" ? -number(change.cash_amount_piasters) : 0), 0); }
 
-async function transaction<T>(pool: Pool, work: (client: PoolClient) => Promise<T>): Promise<T> { const client = await pool.connect(); try { await client.query("BEGIN"); const value = await work(client); await client.query("COMMIT"); return value; } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); } }
+async function transaction<T>(pool: Pool, work: (client: PoolClient) => Promise<T>): Promise<T> { const client = await pool.connect(); try { await client.query("BEGIN"); await client.query("SELECT restore_enter_business_write()"); const value = await work(client); await client.query("COMMIT"); return value; } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); } }
 function number(value: number | string | null | undefined) { const parsed = Number(value ?? 0); if (!Number.isSafeInteger(parsed)) throw new Error("Unrepresentable numeric value."); return parsed; }
 function must<T>(value: T | null): T { if (!value) throw new Error("Correction result could not be loaded."); return value; }

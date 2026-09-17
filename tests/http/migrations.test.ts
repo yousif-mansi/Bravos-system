@@ -51,6 +51,7 @@ test("apply, down the latest migration, and reapply works with multiple migratio
       "026_opening_import.sql",
       "027_online_returns.sql",
       "028_aggregate_analytics.sql",
+      "029_restore.sql",
     ]);
     expect(await listAppliedMigrations(pool)).toEqual(first);
     expect(await tableNames(pool)).toEqual(
@@ -105,6 +106,11 @@ test("apply, down the latest migration, and reapply works with multiple migratio
         "recording_online_return_unit_value",
         "inventory_delivered_return_allocation_effect",
         "public_analytics_event",
+        "restore_preview",
+        "restore_runtime",
+        "restore_preview_till",
+        "restore_activation",
+        "sales_restore_deferred_completion",
       ]),
     );
 
@@ -178,6 +184,10 @@ test("apply, down the latest migration, and reapply works with multiple migratio
     expect(await constraintExists(pool, "returns_return_source_exact")).toBe(false);
     expect(await constraintExists(pool, "returns_return_line_source_exact")).toBe(false);
     expect(afterDown).not.toContain("public_analytics_event");
+    for (const table of ["restore_preview", "restore_runtime", "restore_preview_till", "restore_activation", "sales_restore_deferred_completion"]) {
+      expect(afterDown).not.toContain(table);
+    }
+    expect(await columnExists(pool, "inventory_known_till", "restore_generation")).toBe(false);
     expect(await columnExists(pool, "sales_pos_snapshot", "pricing_version")).toBe(false);
     expect(await columnExists(pool, "sales_sale", "cash_received_piasters")).toBe(false);
     expect(await columnExists(pool, "inventory_batch", "effective_received_quantity")).toBe(false);
@@ -216,7 +226,11 @@ test("apply, down the latest migration, and reapply works with multiple migratio
       "opening_import_preview",
       "recording_online_return_unit_value", "inventory_delivered_return_allocation_effect",
       "public_analytics_event",
+      "restore_preview", "restore_runtime", "restore_preview_till", "restore_activation",
+      "sales_restore_deferred_completion",
     ]));
+    expect(await columnExists(pool, "sales_pos_snapshot", "restore_generation")).toBe(true);
+    expect(await columnExists(pool, "sales_sale", "source_restore_generation")).toBe(true);
     expect(await columnExists(pool, "returns_return", "source_online_order_id")).toBe(true);
     expect(await constraintExists(pool, "returns_return_source_exact")).toBe(true);
     expect(await constraintExists(pool, "returns_return_line_source_exact")).toBe(true);
@@ -393,6 +407,7 @@ test("008 down expands counted unit ranges into one legacy row per ordinal", asy
       "026_opening_import.sql",
       "027_online_returns.sql",
       "028_aggregate_analytics.sql",
+      "029_restore.sql",
     ]);
     const restored = await pool.query<{ unit_index: number; quantity: number; paid_piasters: number }>(
       `SELECT unit_index, quantity, paid_piasters FROM sales_sale_unit ORDER BY unit_index`,
@@ -406,12 +421,48 @@ test("008 down expands counted unit ranges into one legacy row per ordinal", asy
   }
 });
 
+test("029 refuses to discard restore history or retained sales during rollback", async () => {
+  const databaseName = `bravos_migrate_${crypto.randomUUID().replaceAll("-", "")}`;
+  await cluster.createDatabase(databaseName);
+  const pool = new Pool({ connectionString: cluster.connectionString(databaseName), max: 3 });
+  try {
+    await applyMigrations(pool);
+    expect((await pool.query("SELECT current_generation::text AS generation FROM restore_runtime")).rows).toEqual([{ generation: "0" }]);
+    await pool.query("UPDATE restore_runtime SET current_generation = 1");
+    await expect(revertLastMigration(pool)).rejects.toThrow(/Cannot remove restore history/);
+    expect((await listAppliedMigrations(pool)).at(-1)).toBe("029_restore.sql");
+
+    await pool.query("UPDATE restore_runtime SET current_generation = 0");
+    await pool.query(
+      `INSERT INTO sales_restore_deferred_completion (
+         operation_id, sale_id, payload_fingerprint, source_generation, original_staff_id, branch_id,
+         occurred_at, payload_json, retained_at
+       ) VALUES ($1, $2, repeat('b', 64), 0, 'staff', '11111111-1111-4111-8111-111111111111', now(), '{}'::jsonb, now())`,
+      [crypto.randomUUID(), crypto.randomUUID()],
+    );
+    await expect(revertLastMigration(pool)).rejects.toThrow(/Cannot remove restore history/);
+    expect(await tableNames(pool)).toContain("sales_restore_deferred_completion");
+
+    await pool.query("DELETE FROM sales_restore_deferred_completion");
+    expect(await revertLastMigration(pool)).toBe("029_restore.sql");
+    expect(await tableNames(pool)).not.toContain("restore_runtime");
+    expect(await triggerCount(pool, "restore_write_guard_%")).toBe(0);
+    expect(await constraintDeferrable(pool, "expense_operation_expense_fk")).toBe(false);
+    expect(await applyMigrations(pool)).toEqual(["029_restore.sql"]);
+    expect(await unguardedBusinessTables(pool)).toEqual([]);
+    expect(await constraintDeferrable(pool, "expense_operation_expense_fk")).toBe(true);
+  } finally {
+    await pool.end();
+  }
+});
+
 test("028 refuses to discard retained analytics events during rollback", async () => {
   const databaseName = `bravos_migrate_${crypto.randomUUID().replaceAll("-", "")}`;
   await cluster.createDatabase(databaseName);
   const pool = new Pool({ connectionString: cluster.connectionString(databaseName), max: 3 });
   try {
     await applyMigrations(pool);
+    expect(await revertLastMigration(pool)).toBe("029_restore.sql");
     await pool.query(
       `INSERT INTO public_analytics_event
          (operation_id,payload_fingerprint,event_type,product_id,variant_id,quantity,recorded_at)
@@ -426,7 +477,7 @@ test("028 refuses to discard retained analytics events during rollback", async (
     await pool.query("DELETE FROM public_analytics_event");
     expect(await revertLastMigration(pool)).toBe("028_aggregate_analytics.sql");
     expect(await tableNames(pool)).not.toContain("public_analytics_event");
-    expect(await applyMigrations(pool)).toEqual(["028_aggregate_analytics.sql"]);
+    expect(await applyMigrations(pool)).toEqual(["028_aggregate_analytics.sql", "029_restore.sql"]);
   } finally {
     await pool.end();
   }
@@ -487,6 +538,7 @@ test("020 backfills each legacy till from its latest snapshot without inventing 
       "026_opening_import.sql",
       "027_online_returns.sql",
       "028_aggregate_analytics.sql",
+      "029_restore.sql",
     ]);
     const knownTills = await pool.query<{
       device_id: string;
@@ -535,6 +587,7 @@ test("027 refuses to discard delivered online Return evidence during rollback", 
   const pool = new Pool({ connectionString: cluster.connectionString(databaseName), max: 3 });
   try {
     await applyMigrations(pool);
+    expect(await revertLastMigration(pool)).toBe("029_restore.sql");
     expect(await revertLastMigration(pool)).toBe("028_aggregate_analytics.sql");
     await pool.query(`
       INSERT INTO "user" (id, name, email, "emailVerified", "createdAt", "updatedAt")
@@ -677,4 +730,41 @@ async function constraintExists(pool: Pool, constraintName: string): Promise<boo
     [constraintName],
   );
   return result.rows[0]?.exists === true;
+}
+
+async function triggerCount(pool: Pool, pattern: string): Promise<number> {
+  const result = await pool.query<{ count: string }>(
+    "SELECT count(*)::text AS count FROM pg_trigger WHERE tgname LIKE $1 AND NOT tgisinternal",
+    [pattern],
+  );
+  return Number(result.rows[0]?.count ?? 0);
+}
+
+// A deferrable delete check must use NO ACTION: PostgreSQL checks RESTRICT immediately even when deferred.
+async function constraintDeferrable(pool: Pool, constraintName: string): Promise<boolean> {
+  const result = await pool.query<{ condeferrable: boolean; confdeltype: string }>(
+    "SELECT condeferrable, confdeltype FROM pg_constraint WHERE conname = $1",
+    [constraintName],
+  );
+  return result.rows[0]?.condeferrable === true && result.rows[0]?.confdeltype === "a";
+}
+
+// Every business table must enter the restore write barrier; only restore control, session and
+// till-evidence tables are exempt. A table added by a later migration needs its own guard.
+async function unguardedBusinessTables(pool: Pool): Promise<string[]> {
+  const exempt = new Set([
+    "schema_migrations", "session", "account", "verification", "owner_recovery_challenge", "staff_session_branch",
+    "sales_pos_snapshot", "sales_pos_snapshot_price", "inventory_known_till", "inventory_count_coordination_device",
+    "sales_restore_deferred_completion", "restore_preview", "restore_runtime", "restore_preview_till", "restore_activation",
+  ]);
+  const result = await pool.query<{ tablename: string }>(
+    `SELECT t.tablename FROM pg_tables t
+     WHERE t.schemaname = 'public'
+       AND NOT EXISTS (
+         SELECT 1 FROM pg_trigger g JOIN pg_class c ON c.oid = g.tgrelid
+         WHERE c.relname = t.tablename AND g.tgfoid = 'restore_business_write_guard'::regproc AND NOT g.tgisinternal
+       )
+     ORDER BY t.tablename`,
+  );
+  return result.rows.map((row) => row.tablename).filter((table) => !exempt.has(table));
 }

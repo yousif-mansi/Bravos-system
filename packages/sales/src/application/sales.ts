@@ -23,7 +23,7 @@ import {
 } from "@bravos/inventory";
 import { evaluateAutomaticOffers, evaluateCoupon } from "@bravos/pricing";
 import { assertMergedSaleQuantities, mergeVariantQuantities, priceSaleLines } from "../domain/discount.ts";
-import { SalesValidationError } from "../domain/errors.ts";
+import { SaleRestoreGenerationChangedError, SaleRetainedForRestoreError, SalesValidationError } from "../domain/errors.ts";
 import { addMoney, assertSafeMoney, subtractMoney } from "../domain/money.ts";
 import {
   fingerprintAcceptedSalePayload,
@@ -32,6 +32,7 @@ import {
 } from "../domain/fingerprint.ts";
 import type {
   CashierCatalogReader,
+  DeferredCompletedSalePort,
   CompleteSaleResult,
   AutomaticPricingPort,
   ListedPriceReader,
@@ -59,7 +60,13 @@ const PREPARE_KEYS = new Set([
   "occurredAt",
   "lines",
 ]);
-const COMPLETE_KEYS = new Set([...PREPARE_KEYS, "physicallyCompleted", "pendingOperationIds"]);
+const COMPLETE_KEYS = new Set([
+  ...PREPARE_KEYS,
+  "physicallyCompleted",
+  "pendingOperationIds",
+  "restoreGeneration",
+  "deviceId",
+]);
 const ACCEPTED_KEYS = new Set([
   ...COMPLETE_KEYS,
   "deviceId",
@@ -157,6 +164,7 @@ export function createSalesServices(ports: {
   cashierCatalog: CashierCatalogReader;
   uow: SalesUnitOfWork;
   allocations: { listAllocations(operationId: string): Promise<AllocationRecord[]> };
+  deferredCompletions: DeferredCompletedSalePort;
 }) {
   async function requireCashier(auth: VerifiedAuth | null) {
     if (!auth) {
@@ -314,6 +322,8 @@ export function createSalesServices(ports: {
     recoveredAt: Date | null;
     requireViewerRead: boolean;
     coverageVariantIds: string[];
+    // The generation a synchronized sale was made under; null for a manager recovery.
+    expectedRestoreGeneration: number | null;
   }): Promise<{ record: SaleRecord; created: boolean; acknowledgement: SaleAcknowledgementDto }> {
     const snapshotPrices = new Map(input.snapshot.prices.map((item) => [item.variantId, item.listedUnitPricePiasters]));
     for (const line of input.command.lines) {
@@ -340,6 +350,13 @@ export function createSalesServices(ports: {
       if (existing) {
         replayOrConflict(existing, input.fingerprint, input.command.operationId);
         throw new OperationConflictError();
+      }
+      if (input.expectedRestoreGeneration !== null
+        && (await tx.restore.current()).generation !== input.expectedRestoreGeneration) {
+        throw new SaleRestoreGenerationChangedError();
+      }
+      if (input.recoveredByStaffId) {
+        await tx.sales.markRestoreDeferredReconciled(input.command.operationId, input.recoveredByStaffId);
       }
       const claimed = await tx.inventory.claimSaleOperation({
         operationId: input.command.operationId,
@@ -467,6 +484,8 @@ export function createSalesServices(ports: {
             occurredAt: input.command.occurredAt,
             lines: input.command.lines,
             pendingOperationIds: [],
+            restoreGeneration: input.snapshot.restoreGeneration,
+            deviceId: input.command.deviceId,
           },
           { staff: input.seller, branch: input.branch },
           acceptedPricing,
@@ -481,6 +500,7 @@ export function createSalesServices(ports: {
               recoveredAt: input.recoveredAt,
               sourceDeviceId: input.command.deviceId,
               sourceSnapshotId: input.command.snapshotId,
+              sourceRestoreGeneration: input.snapshot.restoreGeneration,
               couponUsageDiscrepancy,
           },
         ),
@@ -530,6 +550,7 @@ export function createSalesServices(ports: {
             physicallyCompleted: false,
             recordedAt: null,
             costsIncomplete: false,
+            sourceRestoreGeneration: (await tx.restore.current()).generation,
           }),
         );
         if (inserted.kind === "existing") {
@@ -557,6 +578,24 @@ export function createSalesServices(ports: {
       const preliminary =
         (await ports.sales.getById(command.saleId)) ??
         (await ports.sales.getByOperationId(command.operationId));
+      const completionBranchId = preliminary?.branchId ?? sessionBranchId;
+      if (!completionBranchId || !canCashierOn(actor, completionBranchId)) throw new ForbiddenError();
+      if (await ports.deferredCompletions.retainIfRequired({
+        operationId: command.operationId,
+        saleId: command.saleId,
+        payloadFingerprint: fingerprint,
+        sourceGeneration: command.restoreGeneration,
+        sourceDeviceId: command.deviceId,
+        originalStaffId: preliminary?.soldByStaffId ?? actor.id,
+        branchId: completionBranchId,
+        occurredAt: command.occurredAt ?? new Date(),
+        payload: {
+          ...deferredPayload("connected", command),
+          // A retained connected sale keeps its accepted prices, so recovery works even when the
+          // restored data no longer holds the prepared sale.
+          ...(preliminary && !preliminary.physicallyCompleted ? { preparedSale: preparedSaleJson(preliminary) } : {}),
+        },
+      })) throw new SaleRetainedForRestoreError();
       const directPricing = preliminary ? null : await ports.pricingQuote.run(async (quote) => {
         const listed = await quote.prices.getListedPrices(quantities.map((item) => item.variantId));
         return priceFromListed(quote.automaticPricing, listed, quantities, command.employeeDiscountPiasters, command.couponCode);
@@ -571,6 +610,11 @@ export function createSalesServices(ports: {
           assertCanRead(actor, existing);
           return finish(existing, false);
         }
+        const restore = await tx.restore.current();
+        if (command.restoreGeneration !== null && command.restoreGeneration !== restore.generation) {
+          throw new SaleRestoreGenerationChangedError();
+        }
+        const saleGeneration = restore.generation;
         if (existing) {
           replayOrConflict(existing, fingerprint, command.operationId);
           assertCanRead(actor, existing);
@@ -715,6 +759,7 @@ export function createSalesServices(ports: {
             costsIncomplete,
             lines: completedLines,
             couponUsageDiscrepancy,
+            sourceRestoreGeneration: saleGeneration,
           });
           return finish(record, true);
         }
@@ -730,6 +775,7 @@ export function createSalesServices(ports: {
               costsIncomplete,
               completedLines,
               occurredAt,
+              sourceRestoreGeneration: saleGeneration,
             },
           ),
         );
@@ -778,11 +824,13 @@ export function createSalesServices(ports: {
         };
       });
       const issuedAt = new Date();
-      const stock = await ports.uow.run(async (tx) => {
+      const stock = await ports.uow.runRestoreControl(async (tx) => {
         await tx.inventory.lockStockClock("share");
         const stockVersion = await tx.inventory.currentStockVersion();
+        const restore = await tx.restore.current();
         const quantities = await tx.inventory.quantitiesFor(ids);
         const includedOperations = await tx.sales.listCompletedOperationProofs(request.pendingOperationIds);
+        const deferredCompletionProofs = await tx.sales.listDeferredCompletionProofs(request.pendingOperationIds);
         const record = await tx.snapshots.insert({
           id: crypto.randomUUID(),
           pricingVersion: 1,
@@ -790,6 +838,7 @@ export function createSalesServices(ports: {
           branchId: current.branch.id,
           deviceId: request.deviceId,
           issuedAt,
+          restoreGeneration: restore.generation,
           prices,
           automaticOffers: pricingSnapshot.automaticOffers,
           coupons: pricingSnapshot.coupons,
@@ -801,10 +850,14 @@ export function createSalesServices(ports: {
           snapshotId: record.id,
           issuedAt,
           stockVersion,
+          restoreGeneration: restore.generation,
           pendingOperationIds: request.pendingOperationIds,
           includedOperationIds: includedOperations.map((proof) => proof.operationId),
         });
-        return { record, stockVersion, quantities, includedOperations, stockPause };
+        return {
+          record, stockVersion, quantities, includedOperations, deferredCompletionProofs, stockPause,
+          restoreGeneration: restore.generation, restorePause: restore.pause,
+        };
       });
       return {
         snapshotId: stock.record.id,
@@ -815,8 +868,11 @@ export function createSalesServices(ports: {
         issuedAt: stock.record.issuedAt.toISOString(),
         stockVersion: stock.stockVersion,
         stockPause: stock.stockPause,
+        restoreGeneration: stock.restoreGeneration,
+        restorePause: stock.restorePause,
         includedOperationIds: stock.includedOperations.map((proof) => proof.operationId),
         includedOperations: stock.includedOperations,
+        deferredCompletionProofs: stock.deferredCompletionProofs,
         automaticOffers: stock.record.automaticOffers,
         coupons: stock.record.coupons,
         couponAccountedOperations: stock.record.couponAccountedOperations,
@@ -883,6 +939,15 @@ export function createSalesServices(ports: {
             : {}),
         })),
       });
+      const sourceGeneration = command.restoreGeneration ?? snapshot.restoreGeneration;
+      if (command.restoreGeneration !== null && command.restoreGeneration !== snapshot.restoreGeneration) {
+        throw new SalesValidationError("جيل لقطة البيع غير متطابق.");
+      }
+      if (await ports.deferredCompletions.retainIfRequired({
+        operationId: command.operationId, saleId: command.saleId, payloadFingerprint: fingerprint,
+        sourceGeneration, sourceDeviceId: command.deviceId, originalStaffId: actor.id, branchId: branch.id,
+        occurredAt: command.occurredAt, payload: deferredPayload("accepted", command),
+      })) throw new SaleRetainedForRestoreError();
       const coverageVariantIds = [...new Set([...snapshot.prices.map((item) => item.variantId), ...(await catalogCoverage(auth))])];
       const outcome = await commitSnapshotPricedSale({
         viewer: actor,
@@ -893,6 +958,7 @@ export function createSalesServices(ports: {
         fingerprint,
         recoveredByStaffId: null,
         recoveredAt: null,
+        expectedRestoreGeneration: sourceGeneration,
         requireViewerRead: true,
         coverageVariantIds,
       });
@@ -913,10 +979,15 @@ export function createSalesServices(ports: {
       if (recovered.kind === "prepared") {
         const outcome = await ports.uow.run(async (tx) => {
           await tx.inventory.lockStockClock("update");
-          const existing = await loadLockedIdentity(tx.sales, recovered.saleId, recovered.operationId);
+          let existing = await loadLockedIdentity(tx.sales, recovered.saleId, recovered.operationId);
+          if (!existing) {
+            const retained = await tx.sales.getRestoreDeferredPreparedSale(recovered.operationId);
+            if (retained && retained.id === recovered.saleId) existing = (await tx.sales.insert(retained)).record;
+          }
           if (!existing) {
             throw new NotFoundError("لم يُحفظ البيع بعد.");
           }
+          await tx.sales.markRestoreDeferredReconciled(recovered.operationId, manager.id);
           const finish = (record: SaleRecord, created: boolean) =>
             attachAck(tx, record, created, coverageVariantIds, recovered.pendingOperationIds);
           if (existing.physicallyCompleted) {
@@ -982,6 +1053,7 @@ export function createSalesServices(ports: {
             recoveredByStaffId: manager.id,
             recoveredAt: new Date(),
             couponUsageDiscrepancy,
+            sourceRestoreGeneration: recovered.sourceRestoreGeneration,
           });
           return finish(record, true);
         });
@@ -1041,6 +1113,7 @@ export function createSalesServices(ports: {
         recoveredByStaffId: manager.id,
         recoveredAt: new Date(),
         requireViewerRead: false,
+        expectedRestoreGeneration: null,
         coverageVariantIds: [...new Set([...snapshot.prices.map((item) => item.variantId), ...coverageVariantIds])],
       });
       return {
@@ -1048,6 +1121,11 @@ export function createSalesServices(ports: {
         created: outcome.created,
         acknowledgement: outcome.acknowledgement,
       };
+    },
+
+    async listDeferredForRestore(auth: VerifiedAuth | null) {
+      await requireManager(auth);
+      return ports.deferredCompletions.list();
     },
 
     async list(auth: VerifiedAuth | null): Promise<Array<SaleDto | ManagerSaleDto>> {
@@ -1163,6 +1241,7 @@ function toInsert(
     couponUsageDiscrepancy?: SaleRecord["couponUsageDiscrepancy"];
     sourceDeviceId?: string | null;
     sourceSnapshotId?: string | null;
+    sourceRestoreGeneration: number;
   },
 ): SaleInsert {
   const pricedLines = priced.lines;
@@ -1220,6 +1299,7 @@ function toInsert(
     recoveredAt: options.recoveredAt ?? null,
     sourceDeviceId: options.sourceDeviceId ?? null,
     sourceSnapshotId: options.sourceSnapshotId ?? null,
+    sourceRestoreGeneration: options.sourceRestoreGeneration,
     lines,
   };
 }
@@ -1287,6 +1367,8 @@ type ParsedSale = {
   discountReason: string | null;
   occurredAt: Date | null;
   pendingOperationIds: string[];
+  restoreGeneration: number | null;
+  deviceId: string | null;
   lines: Array<{ variantId: string; quantity: number }>;
 };
 
@@ -1304,6 +1386,7 @@ type ParsedAcceptedSale = {
   discountReason: string | null;
   occurredAt: Date;
   pendingOperationIds: string[];
+  restoreGeneration: number | null;
   lines: Array<{ variantId: string; quantity: number; listedUnitPricePiasters: number | null }>;
 };
 
@@ -1382,6 +1465,7 @@ function parseAcceptedSale(input: unknown): ParsedAcceptedSale {
     discountReason: parseOptionalText(body.discountReason, 200, "سبب الخصم غير صالح."),
     occurredAt,
     pendingOperationIds: parsePendingOperationIds(body.pendingOperationIds),
+    restoreGeneration: parseRestoreGeneration(body.restoreGeneration, null),
     lines: body.lines.map((item) => {
       const line = expectObject(item, "بيانات صنف البيع غير صالحة.");
       assertAllowedKeys(line, ACCEPTED_LINE_KEYS, "بيانات صنف البيع غير صالحة.");
@@ -1405,7 +1489,8 @@ function parseRecoverCommand(
   input: unknown,
 ):
   | { kind: "snapshot"; command: ParsedAcceptedSale }
-  | { kind: "prepared"; saleId: string; operationId: string; pendingOperationIds: string[]; occurredAt: Date | null } {
+  | { kind: "prepared"; saleId: string; operationId: string; pendingOperationIds: string[]; occurredAt: Date | null;
+      sourceRestoreGeneration: number | null } {
   const body = expectObject(input, "بيانات البيع غير صالحة.");
   assertAllowedKeys(body, RECOVER_KEYS, "بيانات البيع غير صالحة.");
   if (body.physicallyCompleted !== true) {
@@ -1418,6 +1503,7 @@ function parseRecoverCommand(
       operationId: assertUuid(body.operationId, "معرّف العملية غير صالح."),
       pendingOperationIds: parsePendingOperationIds(body.pendingOperationIds),
       occurredAt: parseOptionalTime(body.occurredAt),
+      sourceRestoreGeneration: parseRestoreGeneration(body.restoreGeneration, null),
     };
   }
   return { kind: "snapshot", command: parseAcceptedSale(input) };
@@ -1443,6 +1529,10 @@ function parseSaleWrite(input: unknown, complete: boolean): ParsedSale {
     discountReason: parseOptionalText(body.discountReason, 200, "سبب الخصم غير صالح."),
     occurredAt: parseOptionalTime(body.occurredAt),
     pendingOperationIds: complete ? parsePendingOperationIds(body.pendingOperationIds) : [],
+    restoreGeneration: complete ? parseRestoreGeneration(body.restoreGeneration, null) : null,
+    deviceId: complete && body.deviceId !== undefined && body.deviceId !== null
+      ? assertUuid(body.deviceId, "معرّف الجهاز غير صالح.")
+      : null,
     lines: body.lines.map((item) => {
       const line = expectObject(item, "بيانات صنف البيع غير صالحة.");
       assertAllowedKeys(line, LINE_KEYS, "بيانات صنف البيع غير صالحة.");
@@ -1451,6 +1541,48 @@ function parseSaleWrite(input: unknown, complete: boolean): ParsedSale {
         quantity: assertQuantity(line.quantity, "الكمية غير صالحة."),
       };
     }),
+  };
+}
+
+function parseRestoreGeneration(value: unknown, fallback: number | null): number | null {
+  if (value === undefined || value === null) return fallback;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    throw new SalesValidationError("جيل الاستعادة غير صالح.");
+  }
+  return value;
+}
+
+function preparedSaleJson(record: SaleRecord): Record<string, unknown> {
+  return {
+    ...record,
+    occurredAt: record.occurredAt.toISOString(),
+    recordedAt: record.recordedAt?.toISOString() ?? null,
+    couponUsageDiscrepancy: null,
+    recoveredAt: null,
+  };
+}
+
+function deferredPayload(kind: "connected" | "accepted", command: ParsedSale | ParsedAcceptedSale): Record<string, unknown> {
+  return {
+    kind,
+    saleId: command.saleId,
+    operationId: command.operationId,
+    physicallyCompleted: true,
+    restoreGeneration: command.restoreGeneration,
+    occurredAt: command.occurredAt?.toISOString() ?? null,
+    customerName: command.customerName,
+    customerPhone: command.customerPhone,
+    couponCode: command.couponCode,
+    employeeDiscountPiasters: command.employeeDiscountPiasters,
+    discountReason: command.discountReason,
+    pendingOperationIds: command.pendingOperationIds,
+    lines: command.lines,
+    ...(kind === "accepted" ? {
+      deviceId: (command as ParsedAcceptedSale).deviceId,
+      snapshotId: (command as ParsedAcceptedSale).snapshotId,
+      pricingVersion: (command as ParsedAcceptedSale).pricingVersion,
+      pricingOccurredAt: (command as ParsedAcceptedSale).pricingOccurredAt.toISOString(),
+    } : {}),
   };
 }
 

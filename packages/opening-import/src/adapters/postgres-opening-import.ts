@@ -98,6 +98,7 @@ async function transaction<T>(pool: Pool, work: (client: PoolClient) => Promise<
   const client = await pool.connect();
   try {
     await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
+    await client.query("SELECT restore_enter_business_write()");
     const value = await work(client);
     await client.query("COMMIT");
     return value;

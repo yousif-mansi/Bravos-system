@@ -347,6 +347,7 @@ export type InventoryTransaction = {
     snapshotId: string;
     issuedAt: Date;
     stockVersion: number;
+    restoreGeneration: number;
     pendingOperationIds: string[];
     includedOperationIds: string[];
   }): Promise<StockPauseDto | null>;

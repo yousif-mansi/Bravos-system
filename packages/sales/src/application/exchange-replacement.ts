@@ -8,6 +8,7 @@ import type {
   ExchangeReplacementSaleWriter,
   ListedPriceReader,
   PricingQuoteReader,
+  RestoreRuntimePort,
   SaleLineWrite,
   SaleStore,
 } from "./ports.ts";
@@ -61,6 +62,7 @@ export function createExchangeReplacementPricing(pricing: PricingQuoteReader): E
 export function createExchangeReplacementSaleWriter(ports: {
   sales: SaleStore;
   inventory: InventoryTransaction;
+  restore: RestoreRuntimePort;
 }): ExchangeReplacementSaleWriter {
   return {
     async create(input) {
@@ -118,7 +120,9 @@ export function createExchangeReplacementSaleWriter(ports: {
           units: line.units.map((unit) => ({ ...unit, employeeDiscountPiasters: 0 })),
         });
       }
+      const restore = await ports.restore.current();
       const inserted = await ports.sales.insert({
+        sourceRestoreGeneration: restore.generation,
         id: input.saleId,
         operationId: input.operationId,
         branchId: input.branchId,

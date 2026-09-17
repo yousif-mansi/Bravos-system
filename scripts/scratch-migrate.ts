@@ -42,6 +42,7 @@ try {
       "026_opening_import.sql",
       "027_online_returns.sql",
       "028_aggregate_analytics.sql",
+      "029_restore.sql",
     ];
     if (first.join(",") !== expectedMigrations.join(",") || afterApply.join(",") !== first.join(",")) {
       throw new Error(`Scratch apply did not record multiple migrations: ${first.join(",")}`);
@@ -303,6 +304,8 @@ async function assertCurrentBatchStorage(pool: Pool, present: boolean): Promise<
     "opening_import_preview",
     "recording_online_return_unit_value", "inventory_delivered_return_allocation_effect",
     "public_analytics_event",
+    "restore_preview", "restore_runtime", "restore_preview_till", "restore_activation",
+    "sales_restore_deferred_completion",
   ]) {
     if (tables.includes(table) !== present) throw new Error(`Expected ${table} presence=${present}.`);
   }
@@ -318,6 +321,9 @@ async function assertCurrentBatchStorage(pool: Pool, present: boolean): Promise<
     ["returns_return_line", "source_online_order_line_id"],
     ["returns_return_unit", "source_online_order_line_id"],
     ["recording_correction", "effective_refund_merchandise_piasters"],
+    ["sales_pos_snapshot", "restore_generation"],
+    ["sales_sale", "source_restore_generation"],
+    ["inventory_known_till", "restore_generation"],
   ] as const) {
     if (await columnExists(pool, table, column) !== present) {
       throw new Error(`Expected ${table}.${column} presence=${present}.`);

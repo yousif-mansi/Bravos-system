@@ -1,5 +1,5 @@
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
-import { Pool } from "pg";
+import { Pool, type PoolClient } from "pg";
 import {
   AnalyticsOperationConflictError,
   AnalyticsValidationError,
@@ -54,6 +54,8 @@ import {
   createPostgresReceivingUnitOfWork,
 } from "@bravos/receiving/node";
 import {
+  SaleRestoreGenerationChangedError,
+  SaleRetainedForRestoreError,
   SalesValidationError,
   createExchangeReplacementPricing,
   createExchangeReplacementSaleWriter,
@@ -66,6 +68,8 @@ import {
   createPostgresSaleStore,
   createPostgresStockReconciliationSales,
   createPostgresSalesUnitOfWork,
+  createPostgresDeferredCompletedSaleStore,
+  createPostgresSalesRestorePort,
 } from "@bravos/sales/node";
 import {
   ReturnsValidationError,
@@ -162,7 +166,38 @@ import {
 } from "@bravos/report-export";
 import { createLazyReportRenderer } from "@bravos/report-export/node";
 import { BackupInProgressError, BackupValidationError, createBackupServices, type BackupServices } from "@bravos/backup";
-import { createNodeBackupCrypto, createPostgresBackupUnitOfWork } from "@bravos/backup/node";
+import {
+  createBackupQueryable,
+  createNodeBackupCrypto,
+  createPostgresBackupUnitOfWork,
+  decodeBackupArchive,
+  type BackupQueryable,
+} from "@bravos/backup/node";
+import type { BackupReaderSet } from "@bravos/backup";
+import {
+  RestorePausedError,
+  RestoreStaleError,
+  RestoreValidationError,
+  createRestoreServices,
+  type RestoreServices,
+} from "@bravos/restore";
+import {
+  createPostgresRestoreRuntimeReader,
+  createPostgresRestoreStore,
+  isRestorePausedDatabaseError,
+} from "@bravos/restore/node";
+import { createPostgresIdentityRestorePort } from "@bravos/identity/node";
+import { createPostgresCatalogRestorePort } from "@bravos/catalog/node";
+import { createPostgresInventoryRestorePort } from "@bravos/inventory/node";
+import { createPostgresReceivingRestorePort } from "@bravos/receiving/node";
+import { createPostgresExpensesRestorePort } from "@bravos/expenses/node";
+import { createPostgresPricingRestorePort } from "@bravos/pricing/node";
+import { createPostgresReturnsRestorePort } from "@bravos/returns/node";
+import { createPostgresCorrectionsRestorePort } from "@bravos/corrections/node";
+import { createPostgresOnlineOrdersRestorePort } from "@bravos/online-orders/node";
+import { createPostgresStorefrontConfigRestorePort } from "@bravos/storefront-config/node";
+import { createPostgresOpeningImportRestorePort } from "@bravos/opening-import/node";
+import { createPostgresAnalyticsRestorePort } from "@bravos/analytics/node";
 import { createPostgresIdentityBackupReader } from "@bravos/identity/node";
 import { createPostgresCatalogBackupReader } from "@bravos/catalog/node";
 import { createPostgresInventoryBackupReader } from "@bravos/inventory/node";
@@ -201,6 +236,7 @@ export type BuiltApp = {
   onlineOrders: OnlineOrderServices;
   openingImport: OpeningImportServices;
   backup: BackupServices;
+  restore: RestoreServices;
   analytics: AnalyticsServices;
   reporting: ReportingServices;
   reportExport: ReportExportServices;
@@ -321,8 +357,14 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
       cashierCatalog: {
         listCashierProducts: (auth) => catalog.listCashierCatalog(auth),
       },
-      uow: createPostgresSalesUnitOfWork(pool, createInventoryTransaction, createPostgresCouponUsageTransaction),
+      uow: createPostgresSalesUnitOfWork(
+        pool,
+        createInventoryTransaction,
+        createPostgresCouponUsageTransaction,
+        createPostgresRestoreRuntimeReader,
+      ),
       allocations: { listAllocations: (operationId) => inventoryStore.listAllocations(operationId) },
+      deferredCompletions: createPostgresDeferredCompletedSaleStore(pool, createPostgresRestoreRuntimeReader),
     });
     const expenses = createExpenseServices({
       actors,
@@ -358,6 +400,7 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
         (client, inventoryTransaction) => createExchangeReplacementSaleWriter({
           sales: createPostgresSaleStore(client),
           inventory: inventoryTransaction,
+          restore: createPostgresRestoreRuntimeReader(client),
         }),
       ),
       clock: { now: config.businessClock ?? (() => new Date()) },
@@ -395,24 +438,44 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
       })),
       clock: { now: config.businessClock ?? (() => new Date()) },
     });
+    const backupCrypto = createNodeBackupCrypto();
     const backup = createBackupServices({
       actors,
-      crypto: createNodeBackupCrypto(),
-      unitOfWork: createPostgresBackupUnitOfWork(pool, (client) => ({
-        identity: createPostgresIdentityBackupReader(client),
-        catalog: createPostgresCatalogBackupReader(client),
-        inventory: createPostgresInventoryBackupReader(client),
-        receiving: createPostgresReceivingBackupReader(client),
-        sales: createPostgresSalesBackupReader(client),
-        expenses: createPostgresExpensesBackupReader(client),
-        pricing: createPostgresPricingBackupReader(client),
-        returns: createPostgresReturnsBackupReader(client),
-        corrections: createPostgresCorrectionsBackupReader(client),
-        onlineOrders: createPostgresOnlineOrdersBackupReader(client),
-        storefrontConfiguration: createPostgresStorefrontConfigBackupReader(client),
-        openingImport: createPostgresOpeningImportBackupReader(client),
-        analytics: createPostgresAnalyticsBackupReader(client),
-      })),
+      crypto: backupCrypto,
+      unitOfWork: createPostgresBackupUnitOfWork(pool, createBackupReaders),
+    });
+    const restore = createRestoreServices({
+      actors,
+      archive: {
+        decode: decodeBackupArchive,
+        decodeBase64: (value) => Buffer.from(value, "base64"),
+        sha256: (value) => backupCrypto.sha256(value),
+      },
+      backup,
+      store: createPostgresRestoreStore({
+        pool,
+        databaseUrl: config.databaseUrl,
+        factories: {
+          features: (queryable) => ({
+            identity: createPostgresIdentityRestorePort(queryable),
+            catalog: createPostgresCatalogRestorePort(queryable),
+            sales: createPostgresSalesRestorePort(queryable),
+            inventory: createPostgresInventoryRestorePort(queryable),
+            receiving: createPostgresReceivingRestorePort(queryable),
+            pricing: createPostgresPricingRestorePort(queryable),
+            expenses: createPostgresExpensesRestorePort(queryable),
+            onlineOrders: createPostgresOnlineOrdersRestorePort(queryable),
+            storefrontConfiguration: createPostgresStorefrontConfigRestorePort(queryable),
+            returns: createPostgresReturnsRestorePort(queryable),
+            corrections: createPostgresCorrectionsRestorePort(queryable),
+            openingImport: createPostgresOpeningImportRestorePort(queryable),
+            analytics: createPostgresAnalyticsRestorePort(queryable),
+          }),
+          liveReaders: (client: PoolClient) => createBackupReaders(createBackupQueryable(client)),
+          snapshot: (stagePool) => createPostgresBackupUnitOfWork(stagePool, createBackupReaders),
+          migrate: (stagePool) => applyMigrations(stagePool),
+        },
+      }),
     });
     const analytics = createAnalyticsServices({
       actors: { getStaff: (staffId) => directory.getStaff(staffId) },
@@ -447,7 +510,7 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
 
     const instance = Fastify({ logger: false });
     app = instance;
-    await registerRoutes(instance, config, auth, identity, services, catalog, inventory, receiving, pricing, sales, expenses, returns, corrections, storefrontConfig, onlineOrders, openingImport, backup, analytics, reporting, reportExport);
+    await registerRoutes(instance, config, auth, identity, services, catalog, inventory, receiving, pricing, sales, expenses, returns, corrections, storefrontConfig, onlineOrders, openingImport, backup, restore, analytics, reporting, reportExport);
 
     return {
       app: instance,
@@ -465,6 +528,7 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
       onlineOrders,
       openingImport,
       backup,
+      restore,
       analytics,
       reporting,
       reportExport,
@@ -491,6 +555,25 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
   }
 }
 
+function createBackupReaders(queryable: BackupQueryable): BackupReaderSet {
+  return {
+    identity: createPostgresIdentityBackupReader(queryable),
+    catalog: createPostgresCatalogBackupReader(queryable),
+    inventory: createPostgresInventoryBackupReader(queryable),
+    receiving: createPostgresReceivingBackupReader(queryable),
+    sales: createPostgresSalesBackupReader(queryable),
+    expenses: createPostgresExpensesBackupReader(queryable),
+    pricing: createPostgresPricingBackupReader(queryable),
+    returns: createPostgresReturnsBackupReader(queryable),
+    corrections: createPostgresCorrectionsBackupReader(queryable),
+    onlineOrders: createPostgresOnlineOrdersBackupReader(queryable),
+    storefrontConfiguration: createPostgresStorefrontConfigBackupReader(queryable),
+    openingImport: createPostgresOpeningImportBackupReader(queryable),
+    analytics: createPostgresAnalyticsBackupReader(queryable),
+    restore: createPostgresRestoreRuntimeReader(queryable),
+  };
+}
+
 async function registerRoutes(
   app: FastifyInstance,
   config: AppConfig,
@@ -509,6 +592,7 @@ async function registerRoutes(
   onlineOrders: OnlineOrderServices,
   openingImport: OpeningImportServices,
   backup: BackupServices,
+  restore: RestoreServices,
   analytics: AnalyticsServices,
   reporting: ReportingServices,
   reportExport: ReportExportServices,
@@ -656,6 +740,90 @@ async function registerRoutes(
       reply.header("x-bravos-backup-includes-image-binaries", "false");
       reply.header("x-bravos-backup-sha256", result.archiveSha256);
       return reply.send(Buffer.from(result.bytes.buffer, result.bytes.byteOffset, result.bytes.byteLength));
+    });
+  });
+
+  app.get("/api/internal/restore/state", async (request, reply) => {
+    reply.header("cache-control", "no-store");
+    return handle(reply, async () => restore.state(await verifiedAuth(identity, request)));
+  });
+
+  app.get("/api/internal/restore/pause", async (request, reply) => {
+    reply.header("cache-control", "no-store");
+    return handle(reply, async () => restore.pause(await verifiedAuth(identity, request)));
+  });
+
+  app.get("/api/internal/restore/previews", async (request, reply) => {
+    reply.header("cache-control", "no-store");
+    return handle(reply, async () => restore.list(await verifiedAuth(identity, request)));
+  });
+
+  app.get("/api/internal/restore/previews/:previewId", async (request, reply) => {
+    const params = request.params as { previewId: string };
+    reply.header("cache-control", "no-store");
+    return handle(reply, async () => restore.get(await verifiedAuth(identity, request), params.previewId));
+  });
+
+  // The encrypted archive travels as base64 JSON; 270 MiB covers the 192 MiB archive limit.
+  app.post("/api/internal/restore/previews", {
+    bodyLimit: 270 * 1024 * 1024,
+    // Only a signed-in manager may send the large archive body; it is refused before it is read.
+    onRequest: async (request, reply) => {
+      try {
+        await restore.authorizeManager(await verifiedAuth(identity, request));
+      } catch (error) {
+        return sendError(reply, error);
+      }
+    },
+  }, async (request, reply) => {
+    reply.header("cache-control", "no-store");
+    return handle(reply, async () => {
+      const result = await restore.createPreview(await verifiedAuth(identity, request), request.body);
+      reply.status(result.created ? 201 : 200);
+      return result.value;
+    });
+  });
+
+  app.get("/api/internal/restore/previews/:previewId/pre-restore-backup", async (request, reply) => {
+    const params = request.params as { previewId: string };
+    reply.header("cache-control", "no-store");
+    reply.header("x-content-type-options", "nosniff");
+    return handle(reply, async () => {
+      const result = await restore.downloadPreRestoreBackup(await verifiedAuth(identity, request), params.previewId);
+      reply.header("content-type", "application/vnd.bravos.backup");
+      reply.header("content-disposition", `attachment; filename="${result.fileName}"`);
+      reply.header("x-bravos-backup-sha256", result.archiveSha256);
+      return reply.send(Buffer.from(result.bytes.buffer, result.bytes.byteOffset, result.bytes.byteLength));
+    });
+  });
+
+  app.post("/api/internal/restore/previews/:previewId/pre-restore-backup/acknowledgement", async (request, reply) => {
+    const params = request.params as { previewId: string };
+    reply.header("cache-control", "no-store");
+    return handle(reply, async () => restore.acknowledgePreRestoreBackup(
+      await verifiedAuth(identity, request), params.previewId, request.body,
+    ));
+  });
+
+  app.post("/api/internal/restore/previews/:previewId/acknowledgements", async (request, reply) => {
+    const params = request.params as { previewId: string };
+    reply.header("cache-control", "no-store");
+    return handle(reply, async () => restore.acknowledge(await verifiedAuth(identity, request), params.previewId, request.body));
+  });
+
+  app.post("/api/internal/restore/previews/:previewId/cancel", async (request, reply) => {
+    const params = request.params as { previewId: string };
+    reply.header("cache-control", "no-store");
+    return handle(reply, async () => restore.cancel(await verifiedAuth(identity, request), params.previewId));
+  });
+
+  app.post("/api/internal/restore/previews/:previewId/activate", async (request, reply) => {
+    const params = request.params as { previewId: string };
+    reply.header("cache-control", "no-store");
+    return handle(reply, async () => {
+      const result = await restore.activate(await verifiedAuth(identity, request), params.previewId, request.body);
+      reply.status(result.created ? 201 : 200);
+      return result.value;
     });
   });
 
@@ -1258,6 +1426,11 @@ async function registerRoutes(
     });
   });
 
+  app.get("/api/internal/sales/restore-deferred", async (request, reply) => {
+    reply.header("cache-control", "no-store");
+    return handle(reply, async () => sales.listDeferredForRestore(await verifiedAuth(identity, request)));
+  });
+
   app.post("/api/internal/sales", async (request, reply) => {
     return handle(reply, async () => {
       const result = await sales.complete(await verifiedAuth(identity, request), request.body);
@@ -1582,6 +1755,16 @@ function sendError(reply: FastifyReply, error: unknown) {
   if (error instanceof BackupInProgressError) {
     return reply.status(409).send(errorBody(error.code, error.message));
   }
+  if (error instanceof RestorePausedError) {
+    return reply.status(409).send(errorBody(error.code, error.message));
+  }
+  if (isRestorePausedDatabaseError(error)) {
+    return reply.status(409).send(errorBody("RESTORE_PAUSED", "تغييرات العمل متوقفة مؤقتاً لإتمام استعادة البيانات."));
+  }
+  if (error instanceof RestoreStaleError || error instanceof SaleRetainedForRestoreError
+    || error instanceof SaleRestoreGenerationChangedError) {
+    return reply.status(409).send(errorBody(error.code, error.message));
+  }
   if (error instanceof AnalyticsOperationConflictError) {
     return reply.status(409).send(errorBody(error.code, error.message));
   }
@@ -1629,6 +1812,7 @@ function sendError(reply: FastifyReply, error: unknown) {
     || error instanceof OnlineOrderValidationError
     || error instanceof OpeningImportValidationError
     || error instanceof BackupValidationError
+    || error instanceof RestoreValidationError
     || error instanceof AnalyticsValidationError
     || error instanceof ReportingValidationError
     || error instanceof ReportingExportLimitError

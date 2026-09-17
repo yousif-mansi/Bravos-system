@@ -75,6 +75,10 @@ const managerBackupChunk = internalFiles.find((file) => path.basename(file).incl
 if (!managerBackupChunk) {
   throw new Error("Manager backup was not split into its own chunk.");
 }
+const managerRestoreChunk = internalFiles.find((file) => path.basename(file).includes("manager-restore"));
+if (!managerRestoreChunk) {
+  throw new Error("Manager restore was not split into its own chunk.");
+}
 
 const loginHtml = await readFile(path.join(internalDist, "index.html"), "utf8");
 const referenced = [...loginHtml.matchAll(/assets\/[^\s"]+\.js/g)].map((match) => match[0]);
@@ -103,9 +107,15 @@ for (const file of staticGraph) {
   if (file === managerBackupChunk) {
     throw new Error("Login entry statically imports manager backup.");
   }
+  if (file === managerRestoreChunk) {
+    throw new Error("Login entry statically imports manager restore.");
+  }
   const source = await readFile(file, "utf8");
   if (source.includes("نسخة احتياطية للبيانات") || source.includes("/api/internal/backups")) {
     throw new Error(`${path.relative(internalDist, file)} should not include manager backup for the initial login route.`);
+  }
+  if (source.includes("فك النسخة وإنشاء المعاينة") || source.includes("RestorePage")) {
+    throw new Error(`${path.relative(internalDist, file)} should not include manager restore for the initial login route.`);
   }
   if (source.includes("إنشاء حساب موظف") || source.includes("StaffPage")) {
     throw new Error(`${path.relative(internalDist, file)} should not include staff management for the initial login route.`);
@@ -136,6 +146,7 @@ const dynamicOpeningImport = [];
 const dynamicManagementReports = [];
 const dynamicStorefrontAnalytics = [];
 const dynamicManagerBackup = [];
+const dynamicManagerRestore = [];
 for (const file of staticGraph) {
   const source = await readFile(file, "utf8");
   const specifiers = dynamicImportSpecifiers(source);
@@ -154,6 +165,7 @@ for (const file of staticGraph) {
   dynamicManagementReports.push(...specifiers.filter((specifier) => specifier.includes("management-reports")));
   dynamicStorefrontAnalytics.push(...specifiers.filter((specifier) => specifier.includes("storefront-analytics")));
   dynamicManagerBackup.push(...specifiers.filter((specifier) => specifier.includes("manager-backup")));
+  dynamicManagerRestore.push(...specifiers.filter((specifier) => specifier.includes("manager-restore")));
 }
 if (dynamicStaff.length === 0) {
   throw new Error("Staff management chunk is not loaded through a dynamic import from the login graph.");
@@ -200,6 +212,9 @@ if (dynamicStorefrontAnalytics.length === 0) {
 if (dynamicManagerBackup.length === 0) {
   throw new Error("Manager backup is not loaded through a dynamic import from the login graph.");
 }
+if (dynamicManagerRestore.length === 0) {
+  throw new Error("Manager restore is not loaded through a dynamic import from the login graph.");
+}
 
 for (const file of internalFiles) {
   const source = await readFile(file, "utf8");
@@ -208,6 +223,9 @@ for (const file of internalFiles) {
     || source.includes("decodeBackupArchive")
     || source.includes("createNodeBackupCrypto")
     || source.includes("BRAVOS-BACKUP")
+    || source.includes("@bravos/restore")
+    || source.includes("restore_enter_business_write")
+    || source.includes("bravos_restore_stage_")
   ) {
     throw new Error(`Internal browser build contains private server archive implementation: ${file}`);
   }
@@ -235,6 +253,9 @@ if (swSource.includes("storefront-analytics")) {
 }
 if (swSource.includes("manager-backup")) {
   throw new Error("Service worker precaches online-only manager backup.");
+}
+if (swSource.includes("manager-restore")) {
+  throw new Error("Service worker precaches online-only manager restore.");
 }
 if (!swSource.includes("cashier-lookup")) {
   throw new Error("Service worker does not precache the essential POS lookup chunk.");
@@ -276,6 +297,15 @@ for (const file of storefrontFiles) {
     || source.includes("نسخة احتياطية للبيانات")
   ) {
     throw new Error(`Public build leaked manager backup: ${file}`);
+  }
+  if (
+    source.includes("@bravos/restore")
+    || source.includes("RestorePage")
+    || source.includes("manager-restore")
+    || source.includes("/api/internal/restore")
+    || source.includes("فك النسخة وإنشاء المعاينة")
+  ) {
+    throw new Error(`Public build leaked manager restore: ${file}`);
   }
   if (source.includes("@bravos/identity") || source.includes("إدارة الموظفين") || source.includes("إدارة المنتجات") || source.includes("استلام المخزون") || source.includes("الإلغاء وحده لا يعيد بضاعة") || source.includes("مصروف جديد") || source.includes("ExpensesPage") || source.includes("CorrectionsPage") || source.includes("@bravos/catalog") || source.includes("@bravos/inventory") || source.includes("@bravos/receiving") || source.includes("@bravos/sales") || source.includes("@bravos/expenses") || source.includes("@bravos/corrections")) {
     throw new Error(`Public build leaked internal staff modules: ${file}`);

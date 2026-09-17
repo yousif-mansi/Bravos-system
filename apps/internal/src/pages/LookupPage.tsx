@@ -17,6 +17,7 @@ import {
 } from "../pos.ts";
 import { mergeVariantQuantities, SalesValidationError } from "@bravos/sales/browser";
 import { accountGeneration, subscribeAccount } from "../account-session.ts";
+import { getRestorePause } from "../restore-api.ts";
 import { isNetworkFailure, signOutPreservingSales } from "../session.ts";
 import {
   createPendingSale,
@@ -26,10 +27,11 @@ import {
   type SalePayload,
 } from "../sales-pending.ts";
 
-function saleWriteFromRecord(sale: SaleDto, occurredAt: string | null) {
+function saleWriteFromRecord(sale: SaleDto, occurredAt: string | null, restoreGeneration: number | null) {
   return {
     saleId: sale.id,
     operationId: sale.operationId,
+    ...(restoreGeneration !== null ? { restoreGeneration } : {}),
     customerName: sale.customerName,
     customerPhone: sale.customerPhone,
     couponCode: sale.appliedCoupon?.code ?? null,
@@ -109,6 +111,9 @@ export default function LookupPage({
   const revisionBlockRef = useRef(false);
   const localIdentityRef = useRef<{ saleId: string; operationId: string } | null>(null);
   const foreignRecoveryRef = useRef<PendingSale | null>(null);
+  const foreignRecoverySnapshotRef = useRef<PosPriceSnapshotDto | null>(null);
+  // Restore generation observed when a server quote was accepted; null when it could not be read.
+  const quoteGenerationRef = useRef<number | null>(null);
   const cartRef = useRef<CartLine[]>([]);
   const revisionEpochRef = useRef(0);
   const submitEpochRef = useRef(0);
@@ -116,6 +121,7 @@ export default function LookupPage({
   const [foreignRecovery, setForeignRecovery] = useState<PendingSale | null>(null);
   const [effectiveByVariant, setEffectiveByVariant] = useState<Record<string, number>>({});
   const [stockPause, setStockPause] = useState<StockPauseDto | null>(null);
+  const [restorePause, setRestorePause] = useState<PosPriceSnapshotDto["restorePause"]>(null);
   const quoteOriginRef = useRef<"server" | "snapshot" | null>(null);
   const quoteSnapshotRef = useRef<PosPriceSnapshotDto | null>(null);
   const quoteCachedRef = useRef<Map<string, number> | null>(null);
@@ -129,6 +135,8 @@ export default function LookupPage({
         setCompleted(null);
         setPendingSale(null);
         pendingSaleRef.current = null;
+        foreignRecoveryRef.current = null;
+        foreignRecoverySnapshotRef.current = null;
         setHandedOver(false);
       }
     });
@@ -161,6 +169,37 @@ export default function LookupPage({
   }, [workspace.staff.id, stockPause?.coordinationId, stockPause?.expiresAt]);
 
   useEffect(() => {
+    let cancelled = false;
+    const staffId = workspace.staff.id;
+    const epoch = accountGeneration();
+    const stillCurrent = () => !cancelled && accountGeneration() === epoch && workspace.staff.id === staffId;
+    const refresh = async () => {
+      if (!stillCurrent()) return;
+      if (!navigator.onLine) {
+        const cached = await pos.loadSnapshot(staffId);
+        if (stillCurrent()) setRestorePause(cached?.restorePause ?? null);
+        return;
+      }
+      try {
+        const state = await getRestorePause();
+        if (stillCurrent()) setRestorePause(state.pause);
+      } catch {
+        /* keep the last observed restore pause until a later refresh */
+      }
+    };
+    const interval = window.setInterval(() => void refresh(), 5_000);
+    window.addEventListener("focus", refresh);
+    window.addEventListener("online", refresh);
+    void refresh();
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refresh);
+      window.removeEventListener("online", refresh);
+    };
+  }, [workspace.staff.id]);
+
+  useEffect(() => {
     setCart([]);
     setQuote(null);
     setCompleted(null);
@@ -170,6 +209,7 @@ export default function LookupPage({
     pendingSaleRef.current = null;
     setPendingSale(null);
     foreignRecoveryRef.current = null;
+    foreignRecoverySnapshotRef.current = null;
     setForeignRecovery(null);
     quoteOriginRef.current = null;
     quoteSnapshotRef.current = null;
@@ -198,6 +238,7 @@ export default function LookupPage({
           pricingOccurredAt: extras[0].pricingOccurredAt ?? null,
         };
         foreignRecoveryRef.current = blocked;
+        foreignRecoverySnapshotRef.current = extras[0].snapshot;
         setForeignRecovery(blocked);
       }
       const pending: PendingSale = {
@@ -264,7 +305,7 @@ export default function LookupPage({
             setError("تم تسليم البضاعة واستلام النقد. لا تطلب الدفع مرة أخرى. أعد المحاولة لحفظ البيع.");
             if (found && !found.physicallyCompleted) {
               setQuote(found);
-              const recovered = await completeSale(saleWriteFromRecord(found, stored.occurredAt));
+              const recovered = await completeSale(saleWriteFromRecord(found, stored.occurredAt, stored.snapshot?.restoreGeneration ?? null));
               if (!cancelled && recovered.physicallyCompleted) {
                 await acceptSale(recovered, "تم حفظ البيع النقدي.");
               }
@@ -510,6 +551,7 @@ export default function LookupPage({
     const recoveringLocal = Boolean(pendingSaleRef.current && pendingSaleRef.current.saleId === sale.id);
     if (recoveringForeign) {
       foreignRecoveryRef.current = null;
+      foreignRecoverySnapshotRef.current = null;
       setForeignRecovery(null);
     }
     if (recoveringLocal || !recoveringForeign) {
@@ -650,6 +692,7 @@ export default function LookupPage({
     const pinnedSnapshot = quoteSnapshotRef.current;
     const origin = quoteOriginRef.current;
     if (pinnedQuote && origin === "server") {
+      const restoreGeneration = quoteGenerationRef.current ?? pinnedSnapshot?.restoreGeneration ?? null;
       const recorded = await pos.recordCompleted(
         offlineFromQuote({
           staffId: workspace.staff.id,
@@ -658,6 +701,7 @@ export default function LookupPage({
           occurredAt,
           kind: "connected",
           snapshotId: null,
+          ...(restoreGeneration !== null ? { restoreGeneration } : {}),
         }),
         quoteCachedRef.current ?? cachedQuantitiesFromCart(cart),
       );
@@ -673,6 +717,7 @@ export default function LookupPage({
           kind: "accepted",
           snapshotId: pinnedSnapshot.snapshotId,
           pricingVersion: pinnedSnapshot.pricingVersion === 1 ? 1 : null,
+          restoreGeneration: pinnedSnapshot.restoreGeneration,
           pricingOccurredAt: pending.pricingOccurredAt ?? pinnedQuote.occurredAt,
         }),
         quoteCachedRef.current ?? cachedQuantitiesFromSnapshot(pinnedSnapshot),
@@ -712,10 +757,12 @@ export default function LookupPage({
     const generation = accountGeneration();
     const physical = kind === "complete";
     const alreadyCompleted = handedOver || pendingSaleRef.current?.physicallyCompleted === true;
-    if (stockPause && (kind === "prepare" || !alreadyCompleted)) {
+    if ((stockPause || restorePause) && (kind === "prepare" || !alreadyCompleted)) {
       inFlightRef.current = false;
       setPending("");
-      setError("تغييرات المخزون متوقفة مؤقتاً. لا تبدأ بيعاً جديداً ولا تسلّم بضاعة حتى انتهاء التوقف.");
+      setError(restorePause
+        ? "العمل متوقف مؤقتاً لمراجعة استعادة البيانات. لا تبدأ بيعاً جديداً ولا تسلّم بضاعة حتى انتهاء التوقف."
+        : "تغييرات المخزون متوقفة مؤقتاً. لا تبدأ بيعاً جديداً ولا تسلّم بضاعة حتى انتهاء التوقف.");
       return;
     }
     if (typeof navigator !== "undefined" && navigator.onLine && !pendingSaleRef.current?.physicallyCompleted) {
@@ -845,6 +892,23 @@ export default function LookupPage({
       setError("أكد الأسعار بعد تعديل السلة قبل إتمام البيع.");
       return;
     }
+    if (kind === "prepare" && navigator.onLine) {
+      // A server quote remembers the restore generation it was accepted under, without issuing a POS snapshot.
+      quoteGenerationRef.current = null;
+      try {
+        const state = await getRestorePause();
+        setRestorePause(state.pause);
+        if (state.pause) {
+          inFlightRef.current = false;
+          setPending("");
+          setError("العمل متوقف مؤقتاً لمراجعة استعادة البيانات. لا تبدأ بيعاً جديداً.");
+          return;
+        }
+        quoteGenerationRef.current = state.currentGeneration;
+      } catch {
+        /* the server records the current generation when the sale is completed */
+      }
+    }
     try {
       const pendingRecord = {
         staffId: workspace.staff.id,
@@ -884,6 +948,7 @@ export default function LookupPage({
             pricingOccurredAt: stored.pricingOccurredAt ?? null,
           };
           foreignRecoveryRef.current = blocked;
+          foreignRecoverySnapshotRef.current = stored.snapshot;
           setForeignRecovery(blocked);
         }
         if (local.physicallyCompleted) {
@@ -1091,7 +1156,13 @@ export default function LookupPage({
         if (adoptQuote) {
           setQuote(found);
         }
-        const recovered = await completeSale(saleWriteFromRecord(found, current.occurredAt));
+        const recovered = await completeSale(saleWriteFromRecord(
+          found,
+          current.occurredAt,
+          adoptQuote
+            ? quoteGenerationRef.current ?? quoteSnapshotRef.current?.restoreGeneration ?? null
+            : foreignRecoverySnapshotRef.current?.restoreGeneration ?? null,
+        ));
         if (recovered.physicallyCompleted) {
           await acceptSale(recovered, "تم حفظ البيع النقدي.");
         }
@@ -1184,6 +1255,11 @@ export default function LookupPage({
           تغييرات المخزون متوقفة مؤقتاً لإجراء تصحيح كمية. لا تبدأ بيعاً جديداً ولا تسلّم بضاعة.
         </div>
       ) : null}
+      {restorePause ? (
+        <div className="error" data-testid="restore-pause" role="alert">
+          العمل متوقف مؤقتاً لمراجعة استعادة نسخة البيانات. لا تبدأ بيعاً جديداً ولا تسلّم بضاعة.
+        </div>
+      ) : null}
       {notice ? <div className="notice" role="status">{notice}</div> : null}
       <form className="card" aria-label="البحث برمز المنتج" onSubmit={(event) => void onSearch(event)}>
         <div className="field">
@@ -1231,7 +1307,7 @@ export default function LookupPage({
               {selectedEffective === 0 ? (
                 <p className="muted">غير متوفر في المخزون حتى يتم الاستلام.</p>
               ) : (
-                <button type="button" disabled={formLocked || Boolean(stockPause)} onClick={addSelected}>إضافة إلى السلة</button>
+                <button type="button" disabled={formLocked || Boolean(stockPause) || Boolean(restorePause)} onClick={addSelected}>إضافة إلى السلة</button>
               )}
             </div>
           ) : (
@@ -1319,14 +1395,14 @@ export default function LookupPage({
               id="handedOver"
               type="checkbox"
               checked={handedOver || pendingSale?.physicallyCompleted === true}
-              disabled={Boolean(stockPause) || (!quote && !pendingSale?.physicallyCompleted)}
+              disabled={Boolean(stockPause) || Boolean(restorePause) || (!quote && !pendingSale?.physicallyCompleted)}
               onChange={(event) => setHandedOver(event.target.checked)}
             />
             {" "}استلم الزبون البضاعة ودفع نقداً
           </label>
         </div>
         <div className="actions">
-          <button type="button" disabled={Boolean(stockPause) || Boolean(pending) || cart.length === 0 || formLocked} onClick={() => void submit("prepare")}>
+          <button type="button" disabled={Boolean(stockPause) || Boolean(restorePause) || Boolean(pending) || cart.length === 0 || formLocked} onClick={() => void submit("prepare")}>
             {pending === "prepare" ? "جارٍ قبول الأسعار…" : "قبول الأسعار"}
           </button>
           {quote && !formLocked ? (
@@ -1334,7 +1410,7 @@ export default function LookupPage({
               إلغاء عرض السعر
             </button>
           ) : null}
-          <button type="button" disabled={(Boolean(stockPause) && !handedOver && !pendingSale?.physicallyCompleted) || Boolean(pending) || revisionBlock || (!quote && !pendingSale?.physicallyCompleted)} onClick={() => void submit("complete")}>
+          <button type="button" disabled={((Boolean(stockPause) || Boolean(restorePause)) && !handedOver && !pendingSale?.physicallyCompleted) || Boolean(pending) || revisionBlock || (!quote && !pendingSale?.physicallyCompleted)} onClick={() => void submit("complete")}>
             {pending === "complete" ? "جارٍ الحفظ…" : "إتمام البيع"}
           </button>
           {pendingSale ? (

@@ -695,8 +695,11 @@ export type PosPriceSnapshotDto = {
   issuedAt: string;
   stockVersion: number;
   stockPause: StockPauseDto | null;
+  restoreGeneration: number;
+  restorePause: RestorePauseDto | null;
   includedOperationIds: string[];
   includedOperations: CompletedOperationProofDto[];
+  deferredCompletionProofs: CompletedOperationProofDto[];
   couponAccountedOperations: CouponUsageProofDto[];
   products: CashierProductLookupDto[];
   automaticOffers: AutomaticOfferDto[];
@@ -1277,6 +1280,102 @@ export type BackupTableSnapshot = {
 
 export type BackupSectionCounts = Record<BackupSectionName, number>;
 
+export type RestoreStatus = "staged" | "paused" | "ready" | "activated" | "cancelled";
+
+export type RestorePauseDto = {
+  previewId: string;
+  generation: number;
+  pausedAt: string;
+};
+
+export type RestoreDeviceDto = {
+  deviceId: string;
+  staffId: string;
+  knownSnapshotId: string;
+  knownSnapshotAt: string;
+  knownStockVersion: string | null;
+  knownRestoreGeneration: number;
+  pendingOperationIds: string[];
+  custodiedOperationIds: string[];
+  synchronizationComplete: boolean;
+  acknowledgedSnapshotId: string | null;
+  acknowledgedAt: string | null;
+};
+
+export type RestoreDifferenceDto = {
+  section: BackupSectionName;
+  archivedRecordCount: number;
+  liveRecordCount: number;
+  // Rows the activated database will hold after archive-only rows are added to the live rows.
+  restoredRecordCount: number;
+  archiveOnlyRecordCount: number;
+  liveOnlyRecordCount: number;
+  // Same stable key with different values on both sides; any conflict blocks activation.
+  conflictingRecordCount: number;
+  difference: number;
+};
+
+export type RestorePreviewDto = {
+  id: string;
+  operationId: string;
+  status: RestoreStatus;
+  backupId: string;
+  archiveSha256: string;
+  archiveSchemaVersion: string;
+  sourceGeneration: number | null;
+  expectedGeneration: number;
+  previewFingerprint: string | null;
+  totalRecordCount: number;
+  differences: RestoreDifferenceDto[];
+  blockingReasons: string[];
+  devices: RestoreDeviceDto[];
+  preRestoreBackupId: string | null;
+  preRestoreArchiveSha256: string | null;
+  preRestoreDownloadAcknowledgedAt: string | null;
+  createdByStaffId: string;
+  createdAt: string;
+  pausedAt: string | null;
+  activatedAt: string | null;
+};
+
+export type RestoreStateDto = {
+  currentGeneration: number;
+  pause: RestorePauseDto | null;
+};
+
+export type RestoreDeferredSaleDto = {
+  operationId: string;
+  saleId: string;
+  sourceGeneration: number;
+  currentGeneration: number;
+  sourceDeviceId: string | null;
+  originalStaffId: string;
+  branchId: string;
+  occurredAt: string;
+  retainedAt: string;
+  status: "pending" | "reconciled";
+  recoveryPayload: Record<string, unknown>;
+};
+
+export type RestorePreviewRequest = {
+  operationId: string;
+  archiveBase64: string;
+  archivePassword: string;
+  preRestoreBackupPassword: string;
+};
+
+export type RestoreAcknowledgementRequest = {
+  deviceId: string;
+  snapshotId: string;
+};
+
+export type RestoreConfirmRequest = {
+  operationId: string;
+  previewFingerprint: string;
+};
+
+export type RestoreCheckpointAcknowledgementRequest = { archiveSha256: string };
+
 export type AnalyticsMetricDto = {
   count: number;
   definitionAr: string;
@@ -1547,6 +1646,9 @@ export type ApiErrorCode =
   | "COORDINATION_STALE"
   | "OPERATION_CONFLICT"
   | "OPENING_IMPORT_STALE"
+  | "RESTORE_PAUSED"
+  | "RESTORE_STALE"
+  | "SALE_RETAINED_FOR_RESTORE"
   | "VARIANT_REFERENCED";
 
 export type ApiErrorBody = {

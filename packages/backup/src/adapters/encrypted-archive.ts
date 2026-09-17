@@ -161,7 +161,8 @@ function validatePayload(value: unknown): DecodedBackupArchive {
     || typeof manifest.backupId !== "string" || !UUID_PATTERN.test(manifest.backupId)
     || typeof manifest.createdAt !== "string" || !isIsoInstant(manifest.createdAt)
     || typeof manifest.schemaVersion !== "string" || !/^\d{3}_.+\.sql$/.test(manifest.schemaVersion)
-    || manifest.sourceGeneration !== null || typeof manifest.createdByStaffId !== "string"
+    || !(manifest.sourceGeneration === null || isCount(manifest.sourceGeneration))
+    || typeof manifest.createdByStaffId !== "string"
     || typeof manifest.stockVersion !== "string" || !/^\d+$/.test(manifest.stockVersion)
     || !isRecord(manifest.onlineOrderReferenceSequence)
     || typeof manifest.onlineOrderReferenceSequence.lastValue !== "string"
@@ -185,6 +186,14 @@ function validatePayload(value: unknown): DecodedBackupArchive {
     throw new Error("Invalid backup manifest.");
   }
   validateKnownTills(manifest.knownUnsynchronizedTills);
+  // Two strict profiles: archives made before restore generations existed (028, no generation)
+  // and generation-aware archives (029). Mixed profiles are rejected.
+  const legacy028 = manifest.schemaVersion === "028_aggregate_analytics.sql" && manifest.sourceGeneration === null;
+  const generationAware = manifest.schemaVersion === "029_restore.sql" && isCount(manifest.sourceGeneration);
+  if (!legacy028 && !generationAware) throw new Error("Unsupported backup schema or generation profile.");
+  const expectedTables = legacy028
+    ? new Set([...EXPECTED_BACKUP_TABLES].filter((name) => name !== "sales_restore_deferred_completion"))
+    : EXPECTED_BACKUP_TABLES;
   const data = value.data;
   const sectionKeys = Object.keys(data);
   if (sectionKeys.length !== BACKUP_SECTION_NAMES.length || BACKUP_SECTION_NAMES.some((name) => !isRecord(data[name]))) {
@@ -221,12 +230,40 @@ function validatePayload(value: unknown): DecodedBackupArchive {
     }
     total += sectionCount;
   }
-  if (seenTables.size !== EXPECTED_BACKUP_TABLES.size || [...EXPECTED_BACKUP_TABLES].some((name) => !seenTables.has(name))
+  if (seenTables.size !== expectedTables.size || [...expectedTables].some((name) => !seenTables.has(name))
     || manifest.totalRecordCount !== total) {
     throw new Error("Backup table inventory or total count is incomplete.");
   }
+  validateGenerationColumns(data, generationAware);
   validateActorProjection((data.identity as Record<string, unknown>).identity_actor);
   return value as unknown as DecodedBackupArchive;
+}
+
+function validateGenerationColumns(data: Record<string, unknown>, generationAware: boolean) {
+  const sales = data.sales as Record<string, unknown>;
+  validateGenerationRows(sales.sales_pos_snapshot, "restore_generation", generationAware);
+  validateGenerationRows(sales.sales_sale, "source_restore_generation", generationAware);
+  const knownTills = (data.inventory as Record<string, unknown>).inventory_known_till;
+  // The destination assigns its own generation to known tills; it is never archived.
+  if (!Array.isArray(knownTills) || knownTills.some((row) => !isRecord(row) || "restore_generation" in row)) {
+    throw new Error("Known-till restore generation must not be archived.");
+  }
+}
+
+function validateGenerationRows(value: unknown, column: string, required: boolean) {
+  if (!Array.isArray(value)) throw new Error("Missing sales generation table.");
+  for (const row of value) {
+    if (!isRecord(row)) throw new Error("Invalid sales generation row.");
+    const present = Object.prototype.hasOwnProperty.call(row, column);
+    if (required) {
+      const archived = row[column];
+      if (!present || typeof archived !== "string" || !/^(0|[1-9]\d*)$/.test(archived) || !Number.isSafeInteger(Number(archived))) {
+        throw new Error(`Generation-aware backup row requires a valid ${column}.`);
+      }
+    } else if (present) {
+      throw new Error(`Legacy backup row must not contain ${column}.`);
+    }
+  }
 }
 
 function validateActorProjection(value: unknown) {

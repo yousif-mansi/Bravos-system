@@ -247,6 +247,7 @@ export function createPostgresCatalogStore(pool: Pool): CatalogStore {
       const client = await pool.connect();
       try {
         await client.query("BEGIN");
+        await client.query("SELECT restore_enter_business_write()");
         const inserted = await client.query<{ id: string }>(
           `INSERT INTO catalog_product (
              id, code, name_ar, description_ar, category_id,
@@ -287,6 +288,7 @@ export function createPostgresCatalogStore(pool: Pool): CatalogStore {
       const client = await pool.connect();
       try {
         await client.query("BEGIN");
+        await client.query("SELECT restore_enter_business_write()");
         const updated = await client.query<{ id: string }>(
           `UPDATE catalog_product
            SET code = $2,

@@ -11,6 +11,7 @@ const TABLES: ReadonlyArray<{ tableName: string; orderBy: string; where?: string
   { tableName: "sales_sale", orderBy: "id" },
   { tableName: "sales_sale_line", orderBy: "sale_id, line_index, id" },
   { tableName: "sales_sale_unit", orderBy: "line_id, unit_index, id" },
+  { tableName: "sales_restore_deferred_completion", orderBy: "retained_at, operation_id" },
 ];
 
 export function createPostgresSalesBackupReader(queryable: Queryable) {

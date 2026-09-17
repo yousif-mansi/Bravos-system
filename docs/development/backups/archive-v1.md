@@ -16,7 +16,7 @@ The decoder requires every table below exactly once and rejects unknown, duplica
 - `catalog`: `catalog_category`, `catalog_size`, `catalog_color`, `catalog_product`, `catalog_product_variant`
 - `inventory`: `inventory_settings`, `inventory_variant_setting`, `inventory_stock_clock`, `inventory_operation`, `inventory_batch`, `inventory_movement`, `inventory_allocation`, `inventory_discrepancy`, `inventory_known_till`, `inventory_count_coordination`, `inventory_count_coordination_device`, `inventory_stock_correction`, `inventory_stock_correction_batch`, `inventory_stock_reconciliation`, `inventory_stock_reconciliation_batch`, `inventory_protected_order`, `inventory_protected_order_allocation`, `inventory_order_disposition`, `inventory_order_disposition_allocation`, `inventory_delivered_return_allocation_effect`
 - `receiving`: `receiving_receipt`, `receiving_receipt_line`, `receiving_correction`, `receiving_correction_line`
-- `sales`: `sales_pos_snapshot`, `sales_pos_snapshot_price`, `sales_sale`, `sales_sale_line`, `sales_sale_unit`
+- `sales`: `sales_pos_snapshot`, `sales_pos_snapshot_price`, `sales_sale`, `sales_sale_line`, `sales_sale_unit`, and in the generation-aware profile `sales_restore_deferred_completion`
 - `expenses`: `expense_category`, `expense_operation`, `expense_record`, `expense_change`
 - `pricing`: `pricing_automatic_offer`, `pricing_automatic_offer_product`, `pricing_automatic_offer_category`, `pricing_automatic_offer_bundle_item`, `pricing_automatic_offer_buy_product`, `pricing_automatic_offer_buy_category`, `pricing_automatic_offer_reward_product`, `pricing_automatic_offer_reward_category`, `pricing_coupon`, `pricing_coupon_product`, `pricing_coupon_category`, `pricing_coupon_usage`
 - `returns`: `returns_return`, `returns_return_line`, `returns_return_unit`, `returns_batch_restoration`, `returns_refund_event`, `returns_exchange_quote`, `returns_exchange`
@@ -30,6 +30,17 @@ The opening-import table stores the accepted parsed plan, state, response and op
 
 The archive never contains raw `user`, `account`, `session`, `verification`, `staff_session_branch` or `owner_recovery_challenge` rows. It also excludes service secrets, browser storage, unsent browser records and image binaries. The latest `schema_migrations` filename appears as `schemaVersion`; migration rows are not archived.
 
+## Schema profiles
+
+Version 1 has two strict profiles, and the decoder rejects mixed ones:
+
+- Legacy: `schemaVersion` `028_aggregate_analytics.sql` with `sourceGeneration: null`. It has no `sales_restore_deferred_completion` table and no `sales_pos_snapshot.restore_generation` or `sales_sale.source_restore_generation` columns.
+- Generation-aware: `schemaVersion` `029_restore.sql` with a nonnegative integer `sourceGeneration` (the source database's restore generation). It includes the retained-sale table and both Sales generation columns as decimal text.
+
+The profiles name exact migration files. A later migration must add its schema version to the decoder, or new backups and restore checkpoints stop decoding; the backup HTTP test catches this.
+
+`inventory_known_till.restore_generation` is never archived in either profile: a known till's generation belongs to the destination database, which assigns it at activation. Retained completed sales in `sales_restore_deferred_completion` are business data and stay recoverable after a restore. They do not mean that sales still queued only in browser storage are included; `includesUnsentBrowserRecords` stays `false`.
+
 ## Value encoding
 
 Readers run inside one `REPEATABLE READ READ ONLY` transaction with the session time zone set to UTC. PostgreSQL `date`, `time`, `timetz`, `timestamp`, `timestamptz` and `interval` values are archived as PostgreSQL text (for example `2026-09-16` and `2026-09-16 09:15:02.123456+00`), not as JavaScript instants. Business dates therefore never shift with the server time zone, and timestamps keep microsecond precision. `bigint` and `numeric` values are text; JSON columns are archived as JSON.
@@ -40,4 +51,4 @@ The server estimates the canonical payload size while each feature reader return
 
 ## Restore responsibilities
 
-Version 1 verifies authentication, the table allowlist, per-section counts and checksums, the total count and the actor projection. It does not verify foreign-key relationships between archived rows; ticket 27 restore validates referential integrity inside its staging database before activation.
+Version 1 verifies authentication, the table allowlist, per-section counts and checksums, the total count, the actor projection and the schema profile. It does not verify foreign-key relationships between archived rows. Restore loads the rows into an independent staging database with every constraint enabled and checks the remaining cross-table links before a preview can be confirmed; see [restore](restore.md).

@@ -7,6 +7,17 @@ export function isNetworkFailure(error: unknown): boolean {
 }
 
 export async function signOutPreservingSales(staffId: string | null): Promise<boolean> {
+  const accepted = await invalidateOfflineSession(staffId);
+  if (!accepted) return false;
+  try {
+    await signOut();
+  } catch {
+    /* explicit sign-out still blocks offline use */
+  }
+  return true;
+}
+
+export async function invalidateOfflineSession(staffId: string | null): Promise<boolean> {
   const expectedRevision = await pos.readSessionRevision();
   const revision = crypto.randomUUID();
   if (staffId) {
@@ -16,10 +27,5 @@ export async function signOutPreservingSales(staffId: string | null): Promise<bo
     }
   }
   publishAccount(null);
-  try {
-    await signOut();
-  } catch {
-    /* explicit sign-out still blocks offline use */
-  }
   return true;
 }

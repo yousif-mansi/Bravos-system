@@ -121,8 +121,13 @@ function tryNormalizeLineUnits(
 }
 
 function normalizeCompletedSale(sale: OfflineCompletedSale): OfflineCompletedSale {
+  const { restoreGeneration, ...recorded } = sale;
   return {
-    ...sale,
+    ...recorded,
+    // A connected sale may not know its restore generation; the server then uses the current one.
+    ...(typeof restoreGeneration === "number" && Number.isSafeInteger(restoreGeneration) && restoreGeneration >= 0
+      ? { restoreGeneration }
+      : {}),
     pricingVersion: sale.pricingVersion === 1 ? 1 : null,
     pricingOccurredAt:
       typeof sale.pricingOccurredAt === "string" ? sale.pricingOccurredAt : null,
@@ -260,14 +265,14 @@ async function writeIfCurrentRevision(
 }
 
 function emptyStockCache(): DeviceStockCache {
-  return { version: 0, availability: {}, includedOperationIds: [] };
+  return { version: 0, restoreGeneration: 0, availability: {}, includedOperationIds: [] };
 }
 
 async function readStockCacheRecord(db: BravosPosDatabase): Promise<DeviceStockCache> {
   const stored = await db.meta.get("stockCache");
   if (!stored?.value) {
     const version = await readAppliedStockVersion(db);
-    return { version, availability: {}, includedOperationIds: [] };
+    return { version, restoreGeneration: 0, availability: {}, includedOperationIds: [] };
   }
   try {
     const parsed = JSON.parse(stored.value) as DeviceStockCache;
@@ -276,6 +281,10 @@ async function readStockCacheRecord(db: BravosPosDatabase): Promise<DeviceStockC
     }
     return {
       version: parsed.version,
+      restoreGeneration:
+        Number.isSafeInteger(parsed.restoreGeneration) && (parsed.restoreGeneration ?? -1) >= 0
+          ? parsed.restoreGeneration
+          : 0,
       availability: parsed.availability && typeof parsed.availability === "object" ? parsed.availability : {},
       includedOperationIds: Array.isArray(parsed.includedOperationIds)
         ? parsed.includedOperationIds.filter((id) => typeof id === "string")
@@ -311,6 +320,10 @@ async function readAppliedStockVersion(db: BravosPosDatabase): Promise<number> {
 function overlaySnapshot(snapshot: PosPriceSnapshotDto, cache: DeviceStockCache): PosPriceSnapshotDto {
   return {
     ...snapshot,
+    restoreGeneration:
+      Number.isSafeInteger(snapshot.restoreGeneration) && snapshot.restoreGeneration >= 0
+        ? snapshot.restoreGeneration
+        : cache.restoreGeneration,
     stockVersion: cache.version,
     includedOperationIds: cache.includedOperationIds,
     includedOperations: [],
@@ -462,6 +475,26 @@ async function acknowledgeMatchingOperations(
   return [...new Set(acked)];
 }
 
+async function validateDeferredCustodyProofs(
+  db: BravosPosDatabase,
+  proofs: CompletedOperationProofDto[],
+  prepared: Map<string, PreparedLocalDigest>,
+) {
+  for (const proof of proofs) {
+    const locals = await db.sales.where("operationId").equals(proof.operationId).toArray();
+    if (locals.length !== 1) throw new SalesValidationError("تعذر التحقق من حفظ البيع المتأخر لدى الخادم.");
+    const matched = locals.some((local) => {
+      const known = prepared.get(local.id);
+      return Boolean(
+        known
+        && canonicalOfflineSaleFactsJson(saleFacts(local)) === known.canonical
+        && localMatchesProof(local, proof, known.digest),
+      );
+    });
+    if (!matched) throw new SalesValidationError("تعذر التحقق من حفظ البيع المتأخر لدى الخادم.");
+  }
+}
+
 async function applyAcknowledgementRecord(
   db: BravosPosDatabase,
   input: OfflineAcknowledgement,
@@ -496,6 +529,7 @@ async function applyAcknowledgementRecord(
   }
   const next: DeviceStockCache = {
     version: input.stockVersion > cache.version ? input.stockVersion : cache.version,
+    restoreGeneration: cache.restoreGeneration,
     availability,
     includedOperationIds: [...new Set([...cache.includedOperationIds, ...acked])],
   };
@@ -520,6 +554,9 @@ function sameCompletedReplay(existing: OfflineCompletedSale, input: CompleteOffl
   }
   const expectedPricingVersion = input.kind === "accepted" && input.snapshot.pricingVersion === 1 ? 1 : null;
   if ((existing.pricingVersion ?? null) !== expectedPricingVersion) {
+    return false;
+  }
+  if ((existing.restoreGeneration ?? 0) !== (input.snapshot.restoreGeneration ?? 0)) {
     return false;
   }
   if (expectedPricingVersion === 1 && existing.occurredAt !== input.occurredAt) {
@@ -560,6 +597,9 @@ function sameRecordedReplay(existing: OfflineCompletedSale, incoming: OfflineCom
     return false;
   }
   if ((existing.pricingVersion ?? null) !== (incoming.pricingVersion ?? null)) {
+    return false;
+  }
+  if ((existing.restoreGeneration ?? 0) !== (incoming.restoreGeneration ?? 0)) {
     return false;
   }
   if (incoming.pricingVersion === 1 && existing.occurredAt !== incoming.occurredAt) {
@@ -780,13 +820,16 @@ export function createDexiePosStore(options?: { databaseName?: string }): Offlin
       }
       try {
         const incomingProofs = Array.isArray(snapshot.includedOperations) ? snapshot.includedOperations : [];
+        const deferredProofs = Array.isArray(snapshot.deferredCompletionProofs) ? snapshot.deferredCompletionProofs : [];
         const couponProofs: CouponUsageProofDto[] = Array.isArray(snapshot.couponAccountedOperations)
           ? snapshot.couponAccountedOperations
           : [];
         const prepared = await prepareLocalDigests(db, incomingProofs);
+        const deferredPrepared = await prepareLocalDigests(db, deferredProofs);
         const couponPrepared = await prepareLocalDigests(db, couponProofs);
         await db.transaction("rw", db.snapshots, db.meta, db.sales, db.effects, async () => {
           const priorSnapshot = await db.snapshots.get(staffId);
+          await validateDeferredCustodyProofs(db, deferredProofs, deferredPrepared);
           for (const proof of couponProofs) {
             if (proof.sourceType !== "physical_sale") continue;
             const localRows = await db.sales.where("operationId").equals(proof.operationId).toArray();
@@ -811,12 +854,36 @@ export function createDexiePosStore(options?: { databaseName?: string }): Offlin
             }
           }
           const cache = await readStockCacheRecord(db);
+          const incomingGeneration =
+            typeof snapshot.restoreGeneration === "number"
+              && Number.isSafeInteger(snapshot.restoreGeneration)
+              && snapshot.restoreGeneration >= 0
+              ? snapshot.restoreGeneration
+              : 0;
           const incomingVersion =
             typeof snapshot.stockVersion === "number" && Number.isSafeInteger(snapshot.stockVersion)
               ? snapshot.stockVersion
               : 0;
           let next = cache;
-          if (incomingVersion > cache.version) {
+          if (incomingGeneration > cache.restoreGeneration) {
+            const availability: Record<string, number> = {};
+            for (const product of snapshot.products) {
+              for (const variant of product.variants) {
+                availability[variant.id] = variant.availableQuantity;
+              }
+            }
+            const acked = await acknowledgeMatchingOperations(db, incomingProofs, undefined, prepared);
+            next = {
+              version: incomingVersion,
+              restoreGeneration: incomingGeneration,
+              availability,
+              includedOperationIds: [...new Set([...snapshot.includedOperationIds, ...acked])],
+            };
+            await writeStockCacheRecord(db, next);
+            await overlayAllSnapshots(db, next);
+          } else if (incomingGeneration < cache.restoreGeneration) {
+            return;
+          } else if (incomingVersion > cache.version) {
             const availability = { ...cache.availability };
             for (const product of snapshot.products) {
               for (const variant of product.variants) {
@@ -826,6 +893,7 @@ export function createDexiePosStore(options?: { databaseName?: string }): Offlin
             const acked = await acknowledgeMatchingOperations(db, incomingProofs, undefined, prepared);
             next = {
               version: incomingVersion,
+              restoreGeneration: incomingGeneration,
               availability,
               includedOperationIds: [...new Set([...cache.includedOperationIds, ...acked])],
             };
@@ -835,6 +903,7 @@ export function createDexiePosStore(options?: { databaseName?: string }): Offlin
             const acked = await acknowledgeMatchingOperations(db, incomingProofs, undefined, prepared);
             next = {
               ...cache,
+              restoreGeneration: incomingGeneration,
               includedOperationIds: [...new Set([...cache.includedOperationIds, ...acked])],
             };
             await writeStockCacheRecord(db, next);
@@ -842,6 +911,7 @@ export function createDexiePosStore(options?: { databaseName?: string }): Offlin
             const acked = await acknowledgeMatchingOperations(db, incomingProofs, undefined, prepared);
             next = {
               ...cache,
+              restoreGeneration: incomingGeneration,
               includedOperationIds: [...new Set([...cache.includedOperationIds, ...acked])],
             };
             await writeStockCacheRecord(db, next);
@@ -959,6 +1029,7 @@ export function createDexiePosStore(options?: { databaseName?: string }): Offlin
             deviceId: input.deviceId,
             snapshotId: input.kind === "accepted" ? input.snapshot.snapshotId : null,
             pricingVersion: input.kind === "accepted" && input.snapshot.pricingVersion === 1 ? 1 : null,
+            restoreGeneration: input.snapshot.restoreGeneration ?? 0,
             pricingOccurredAt: input.pricingOccurredAt ?? null,
             kind: input.kind,
             syncStatus: "pending",

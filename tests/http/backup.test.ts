@@ -149,11 +149,14 @@ test("manager downloads one authenticated business snapshot with privacy and uns
     includesUnsentBrowserRecords: false,
     imageBinariesIncluded: false,
     imageReferencesPreserved: true,
-    sourceGeneration: null,
+    schemaVersion: "029_restore.sql",
+    sourceGeneration: 0,
     knownUnsynchronizedTills: [{ deviceId, pendingOperationIds: [pendingOperationId] }],
     identityPolicy: { preservesStableIds: true, preservesForeignKeys: true, regeneratesIds: false },
     idProvenance: { source: "database_primary_and_foreign_keys", stableIdsPreserved: true, foreignKeysPreserved: true, idsRegenerated: false },
   });
+  expect(decoded.data.inventory.inventory_known_till).toEqual([expect.not.objectContaining({ restore_generation: expect.anything() })]);
+  expect(decoded.data.sales.sales_restore_deferred_completion).toEqual([]);
   const actors = decoded.data.identity.identity_actor ?? [];
   expect(actors).toEqual(expect.arrayContaining([
     expect.objectContaining({ id: ownerId, username: "owner", role: "manager" }),

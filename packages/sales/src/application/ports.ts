@@ -6,6 +6,8 @@ import type {
   CashierProductLookupDto,
   CompletedOperationProofDto,
   ManagerSaleDto,
+  RestoreDeferredSaleDto,
+  RestorePauseDto,
   PosPriceSnapshotDto,
   CouponDto,
   CouponUsageProofDto,
@@ -24,6 +26,22 @@ export type SalesActorPort = {
   getStaff(staffId: string): Promise<AuthenticatedStaff | null>;
   getSessionBranch(sessionId: string): Promise<string | null>;
   listBranches(): Promise<BranchDto[]>;
+};
+
+export type DeferredCompletedSalePort = {
+  retainIfRequired(input: {
+    operationId: string;
+    saleId: string;
+    payloadFingerprint: string;
+    // null means the caller did not report a generation; the current generation is used.
+    sourceGeneration: number | null;
+    sourceDeviceId: string | null;
+    originalStaffId: string;
+    branchId: string;
+    occurredAt: Date;
+    payload: Record<string, unknown>;
+  }): Promise<boolean>;
+  list(): Promise<RestoreDeferredSaleDto[]>;
 };
 
 export type ListedPriceBasis = {
@@ -102,6 +120,7 @@ export type PriceSnapshotRecord = {
   branchId: string;
   deviceId: string;
   issuedAt: Date;
+  restoreGeneration: number;
   prices: PriceSnapshotPrice[];
   automaticOffers: AutomaticOfferDto[];
   coupons: CouponDto[];
@@ -226,6 +245,7 @@ export type SaleInsert = {
   recoveredAt?: Date | null;
   sourceDeviceId?: string | null;
   sourceSnapshotId?: string | null;
+  sourceRestoreGeneration: number;
   lines: SaleLineWrite[];
 };
 
@@ -245,24 +265,40 @@ export type SaleStore = {
     recoveredByStaffId?: string | null;
     recoveredAt?: Date | null;
     couponUsageDiscrepancy?: SaleRecord["couponUsageDiscrepancy"];
+    sourceRestoreGeneration?: number | null;
   }): Promise<SaleRecord>;
   getById(id: string): Promise<SaleRecord | null>;
   getByOperationId(operationId: string): Promise<SaleRecord | null>;
   listCompletedOperationProofs(operationIds: string[]): Promise<CompletedOperationProofDto[]>;
+  listDeferredCompletionProofs(operationIds: string[]): Promise<CompletedOperationProofDto[]>;
+  markRestoreDeferredReconciled(operationId: string, managerStaffId: string): Promise<void>;
+  getRestoreDeferredPreparedSale(operationId: string): Promise<SaleInsert | null>;
   listCompletedOperationIds(operationIds: string[]): Promise<string[]>;
   listCompleted(): Promise<SaleRecord[]>;
   listCompletedForStaff(staffId: string, branchIds: string[]): Promise<SaleRecord[]>;
   referencedVariantIds(variantIds: string[]): Promise<string[]>;
 };
 
+// Supplied by the restore feature at composition. Reading it holds the shared restore barrier
+// lock for the current transaction, so the generation cannot change until the transaction ends.
+export type RestoreRuntimePort = {
+  current(): Promise<{ generation: number; pause: RestorePauseDto | null }>;
+};
+
+export type SalesTransaction = {
+  sales: SaleStore;
+  inventory: InventoryTransaction;
+  snapshots: PriceSnapshotStore;
+  couponUsage: CouponUsageTransaction;
+  restore: RestoreRuntimePort;
+};
+
 export type SalesUnitOfWork = {
   run<T>(
-    work: (tx: {
-      sales: SaleStore;
-      inventory: InventoryTransaction;
-      snapshots: PriceSnapshotStore;
-      couponUsage: CouponUsageTransaction;
-    }) => Promise<T>,
+    work: (tx: SalesTransaction) => Promise<T>,
+  ): Promise<T>;
+  runRestoreControl<T>(
+    work: (tx: SalesTransaction) => Promise<T>,
   ): Promise<T>;
 };
 

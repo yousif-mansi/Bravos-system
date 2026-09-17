@@ -1,4 +1,4 @@
-import type { CompletedOperationProofDto } from "@bravos/contracts";
+import type { CompletedOperationProofDto, RestoreDeferredSaleDto } from "@bravos/contracts";
 import type { Pool, PoolClient } from "pg";
 import type { CouponUsageTransaction } from "@bravos/pricing";
 import {
@@ -9,22 +9,108 @@ import {
 } from "@bravos/inventory";
 import type {
   AutomaticPricingPort,
+  DeferredCompletedSalePort,
   ListedPriceReader,
   PricingQuoteReader,
   PriceSnapshotRecord,
   PriceSnapshotStore,
   PhysicalSaleReportingReader,
+  RestoreRuntimePort,
   SaleInsert,
   SaleLineWrite,
   SaleRecord,
   SaleStore,
   SaleUnitWrite,
+  SalesTransaction,
   SalesUnitOfWork,
 } from "../application/ports.ts";
 
 type Queryable = Pick<Pool, "query"> | PoolClient;
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// A completed paid sale that arrives while a restore is paused, or that was made under an older
+// restore generation, is retained here instead of changing restored stock. A manager recovers it once.
+export function createPostgresDeferredCompletedSaleStore(
+  pool: Pool,
+  restoreFor: (queryable: Queryable) => RestoreRuntimePort,
+): DeferredCompletedSalePort {
+  return {
+    async retainIfRequired(input) {
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const runtime = await restoreFor(client).current();
+        const sourceGeneration = input.sourceGeneration ?? runtime.generation;
+        if (sourceGeneration > runtime.generation) throw new OperationConflictError("جيل الاستعادة المرسل غير صالح.");
+        if (sourceGeneration === runtime.generation && !runtime.pause) {
+          await client.query("COMMIT");
+          return false;
+        }
+        const applied = await client.query<{ payload_fingerprint: string; physically_completed: boolean }>(
+          "SELECT payload_fingerprint, physically_completed FROM sales_sale WHERE operation_id=$1 OR id=$2 FOR UPDATE",
+          [input.operationId, input.saleId],
+        );
+        if (applied.rows[0]?.physically_completed) {
+          if (applied.rows[0].payload_fingerprint !== input.payloadFingerprint) throw new OperationConflictError();
+          await client.query("COMMIT");
+          return false;
+        }
+        await client.query(
+          `INSERT INTO sales_restore_deferred_completion (
+             operation_id, sale_id, payload_fingerprint, source_generation, source_device_id,
+             original_staff_id, branch_id, occurred_at, payload_json, retained_at
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,now())
+           ON CONFLICT DO NOTHING`,
+          [input.operationId, input.saleId, input.payloadFingerprint, sourceGeneration, input.sourceDeviceId,
+            input.originalStaffId, input.branchId, input.occurredAt, JSON.stringify(input.payload)],
+        );
+        const retained = await client.query<{
+          operation_id: string; sale_id: string; payload_fingerprint: string; source_generation: string | number;
+        }>("SELECT operation_id, sale_id, payload_fingerprint, source_generation FROM sales_restore_deferred_completion WHERE operation_id=$1 OR sale_id=$2 FOR UPDATE", [input.operationId, input.saleId]);
+        const row = retained.rows[0];
+        if (!row || row.operation_id !== input.operationId || row.sale_id !== input.saleId
+          || row.payload_fingerprint !== input.payloadFingerprint || Number(row.source_generation) !== sourceGeneration) {
+          throw new OperationConflictError();
+        }
+        await client.query("COMMIT");
+        return true;
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      } finally { client.release(); }
+    },
+    async list() {
+      const runtime = await restoreFor(pool).current();
+      const result = await pool.query<{
+        operation_id: string; sale_id: string; source_generation: string | number;
+        source_device_id: string | null; original_staff_id: string; branch_id: string; occurred_at: Date;
+        retained_at: Date; status: "pending" | "reconciled";
+        payload_json: Record<string, unknown>;
+      }>("SELECT * FROM sales_restore_deferred_completion ORDER BY retained_at, operation_id");
+      return result.rows.map((row): RestoreDeferredSaleDto => ({
+        operationId: row.operation_id, saleId: row.sale_id, sourceGeneration: Number(row.source_generation),
+        currentGeneration: runtime.generation, sourceDeviceId: row.source_device_id,
+        originalStaffId: row.original_staff_id, branchId: row.branch_id, occurredAt: row.occurred_at.toISOString(),
+        retainedAt: row.retained_at.toISOString(), status: row.status,
+        recoveryPayload: recoveryPayload(row.payload_json),
+      }));
+    },
+  };
+}
+
+function recoveryPayload(value: Record<string, unknown>): Record<string, unknown> {
+  const { kind, ...payload } = value;
+  if (kind !== "connected") return payload;
+  return {
+    saleId: payload.saleId,
+    operationId: payload.operationId,
+    physicallyCompleted: true,
+    pendingOperationIds: payload.pendingOperationIds,
+    occurredAt: payload.occurredAt,
+    restoreGeneration: payload.restoreGeneration,
+  };
+}
 
 type SaleRow = {
   id: string;
@@ -128,11 +214,12 @@ export function createPostgresSaleStore(queryable: Queryable): SaleStore {
              physically_completed, costs_incomplete, recovered_by_staff_id, recovered_at,
              exchange_credit_applied_piasters, cash_received_piasters,
              coupon_usage_discrepancy_detected_at, coupon_usage_limit, coupon_usage_count_before,
-             coupon_usage_actual_count, source_device_id, source_snapshot_id
+             coupon_usage_actual_count, source_device_id, source_snapshot_id, source_restore_generation
            ) VALUES (
              $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
              $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34,
-             $35, $36, $37, $38, $39, $40, $41, $42
+              $35, $36, $37, $38, $39, $40, $41, $42,
+              $43
            ) ON CONFLICT (id) DO NOTHING
            RETURNING id`,
           [
@@ -178,6 +265,7 @@ export function createPostgresSaleStore(queryable: Queryable): SaleStore {
             input.couponUsageDiscrepancy?.actualCount ?? null,
             input.sourceDeviceId ?? null,
             input.sourceSnapshotId ?? null,
+            input.sourceRestoreGeneration,
           ],
         );
         if (!inserted.rows[0]) {
@@ -213,7 +301,8 @@ export function createPostgresSaleStore(queryable: Queryable): SaleStore {
              coupon_usage_discrepancy_detected_at = COALESCE($7, coupon_usage_discrepancy_detected_at),
              coupon_usage_limit = COALESCE($8, coupon_usage_limit),
              coupon_usage_count_before = COALESCE($9, coupon_usage_count_before),
-             coupon_usage_actual_count = COALESCE($10, coupon_usage_actual_count)
+              coupon_usage_actual_count = COALESCE($10, coupon_usage_actual_count),
+              source_restore_generation = COALESCE($11, source_restore_generation)
          WHERE id = $1`,
         [
           input.id,
@@ -226,6 +315,7 @@ export function createPostgresSaleStore(queryable: Queryable): SaleStore {
           input.couponUsageDiscrepancy?.usageLimit ?? null,
           input.couponUsageDiscrepancy?.countBefore ?? null,
           input.couponUsageDiscrepancy?.actualCount ?? null,
+          input.sourceRestoreGeneration ?? null,
         ],
       );
       for (const line of input.lines) {
@@ -247,6 +337,38 @@ export function createPostgresSaleStore(queryable: Queryable): SaleStore {
     getByOperationId: (operationId) => loadByOperationId(queryable, operationId),
     async listCompletedOperationProofs(operationIds) {
       return loadCompletedProofs(queryable, operationIds);
+    },
+    async listDeferredCompletionProofs(operationIds) {
+      return loadDeferredCompletionProofs(queryable, operationIds);
+    },
+    async markRestoreDeferredReconciled(operationId, managerStaffId) {
+      await queryable.query(
+        `UPDATE sales_restore_deferred_completion
+         SET status = 'reconciled', reconciled_by_staff_id = $2, reconciled_at = now()
+         WHERE operation_id = $1 AND status = 'pending'`,
+        [operationId, managerStaffId],
+      );
+    },
+    async getRestoreDeferredPreparedSale(operationId) {
+      const result = await queryable.query<{ prepared: (Omit<SaleInsert, "occurredAt" | "recordedAt"> & {
+        occurredAt: string; recordedAt: string | null; sourceRestoreGeneration?: number;
+      }) | null; source_generation: string | number }>(
+        `SELECT payload_json -> 'preparedSale' AS prepared, source_generation
+         FROM sales_restore_deferred_completion WHERE operation_id = $1`,
+        [operationId],
+      );
+      const row = result.rows[0];
+      if (!row?.prepared) return null;
+      return {
+        ...row.prepared,
+        occurredAt: new Date(row.prepared.occurredAt),
+        recordedAt: row.prepared.recordedAt ? new Date(row.prepared.recordedAt) : null,
+        couponUsageDiscrepancy: null,
+        physicallyCompleted: false,
+        recoveredAt: null,
+        recoveredByStaffId: null,
+        sourceRestoreGeneration: Number(row.source_generation),
+      };
     },
     async listCompletedOperationIds(operationIds) {
       const proofs = await loadCompletedProofs(queryable, operationIds);
@@ -413,27 +535,30 @@ export function createPostgresSalesUnitOfWork(
   pool: Pool,
   inventoryFor: (client: PoolClient) => InventoryTransaction,
   couponUsageFor: (client: PoolClient) => CouponUsageTransaction,
+  restoreFor: (client: PoolClient) => RestoreRuntimePort,
 ): SalesUnitOfWork {
+  // Business writes enter the restore write barrier. Snapshot issuing is restore control work that
+  // stays available during a pause; it reads the generation under the same shared lock instead.
+  async function run<T>(work: (tx: SalesTransaction) => Promise<T>, guard: boolean): Promise<T> {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      if (guard) await client.query("SELECT restore_enter_business_write()");
+      const result = await work({
+        sales: createPostgresSaleStore(client), inventory: inventoryFor(client),
+        snapshots: createPostgresPriceSnapshotStore(client), couponUsage: couponUsageFor(client),
+        restore: restoreFor(client),
+      });
+      await client.query("COMMIT");
+      return result;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally { client.release(); }
+  }
   return {
-    async run(work) {
-      const client = await pool.connect();
-      try {
-        await client.query("BEGIN");
-        const result = await work({
-          sales: createPostgresSaleStore(client),
-          inventory: inventoryFor(client),
-          snapshots: createPostgresPriceSnapshotStore(client),
-          couponUsage: couponUsageFor(client),
-        });
-        await client.query("COMMIT");
-        return result;
-      } catch (error) {
-        await client.query("ROLLBACK");
-        throw error;
-      } finally {
-        client.release();
-      }
-    },
+    run<T>(work: (tx: SalesTransaction) => Promise<T>) { return run(work, true); },
+    runRestoreControl<T>(work: (tx: SalesTransaction) => Promise<T>) { return run(work, false); },
   };
 }
 
@@ -535,6 +660,31 @@ async function loadCompletedProofs(queryable: Queryable, operationIds: string[])
     .map((row) => ({
       operationId: row.operation_id,
       saleId: row.id,
+      contentDigest: row.payload_fingerprint,
+    }));
+}
+
+async function loadDeferredCompletionProofs(
+  queryable: Queryable,
+  operationIds: string[],
+): Promise<CompletedOperationProofDto[]> {
+  const unique = [...new Set(operationIds.filter((id) => UUID_PATTERN.test(id)))];
+  if (unique.length === 0) return [];
+  const result = await queryable.query<{
+    sale_id: string;
+    operation_id: string;
+    payload_fingerprint: string;
+  }>(
+    `SELECT sale_id, operation_id, payload_fingerprint
+     FROM sales_restore_deferred_completion
+     WHERE operation_id = ANY($1::uuid[])`,
+    [unique],
+  );
+  return result.rows
+    .filter((row) => typeof row.payload_fingerprint === "string" && /^[0-9a-f]{64}$/i.test(row.payload_fingerprint))
+    .map((row) => ({
+      operationId: row.operation_id,
+      saleId: row.sale_id,
       contentDigest: row.payload_fingerprint,
     }));
 }
@@ -762,6 +912,7 @@ type SnapshotRow = {
   branch_id: string;
   device_id: string;
   issued_at: Date;
+  restore_generation: string | number;
   price_fingerprint: string;
   automatic_offers: PriceSnapshotRecord["automaticOffers"];
   coupons: PriceSnapshotRecord["coupons"];
@@ -777,9 +928,9 @@ export function createPostgresPriceSnapshotStore(queryable: Queryable): PriceSna
         .join("|");
       await queryable.query(
         `INSERT INTO sales_pos_snapshot (
-           id, pricing_version, staff_id, branch_id, device_id, issued_at, price_fingerprint, automatic_offers, coupons,
+           id, pricing_version, staff_id, branch_id, device_id, issued_at, restore_generation, price_fingerprint, automatic_offers, coupons,
            coupon_accounted_operations
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10::jsonb)`,
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb, $11::jsonb)`,
         [
           input.id,
           input.pricingVersion,
@@ -787,6 +938,7 @@ export function createPostgresPriceSnapshotStore(queryable: Queryable): PriceSna
           input.branchId,
           input.deviceId,
           input.issuedAt,
+          input.restoreGeneration,
           fingerprint,
           JSON.stringify(input.automaticOffers),
           JSON.stringify(input.coupons),
@@ -827,6 +979,7 @@ export function createPostgresPriceSnapshotStore(queryable: Queryable): PriceSna
         branchId: row.branch_id,
         deviceId: row.device_id,
         issuedAt: row.issued_at,
+        restoreGeneration: Number(row.restore_generation),
         automaticOffers: row.automatic_offers,
         coupons: row.coupons,
         couponAccountedOperations: row.coupon_accounted_operations,

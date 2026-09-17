@@ -52,6 +52,11 @@ export function createPostgresBackupUnitOfWork(
   };
 }
 
+// Restore reads live rows inside its own activation transaction with the same value encoding.
+export function createBackupQueryable(client: PoolClient): BackupQueryable {
+  return rawTemporalQueryable(client);
+}
+
 function rawTemporalQueryable(client: PoolClient): BackupQueryable {
   return {
     async query<T extends QueryResultRow = QueryResultRow>(sql: string) {
@@ -66,9 +71,10 @@ async function readMetadata(client: PoolClient, readers: BackupReaderSet): Promi
   const migration = await client.query<{ id: string }>("SELECT id FROM schema_migrations ORDER BY id DESC LIMIT 1");
   const stockVersion = await readers.inventory.readStockVersion();
   const onlineOrderReferenceSequence = await readers.onlineOrders.readReferenceSequence();
+  const sourceGeneration = await readers.restore.readRestoreGeneration();
   const capturedAt = captured.rows[0]?.captured_at;
   const schemaVersion = migration.rows[0]?.id;
-  if (!capturedAt || !schemaVersion) {
+  if (!capturedAt || !schemaVersion || !Number.isSafeInteger(sourceGeneration) || sourceGeneration < 0) {
     throw new Error("Backup metadata is incomplete.");
   }
   return {
@@ -76,5 +82,6 @@ async function readMetadata(client: PoolClient, readers: BackupReaderSet): Promi
     schemaVersion,
     stockVersion,
     onlineOrderReferenceSequence,
+    sourceGeneration,
   };
 }

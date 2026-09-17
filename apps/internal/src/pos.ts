@@ -62,6 +62,7 @@ export function offlineFromQuote(input: {
   pricingOccurredAt?: string | null;
   snapshotId?: string | null;
   pricingVersion?: 1 | null;
+  restoreGeneration?: number;
   kind?: OfflineSaleKind;
 }): OfflineCompletedSale {
   return {
@@ -71,6 +72,7 @@ export function offlineFromQuote(input: {
     deviceId: input.deviceId,
     snapshotId: input.snapshotId ?? null,
     pricingVersion: input.pricingVersion === 1 ? 1 : null,
+    ...(input.restoreGeneration !== undefined ? { restoreGeneration: input.restoreGeneration } : {}),
     kind: input.kind ?? "connected",
     syncStatus: "pending",
     branch: input.quote.branch,
@@ -141,6 +143,9 @@ export async function cacheIssuedSnapshot(staffId: string, snapshot: PosPriceSna
 }
 
 export function syncOutcomeMessage(error: unknown): string {
+  if (error instanceof ApiError && error.code === "SALE_RETAINED_FOR_RESTORE") {
+    return "تم الاحتفاظ بالبيع المكتمل للمراجعة بعد الاستعادة. سيظل محفوظاً وقابلاً للاسترداد حتى يراجعه المدير.";
+  }
   if (error instanceof ApiError && error.status === 401) {
     return "انتهت الجلسة أو أُلغي الدخول. سجّل الدخول مجدداً. المبيعات المكتملة محفوظة.";
   }
@@ -284,6 +289,7 @@ export async function acceptedPayload(sale: OfflineCompletedSale) {
     snapshotId: sale.snapshotId ?? "",
     ...(sale.pricingVersion === 1 ? { pricingVersion: 1 as const } : {}),
     ...(sale.pricingVersion === 1 ? { pricingOccurredAt: sale.pricingOccurredAt ?? "" } : {}),
+    restoreGeneration: sale.restoreGeneration ?? 0,
     occurredAt: sale.occurredAt,
     customerName: sale.customerName,
     customerPhone: sale.customerPhone,
@@ -303,7 +309,9 @@ export async function completedPayload(sale: OfflineCompletedSale) {
   return {
     saleId: sale.id,
     operationId: sale.operationId,
+    deviceId: sale.deviceId,
     occurredAt: sale.occurredAt,
+    ...(sale.restoreGeneration !== undefined ? { restoreGeneration: sale.restoreGeneration } : {}),
     customerName: sale.customerName,
     customerPhone: sale.customerPhone,
     couponCode: sale.couponCode,
@@ -323,6 +331,7 @@ export async function recoveryPayload(sale: OfflineCompletedSale) {
     operationId: sale.operationId,
     deviceId: sale.deviceId,
     occurredAt: sale.occurredAt,
+    ...(sale.restoreGeneration !== undefined ? { restoreGeneration: sale.restoreGeneration } : {}),
     pendingOperationIds: await pendingOperationIds(),
   };
 }
