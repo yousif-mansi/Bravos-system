@@ -1649,6 +1649,8 @@ export type ApiErrorCode =
   | "RESTORE_PAUSED"
   | "RESTORE_STALE"
   | "SALE_RETAINED_FOR_RESTORE"
+  | "PUBLIC_ORDERING_DISABLED"
+  | "RATE_LIMITED"
   | "VARIANT_REFERENCED";
 
 export type ApiErrorBody = {

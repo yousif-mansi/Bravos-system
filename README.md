@@ -37,6 +37,8 @@ pnpm dev
 
 Disposable local credentials are written to `.local/demo-credentials.txt`. Do not use them in production.
 
+The [portable release rehearsal](docs/development/release-rehearsal.md) covers built artifacts, locked forward migrations, one-owner bootstrap, protected operator recovery, and the internal-before-public ordering gate. It is explicitly not a hosted production launch.
+
 ## Checks
 
 ```powershell

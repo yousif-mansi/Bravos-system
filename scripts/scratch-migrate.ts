@@ -1,7 +1,7 @@
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { applyMigrations, listAppliedMigrations, revertLastMigration } from "@bravos/persistence";
+import { applyMigrations, listAppliedMigrations, resolveMigrationsDir, revertLastMigration } from "@bravos/persistence";
 import { Pool } from "pg";
 import { startPostgresCluster } from "@bravos/testkit";
 
@@ -240,8 +240,9 @@ try {
 async function expectFailedMigrationRollsBack(pool: Pool): Promise<void> {
   const before = await listAppliedMigrations(pool);
   const dir = await mkdtemp(path.join(tmpdir(), "bravos-scratch-fail-"));
+  await cp(resolveMigrationsDir(), dir, { recursive: true });
   await writeFile(
-    path.join(dir, "002_fail_probe.sql"),
+    path.join(dir, "999_fail_probe.sql"),
     "CREATE TABLE scratch_fail_probe (id integer PRIMARY KEY);\nSELECT 1 / 0;\n",
     "utf8",
   );
@@ -264,7 +265,7 @@ async function expectFailedMigrationRollsBack(pool: Pool): Promise<void> {
   }
   const bookkeeping = await pool.query<{ id: string }>(
     "SELECT id FROM schema_migrations WHERE id = $1",
-    ["002_fail_probe.sql"],
+    ["999_fail_probe.sql"],
   );
   if (bookkeeping.rows.length > 0) {
     throw new Error("Failed migration left a schema_migrations row.");

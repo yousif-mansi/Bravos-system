@@ -1,1 +1,8 @@
-export { applyMigrations, listAppliedMigrations, revertLastMigration, resolveMigrationsDir } from "./migrate.ts";
+export {
+  applyMigrations,
+  inspectMigrations,
+  listAppliedMigrations,
+  revertLastMigration,
+  resolveMigrationsDir,
+  type MigrationStatus,
+} from "./migrate.ts";

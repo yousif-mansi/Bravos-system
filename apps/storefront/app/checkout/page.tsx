@@ -8,6 +8,7 @@ import type {
   PublicDeliveryAreaDto,
   PublicOrderSubmissionDto,
   PublicOrderSubmissionRequest,
+  PublicRuntimeDto,
 } from "@bravos/contracts/public";
 import { useCart } from "../cart/cart-provider";
 import { formatEgp } from "../public-catalog";
@@ -40,6 +41,7 @@ type StoredAttempt = {
 };
 
 type ApiError = { error?: { code?: string; messageAr?: string } };
+type OrderingState = "loading" | "enabled" | "disabled" | "unavailable";
 
 const EMPTY_FIELDS: CheckoutFields = {
   customerName: "",
@@ -55,6 +57,7 @@ const EMPTY_FIELDS: CheckoutFields = {
 export default function CheckoutPage() {
   const cart = useCart();
   const [fields, setFields] = useState(EMPTY_FIELDS);
+  const [orderingState, setOrderingState] = useState<OrderingState>("loading");
   const [areas, setAreas] = useState<PublicDeliveryAreaDto[]>([]);
   const [areasLoading, setAreasLoading] = useState(true);
   const [quote, setQuote] = useState<CheckoutQuoteDto | null>(null);
@@ -77,16 +80,29 @@ export default function CheckoutPage() {
 
   useEffect(() => {
     let active = true;
-    void fetch("/api/public/checkout/delivery-areas", { cache: "no-store" })
+    void fetch("/api/public/runtime", { cache: "no-store" })
       .then(async (response) => {
-        if (!response.ok) throw new Error("areas");
-        return response.json() as Promise<PublicDeliveryAreaDto[]>;
+        if (!response.ok) throw new Error("runtime");
+        return response.json() as Promise<PublicRuntimeDto>;
       })
-      .then((loaded) => {
+      .then(async (runtime) => {
+        if (!active) return;
+        if (!runtime.publicOrderingEnabled) {
+          setOrderingState("disabled");
+          setAreasLoading(false);
+          return;
+        }
+        setOrderingState("enabled");
+        const response = await fetch("/api/public/checkout/delivery-areas", { cache: "no-store" });
+        if (!response.ok) throw new Error("areas");
+        const loaded = await response.json() as PublicDeliveryAreaDto[];
         if (active) setAreas(loaded);
       })
       .catch(() => {
-        if (active) showMessage("تعذر تحميل مناطق التوصيل حالياً. أعد المحاولة بعد قليل.", "error");
+        if (active) {
+          setOrderingState((current) => current === "enabled" ? current : "unavailable");
+          showMessage("تعذر التحقق من إتاحة الطلب حالياً. لم نرسل أي طلب.", "error");
+        }
       })
       .finally(() => {
         if (active) setAreasLoading(false);
@@ -102,23 +118,26 @@ export default function CheckoutPage() {
   }, [currentInputKey, quote, quoteKey]);
 
   useEffect(() => {
-    if (!cart.hydrated || recoveryStarted.current) return;
-    recoveryStarted.current = true;
+    if (!cart.hydrated || orderingState === "loading" || recoveryStarted.current) return;
     const stored = readAttempt();
     if (stored === "invalid") {
+      recoveryStarted.current = true;
       setStorageBlocked(true);
       showMessage("تعذر قراءة محاولة طلب محفوظة. أوقفنا أي إرسال جديد حتى لا يتكرر طلب سابق.", "error");
       return;
     }
     if (!stored) return;
     if (stored.status === "accepted") {
+      recoveryStarted.current = true;
       if (!stored.cartCompleted || cart.items.length === 0) void acceptResult(stored.result, stored.request, stored.cartCompleted);
       return;
     }
+    if (orderingState !== "enabled") return;
+    recoveryStarted.current = true;
     activeOperationId.current = stored.request.operationId;
     showMessage("جارٍ التحقق من نتيجة الإرسال السابق…", "status");
     void recoverStoredAttempt();
-  }, [cart.hydrated]);
+  }, [cart.hydrated, orderingState]);
 
   useEffect(() => {
     function syncAttempt(event: StorageEvent) {
@@ -127,7 +146,7 @@ export default function CheckoutPage() {
       if (!stored) return;
       if (stored.status === "accepted" && activeOperationId.current === stored.request.operationId) {
         void acceptResult(stored.result, stored.request, stored.cartCompleted);
-      } else if (stored.status === "pending" && !submitting) {
+      } else if (stored.status === "pending" && !submitting && orderingState === "enabled") {
         activeOperationId.current = stored.request.operationId;
         showMessage("يوجد إرسال جارٍ من نافذة أخرى. نتحقق من نفس الطلب…", "status");
         void recoverStoredAttempt();
@@ -135,9 +154,10 @@ export default function CheckoutPage() {
     }
     window.addEventListener("storage", syncAttempt);
     return () => window.removeEventListener("storage", syncAttempt);
-  }, [submitting]);
+  }, [orderingState, submitting]);
 
   async function reviewPrice() {
+    if (orderingState !== "enabled") return;
     if (!fields.deliveryAreaId || cart.items.length === 0) return;
     const requestedKey = currentInputKey;
     const request: CheckoutQuoteRequest = {
@@ -176,6 +196,10 @@ export default function CheckoutPage() {
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (orderingState !== "enabled") {
+      showMessage("الطلب عبر المتجر غير متاح حالياً.", "error");
+      return;
+    }
     if (!quote || quoteKey !== currentInputKey) {
       showMessage("راجع السعر الحالي قبل إرسال الطلب.", "error");
       return;
@@ -307,7 +331,7 @@ export default function CheckoutPage() {
     setMessageKind(kind);
   }
 
-  if (!cart.hydrated) {
+  if (!cart.hydrated || orderingState === "loading") {
     return <main id="main-content" className="checkout-page"><p>جارٍ تحميل بيانات الطلب…</p></main>;
   }
 
@@ -321,6 +345,24 @@ export default function CheckoutPage() {
         <p>سيتواصل معك ممثل برافوس عبر واتساب لتأكيد الطلب والتأكد من توفر القطع.</p>
         <p className="success-total">الإجمالي الذي راجعته: <strong>{formatEgp(result.quote.finalTotalPiasters)}</strong></p>
         <Link className="button-link" href="/">العودة إلى المتجر</Link>
+      </main>
+    );
+  }
+
+  if (orderingState === "disabled" || orderingState === "unavailable") {
+    return (
+      <main id="main-content" className="checkout-page">
+        <div className="empty-state">
+          <p className="eyebrow">المتجر متاح للتصفح</p>
+          <h1>الطلب عبر المتجر غير متاح حالياً</h1>
+          <p>{orderingState === "disabled"
+            ? "نجهّز استقبال طلبات التوصيل. يمكنك تصفح المنتجات والاحتفاظ بما أضفته إلى السلة حتى يبدأ استقبال الطلبات."
+            : "تعذر التحقق من إتاحة الطلب الآن. احتفظنا بسلتك ولم نرسل أي طلب؛ أعد المحاولة بعد قليل."}</p>
+          <div className="checkout-actions">
+            <Link className="button-link" href="/">العودة إلى المتجر</Link>
+            <Link href="/cart">عرض السلة</Link>
+          </div>
+        </div>
       </main>
     );
   }

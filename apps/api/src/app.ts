@@ -103,6 +103,11 @@ import {
   createBetterAuthIdentityProvider,
   createOwnerRecoveryOutbox,
   createPostgresStaffDirectory,
+  operatorDirectoriesOverlap,
+  prepareExternalOperatorDirectory,
+  prepareOperatorRecoveryDirectory,
+  resolveExternalOperatorDirectory,
+  resolveOperatorRecoveryDirectory,
   type IdentityGateway,
 } from "@bravos/identity/node";
 import type { VerifiedAuth } from "@bravos/identity";
@@ -246,10 +251,43 @@ export type BuiltApp = {
 };
 
 export async function buildApp(config: AppConfig): Promise<BuiltApp> {
+  let productMediaDir = config.productMediaDir ?? ".local/product-media";
+  let ownerRecoveryOutboxDir = config.ownerRecoveryOutboxDir;
+  if (config.nodeEnv === "production") {
+    if (config.ownerRecoveryAdapter !== "operator-file") {
+      throw new Error(
+        "Owner recovery is fail-closed in production until the explicit operator-file adapter is configured.",
+      );
+    }
+    if (!config.ownerRecoveryOutboxDir) {
+      throw new Error("BRAVOS_OWNER_RECOVERY_OUTBOX_DIR is required for the operator-file adapter.");
+    }
+    if (!config.productMediaDir) {
+      throw new Error("BRAVOS_PRODUCT_MEDIA_DIR is required in production.");
+    }
+    const [recoveryCandidate, mediaCandidate] = await Promise.all([
+      resolveOperatorRecoveryDirectory(config.ownerRecoveryOutboxDir),
+      resolveExternalOperatorDirectory(config.productMediaDir, "Product media directory"),
+    ]);
+    if (operatorDirectoriesOverlap(recoveryCandidate, mediaCandidate)) {
+      throw new Error("Recovery and product media must use separate, non-overlapping external directories.");
+    }
+    const [preparedRecovery, preparedMedia] = await Promise.all([
+      prepareOperatorRecoveryDirectory(config.ownerRecoveryOutboxDir),
+      prepareExternalOperatorDirectory(config.productMediaDir, "Product media directory"),
+    ]);
+    if (operatorDirectoriesOverlap(preparedRecovery, preparedMedia)) {
+      throw new Error("Recovery and product media resolved to overlapping external directories.");
+    }
+    ownerRecoveryOutboxDir = preparedRecovery;
+    productMediaDir = preparedMedia;
+  } else if (config.ownerRecoveryAdapter === "operator-file" && config.ownerRecoveryOutboxDir) {
+    ownerRecoveryOutboxDir = await prepareOperatorRecoveryDirectory(config.ownerRecoveryOutboxDir);
+  }
   const recoveryOutbox = createOwnerRecoveryOutbox({
     nodeEnv: config.nodeEnv,
     adapter: config.ownerRecoveryAdapter,
-    directory: config.ownerRecoveryOutboxDir,
+    directory: ownerRecoveryOutboxDir,
   });
 
   const pool = new Pool({
@@ -279,7 +317,7 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
       recoveryOutbox,
     });
     const catalogStore = createPostgresCatalogStore(pool);
-    const productMedia = createLocalProductMediaStorage(config.productMediaDir ?? ".local/product-media");
+    const productMedia = createLocalProductMediaStorage(productMediaDir);
     const inventoryStore = createPostgresInventoryStore(pool);
     const actors = {
       getStaff: (staffId: string) => directory.getStaff(staffId),
@@ -626,6 +664,12 @@ async function registerRoutes(
     application: "bravos-public",
   }));
 
+  const publicOrderingEnabled = config.publicOrderingEnabled ?? config.nodeEnv !== "production";
+  app.get("/api/public/runtime", async (_request, reply) => {
+    reply.header("cache-control", "no-store");
+    return { publicOrderingEnabled };
+  });
+
   app.post("/api/public/analytics/events", async (request, reply) => {
     reply.header("cache-control", "no-store");
     return handle(reply, async () => {
@@ -661,11 +705,13 @@ async function registerRoutes(
 
   app.post("/api/public/checkout/quote", async (request, reply) => {
     reply.header("cache-control", "no-store");
+    if (!publicOrderingEnabled) return publicOrderingDisabled(reply);
     return handle(reply, async () => onlineOrders.quote(request.body));
   });
 
   app.post("/api/public/checkout/orders", async (request, reply) => {
     reply.header("cache-control", "no-store");
+    if (!publicOrderingEnabled) return publicOrderingDisabled(reply);
     return handle(reply, async () => {
       const result = await onlineOrders.submit(request.body);
       reply.status(result.created ? 201 : 200);
@@ -1604,6 +1650,15 @@ async function registerRoutes(
   });
 }
 
+function publicOrderingDisabled(reply: FastifyReply) {
+  return reply.status(503).send({
+    error: {
+      code: "PUBLIC_ORDERING_DISABLED",
+      messageAr: "الطلب عبر المتجر غير متاح حالياً.",
+    },
+  });
+}
+
 function isPrivilegedPath(url: string): boolean {
   return url.startsWith("/api/auth") || url.startsWith("/api/internal");
 }
@@ -1631,6 +1686,8 @@ async function forwardAuth(
 ) {
   const url = new URL(request.url, configFallbackUrl(request));
   const headers = requestHeaders(request);
+  // Sign-in rate limits are kept per client connection address.
+  headers.set("x-bravos-client-ip", request.ip);
   const payload =
     request.method === "GET" || request.method === "HEAD"
       ? undefined
@@ -1650,6 +1707,9 @@ async function forwardAuth(
   const text = await response.text();
   if (response.status >= 500) {
     return reply.status(500).send(errorBody("CONFLICT", "تعذر إكمال العملية."));
+  }
+  if (response.status === 429) {
+    return reply.status(429).send(errorBody("RATE_LIMITED", "محاولات دخول كثيرة. انتظر قليلاً ثم أعد المحاولة."));
   }
   if (response.status >= 400) {
     return reply.status(401).send(errorBody("UNAUTHENTICATED", "يلزم تسجيل الدخول."));

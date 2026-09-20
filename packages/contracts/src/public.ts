@@ -50,6 +50,10 @@ export type PublicStorefrontContactsDto = {
   tiktokUrl: string | null;
 };
 
+export type PublicRuntimeDto = {
+  publicOrderingEnabled: boolean;
+};
+
 export type PublicDeliveryAreaDto = {
   id: string;
   nameAr: string;

@@ -1,8 +1,8 @@
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, expect, test } from "vitest";
-import { applyMigrations, listAppliedMigrations, revertLastMigration } from "@bravos/persistence";
+import { applyMigrations, inspectMigrations, listAppliedMigrations, resolveMigrationsDir, revertLastMigration } from "@bravos/persistence";
 import { startPostgresCluster, type PostgresCluster } from "@bravos/testkit";
 import { Pool } from "pg";
 
@@ -670,8 +670,9 @@ test("a failing migration run through applyMigrations rolls back table and bookk
     const before = await listAppliedMigrations(pool);
 
     const dir = await mkdtemp(path.join(tmpdir(), "bravos-failing-migration-"));
+    await cp(resolveMigrationsDir(), dir, { recursive: true });
     await writeFile(
-      path.join(dir, "002_fail_probe.sql"),
+      path.join(dir, "999_fail_probe.sql"),
       `CREATE TABLE scratch_fail_probe (id integer PRIMARY KEY);\nSELECT 1 / 0;\n`,
       "utf8",
     );
@@ -687,9 +688,48 @@ test("a failing migration run through applyMigrations rolls back table and bookk
     expect(await listAppliedMigrations(pool)).toEqual(before);
     const bookkeeping = await pool.query<{ id: string }>(
       `SELECT id FROM schema_migrations WHERE id = $1`,
-      ["002_fail_probe.sql"],
+      ["999_fail_probe.sql"],
     );
     expect(bookkeeping.rows).toHaveLength(0);
+  } finally {
+    await pool.end();
+  }
+});
+
+test("concurrent forward migration commands serialize under one database lock", async () => {
+  const databaseName = `bravos_migrate_${crypto.randomUUID().replaceAll("-", "")}`;
+  await cluster.createDatabase(databaseName);
+  const pool = new Pool({ connectionString: cluster.connectionString(databaseName), max: 3 });
+  try {
+    const dir = await mkdtemp(path.join(tmpdir(), "bravos-locked-migration-"));
+    await writeFile(path.join(dir, "001_lock_probe.sql"), "CREATE TABLE lock_probe (id integer PRIMARY KEY);\n", "utf8");
+    const [first, second] = await Promise.all([applyMigrations(pool, dir), applyMigrations(pool, dir)]);
+    const status = await inspectMigrations(pool, dir);
+    expect([first.length, second.length].sort((left, right) => left - right)).toEqual([0, status.known.length]);
+    expect(status.applied).toEqual(status.known);
+    expect(status.pending).toEqual([]);
+    expect(status.unexpected).toEqual([]);
+    expect(status.outOfOrder).toBe(false);
+  } finally {
+    await pool.end();
+  }
+});
+
+test("migration inspection and apply fail closed on a gap in recorded history", async () => {
+  const databaseName = `bravos_migrate_${crypto.randomUUID().replaceAll("-", "")}`;
+  await cluster.createDatabase(databaseName);
+  const pool = new Pool({ connectionString: cluster.connectionString(databaseName), max: 2 });
+  try {
+    const dir = await mkdtemp(path.join(tmpdir(), "bravos-drift-migration-"));
+    await writeFile(path.join(dir, "001_probe.sql"), "CREATE TABLE drift_probe_1 (id integer PRIMARY KEY);\n", "utf8");
+    await writeFile(path.join(dir, "002_probe.sql"), "CREATE TABLE drift_probe_2 (id integer PRIMARY KEY);\n", "utf8");
+    await writeFile(path.join(dir, "003_probe.sql"), "CREATE TABLE drift_probe_3 (id integer PRIMARY KEY);\n", "utf8");
+    await applyMigrations(pool, dir);
+    await pool.query("DELETE FROM schema_migrations WHERE id = $1", ["002_probe.sql"]);
+    const status = await inspectMigrations(pool, dir);
+    expect(status.outOfOrder).toBe(true);
+    expect(status.unexpected).toEqual([]);
+    await expect(applyMigrations(pool, dir)).rejects.toThrow(/migration history drift/i);
   } finally {
     await pool.end();
   }

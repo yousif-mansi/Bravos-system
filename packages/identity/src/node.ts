@@ -12,5 +12,15 @@ export {
   createOwnerRecoveryOutbox,
   createUnavailableRecoveryOutbox,
 } from "./adapters/local-recovery-outbox.ts";
+export {
+  assertOperatorRecoveryDirectory,
+  createOperatorRecoveryOutbox,
+  operatorDirectoriesOverlap,
+  prepareExternalOperatorDirectory,
+  prepareOperatorRecoveryDirectory,
+  protectOperatorSecretFile,
+  resolveExternalOperatorDirectory,
+  resolveOperatorRecoveryDirectory,
+} from "./adapters/operator-recovery-outbox.ts";
 export { createPostgresIdentityBackupReader } from "./adapters/postgres-backup.ts";
 export { createPostgresIdentityRestorePort } from "./adapters/postgres-restore.ts";

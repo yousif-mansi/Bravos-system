@@ -67,6 +67,6 @@ export type StaffDirectory = {
 };
 
 export type RecoveryOutbox = {
-  readonly kind: "local-outbox" | "unavailable";
+  readonly kind: "local-outbox" | "operator-file" | "unavailable";
   deliver(message: { purpose: "owner-recovery"; createdAt: string; token: string }): Promise<void>;
 };

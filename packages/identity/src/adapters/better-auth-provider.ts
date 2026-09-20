@@ -72,6 +72,8 @@ export function createBetterAuth(pool: Pool, options: BetterAuthOptions) {
       updateAge: 60 * 60,
     },
     advanced: {
+      // The API sets this header from the connection address; client-supplied forwarding headers are not trusted.
+      ipAddress: { ipAddressHeaders: ["x-bravos-client-ip"] },
       useSecureCookies: options.secureCookies,
       defaultCookieAttributes: {
         httpOnly: true,

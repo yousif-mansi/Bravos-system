@@ -209,6 +209,41 @@ test("changed delivery pricing and a later stock shortage cannot submit an old r
   await expect(checkout.getByLabel("الاسم")).toHaveValue("منى محمود");
 });
 
+test("closed public ordering keeps the cart and shows the Arabic closure screen", async ({ page }) => {
+  await signInManager(page);
+  const catalog = await seedCheckoutProduct(page, "CLOSED-ORDERING-E2E-28", 30_000, 1);
+  await addPublicProduct(page, catalog.productId);
+  await expect(cartLink(page)).toContainText("1");
+
+  await page.route("**/api/public/runtime", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ publicOrderingEnabled: false }),
+    });
+  });
+  for (const url of ["**/api/public/checkout/quote", "**/api/public/checkout/orders"]) {
+    await page.route(url, async (route) => {
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: { code: "PUBLIC_ORDERING_DISABLED", messageAr: "الطلب عبر المتجر غير متاح حالياً." },
+        }),
+      });
+    });
+  }
+
+  await page.goto("http://127.0.0.1:3001/checkout");
+  await expect(page.getByRole("heading", { name: "الطلب عبر المتجر غير متاح حالياً" })).toBeVisible();
+  await expect(page.getByText("يمكنك تصفح المنتجات والاحتفاظ بما أضفته إلى السلة")).toBeVisible();
+  await expect(page.getByRole("form", { name: "بيانات طلب التوصيل" })).toHaveCount(0);
+  await page.getByRole("link", { name: "عرض السلة" }).click();
+  await expect(page).toHaveURL(/\/cart$/);
+  await expect(cartLink(page)).toContainText("1");
+  await expect(page.getByText(/CLOSED-ORDERING-E2E-28/)).toBeVisible();
+});
+
 async function signInManager(page: Page) {
   await page.goto("http://127.0.0.1:5174/login");
   await page.getByLabel("اسم الدخول").fill("owner");

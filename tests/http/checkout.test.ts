@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterAll, beforeAll, expect, test } from "vitest";
 import { buildApp, type BuiltApp } from "../../apps/api/src/app.ts";
 import { ensureOwner } from "../../apps/api/src/bootstrap.ts";
+import { loadConfig } from "../../apps/api/src/config.ts";
 import { startPostgresCluster, type PostgresCluster } from "@bravos/testkit";
 
 const INTERNAL_ORIGIN = "http://127.0.0.1:5173";
@@ -37,6 +38,34 @@ afterAll(async () => {
   if (cluster) await cluster.stop();
 });
 
+test("production configuration defaults public ordering closed and requires an exact override", () => {
+  const environment = {
+    NODE_ENV: "production",
+    DATABASE_URL: "postgres://operator@example/bravos",
+    BETTER_AUTH_SECRET: "operator-secret-operator-secret-32",
+    BRAVOS_PRODUCT_MEDIA_DIR: "C:/BravosPrivate/media",
+  };
+  expect(loadConfig(environment)).toMatchObject({ publicOrderingEnabled: false, secureCookies: true });
+  expect(loadConfig({ ...environment, BRAVOS_PUBLIC_ORDERING_ENABLED: "true" }).publicOrderingEnabled).toBe(true);
+  expect(() => loadConfig({ ...environment, BRAVOS_PUBLIC_ORDERING_ENABLED: "yes" })).toThrow(/exactly true or false/i);
+  expect(loadConfig({ ...environment, BRAVOS_LOOPBACK_REHEARSAL: "true" }).secureCookies).toBe(false);
+  expect(() => loadConfig({
+    ...environment,
+    BRAVOS_LOOPBACK_REHEARSAL: "true",
+    BRAVOS_PUBLIC_ORIGIN: "https://shop.example",
+  })).toThrow(/fixed production-build loopback origins/i);
+  expect(() => loadConfig({
+    ...environment,
+    BRAVOS_LOOPBACK_REHEARSAL: "true",
+    BRAVOS_TRUSTED_ORIGINS: "https://extra.example",
+  })).toThrow(/fixed production-build loopback origins/i);
+  expect(() => loadConfig({
+    NODE_ENV: "production",
+    DATABASE_URL: environment.DATABASE_URL,
+    BETTER_AUTH_SECRET: environment.BETTER_AUTH_SECRET,
+  })).toThrow(/BRAVOS_PRODUCT_MEDIA_DIR is required/i);
+});
+
 test("manager maintains supported delivery areas while public checkout sees only active safe fields", async () => {
   const manager = await signIn("owner", "owner-pass-1");
   const created = await api(manager, "POST", "/api/internal/delivery-areas", { nameAr: "مدينة الفيوم", feePiasters: 5000, active: true });
@@ -59,6 +88,53 @@ test("manager maintains supported delivery areas while public checkout sees only
   expect(updated.body).toMatchObject({ feePiasters: 6500, active: false });
   const hidden = await api(undefined, "GET", "/api/public/checkout/delivery-areas", undefined, PUBLIC_ORIGIN);
   expect(hidden.body).toEqual([]);
+});
+
+test("public ordering gate is authoritative while browsing remains available", async () => {
+  const databaseName = `bravos_checkout_gate_${crypto.randomUUID().replaceAll("-", "")}`;
+  await cluster.createDatabase(databaseName);
+  const disabled = await buildApp({
+    nodeEnv: "test",
+    databaseUrl: cluster.connectionString(databaseName),
+    authSecret: "test-secret-test-secret-test-secret-32",
+    authBaseUrl: "http://127.0.0.1:3010",
+    internalOrigin: INTERNAL_ORIGIN,
+    publicOrigin: PUBLIC_ORIGIN,
+    trustedOrigins: [INTERNAL_ORIGIN, "http://127.0.0.1:3010"],
+    secureCookies: false,
+    ownerRecoveryAdapter: "local-outbox",
+    ownerRecoveryOutboxDir: await mkdtemp(path.join(tmpdir(), "bravos-checkout-gate-outbox-")),
+    publicOrderingEnabled: false,
+  });
+  try {
+    const runtime = await disabled.app.inject({ method: "GET", url: "/api/public/runtime", headers: { origin: PUBLIC_ORIGIN } });
+    expect(runtime.statusCode).toBe(200);
+    expect(runtime.json()).toEqual({ publicOrderingEnabled: false });
+
+    const catalog = await disabled.app.inject({ method: "GET", url: "/api/public/catalog/products", headers: { origin: PUBLIC_ORIGIN } });
+    expect(catalog.statusCode).toBe(200);
+
+    for (const url of ["/api/public/checkout/quote", "/api/public/checkout/orders"]) {
+      const response = await disabled.app.inject({
+        method: "POST",
+        url,
+        headers: { origin: PUBLIC_ORIGIN, "content-type": "application/json" },
+        payload: {},
+      });
+      expect(response.statusCode).toBe(503);
+      expect(response.json()).toEqual({
+        error: { code: "PUBLIC_ORDERING_DISABLED", messageAr: "الطلب عبر المتجر غير متاح حالياً." },
+      });
+    }
+    const effects = await disabled.pool.query<{ quotes: string; orders: string }>(
+      `SELECT
+         (SELECT count(*)::text FROM online_checkout_quote) AS quotes,
+         (SELECT count(*)::text FROM online_order) AS orders`,
+    );
+    expect(effects.rows[0]).toEqual({ quotes: "0", orders: "0" });
+  } finally {
+    await disabled.close();
+  }
 });
 
 test("guest quote applies configured offer, coupon and fee while pending submission holds no stock or coupon use", async () => {

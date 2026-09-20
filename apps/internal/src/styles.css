@@ -542,6 +542,8 @@ button, .button, input, select {
 }
 .report-wide { grid-column: 1 / -1; }
 .report-table-wrap { overflow-x: auto; }
+/* Report cards shrink to the screen so wide tables scroll inside their wrapper instead of widening the page. */
+.report-results, .report-results .grid > * { min-width: 0; }
 .report-table { width: 100%; border-collapse: collapse; min-width: 34rem; }
 .report-table th, .report-table td { padding: 0.7rem; border-bottom: 1px solid var(--line); text-align: right; }
 .report-detail-card { border: 1px solid var(--line); border-radius: 12px; padding: 1rem; }

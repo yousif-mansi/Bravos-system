@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { RecoveryOutbox } from "../application/ports.ts";
+import { createOperatorRecoveryOutbox } from "./operator-recovery-outbox.ts";
 
 export function createLocalRecoveryOutbox(directory: string): RecoveryOutbox {
   return {
@@ -37,10 +38,16 @@ export function createOwnerRecoveryOutbox(input: {
   directory: string | undefined;
 }): RecoveryOutbox {
   const adapter = input.adapter ?? (input.nodeEnv === "production" ? undefined : "local-outbox");
-  if (input.nodeEnv === "production") {
+  if (input.nodeEnv === "production" && adapter !== "operator-file") {
     throw new Error(
-      "Owner recovery is fail-closed in production until a non-local delivery adapter is configured.",
+      "Owner recovery is fail-closed in production until the explicit operator-file adapter is configured.",
     );
+  }
+  if (adapter === "operator-file") {
+    if (!input.directory) {
+      throw new Error("BRAVOS_OWNER_RECOVERY_OUTBOX_DIR is required for the operator-file adapter.");
+    }
+    return createOperatorRecoveryOutbox(input.directory);
   }
   if (adapter !== "local-outbox") {
     throw new Error("Unknown owner recovery adapter.");

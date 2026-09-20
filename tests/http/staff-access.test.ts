@@ -1,15 +1,23 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 import { afterAll, beforeAll, beforeEach, expect, test } from "vitest";
 import { buildApp, type BuiltApp } from "../../apps/api/src/app.ts";
 import { ensureOwner } from "../../apps/api/src/bootstrap.ts";
 import { applyMigrations } from "@bravos/persistence";
+import {
+  assertOperatorRecoveryDirectory,
+  createOperatorRecoveryOutbox,
+  protectOperatorSecretFile,
+} from "@bravos/identity/node";
 import { startPostgresCluster, type PostgresCluster } from "@bravos/testkit";
 
 const INTERNAL_ORIGIN = "http://127.0.0.1:5173";
 const PUBLIC_ORIGIN = "http://127.0.0.1:3000";
 const EVIL_ORIGIN = "http://evil.example";
+const execFileAsync = promisify(execFile);
 
 let cluster: PostgresCluster;
 let databaseName = "bravos_http_1";
@@ -19,7 +27,7 @@ let abshwayId = "";
 let fayoumId = "";
 
 beforeAll(async () => {
-  cluster = await startPostgresCluster({ port: 55432 });
+  cluster = await startPostgresCluster({ port: Number(process.env.BRAVOS_STAFF_TEST_PORT ?? 55432) });
 }, 120_000);
 
 afterAll(async () => {
@@ -272,6 +280,188 @@ test("production owner recovery configuration fails closed", async () => {
     }),
   ).rejects.toThrow(/fail-closed/i);
 });
+
+test("production sign-in limits each client address instead of the whole shop and reports the limit", async () => {
+  const limitDatabase = `bravos_http_limit_${crypto.randomUUID().replaceAll("-", "")}`;
+  await cluster.createDatabase(limitDatabase);
+  const recoveryDirectory = await mkdtemp(path.join(tmpdir(), "bravos-limit-recovery-"));
+  const mediaDirectory = await mkdtemp(path.join(tmpdir(), "bravos-limit-media-"));
+  try {
+    const { stdout } = await execFileAsync(process.execPath, ["--import", "tsx", "tests/http/fixtures/production-sign-in-limit.ts"], {
+      env: {
+        ...process.env,
+        NODE_ENV: "production",
+        DATABASE_URL: cluster.connectionString(limitDatabase),
+        BRAVOS_OWNER_RECOVERY_OUTBOX_DIR: recoveryDirectory,
+        BRAVOS_PRODUCT_MEDIA_DIR: mediaDirectory,
+      },
+      timeout: 90_000,
+      maxBuffer: 1024 * 1024,
+    });
+    const result = JSON.parse(stdout) as { separateClients: number[]; sameClient: number[]; limited: unknown };
+    expect(result.separateClients).toEqual([200, 200, 200, 200]);
+    expect(result.sameClient).toEqual([200, 200, 200, 429]);
+    expect(result.limited).toEqual({
+      error: { code: "RATE_LIMITED", messageAr: "محاولات دخول كثيرة. انتظر قليلاً ثم أعد المحاولة." },
+    });
+  } finally {
+    await rm(recoveryDirectory, { recursive: true, force: true });
+    await rm(mediaDirectory, { recursive: true, force: true });
+  }
+}, 120_000);
+
+test("production API requires an explicit external product media directory", async () => {
+  const recoveryDirectory = await mkdtemp(path.join(tmpdir(), "bravos-production-recovery-"));
+  try {
+    await expect(
+      buildApp({
+        nodeEnv: "production",
+        databaseUrl: "postgres://nobody:nobody@127.0.0.1:1/missing",
+        authSecret: "prod-secret-prod-secret-prod-secret-32",
+        authBaseUrl: "https://staff.example",
+        internalOrigin: "https://staff.example",
+        publicOrigin: "https://shop.example",
+        trustedOrigins: ["https://staff.example"],
+        secureCookies: true,
+        ownerRecoveryAdapter: "operator-file",
+        ownerRecoveryOutboxDir: recoveryDirectory,
+      }),
+    ).rejects.toThrow(/BRAVOS_PRODUCT_MEDIA_DIR is required/i);
+  } finally {
+    await rm(recoveryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("operator recovery writes only through a protected external directory", async () => {
+  expect(() => assertOperatorRecoveryDirectory("relative/recovery")).toThrow(/absolute path/i);
+  expect(() => assertOperatorRecoveryDirectory(path.join(process.cwd(), ".private-recovery"))).toThrow(/disjoint/i);
+  const directory = await mkdtemp(path.join(tmpdir(), "bravos-operator-recovery-"));
+  try {
+    const recovery = createOperatorRecoveryOutbox(directory);
+    expect(recovery.kind).toBe("operator-file");
+    await recovery.deliver({
+      purpose: "owner-recovery",
+      createdAt: "2026-09-16T12:30:00.000Z",
+      token: "a".repeat(64),
+    });
+    const latestPath = path.join(directory, "latest.json");
+    const latest = JSON.parse(await readFile(latestPath, "utf8"));
+    expect(latest).toEqual({
+      purpose: "owner-recovery",
+      createdAt: "2026-09-16T12:30:00.000Z",
+      token: "a".repeat(64),
+    });
+    await assertPrivateOperatorPath(directory, "directory");
+    await assertPrivateOperatorPath(latestPath, "file");
+    const written = (await readdir(directory)).filter((name) => name.startsWith("owner-recovery-"));
+    expect(written).toHaveLength(1);
+    await assertPrivateOperatorPath(path.join(directory, written[0]!), "file");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("operator secret files must be protected regular files outside the workspace", async () => {
+  await expect(protectOperatorSecretFile("relative-owner-password.txt")).rejects.toThrow(/absolute path/i);
+  await expect(protectOperatorSecretFile(path.join(process.cwd(), "owner-password.txt"))).rejects.toThrow(/disjoint/i);
+
+  const directory = await mkdtemp(path.join(tmpdir(), "bravos-operator-secret-"));
+  const passwordFile = path.join(directory, "owner-password.txt");
+  try {
+    await writeFile(passwordFile, "owner-pass-1\n", "utf8");
+    await expect(protectOperatorSecretFile(directory)).rejects.toThrow(/regular file/i);
+    expect(await protectOperatorSecretFile(passwordFile)).toBe(path.resolve(passwordFile));
+    await assertPrivateOperatorPath(passwordFile, "file");
+
+    if (process.platform !== "win32") {
+      const linked = path.join(directory, "linked-password.txt");
+      await symlink(passwordFile, linked);
+      await expect(protectOperatorSecretFile(linked)).rejects.toThrow(/symbolic link/i);
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("operator recovery rejects a workspace ancestor without changing it", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "bravos-recovery-ancestor-"));
+  try {
+    const ancestor = path.join(root, "ancestor");
+    const workspace = path.join(ancestor, "workspace");
+    const marker = path.join(ancestor, "keep.txt");
+    await mkdir(workspace, { recursive: true });
+    await writeFile(marker, "unchanged", "utf8");
+    const beforePermissions = await permissionSnapshot(ancestor);
+    const before = await stat(ancestor);
+
+    expect(() => assertOperatorRecoveryDirectory(ancestor, workspace)).toThrow(/disjoint/i);
+
+    const after = await stat(ancestor);
+    expect(await readFile(marker, "utf8")).toBe("unchanged");
+    expect(await permissionSnapshot(ancestor)).toBe(beforePermissions);
+    expect(after.mtimeMs).toBe(before.mtimeMs);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+async function permissionSnapshot(target: string): Promise<string> {
+  if (process.platform === "win32") {
+    const env = { ...process.env, BRAVOS_PERMISSION_TARGET: target };
+    delete env.PSModulePath;
+    const result = await execFileAsync("powershell.exe", [
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "(Get-Acl -LiteralPath $env:BRAVOS_PERMISSION_TARGET).Sddl",
+    ], {
+      windowsHide: true,
+      encoding: "utf8",
+      env,
+    });
+    return String(result.stdout).trim();
+  }
+  const info = await stat(target);
+  return `${info.uid}:${info.gid}:${info.mode & 0o777}`;
+}
+
+async function assertPrivateOperatorPath(target: string, kind: "directory" | "file"): Promise<void> {
+  const info = await lstat(target);
+  expect(info.isSymbolicLink()).toBe(false);
+  if (kind === "directory") expect(info.isDirectory()).toBe(true);
+  else expect(info.isFile()).toBe(true);
+  if (process.platform === "win32") {
+    const env = { ...process.env, BRAVOS_PERMISSION_TARGET: target };
+    delete env.PSModulePath;
+    const result = await execFileAsync("powershell.exe", [
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      String.raw`
+        $ErrorActionPreference = 'Stop'
+        $acl = Get-Acl -LiteralPath $env:BRAVOS_PERMISSION_TARGET
+        if (-not $acl.AreAccessRulesProtected) { throw 'Recovery ACL still inherits permissions.' }
+        $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+        $unsafe = @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]) | Where-Object {
+          $_.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow -and
+          $_.IdentityReference.Value -ne $sid.Value
+        })
+        if ($unsafe.Count -ne 0) { throw 'Recovery ACL grants another principal access.' }
+        'private'
+      `,
+    ], {
+      windowsHide: true,
+      encoding: "utf8",
+      env,
+    });
+    expect(String(result.stdout).trim()).toBe("private");
+    return;
+  }
+  expect(info.uid).toBe(process.getuid?.());
+  expect(info.mode & 0o777).toBe(kind === "directory" ? 0o700 : 0o600);
+}
 
 test("invalid recovery adapter fails before opening a database pool", async () => {
   const started = Date.now();

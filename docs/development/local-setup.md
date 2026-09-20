@@ -72,9 +72,9 @@ The API production start path is `apps/api` `pnpm start` after `pnpm build`, whi
 
 To point PostgreSQL at another data directory, set `BRAVOS_PG_DATA_DIR` and `BRAVOS_PG_PORT` for `postgres:dev`. To start the API against that database, export `DATABASE_URL` and the other values from that environment (process env wins over `.local/dev.env`).
 
-## Owner recovery (development only)
+## Owner recovery
 
-Owner recovery does not send email or WhatsApp. In local development the delivery adapter writes a one-time token under `.local/owner-recovery-outbox/`. After requesting recovery in the staff app, read `.local/owner-recovery-outbox/latest.json` on this machine, then submit the token on the recovery screen. The HTTP API never returns the token. Production startup fails closed until a non-local delivery adapter is configured; that configuration is a later launch gate.
+Owner recovery does not send email or WhatsApp. In local development the delivery adapter writes a one-time token under `.local/owner-recovery-outbox/`. After requesting recovery in the staff app, read `.local/owner-recovery-outbox/latest.json` on this machine, then submit the token on the recovery screen. The HTTP API never returns the token. Production rejects this local adapter. The operator-file recovery contract and its OS permission checks are documented in [release-rehearsal.md](release-rehearsal.md).
 
 ## Checks
 
