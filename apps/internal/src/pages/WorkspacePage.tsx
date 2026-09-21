@@ -618,23 +618,23 @@ export function WorkspacePage({
       {workspace.staff.role === "manager" ? (
         <section className="kpi-grid" aria-label="ملخص اليوم">
           <article className="kpi-card">
-            <span>مبيعات اليوم</span>
             <strong>{todaySales ?? "—"}</strong>
+            <span>مبيعات اليوم</span>
             <small>{todayCount === null ? "لحظات" : `${todayCount} عملية`}</small>
           </article>
           <article className="kpi-card">
-            <span>طلبات جديدة</span>
             <strong>{pendingOrders === null ? "—" : pendingOrders}</strong>
+            <span>طلبات جديدة</span>
             <small>من غير تأكيد</small>
           </article>
           <article className="kpi-card">
-            <span>مخزون يحتاج متابعة</span>
             <strong>{lowStockCount === null ? "—" : lowStockCount}</strong>
+            <span>مخزون يحتاج متابعة</span>
             <small>أصناف قليلة</small>
           </article>
           <article className={`kpi-card${unsynced > 0 ? " is-warn" : ""}`}>
-            <span>مبيعات لسه متبعتش</span>
             <strong>{unsynced}</strong>
+            <span>مبيعات لسه متبعتش</span>
             <small data-testid="unsynced-count">مبيعات غير مزامنة: {unsynced}</small>
           </article>
         </section>

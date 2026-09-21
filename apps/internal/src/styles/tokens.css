@@ -18,8 +18,9 @@
   --surface-danger: #2a1c1a;
   --surface-success: #1c241c;
   --focus-ring: #c6b48a;
-  --shadow: 0 18px 40px rgba(0, 0, 0, 0.35);
-  --radius: 14px;
+  --shadow: 0 1px 0 color-mix(in srgb, var(--brand-accent) 8%, transparent), 0 24px 48px rgba(0, 0, 0, 0.28);
+  --radius: 12px;
+  --radius-sm: 6px;
   --space: 8px;
   --logo-mark: url("/brand/03_Logo-Mark_Ivory.svg");
   --logo-primary: url("/brand/01_Primary-Logo_Vertical_Ivory.svg");
@@ -57,7 +58,9 @@
   --surface-danger: #f6ece9;
   --surface-success: #eef2e6;
   --focus-ring: #8a7344;
-  --shadow: 0 12px 28px rgba(16, 16, 16, 0.08);
+  --shadow: 0 1px 0 color-mix(in srgb, var(--text-primary) 6%, transparent), 0 16px 32px rgba(16, 16, 16, 0.06);
+  --radius: 12px;
+  --radius-sm: 6px;
   --logo-mark: url("/brand/03_Logo-Mark_Black.svg");
   --logo-primary: url("/brand/01_Primary-Logo_Vertical_Black.svg");
   --logo-horizontal: url("/brand/02_Logo_Horizontal_Black.svg");

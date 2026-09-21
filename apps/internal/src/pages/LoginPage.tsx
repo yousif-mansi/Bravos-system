@@ -71,7 +71,7 @@ export function LoginPage({
               {pending ? "لحظات…" : "دخول"}
             </button>
             <Link className="button ghost" to="/recovery">
-              استرداد حساب المالك
+              استرداد المالك
             </Link>
           </div>
         </form>
