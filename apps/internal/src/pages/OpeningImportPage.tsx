@@ -14,6 +14,7 @@ import {
   getOpeningImportPreview,
 } from "../api.ts";
 import { formatEgpFromPiasters } from "../money.ts";
+import { PageLoading } from "../ui/PageLoading.tsx";
 import {
   assignPendingOpeningImport,
   clearPendingOpeningImport,
@@ -313,7 +314,7 @@ export default function OpeningImportPage({ workspace }: { workspace: WorkspaceD
   }
 
   if (loading && !preview) {
-    return <main className="shell"><p>جارٍ تحميل استيراد بيانات البداية…</p></main>;
+    return <PageLoading />;
   }
 
   return (
@@ -423,7 +424,7 @@ function OpeningImportPreview({
 }) {
   return (
     <section className="card opening-import-preview" aria-label="معاينة الاستيراد">
-      <div className="brand">
+      <div className="page-hero">
         <div>
           <h2>{previewStatus(preview.status)}</h2>
           <p className="muted">رقم المعاينة: {preview.id}</p>
@@ -468,7 +469,7 @@ function OpeningImportPreview({
 
       <section className="opening-import-section" data-testid="opening-import-batches">
         <h3>كل دفعات التكلفة الافتتاحية</h3>
-        {preview.batches.length === 0 ? <p className="empty">لا توجد دفعات في هذه المعاينة.</p> : (
+        {preview.batches.length === 0 ? <p className="empty">مفيش دفعات في المعاينة.</p> : (
           <div className="list-stack">
             {preview.batches.map((batch) => (
               <article className="summary-card opening-import-row" data-testid="opening-import-batch" key={batch.key}>
@@ -541,23 +542,23 @@ function CatalogPreview({ catalog }: { catalog: OpeningImportPreviewDto["catalog
       <div className="grid two">
         <PreviewKeyList
           title="التصنيفات"
-          empty="لا توجد تصنيفات في هذه المعاينة."
+          empty="مفيش تصنيفات في المعاينة."
           rows={catalog.categories.map((item) => `${item.key} — ${item.nameAr}${item.parentKey ? ` — الأب: ${item.parentKey}` : ""}`)}
         />
         <PreviewKeyList
           title="المقاسات"
-          empty="لا توجد مقاسات في هذه المعاينة."
+          empty="مفيش مقاسات في المعاينة."
           rows={catalog.sizes.map((item) => `${item.key} — ${item.nameAr}`)}
         />
         <PreviewKeyList
           title="الألوان"
-          empty="لا توجد ألوان في هذه المعاينة."
+          empty="مفيش ألوان في المعاينة."
           rows={catalog.colors.map((item) => `${item.key} — ${item.nameAr}`)}
         />
       </div>
 
       <h4>المنتجات</h4>
-      {catalog.products.length === 0 ? <p className="empty">لا توجد منتجات في هذه المعاينة.</p> : (
+      {catalog.products.length === 0 ? <p className="empty">مفيش منتجات في المعاينة.</p> : (
         <div className="list-stack">
           {catalog.products.map((product) => (
             <article className="summary-card opening-import-row" data-testid="opening-import-product" key={product.key}>
@@ -637,7 +638,7 @@ function ConfigurationDetails({ details }: { details: OpeningImportPreviewDto["c
       <div className="grid two">
         <PreviewKeyList
           title="فئات المصروفات"
-          empty="لا توجد فئات مصروفات في هذه المعاينة."
+          empty="مفيش فئات مصروفات في المعاينة."
           rows={details.expenseCategories.map((item) => `${item.key} — ${item.nameAr} — ${activeLabel(item.active)}`)}
         />
         <div>

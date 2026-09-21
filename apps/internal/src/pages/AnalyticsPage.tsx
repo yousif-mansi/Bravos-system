@@ -88,7 +88,7 @@ export default function AnalyticsPage({ workspace }: { workspace: WorkspaceDto }
       </form>
 
       {error ? <div className="error" role="alert">{error}</div> : null}
-      {loading ? <p role="status">جارٍ تحميل التحليلات…</p> : null}
+      {loading ? <p role="status">لحظات…</p> : null}
       {summary ? (
         <section className="card" aria-labelledby="analytics-summary-heading">
           <div className="analytics-period">

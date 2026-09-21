@@ -25,6 +25,7 @@ import {
   uploadProductImage,
 } from "../api.ts";
 import { egpInputToPiasters, formatEgpFromPiasters, piastersToEgpInput } from "../money.ts";
+import { EmptyState } from "../ui/EmptyState.tsx";
 
 
 type VariantDraft = {
@@ -391,9 +392,11 @@ export default function CatalogPage({
                 ))}
               </select>
             </div>
-            <button type="submit" disabled={pending === "category"}>
-              {pending === "category" ? "جارٍ الحفظ…" : "حفظ التصنيف"}
-            </button>
+            <div className="form-actions">
+              <button type="submit" disabled={pending === "category"}>
+                {pending === "category" ? "جارٍ الحفظ…" : "حفظ التصنيف"}
+              </button>
+            </div>
           </form>
           {categories.length > 0 ? (
             <div className="staff-list stacked-form">
@@ -537,7 +540,7 @@ export default function CatalogPage({
                 onChange={(event) => void onUploadImages(event)}
               />
             </div>
-            {productPending === "media" ? <p role="status">جارٍ رفع الصور…</p> : null}
+            {productPending === "media" ? <p role="status">لحظات…</p> : null}
             {product.imageRefs.length > 0 ? (
               <div className="media-grid" aria-label="صور المنتج الحالية">
                 {product.imageRefs.map((ref, index) => (
@@ -618,10 +621,7 @@ export default function CatalogPage({
               إضافة متغير
             </button>
           </fieldset>
-          <div className="actions">
-            <button type="submit" disabled={Boolean(productPending)}>
-              {productPending === "product" ? "جارٍ الحفظ…" : editingId ? "حفظ التعديل" : "حفظ المنتج"}
-            </button>
+          <div className="form-actions">
             {editingId ? (
               <button
                 type="button"
@@ -635,13 +635,16 @@ export default function CatalogPage({
                 إلغاء التعديل
               </button>
             ) : null}
+            <button type="submit" disabled={Boolean(productPending)}>
+              {productPending === "product" ? "جارٍ الحفظ…" : editingId ? "حفظ التعديل" : "حفظ المنتج"}
+            </button>
           </div>
         </form>
       </div>
       <section className="card">
         <h2>المنتجات</h2>
         {products.length === 0 ? (
-          <div className="empty">لا توجد منتجات بعد.</div>
+          <EmptyState title="لسه مفيش منتجات" message="ابدأ بإضافة أول صنف للمحل من النموذج فوق." />
         ) : (
           <div className="staff-list">
             {products.map((item) => (
@@ -653,14 +656,16 @@ export default function CatalogPage({
                 <p>
                   المتغيرات: {item.variants.map((variant) => `${variant.size.nameAr} / ${variant.color.nameAr} (${formatEgpFromPiasters(variant.sellingPricePiasters)})`).join("، ")}
                 </p>
-                <button
-                  type="button"
-                  className="secondary"
-                  disabled={Boolean(productPending)}
-                  onClick={() => startEdit(item)}
-                >
-                  تعديل
-                </button>
+                <div className="form-actions">
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={Boolean(productPending)}
+                    onClick={() => startEdit(item)}
+                  >
+                    تعديل
+                  </button>
+                </div>
               </article>
             ))}
           </div>

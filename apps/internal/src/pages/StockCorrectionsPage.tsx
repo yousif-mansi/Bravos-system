@@ -11,6 +11,7 @@ import type {
   StockReconciliationDto,
   WorkspaceDto,
 } from "@bravos/contracts";
+import { EmptyState } from "../ui/EmptyState.tsx";
 import {
   acknowledgeCountCoordination,
   ApiError,
@@ -481,7 +482,7 @@ export default function StockCorrectionsPage({ workspace }: { workspace: Workspa
 
       <section className="card">
         <h2>المبيعات المتأخرة بعد التصحيح</h2>
-        {data.cases.length === 0 ? <p className="empty">لا توجد حالات تحتاج مراجعة.</p> : data.cases.map((item) => (
+        {data.cases.length === 0 ? <EmptyState title="مفيش حاجة للمراجعة" message="بعد التصحيح أي فرق هيظهر هنا." /> : data.cases.map((item) => (
           <article className="history-item" key={`${item.correctionId}-${item.saleId}-${item.variantId}`} data-testid="stock-reconciliation-case">
             <p><strong>البيع {item.saleId}</strong></p>
             <p data-testid="late-sale-timing">
@@ -550,7 +551,7 @@ export default function StockCorrectionsPage({ workspace }: { workspace: Workspa
 
       <section className="card" data-testid="stock-correction-history">
         <h2>سجل التصحيحات</h2>
-        {data.corrections.length === 0 ? <p className="empty">لا توجد تصحيحات.</p> : data.corrections.map((item) => (
+        {data.corrections.length === 0 ? <EmptyState title="لسه مفيش تصحيحات" message="أول تصحيح هيتسجل هنا." /> : data.corrections.map((item) => (
           <article className="history-item" key={item.id} data-testid="stock-correction-row">
             <p><strong>{item.variant.product.code}</strong> — من {item.previousAvailableQuantity} إلى {item.correctedAvailableQuantity} ({signed(item.quantityDelta)})</p>
             <p>{item.reason}</p>

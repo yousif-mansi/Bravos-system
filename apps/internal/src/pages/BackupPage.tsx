@@ -227,7 +227,7 @@ export default function BackupPage({ workspace }: { workspace: WorkspaceDto }) {
           />
         </div>
         <button type="submit" disabled={creating || readinessLoading || !readiness || Boolean(readinessError)}>
-          {creating ? "جارٍ إنشاء النسخة والتحقق منها…" : "إنشاء وتنزيل النسخة"}
+          {creating ? "لحظات…" : "إنشاء وتنزيل النسخة"}
         </button>
       </form>
     </main>
@@ -244,13 +244,13 @@ function Readiness({
   error: string;
 }) {
   if (loading) {
-    return <p role="status">جارٍ فحص أجهزة نقاط البيع المعروفة…</p>;
+    return <p role="status">لحظات…</p>;
   }
   if (error) {
     return <div className="error" role="alert">{error}</div>;
   }
   if (!readiness || readiness.knownUnsynchronizedTillCount === 0) {
-    return <div className="notice" role="status">لا توجد أجهزة معروفة تبلغ عن عمليات غير مزامنة حالياً.</div>;
+    return <div className="notice" role="status">كل الأجهزة المعروفة متزامنة.</div>;
   }
   return (
     <div className="backup-warning" role="alert" data-testid="backup-unsynchronized-warning">

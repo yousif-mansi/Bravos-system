@@ -22,6 +22,7 @@ import {
   updateInventorySettings,
 } from "../api.ts";
 import { egpInputToPiasters, formatEgpFromPiasters, piastersToEgpInput } from "../money.ts";
+import { EmptyState } from "../ui/EmptyState.tsx";
 
 import {
   assignPendingReceive,
@@ -659,7 +660,7 @@ export default function ReceivingPage({
         <section className="card">
           <h2>أذون الاستلام</h2>
           {receipts.length === 0 ? (
-            <p className="empty">لا توجد أذون استلام بعد.</p>
+            <EmptyState title="لسه مفيش استلام" message="سجّل أول إذن من النموذج فوق." />
           ) : (
             <div className="staff-list" data-testid="receipt-list">
               {receipts.map((receipt) => (
@@ -774,7 +775,7 @@ export default function ReceivingPage({
         <section className="card">
           <h2>دفعات التكلفة</h2>
           {batches.length === 0 ? (
-            <p className="empty">لا توجد دفعات بعد.</p>
+            <EmptyState title="لسه مفيش دفعات" message="بعد أول استلام هتظهر هنا." />
           ) : (
             <div className="staff-list" data-testid="batch-list">
               {batches.map((batch) => (
@@ -825,7 +826,7 @@ export default function ReceivingPage({
             </button>
           </form>
           {lowStock.length === 0 ? (
-            <p className="empty">لا توجد أصناف منخفضة حالياً.</p>
+            <EmptyState title="المخزون كويس" message="مفيش أصناف وصلت لحد التنبيه." />
           ) : (
             <div className="staff-list" data-testid="low-stock-list">
               {lowStock.map((item) => (

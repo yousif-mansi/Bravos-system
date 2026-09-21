@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import type { DeliveryAreaDto, WorkspaceDto } from "@bravos/contracts";
 import { createDeliveryArea, listDeliveryAreas, updateDeliveryArea } from "../api.ts";
 import { egpInputToPiasters, formatEgpFromPiasters, piastersToEgpInput } from "../money.ts";
+import { EmptyState } from "../ui/EmptyState.tsx";
 
 type Draft = { nameAr: string; feeEgp: string; active: boolean };
 const EMPTY: Draft = { nameAr: "", feeEgp: "", active: true };
@@ -57,14 +58,17 @@ export default function DeliveryAreasPage({ workspace }: { workspace: WorkspaceD
           <div className="field"><label htmlFor="area-name">اسم المنطقة</label><input id="area-name" value={draft.nameAr} onChange={(event) => setDraft({ ...draft, nameAr: event.target.value })} required /></div>
           <div className="field"><label htmlFor="area-fee">رسوم التوصيل بالجنيه</label><input id="area-fee" dir="ltr" inputMode="decimal" value={draft.feeEgp} onChange={(event) => setDraft({ ...draft, feeEgp: event.target.value })} required /></div>
           <label className="checkbox-row"><input type="checkbox" checked={draft.active} onChange={(event) => setDraft({ ...draft, active: event.target.checked })} /> متاحة في صفحة الطلب</label>
-          <div className="actions"><button type="submit" disabled={saving}>{saving ? "جارٍ الحفظ…" : "حفظ"}</button>{editingId ? <button className="secondary" type="button" onClick={() => { setEditingId(null); setDraft(EMPTY); }}>إلغاء</button> : null}</div>
+          <div className="form-actions">
+            {editingId ? <button className="secondary" type="button" onClick={() => { setEditingId(null); setDraft(EMPTY); }}>إلغاء</button> : null}
+            <button type="submit" disabled={saving}>{saving ? "جارٍ الحفظ…" : "حفظ"}</button>
+          </div>
         </form>
         {message ? <p role="status" className="notice">{message}</p> : null}
         {error ? <p role="alert" className="error">{error}</p> : null}
       </section>
       <section className="card">
         <h2>المناطق المسجلة</h2>
-        {loading ? <p>جارٍ التحميل…</p> : areas.length === 0 ? <p className="muted">لا توجد مناطق توصيل بعد.</p> : (
+        {loading ? <p role="status">لحظات…</p> : areas.length === 0 ? <EmptyState title="لسه مفيش مناطق" message="حدد مناطق التوصيل عشان الطلبات تمشي." /> : (
           <div className="list-stack">{areas.map((area) => (
             <article className="summary-card" key={area.id}>
               <div><strong>{area.nameAr}</strong><p className="muted">{formatEgpFromPiasters(area.feePiasters)} · {area.active ? "متاحة" : "موقوفة"}</p></div>

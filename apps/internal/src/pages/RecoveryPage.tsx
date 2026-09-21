@@ -33,9 +33,9 @@ export function RecoveryPage() {
 
   return (
     <main className="shell">
-      <header className="brand">
+      <header className="page-hero">
         <h1>استرداد حساب المالك</h1>
-        <Link className="button secondary" to="/login">العودة لتسجيل الدخول</Link>
+        <Link className="button ghost" to="/login">العودة لتسجيل الدخول</Link>
       </header>
       {error ? <div className="error" role="alert">{error}</div> : null}
       {message ? <p className="muted">{message}</p> : null}
@@ -46,7 +46,9 @@ export function RecoveryPage() {
             <label htmlFor="ownerLogin">اسم دخول المالك</label>
             <input id="ownerLogin" value={loginName} onChange={(event) => setLoginName(event.target.value)} required />
           </div>
-          <button type="submit">طلب الاسترداد</button>
+          <div className="form-actions">
+            <button type="submit">طلب الاسترداد</button>
+          </div>
         </form>
         <form className="card" onSubmit={complete}>
           <h2>تعيين كلمة مرور جديدة</h2>

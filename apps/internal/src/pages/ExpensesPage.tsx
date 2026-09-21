@@ -13,6 +13,7 @@ import {
   type ExpenseWrite,
 } from "../api.ts";
 import { egpInputToPiasters, formatEgpFromPiasters, piastersToEgpInput } from "../money.ts";
+import { EmptyState } from "../ui/EmptyState.tsx";
 
 
 function todayCairoDate(): string {
@@ -22,7 +23,7 @@ function todayCairoDate(): string {
 }
 
 function expenseValueText(value: ExpenseDto["effective"]): string {
-  if (!value) return "لا توجد قيمة فعلية (إلغاء)";
+  if (!value) return "ملغي — مفيش مبلغ";
   return `${formatEgpFromPiasters(value.amountPiasters)} — ${value.expenseDate} — ${value.category.nameAr} — ${value.description}`;
 }
 
@@ -198,11 +199,40 @@ export default function ExpensesPage({
           <div className="field"><label htmlFor="expenseDate">التاريخ</label><input id="expenseDate" type="date" value={expenseDate} onChange={(event) => setExpenseDate(event.target.value)} disabled={Boolean(pendingCreate)} required /></div>
           <div className="field"><label htmlFor="expenseCategory">الفئة</label><select id="expenseCategory" value={categoryId} onChange={(event) => setCategoryId(event.target.value)} disabled={Boolean(pendingCreate)} required><option value="">اختر الفئة</option>{activeCategories.map((item) => <option key={item.id} value={item.id}>{item.nameAr}</option>)}</select></div>
           <div className="field"><label htmlFor="expenseDescription">الوصف</label><textarea id="expenseDescription" value={description} onChange={(event) => setDescription(event.target.value)} disabled={Boolean(pendingCreate)} required /></div>
-          <button disabled={pending === "create"}>{pending === "create" ? "جارٍ الحفظ…" : pendingCreate ? "إعادة محاولة الحفظ" : "حفظ المصروف"}</button>
+          <div className="form-actions">
+            <button disabled={pending === "create"}>{pending === "create" ? "جارٍ الحفظ…" : pendingCreate ? "إعادة محاولة الحفظ" : "حفظ المصروف"}</button>
+          </div>
         </form>
 
         <section className="card"><h2>{manager ? "كل المصروفات" : "مصروفاتي في الفرع"}</h2>
-          {expenses.length === 0 ? <p className="empty">لا توجد مصروفات.</p> : <div className="staff-list" data-testid="expense-list">{expenses.map((item) => <article className="staff-item" key={item.id}><button className="secondary" onClick={() => setSelectedId(item.id)}>عرض التفاصيل</button><p>{item.effective?.description ?? item.original.description}</p><p>{item.status === "cancelled" ? "ملغي" : formatEgpFromPiasters(item.effective!.amountPiasters)}</p><p className="muted">{item.branch.nameAr} — {item.createdByDisplayName}</p></article>)}</div>}
+          {expenses.length === 0 ? (
+            <EmptyState title="لسه مفيش مصروفات" message="سجّل أول مصروف من النموذج جنب القائمة." />
+          ) : (
+            <div className="report-table-wrap" data-testid="expense-list">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>الوصف</th>
+                    <th>المبلغ</th>
+                    <th>الفرع</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {expenses.map((item) => (
+                    <tr key={item.id}>
+                      <td>{item.effective?.description ?? item.original.description}</td>
+                      <td>{item.status === "cancelled" ? "ملغي" : formatEgpFromPiasters(item.effective!.amountPiasters)}</td>
+                      <td className="muted">{item.branch.nameAr} — {item.createdByDisplayName}</td>
+                      <td className="table-actions">
+                        <button className="secondary" onClick={() => setSelectedId(item.id)}>عرض التفاصيل</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </section>
       </div>
 

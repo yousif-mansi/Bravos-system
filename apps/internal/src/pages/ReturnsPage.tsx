@@ -18,6 +18,7 @@ import {
 } from "../returns-api.ts";
 import { egpInputToPiasters, formatEgpFromPiasters, piastersToEgpInput } from "../money.ts";
 import { calculateReturnRefundSuggestion, type ReturnLineSelection } from "../return-refund.ts";
+import { EmptyState } from "../ui/EmptyState.tsx";
 import { accountGeneration } from "../account-session.ts";
 import {
   assignPendingReturnAttempt,
@@ -526,7 +527,7 @@ export default function ReturnsPage({ workspace }: { workspace: WorkspaceDto; on
               <strong>{source.reference}</strong><span>{sourceOrigin(source)} · {formatCairoDate(source.receivedAt)}</span><span>{formatEgpFromPiasters(source.originalPayment.totalPiasters)} · {source.lines.map((line) => line.variant.product.nameAr).join("، ")}</span>
             </button>
           ))}
-          {sources.length === 0 ? <p className="empty">لا توجد معاملات مطابقة مؤهلة للإرجاع.</p> : null}
+          {sources.length === 0 ? <EmptyState title="مفيش عملية ترجع" message="ابحث برقم العملية أو التاريخ." /> : null}
         </div>
       </section>
 

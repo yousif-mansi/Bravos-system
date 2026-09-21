@@ -11,6 +11,7 @@ import { ApiError, getManagementReport, listStaff, type ManagementReportQuery } 
 import { accountGeneration } from "../account-session.ts";
 import { formatEgpFromPiasters } from "../money.ts";
 import { ReportExportActions } from "./ReportExportActions.tsx";
+import { EmptyState } from "../ui/EmptyState.tsx";
 
 type PeriodKind = "today" | "day" | "month";
 type ChannelFilter = "all" | "physical" | "online";
@@ -179,7 +180,7 @@ export default function ReportsPage({ workspace }: { workspace: WorkspaceDto }) 
           <button type="button" onClick={() => setRequestRevision((current) => current + 1)}>إعادة محاولة تحميل التقرير</button>
         </div>
       ) : null}
-      {loading && !report ? <p role="status">جارٍ تحميل التقرير…</p> : null}
+      {loading && !report ? <p role="status">لحظات…</p> : null}
       {report ? (
         <>
           <ReportExportActions query={query} staffId={workspace.staff.id} />
@@ -269,7 +270,7 @@ function ReportBreakdowns({ report }: { report: ManagementReportDto }) {
       <div className="card">
         <h2>حسب القناة</h2>
         <div className="report-table-wrap">
-          <table className="report-table">
+          <table className="report-table data-table">
             <thead><tr><th>القناة</th><th>النهائي</th><th>صافي البضاعة</th><th>مجمل الربح</th></tr></thead>
             <tbody>
               {report.byChannel.map((row) => (
@@ -288,7 +289,7 @@ function ReportBreakdowns({ report }: { report: ManagementReportDto }) {
         <h2>حسب الفرع</h2>
         {report.byBranch.length ? (
           <div className="report-table-wrap">
-            <table className="report-table">
+            <table className="report-table data-table">
               <thead><tr><th>الفرع</th><th>صافي البضاعة</th><th>المصروفات</th><th>ربح التشغيل</th></tr></thead>
               <tbody>
                 {report.byBranch.map((row) => (
@@ -302,13 +303,13 @@ function ReportBreakdowns({ report }: { report: ManagementReportDto }) {
               </tbody>
             </table>
           </div>
-        ) : <p className="empty">لا توجد مبيعات فرع في هذه الفترة.</p>}
+        ) : <EmptyState title="مفيش مبيعات فرع" message="غيّر الفترة أو الفرع." />}
       </div>
       <div className="card report-wide">
         <h2>حسب الموظف</h2>
         {report.byEmployee.length ? (
           <div className="report-table-wrap">
-            <table className="report-table">
+            <table className="report-table data-table">
               <thead><tr><th>الموظف</th><th>العمليات</th><th>القيمة النهائية</th><th>خصم الموظف</th><th>المرتجعات</th><th>المصروفات</th></tr></thead>
               <tbody>
                 {report.byEmployee.map((row) => (
@@ -324,7 +325,7 @@ function ReportBreakdowns({ report }: { report: ManagementReportDto }) {
               </tbody>
             </table>
           </div>
-        ) : <p className="empty">لا توجد مبيعات منسوبة لموظف في هذه الفترة.</p>}
+        ) : <EmptyState title="مفيش مبيعات موظفين" message="غيّر الفترة أو الموظف." />}
       </div>
     </section>
   );
@@ -422,7 +423,7 @@ function CompletedSales({ sales }: { sales: ReportCompletedSaleDto[] }) {
             <CorrectionHistory items={sale.corrections} />
           </article>
         ))}
-      </div> : <p className="empty">لا توجد مبيعات مكتملة في الفترة.</p>}
+      </div> : <EmptyState title="مفيش مبيعات مكتملة" message="غيّر الفترة عشان تشوف عمليات." />}
     </section>
   );
 }
@@ -483,7 +484,7 @@ function Refunds({ refunds, branches }: { refunds: ReportRefundDto[]; branches: 
             ) : null}
           </article>
         ))}
-      </div> : <p className="empty">لا توجد مرتجعات معالجة في الفترة.</p>}
+      </div> : <EmptyState title="مفيش مرتجعات" message="المرتجعات المعالجة هتظهر هنا." />}
     </section>
   );
 }
@@ -511,7 +512,7 @@ function BestSellers({ report }: { report: ManagementReportDto }) {
             <span>مرتجع: {product.returnedQuantity}</span>
           </li>
         ))}
-      </ol> : <p className="empty">لا توجد أصناف مباعة في الفترة.</p>}
+      </ol> : <EmptyState title="مفيش أصناف مباعة" message="غيّر الفترة عشان تشوف الأكثر مبيعاً." />}
     </section>
   );
 }
@@ -566,7 +567,7 @@ function PurchasesAndExpenses({ report }: { report: ManagementReportDto }) {
               ))}
             </li>
           ))}
-        </ul> : <p className="empty">لا توجد مشتريات في الفترة.</p>}
+        </ul> : <EmptyState title="مفيش مشتريات" message="الاستلام في الفترة دي هيظهر هنا." />}
       </div>
       <div className="card">
         <h2>المصروفات</h2>
@@ -582,7 +583,7 @@ function PurchasesAndExpenses({ report }: { report: ManagementReportDto }) {
               <CorrectionHistory items={expense.corrections} compact />
             </li>
           ))}
-        </ul> : <p className="empty">لا توجد مصروفات في الفترة.</p>}
+        </ul> : <EmptyState title="مفيش مصروفات" message="المصروفات المسجلة هتظهر هنا." />}
       </div>
     </section>
   );
@@ -601,7 +602,7 @@ function LowStock({ report }: { report: ManagementReportDto }) {
             <span>المتاح {row.availableQuantity} · حد التنبيه {row.threshold}</span>
           </li>
         ))}
-      </ul> : <p className="empty">لا توجد أصناف عند حد المخزون المنخفض.</p>}
+      </ul> : <EmptyState title="المخزون كويس" message="مفيش أصناف وصلت لحد التنبيه." />}
     </section>
   );
 }

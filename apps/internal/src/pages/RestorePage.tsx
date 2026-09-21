@@ -8,6 +8,8 @@ import {
   type WorkspaceDto,
 } from "@bravos/contracts";
 import { accountGeneration } from "../account-session.ts";
+import { EmptyState } from "../ui/EmptyState.tsx";
+import { PageLoading } from "../ui/PageLoading.tsx";
 import { ApiError } from "../api.ts";
 import {
   acknowledgePreRestoreBackup,
@@ -533,7 +535,7 @@ export default function RestorePage({
   }
 
   if (loading && previews.length === 0) {
-    return <main className="shell"><p>جارٍ تحميل الاستعادة…</p></main>;
+    return <PageLoading />;
   }
 
   const pendingDeferred = deferred.filter((sale) => sale.status === "pending");
@@ -610,7 +612,7 @@ export default function RestorePage({
       <section className="card" aria-labelledby="restore-deferred-title">
         <h2 id="restore-deferred-title">مبيعات مكتملة وصلت من جيل سابق</h2>
         <p className="muted">هذه مبيعات دُفعت وسُلّمت فعلياً. تبقى محفوظة حتى يستعيدها المدير مرة واحدة.</p>
-        {pendingDeferred.length === 0 ? <p className="empty">لا توجد مبيعات متأخرة تحتاج إلى استعادة.</p> : (
+        {pendingDeferred.length === 0 ? <EmptyState title="مفيش مبيعات متأخرة" message="لو في بيع اتأخر عن الاستعادة هيظهر هنا." /> : (
           <div className="restore-deferred-list">
             {pendingDeferred.map((sale) => (
               <article className="restore-deferred-sale" key={sale.operationId}>

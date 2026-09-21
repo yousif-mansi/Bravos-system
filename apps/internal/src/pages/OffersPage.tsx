@@ -8,6 +8,7 @@ import type {
   ManagerProductDto,
   WorkspaceDto,
 } from "@bravos/contracts";
+import { EmptyState } from "../ui/EmptyState.tsx";
 import {
   ApiError,
   createAutomaticOffer,
@@ -340,7 +341,7 @@ export default function OffersPage({
 
       <section className="card stacked-form" aria-label="العروض المحفوظة">
         <h2>العروض المحفوظة</h2>
-        {offers.length === 0 ? <p className="empty">لا توجد عروض بعد.</p> : (
+        {offers.length === 0 ? <EmptyState title="لسه مفيش عروض" message="أنشئ أول عرض من النموذج فوق." /> : (
           <div className="staff-list">{offers.map((offer) => <article className="staff-item" key={offer.id} data-testid="offer-row">
             <h3>{offer.nameAr}</h3>
             <p>{offerSummary(offer)} — {offer.startsOn} إلى {offer.endsOn}</p>

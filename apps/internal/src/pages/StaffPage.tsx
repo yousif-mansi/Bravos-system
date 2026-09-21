@@ -9,6 +9,7 @@ import {
   resetStaffPassword,
   setStaffGrants,
 } from "../api.ts";
+import { EmptyState } from "../ui/EmptyState.tsx";
 
 type GrantDraft = {
   assigned: boolean;
@@ -99,72 +100,74 @@ export default function StaffPage({
             value={createGrants}
             onChange={setCreateGrants}
           />
-          <button type="submit" disabled={pendingCreate}>
-            {pendingCreate ? "جارٍ الإنشاء…" : "إنشاء الحساب"}
-          </button>
+          <div className="form-actions">
+            <button type="submit" disabled={pendingCreate}>
+              {pendingCreate ? "جارٍ الإنشاء…" : "إنشاء الحساب"}
+            </button>
+          </div>
         </form>
         <section className="card">
           <h2>الحسابات</h2>
           {staff.length === 0 ? (
-            <div className="empty">لا توجد حسابات موظفين بعد.</div>
+            <EmptyState title="لسه مفيش موظفين" message="أنشئ أول حساب من النموذج جنب القائمة." />
           ) : (
             <div className="staff-list">
               {staff.map((account) => (
-                <StaffCard
-                  key={account.id}
-                  account={account}
-                  branches={branches}
-                  resettingId={resettingId}
-                  resetPassword={resetPassword}
-                  pendingAction={pendingAction}
-                  onResetPasswordChange={setResetPassword}
-                  onToggleReset={(staffId) => {
-                    setError("");
-                    setNotice("");
-                    setResetPassword("");
-                    setResettingId((current) => (current === staffId ? null : staffId));
-                  }}
-                  onReset={async (staffId) => {
-                    setError("");
-                    setPendingAction(`reset-${staffId}`);
-                    try {
-                      await resetStaffPassword(staffId, resetPassword);
-                      setNotice("تم تعيين كلمة المرور الجديدة.");
-                      setResettingId(null);
-                      setResetPassword("");
-                    } catch (caught) {
-                      setError(caught instanceof ApiError ? caught.messageAr : "تعذر إعادة التعيين.");
-                    } finally {
-                      setPendingAction("");
-                    }
-                  }}
-                  onDisable={async (staffId) => {
-                    setError("");
-                    setPendingAction(`disable-${staffId}`);
-                    try {
-                      await disableStaff(staffId);
-                      setNotice("تم تعطيل الحساب.");
-                      await refresh();
-                    } catch (caught) {
-                      setError(caught instanceof ApiError ? caught.messageAr : "تعذر التعطيل.");
-                    } finally {
-                      setPendingAction("");
-                    }
-                  }}
-                  onSaveGrants={async (staffId, grants) => {
-                    setError("");
-                    setPendingAction(`grants-${staffId}`);
-                    try {
-                      await setStaffGrants(staffId, grants);
-                      setNotice("تم حفظ صلاحيات الفروع.");
-                      await refresh();
-                    } catch (caught) {
-                      setError(caught instanceof ApiError ? caught.messageAr : "تعذر حفظ الصلاحيات.");
-                    } finally {
-                      setPendingAction("");
-                    }
-                  }}
-                />
+                    <StaffCard
+                      key={account.id}
+                      account={account}
+                      branches={branches}
+                      resettingId={resettingId}
+                      resetPassword={resetPassword}
+                      pendingAction={pendingAction}
+                      onResetPasswordChange={setResetPassword}
+                      onToggleReset={(staffId) => {
+                        setError("");
+                        setNotice("");
+                        setResetPassword("");
+                        setResettingId((current) => (current === staffId ? null : staffId));
+                      }}
+                      onReset={async (staffId) => {
+                        setError("");
+                        setPendingAction(`reset-${staffId}`);
+                        try {
+                          await resetStaffPassword(staffId, resetPassword);
+                          setNotice("تم تعيين كلمة المرور الجديدة.");
+                          setResettingId(null);
+                          setResetPassword("");
+                        } catch (caught) {
+                          setError(caught instanceof ApiError ? caught.messageAr : "تعذر إعادة التعيين.");
+                        } finally {
+                          setPendingAction("");
+                        }
+                      }}
+                      onDisable={async (staffId) => {
+                        setError("");
+                        setPendingAction(`disable-${staffId}`);
+                        try {
+                          await disableStaff(staffId);
+                          setNotice("تم تعطيل الحساب.");
+                          await refresh();
+                        } catch (caught) {
+                          setError(caught instanceof ApiError ? caught.messageAr : "تعذر التعطيل.");
+                        } finally {
+                          setPendingAction("");
+                        }
+                      }}
+                      onSaveGrants={async (staffId, grants) => {
+                        setError("");
+                        setPendingAction(`grants-${staffId}`);
+                        try {
+                          await setStaffGrants(staffId, grants);
+                          setNotice("تم حفظ صلاحيات الفروع.");
+                          await refresh();
+                        } catch (caught) {
+                          setError(caught instanceof ApiError ? caught.messageAr : "تعذر حفظ الصلاحيات.");
+                        } finally {
+                          setPendingAction("");
+                        }
+                      }}
+                    />
               ))}
             </div>
           )}
@@ -222,7 +225,7 @@ function StaffCard({
             value={drafts}
             onChange={setDrafts}
           />
-          <div className="actions">
+          <div className="form-actions">
             <button
               type="button"
               className="secondary"
@@ -231,11 +234,7 @@ function StaffCard({
             >
               حفظ الفروع
             </button>
-            <button
-              type="button"
-              className="secondary"
-              onClick={() => onToggleReset(account.id)}
-            >
+            <button type="button" className="secondary" onClick={() => onToggleReset(account.id)}>
               إعادة تعيين كلمة المرور
             </button>
             <button
@@ -266,12 +265,12 @@ function StaffCard({
                   required
                 />
               </div>
-              <div className="actions">
-                <button type="submit" disabled={pendingAction === `reset-${account.id}`}>
-                  حفظ كلمة المرور
-                </button>
+              <div className="form-actions">
                 <button type="button" className="secondary" onClick={() => onToggleReset(account.id)}>
                   إلغاء
+                </button>
+                <button type="submit" disabled={pendingAction === `reset-${account.id}`}>
+                  حفظ كلمة المرور
                 </button>
               </div>
             </form>

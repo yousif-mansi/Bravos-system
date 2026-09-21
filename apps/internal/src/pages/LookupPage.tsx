@@ -18,6 +18,7 @@ import { mergeVariantQuantities, SalesValidationError } from "@bravos/sales/brow
 import { accountGeneration, subscribeAccount } from "../account-session.ts";
 import { getRestorePause } from "../restore-api.ts";
 import { isNetworkFailure } from "../session.ts";
+import { EmptyState } from "../ui/EmptyState.tsx";
 import {
   createPendingSale,
   digestSalePayload,
@@ -1305,7 +1306,7 @@ export default function LookupPage({
       >
         <h2>سلة البيع</h2>
         {cart.length === 0 ? (
-          <p className="muted">لا توجد أصناف في السلة.</p>
+          <EmptyState title="السلة فاضية" message="ابحث بالكود وضيف الصنف." />
         ) : (
           <ul data-testid="sale-cart">
             {cart.map((line) => (

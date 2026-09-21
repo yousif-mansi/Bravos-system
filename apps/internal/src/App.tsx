@@ -339,7 +339,7 @@ export function App() {
     if (!workspace) return <Navigate to="/login" replace />;
     return (
       <AppShell workspace={workspace} onChanged={replaceWorkspace}>
-        <Suspense fallback={<div className="page-loading">جارٍ التحميل…</div>}>{node}</Suspense>
+        <Suspense fallback={<div className="page-loading" role="status">لحظات…</div>}>{node}</Suspense>
       </AppShell>
     );
   }
@@ -347,7 +347,7 @@ export function App() {
   if (loading && !workspace) {
     return (
       <main className="auth-screen">
-        <p>جارٍ التحميل…</p>
+        <p role="status">لحظات…</p>
       </main>
     );
   }

@@ -63,7 +63,7 @@ export default function StorefrontSettingsPage({
       </header>
       <section className="card">
         <p className="muted">أدخل الروابط الحقيقية فقط. اترك أي رابط فارغاً لإخفائه من المتجر.</p>
-        {loading ? <p>جارٍ التحميل…</p> : (
+        {loading ? <p role="status">لحظات…</p> : (
           <form
             aria-label="إعداد روابط التواصل في المتجر"
             onSubmit={(event) => {
@@ -75,7 +75,9 @@ export default function StorefrontSettingsPage({
             <ContactField id="facebook-url" label="رابط فيسبوك" value={draft.facebookUrl} onChange={(value) => setDraft({ ...draft, facebookUrl: value })} />
             <ContactField id="instagram-url" label="رابط إنستجرام" value={draft.instagramUrl} onChange={(value) => setDraft({ ...draft, instagramUrl: value })} />
             <ContactField id="tiktok-url" label="رابط تيك توك" value={draft.tiktokUrl} onChange={(value) => setDraft({ ...draft, tiktokUrl: value })} />
-            <button type="submit" disabled={saving}>{saving ? "جارٍ الحفظ…" : "حفظ الروابط"}</button>
+            <div className="form-actions">
+              <button type="submit" disabled={saving}>{saving ? "جارٍ الحفظ…" : "حفظ الروابط"}</button>
+            </div>
           </form>
         )}
         {message ? <p role="status" className="notice">{message}</p> : null}

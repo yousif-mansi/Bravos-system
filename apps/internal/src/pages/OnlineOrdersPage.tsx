@@ -8,6 +8,8 @@ import type {
 } from "@bravos/contracts";
 import type { PublicProductDto, PublicProductSummaryDto } from "@bravos/contracts/public";
 import { accountGeneration } from "../account-session.ts";
+import { EmptyState } from "../ui/EmptyState.tsx";
+import { PageLoading } from "../ui/PageLoading.tsx";
 import {
   abandonOnlineOrderFailedReturnInspection,
   ApiError,
@@ -747,7 +749,7 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
   }
 
   if (loading) {
-    return <main className="shell"><p>جارٍ تحميل الطلبات…</p></main>;
+    return <PageLoading />;
   }
 
   return (
@@ -779,7 +781,7 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
           ) : null}
           <section className="card">
             <h2>طلبات العملاء</h2>
-            {orders.length === 0 ? <p className="empty">لا توجد طلبات أونلاين حتى الآن.</p> : (
+            {orders.length === 0 ? <EmptyState title="لسه مفيش طلبات" message="أول ما عميل يطلب، الطلب هيظهر هنا." /> : (
               <div className="list-stack">
                 {orders.map((order) => (
                   <article className="summary-card online-order-row" data-testid="online-order-row" key={order.id}>

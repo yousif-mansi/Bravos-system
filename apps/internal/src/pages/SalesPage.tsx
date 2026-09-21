@@ -5,6 +5,7 @@ import type { ManagerSaleDto, SaleDto, WorkspaceDto } from "@bravos/contracts";
 import { ApiError, getSale, listSales } from "../api.ts";
 import { pos, saleFromOffline } from "../pos.ts";
 import { formatEgpFromPiasters } from "../money.ts";
+import { EmptyState } from "../ui/EmptyState.tsx";
 import { SaleSummary } from "./SaleSummary.tsx";
 
 export default function SalesPage({
@@ -122,7 +123,7 @@ export default function SalesPage({
         <section className="card">
           <h2>قائمة المبيعات</h2>
           {sales.length === 0 ? (
-            <p className="muted">لا توجد مبيعات ظاهرة لحسابك.</p>
+            <EmptyState title="مفيش مبيعات تظهر" message="أول ما تبيع، العملية هتظهر هنا." />
           ) : (
             <ul data-testid="sale-list">
               {sales.map((sale) => (
