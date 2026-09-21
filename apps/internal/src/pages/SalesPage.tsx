@@ -1,10 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { accountGeneration, subscribeAccount } from "../account-session.ts";
-import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import type { ManagerSaleDto, SaleDto, WorkspaceDto } from "@bravos/contracts";
 import { ApiError, getSale, listSales } from "../api.ts";
 import { pos, saleFromOffline } from "../pos.ts";
-import { signOutPreservingSales } from "../session.ts";
 import { formatEgpFromPiasters } from "../money.ts";
 import { SaleSummary } from "./SaleSummary.tsx";
 
@@ -15,7 +14,6 @@ export default function SalesPage({
   workspace: WorkspaceDto;
   onChanged: (workspace: WorkspaceDto | null) => void;
 }) {
-  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const requestedSaleId = searchParams.get("saleId");
   const [error, setError] = useState("");
@@ -23,15 +21,6 @@ export default function SalesPage({
   const [selected, setSelected] = useState<SaleDto | ManagerSaleDto | null>(null);
   const generationRef = useRef(accountGeneration());
   const canSeeCosts = workspace.staff.role === "manager" && workspace.capabilities.manageInventory;
-
-  async function logout() {
-    const accepted = await signOutPreservingSales(workspace.staff.id);
-    if (!accepted) {
-      return;
-    }
-    await onChanged(null);
-    navigate("/login");
-  }
 
   useEffect(() => {
     return subscribeAccount((payload) => {
@@ -122,20 +111,11 @@ export default function SalesPage({
 
   return (
     <main className="shell">
-      <header className="brand">
-        <div>
-          <h1>المبيعات</h1>
-          <p className="muted">الفرع النشط: {workspace.activeBranch?.nameAr ?? "غير محدد"}</p>
-        </div>
-        <div className="actions">
-          {workspace.capabilities.cashier ? (
-            <Link className="button secondary" to="/lookup">نقطة البيع</Link>
-          ) : null}
-          <Link className="button secondary" to="/workspace">العودة لمساحة العمل</Link>
-          <button className="secondary" type="button" onClick={() => void logout()}>
-            تسجيل الخروج
-          </button>
-        </div>
+      <header className="page-hero">
+        <h1>المبيعات</h1>
+        {workspace.capabilities.cashier ? (
+          <Link className="button" to="/lookup" aria-label="بيع نقدي البحث عن منتج">بيع نقدي</Link>
+        ) : null}
       </header>
       {error ? <div className="error" role="alert">{error}</div> : null}
       <div className="grid two">

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { Link } from "react-router-dom";
+
 import {
   BACKUP_SECTION_NAMES,
   type BackupSectionName,
@@ -163,12 +163,8 @@ export default function BackupPage({ workspace }: { workspace: WorkspaceDto }) {
 
   return (
     <main className="shell backup-page">
-      <header className="brand">
-        <div>
-          <h1>نسخة احتياطية للبيانات</h1>
-          <p className="muted">تنزيل يدوي مشفّر لبيانات العمل المركزية.</p>
-        </div>
-        <Link className="button secondary" to="/workspace">مساحة العمل</Link>
+      <header className="page-hero">
+        <h1>نسخة احتياطية للبيانات</h1>
       </header>
 
       {error ? <div className="error" role="alert">{error}</div> : null}

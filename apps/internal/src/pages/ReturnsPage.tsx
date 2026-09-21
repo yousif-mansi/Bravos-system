@@ -502,9 +502,8 @@ export default function ReturnsPage({ workspace }: { workspace: WorkspaceDto; on
 
   return (
     <main className="shell returns-page">
-      <header className="brand">
-        <div><h1>المرتجعات</h1><p className="muted">استلام وفحص مستقل عن نقطة البيع</p></div>
-        <Link className="button secondary" to="/workspace">مساحة العمل</Link>
+      <header className="page-hero">
+        <h1>المرتجعات</h1>
       </header>
       <div className="branch-banner" data-testid="return-handling-branch">الفرع النشط: {workspace.activeBranch?.nameAr} · اختر فرع معالجة الإرجاع داخل المسودة</div>
       {error ? <div className="error" role="alert">{error}</div> : null}

@@ -91,8 +91,8 @@ export function CouponManager({ products, categories }: Props) {
         {form.discountType === "fixed"
           ? <div className="field"><label htmlFor="couponFixed">الخصم بالجنيه</label><input id="couponFixed" value={form.fixedEgp} onChange={(e) => setForm({ ...form, fixedEgp: e.target.value })} /></div>
           : <div className="field"><label htmlFor="couponPercent">النسبة المئوية</label><input id="couponPercent" value={form.percentage} onChange={(e) => setForm({ ...form, percentage: e.target.value })} /></div>}
-        <div className="field"><label htmlFor="couponStart">من تاريخ (القاهرة)</label><input id="couponStart" type="date" value={form.startsOn} onChange={(e) => setForm({ ...form, startsOn: e.target.value })} /></div>
-        <div className="field"><label htmlFor="couponEnd">إلى تاريخ (القاهرة)</label><input id="couponEnd" type="date" value={form.endsOn} onChange={(e) => setForm({ ...form, endsOn: e.target.value })} /></div>
+        <div className="field"><label htmlFor="couponStart">من تاريخ</label><input id="couponStart" type="date" value={form.startsOn} onChange={(e) => setForm({ ...form, startsOn: e.target.value })} /></div>
+        <div className="field"><label htmlFor="couponEnd">إلى تاريخ</label><input id="couponEnd" type="date" value={form.endsOn} onChange={(e) => setForm({ ...form, endsOn: e.target.value })} /></div>
       </div>
       <fieldset className="offer-scope"><legend>المنتجات المؤهلة للكوبون</legend>{products.map((p) => <label key={p.id}><input type="checkbox" checked={form.productIds.includes(p.id)} onChange={(e) => toggle("productIds", p.id, e.target.checked)} /> {p.code} — {p.nameAr}</label>)}</fieldset>
       <fieldset className="offer-scope"><legend>التصنيفات المؤهلة للكوبون</legend>{categories.map((c) => <label key={c.id}><input type="checkbox" checked={form.categoryIds.includes(c.id)} onChange={(e) => toggle("categoryIds", c.id, e.target.checked)} /> {c.nameAr}</label>)}</fieldset>

@@ -27,8 +27,8 @@ export default defineConfig({
         display: "standalone",
         lang: "ar",
         dir: "rtl",
-        background_color: "#f3f5f8",
-        theme_color: "#1d4ed8",
+        background_color: "#090b0f",
+        theme_color: "#090b0f",
       },
       injectManifest: {
         globPatterns: ["**/*.{js,css,html,svg,ico,woff2,webmanifest}"],

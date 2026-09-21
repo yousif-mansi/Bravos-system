@@ -1,7 +1,8 @@
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from "react";
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import type { WorkspaceDto } from "@bravos/contracts";
 import { acceptOfflineSale, ApiError, completeSale, getWorkspace, issuePosSnapshot } from "./api.ts";
+import { AppShell } from "./layout/AppShell.tsx";
 import { LoginPage } from "./pages/LoginPage.tsx";
 import { RecoveryPage } from "./pages/RecoveryPage.tsx";
 import { BranchPage } from "./pages/BranchPage.tsx";
@@ -334,9 +335,18 @@ export function App() {
     }
   }
 
+  function guarded(node: ReactNode) {
+    if (!workspace) return <Navigate to="/login" replace />;
+    return (
+      <AppShell workspace={workspace} onChanged={replaceWorkspace}>
+        <Suspense fallback={<div className="page-loading">جارٍ التحميل…</div>}>{node}</Suspense>
+      </AppShell>
+    );
+  }
+
   if (loading && !workspace) {
     return (
-      <main className="shell">
+      <main className="auth-screen">
         <p>جارٍ التحميل…</p>
       </main>
     );
@@ -344,11 +354,12 @@ export function App() {
 
   return (
     <>
-      {error ? (
-        <div className="shell">
+      {error && !workspace ? (
+        <div className="auth-screen">
           <div className="error" role="alert">{error}</div>
         </div>
       ) : null}
+      {error && workspace ? <div className="app-float-error" role="alert">{error}</div> : null}
       <Routes>
         <Route
           path="/login"
@@ -375,7 +386,7 @@ export function App() {
           path="/workspace"
           element={
             workspace?.activeBranch ? (
-              <WorkspacePage workspace={workspace} onChanged={replaceWorkspace} />
+              guarded(<WorkspacePage workspace={workspace} onChanged={replaceWorkspace} />)
             ) : workspace ? (
               <Navigate to="/select-branch" replace />
             ) : (
@@ -387,9 +398,7 @@ export function App() {
           path="/staff"
           element={
             workspace?.capabilities.manageStaff ? (
-              <Suspense fallback={<main className="shell">جارٍ التحميل…</main>}>
-                <StaffPage workspace={workspace} onChanged={replaceWorkspace} />
-              </Suspense>
+              guarded(<StaffPage workspace={workspace} onChanged={replaceWorkspace} />)
             ) : (
               <Navigate to={workspace ? "/workspace" : "/login"} replace />
             )
@@ -399,9 +408,7 @@ export function App() {
           path="/catalog"
           element={
             workspace?.capabilities.manageCatalog ? (
-              <Suspense fallback={<main className="shell">جارٍ التحميل…</main>}>
-                <CatalogPage workspace={workspace} onChanged={replaceWorkspace} />
-              </Suspense>
+              guarded(<CatalogPage workspace={workspace} onChanged={replaceWorkspace} />)
             ) : (
               <Navigate to={workspace ? "/workspace" : "/login"} replace />
             )
@@ -411,9 +418,7 @@ export function App() {
           path="/storefront-settings"
           element={
             workspace?.capabilities.manageCatalog ? (
-              <Suspense fallback={<main className="shell">جارٍ التحميل…</main>}>
-                <StorefrontSettingsPage workspace={workspace} onChanged={replaceWorkspace} />
-              </Suspense>
+              guarded(<StorefrontSettingsPage workspace={workspace} onChanged={replaceWorkspace} />)
             ) : (
               <Navigate to={workspace ? "/workspace" : "/login"} replace />
             )
@@ -423,9 +428,7 @@ export function App() {
           path="/delivery-areas"
           element={
             workspace?.capabilities.manageCatalog ? (
-              <Suspense fallback={<main className="shell">جارٍ التحميل…</main>}>
-                <DeliveryAreasPage workspace={workspace} />
-              </Suspense>
+              guarded(<DeliveryAreasPage workspace={workspace} />)
             ) : (
               <Navigate to={workspace ? "/workspace" : "/login"} replace />
             )
@@ -435,9 +438,7 @@ export function App() {
           path="/lookup"
           element={
             workspace?.capabilities.cashier ? (
-              <Suspense fallback={<main className="shell">جارٍ التحميل…</main>}>
-                <LookupPage workspace={workspace} onChanged={replaceWorkspace} />
-              </Suspense>
+              guarded(<LookupPage workspace={workspace} onChanged={replaceWorkspace} />)
             ) : (
               <Navigate to={workspace ? "/workspace" : "/login"} replace />
             )
@@ -447,9 +448,7 @@ export function App() {
           path="/receiving"
           element={
             workspace?.capabilities.manageInventory ? (
-              <Suspense fallback={<main className="shell">جارٍ التحميل…</main>}>
-                <ReceivingPage workspace={workspace} onChanged={replaceWorkspace} />
-              </Suspense>
+              guarded(<ReceivingPage workspace={workspace} onChanged={replaceWorkspace} />)
             ) : (
               <Navigate to={workspace ? "/workspace" : "/login"} replace />
             )
@@ -459,9 +458,7 @@ export function App() {
           path="/offers"
           element={
             workspace?.capabilities.managePricing ? (
-              <Suspense fallback={<main className="shell">جارٍ التحميل…</main>}>
-                <OffersPage workspace={workspace} onChanged={replaceWorkspace} />
-              </Suspense>
+              guarded(<OffersPage workspace={workspace} onChanged={replaceWorkspace} />)
             ) : (
               <Navigate to={workspace ? "/workspace" : "/login"} replace />
             )
@@ -471,9 +468,7 @@ export function App() {
           path="/sales"
           element={
             workspace?.activeBranch ? (
-              <Suspense fallback={<main className="shell">جارٍ التحميل…</main>}>
-                <SalesPage workspace={workspace} onChanged={replaceWorkspace} />
-              </Suspense>
+              guarded(<SalesPage workspace={workspace} onChanged={replaceWorkspace} />)
             ) : (
               <Navigate to={workspace ? "/select-branch" : "/login"} replace />
             )
@@ -483,9 +478,7 @@ export function App() {
           path="/expenses"
           element={
             workspace?.activeBranch ? (
-              <Suspense fallback={<main className="shell">جارٍ التحميل…</main>}>
-                <ExpensesPage workspace={workspace} onChanged={replaceWorkspace} />
-              </Suspense>
+              guarded(<ExpensesPage workspace={workspace} onChanged={replaceWorkspace} />)
             ) : (
               <Navigate to={workspace ? "/select-branch" : "/login"} replace />
             )
@@ -495,9 +488,7 @@ export function App() {
           path="/returns"
           element={
             workspace?.activeBranch && workspace.staff.role === "manager" && workspace.capabilities.manageInventory ? (
-              <Suspense fallback={<main className="shell">جارٍ التحميل…</main>}>
-                <ReturnsPage workspace={workspace} onChanged={replaceWorkspace} />
-              </Suspense>
+              guarded(<ReturnsPage workspace={workspace} onChanged={replaceWorkspace} />)
             ) : (
               <Navigate to={workspace?.activeBranch ? "/workspace" : workspace ? "/select-branch" : "/login"} replace />
             )
@@ -507,9 +498,7 @@ export function App() {
           path="/corrections"
           element={
             workspace?.activeBranch && workspace.staff.role === "manager" && workspace.capabilities.manageInventory ? (
-              <Suspense fallback={<main className="shell">جارٍ التحميل…</main>}>
-                <CorrectionsPage workspace={workspace} onChanged={replaceWorkspace} />
-              </Suspense>
+              guarded(<CorrectionsPage workspace={workspace} onChanged={replaceWorkspace} />)
             ) : (
               <Navigate to={workspace?.activeBranch ? "/workspace" : workspace ? "/select-branch" : "/login"} replace />
             )
@@ -519,9 +508,7 @@ export function App() {
           path="/stock-corrections"
           element={
             workspace?.activeBranch && workspace.staff.role === "manager" && workspace.capabilities.manageInventory ? (
-              <Suspense fallback={<main className="shell">جارٍ التحميل…</main>}>
-                <StockCorrectionsPage workspace={workspace} />
-              </Suspense>
+              guarded(<StockCorrectionsPage workspace={workspace} />)
             ) : (
               <Navigate to={workspace?.activeBranch ? "/workspace" : workspace ? "/select-branch" : "/login"} replace />
             )
@@ -531,9 +518,7 @@ export function App() {
           path="/online-orders/:orderId?"
           element={
             workspace && (workspace.staff.role === "manager" || workspace.capabilities.orderRepresentative) ? (
-              <Suspense fallback={<main className="shell">جارٍ التحميل…</main>}>
-                <OnlineOrdersPage key={workspace.staff.id} workspace={workspace} />
-              </Suspense>
+              guarded(<OnlineOrdersPage key={workspace.staff.id} workspace={workspace} />)
             ) : (
               <Navigate to={workspace?.activeBranch ? "/workspace" : workspace ? "/select-branch" : "/login"} replace />
             )
@@ -545,9 +530,7 @@ export function App() {
             workspace?.staff.role === "manager"
               && workspace.capabilities.manageInventory
               && workspace.capabilities.manageCatalog ? (
-                <Suspense fallback={<main className="shell">جارٍ التحميل…</main>}>
-                  <OpeningImportPage key={workspace.staff.id} workspace={workspace} />
-                </Suspense>
+                guarded(<OpeningImportPage key={workspace.staff.id} workspace={workspace} />)
               ) : (
                 <Navigate to={workspace?.activeBranch ? "/workspace" : workspace ? "/select-branch" : "/login"} replace />
               )
@@ -557,9 +540,7 @@ export function App() {
           path="/analytics"
           element={
             workspace?.staff.role === "manager" ? (
-              <Suspense fallback={<main className="shell">جارٍ التحميل…</main>}>
-                <AnalyticsPage key={workspace.staff.id} workspace={workspace} />
-              </Suspense>
+              guarded(<AnalyticsPage key={workspace.staff.id} workspace={workspace} />)
             ) : (
               <Navigate to={workspace?.activeBranch ? "/workspace" : workspace ? "/select-branch" : "/login"} replace />
             )
@@ -569,9 +550,7 @@ export function App() {
           path="/reports"
           element={
             workspace?.staff.role === "manager" ? (
-              <Suspense fallback={<main className="shell">جارٍ التحميل…</main>}>
-                <ReportsPage key={workspace.staff.id} workspace={workspace} />
-              </Suspense>
+              guarded(<ReportsPage key={workspace.staff.id} workspace={workspace} />)
             ) : (
               <Navigate to={workspace?.activeBranch ? "/workspace" : workspace ? "/select-branch" : "/login"} replace />
             )
@@ -581,9 +560,7 @@ export function App() {
           path="/backup"
           element={
             workspace?.staff.role === "manager" ? (
-              <Suspense fallback={<main className="shell">جارٍ التحميل…</main>}>
-                <BackupPage key={workspace.staff.id} workspace={workspace} />
-              </Suspense>
+              guarded(<BackupPage key={workspace.staff.id} workspace={workspace} />)
             ) : (
               <Navigate to={workspace?.activeBranch ? "/workspace" : workspace ? "/select-branch" : "/login"} replace />
             )
@@ -593,9 +570,7 @@ export function App() {
           path="/restore"
           element={
             workspace?.staff.role === "manager" ? (
-              <Suspense fallback={<main className="shell">جارٍ التحميل…</main>}>
-                <RestorePage key={workspace.staff.id} workspace={workspace} onChanged={replaceWorkspace} />
-              </Suspense>
+              guarded(<RestorePage key={workspace.staff.id} workspace={workspace} onChanged={replaceWorkspace} />)
             ) : (
               <Navigate to={workspace?.activeBranch ? "/workspace" : workspace ? "/select-branch" : "/login"} replace />
             )

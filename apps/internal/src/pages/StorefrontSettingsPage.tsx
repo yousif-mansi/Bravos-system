@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+
 import type { StorefrontContactsDto, WorkspaceDto } from "@bravos/contracts";
 import { getStorefrontContacts, updateStorefrontContacts } from "../api.ts";
 
@@ -58,12 +58,8 @@ export default function StorefrontSettingsPage({
 
   return (
     <main className="shell">
-      <header className="brand">
-        <div>
-          <h1>روابط المتجر</h1>
-          <p className="muted">{workspace.staff.displayName}</p>
-        </div>
-        <Link className="button secondary" to="/workspace">مساحة العمل</Link>
+      <header className="page-hero">
+        <h1>روابط المتجر</h1>
       </header>
       <section className="card">
         <p className="muted">أدخل الروابط الحقيقية فقط. اترك أي رابط فارغاً لإخفائه من المتجر.</p>

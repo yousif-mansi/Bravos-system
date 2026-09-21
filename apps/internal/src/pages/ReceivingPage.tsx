@@ -1,5 +1,5 @@
 import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+
 import type {
   InventoryBatchDto,
   InventorySettingsDto,
@@ -22,7 +22,7 @@ import {
   updateInventorySettings,
 } from "../api.ts";
 import { egpInputToPiasters, formatEgpFromPiasters, piastersToEgpInput } from "../money.ts";
-import { signOutPreservingSales } from "../session.ts";
+
 import {
   assignPendingReceive,
   clearPendingReceive,
@@ -88,7 +88,6 @@ export default function ReceivingPage({
   workspace: WorkspaceDto;
   onChanged: (workspace: WorkspaceDto | null) => void;
 }) {
-  const navigate = useNavigate();
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [pending, setPending] = useState("");
@@ -200,15 +199,6 @@ export default function ReceivingPage({
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
   }, [workspace.staff.id]);
-
-  async function logout() {
-    const accepted = await signOutPreservingSales(workspace.staff.id);
-    if (!accepted) {
-      return;
-    }
-    await onChanged(null);
-    navigate("/login");
-  }
 
   const selectedReceipt = receipts.find((item) => item.id === selectedReceiptId) ?? receipts[0] ?? null;
   const formLocked = pendingReceive?.phase === "uncertain" && frozenPayload !== null;
@@ -532,17 +522,8 @@ export default function ReceivingPage({
 
   return (
     <main className="shell">
-      <header className="brand">
-        <div>
-          <h1>استلام المخزون</h1>
-          <p className="muted">الفرع النشط: {workspace.activeBranch?.nameAr ?? "غير محدد"} — المخزون مركزي</p>
-        </div>
-        <div className="actions">
-          <Link className="button secondary" to="/workspace">العودة لمساحة العمل</Link>
-          <button className="secondary" type="button" onClick={() => void logout()}>
-            تسجيل الخروج
-          </button>
-        </div>
+      <header className="page-hero">
+        <h1>استلام المخزون</h1>
       </header>
       {typeof navigator !== "undefined" && !navigator.onLine ? (
         <div className="error" role="alert">استلام المخزون يتطلب اتصالاً.</div>

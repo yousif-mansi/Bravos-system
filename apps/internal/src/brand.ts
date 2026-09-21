@@ -1,0 +1,15 @@
+export const brandAssets = {
+  markIvory: "/brand/03_Logo-Mark_Ivory.svg",
+  markWhite: "/brand/03_Logo-Mark_White.svg",
+  markBlack: "/brand/03_Logo-Mark_Black.svg",
+  markDark: "/brand/03_Logo-Mark_Dark.svg",
+  primaryIvory: "/brand/01_Primary-Logo_Vertical_Ivory.svg",
+  primaryWhite: "/brand/01_Primary-Logo_Vertical_White.svg",
+  primaryBlack: "/brand/01_Primary-Logo_Vertical_Black.svg",
+  primaryDark: "/brand/01_Primary-Logo_Vertical_Dark.svg",
+  horizontalIvory: "/brand/02_Logo_Horizontal_Ivory.svg",
+  horizontalBlack: "/brand/02_Logo_Horizontal_Black.svg",
+  wordmarkIvory: "/brand/04_Wordmark_Ivory.svg",
+  wordmarkBlack: "/brand/04_Wordmark_Black.svg",
+  cover: "/brand/cover.jpg",
+} as const;

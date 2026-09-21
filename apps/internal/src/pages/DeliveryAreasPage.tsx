@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+
 import type { DeliveryAreaDto, WorkspaceDto } from "@bravos/contracts";
 import { createDeliveryArea, listDeliveryAreas, updateDeliveryArea } from "../api.ts";
 import { egpInputToPiasters, formatEgpFromPiasters, piastersToEgpInput } from "../money.ts";
@@ -48,9 +48,8 @@ export default function DeliveryAreasPage({ workspace }: { workspace: WorkspaceD
 
   return (
     <main className="shell">
-      <header className="brand">
-        <div><h1>مناطق التوصيل</h1><p className="muted">{workspace.staff.displayName}</p></div>
-        <Link className="button secondary" to="/workspace">مساحة العمل</Link>
+      <header className="page-hero">
+        <h1>مناطق التوصيل</h1>
       </header>
       <section className="card">
         <h2>{editingId ? "تعديل المنطقة" : "إضافة منطقة"}</h2>

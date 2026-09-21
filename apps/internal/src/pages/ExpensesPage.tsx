@@ -1,5 +1,5 @@
 import { type FormEvent, useEffect, useMemo, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+
 import type { ExpenseCategoryDto, ExpenseDto, ExpenseTotalsDto, WorkspaceDto } from "@bravos/contracts";
 import {
   ApiError,
@@ -13,7 +13,7 @@ import {
   type ExpenseWrite,
 } from "../api.ts";
 import { egpInputToPiasters, formatEgpFromPiasters, piastersToEgpInput } from "../money.ts";
-import { signOutPreservingSales } from "../session.ts";
+
 
 function todayCairoDate(): string {
   return new Intl.DateTimeFormat("en-CA", {
@@ -33,7 +33,6 @@ export default function ExpensesPage({
   workspace: WorkspaceDto;
   onChanged: (workspace: WorkspaceDto | null) => void;
 }) {
-  const navigate = useNavigate();
   const manager = workspace.staff.role === "manager";
   const [categories, setCategories] = useState<ExpenseCategoryDto[]>([]);
   const [expenses, setExpenses] = useState<ExpenseDto[]>([]);
@@ -176,15 +175,10 @@ export default function ExpensesPage({
     finally { setPending(""); }
   }
 
-  async function logout() {
-    if (await signOutPreservingSales(workspace.staff.id)) { await onChanged(null); navigate("/login"); }
-  }
-
   return (
     <main className="shell">
-      <header className="brand">
-        <div><h1>المصروفات</h1><p className="muted">الفرع النشط: {workspace.activeBranch?.nameAr}</p></div>
-        <div className="actions"><Link className="button secondary" to="/workspace">مساحة العمل</Link><button className="secondary" onClick={() => void logout()}>تسجيل الخروج</button></div>
+      <header className="page-hero">
+        <h1>المصروفات</h1>
       </header>
       {typeof navigator !== "undefined" && !navigator.onLine ? <div className="error" role="alert">تسجيل المصروفات يتطلب اتصالاً.</div> : null}
       {error ? <div className="error" role="alert">{error}</div> : null}

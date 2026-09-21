@@ -2,6 +2,7 @@ import { type FormEvent, useState } from "react";
 import { Link } from "react-router-dom";
 import type { WorkspaceDto } from "@bravos/contracts";
 import { ApiError, getWorkspace, signIn } from "../api.ts";
+import { brandAssets } from "../brand.ts";
 
 export function LoginPage({
   onSignedIn,
@@ -29,15 +30,17 @@ export function LoginPage({
   }
 
   return (
-    <main className="shell">
-      <header className="brand">
-        <div>
-          <h1>برافوس</h1>
-          <p className="muted">دخول الموظفين إلى التطبيق الداخلي</p>
-        </div>
-      </header>
-      <section className="card">
-        <h2>تسجيل الدخول</h2>
+    <main className="login-screen" data-theme="dark">
+      <div className="login-cover" style={{ backgroundImage: `url(${brandAssets.cover})` }} />
+      <section className="login-panel">
+        <img
+          className="login-logo"
+          src={brandAssets.primaryIvory}
+          alt="برافوس"
+          width={180}
+          height={225}
+        />
+        <h1>تسجيل الدخول</h1>
         {error ? <div className="error" role="alert">{error}</div> : null}
         <form onSubmit={onSubmit}>
           <div className="field">
@@ -65,9 +68,9 @@ export function LoginPage({
           </div>
           <div className="actions">
             <button type="submit" disabled={pending}>
-              {pending ? "جارٍ الدخول…" : "دخول"}
+              {pending ? "لحظات…" : "دخول"}
             </button>
-            <Link className="button secondary" to="/recovery">
+            <Link className="button ghost" to="/recovery">
               استرداد حساب المالك
             </Link>
           </div>

@@ -1,5 +1,5 @@
 import { type FormEvent, useEffect, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { useSearchParams } from "react-router-dom";
 import type {
   ReturnCorrectionDetailDto,
   SaleCorrectionDetailDto,
@@ -226,11 +226,9 @@ export default function CorrectionsPage({ workspace }: { workspace: WorkspaceDto
 
   return (
     <main className="shell corrections-page">
-      <header className="brand">
-        <div><h1>تصحيح التسجيلات</h1><p className="muted">للمدير فقط — مرتجعات العملاء تبقى في قسم المرتجعات</p></div>
-        <Link className="button secondary" to="/workspace">مساحة العمل</Link>
+      <header className="page-hero">
+        <h1>تصحيح التسجيلات</h1>
       </header>
-      <div className="branch-banner">المدير المسؤول: {workspace.staff.displayName}</div>
       {error ? <div className="error" role="alert">{error}</div> : null}
       {notice ? <div className="notice" role="status">{notice}</div> : null}
       {uncertainAttempt ? <div className="notice" data-testid="pending-correction-attempt"><p>توجد عملية تصحيح لم يصل تأكيد نتيجتها. ستُعاد بنفس البيانات ومعرّف العملية.</p><button type="button" disabled={busy} onClick={() => void retryCorrectionAttempt()}>إعادة محاولة التصحيح السابق نفسه</button></div> : null}

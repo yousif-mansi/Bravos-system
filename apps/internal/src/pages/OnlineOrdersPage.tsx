@@ -502,7 +502,7 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
     if (!selected) return;
     const receivedAt = cairoWallTimeToIso(customerReceivedAt);
     if (!receivedAt) {
-      setError("أدخل وقت استلام صحيحاً بتوقيت القاهرة. لا تستخدم ساعة مكررة أو غير موجودة عند تغيير التوقيت الصيفي.");
+      setError("أدخل وقت استلام صحيح. متستخدمش ساعة مكررة أو مش موجودة.");
       return;
     }
     await executeAttempt({
@@ -752,12 +752,8 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
 
   return (
     <main className="shell online-orders-page">
-      <header className="brand">
-        <div>
-          <h1>الطلبات الأونلاين</h1>
-          <p className="muted">متابعة طلبات واتساب وحماية الأصناف التي تم فصلها فعلياً.</p>
-        </div>
-        <Link className="button secondary" to="/workspace">مساحة العمل</Link>
+      <header className="page-hero">
+        <h1>الطلبات الأونلاين</h1>
       </header>
       {error ? <div className="error" role="alert">{error}</div> : null}
       {notice ? <div className="notice" role="status">{notice}</div> : null}
@@ -889,7 +885,7 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
               <h2>استلام العميل</h2>
               <p className="muted">سجّل الوقت الفعلي الذي استلم فيه العميل الطلب. وقت التسجيل في النظام يُحفظ منفصلاً.</p>
               <div className="field">
-                <label htmlFor="customer-received-at">وقت استلام العميل بتوقيت القاهرة</label>
+                <label htmlFor="customer-received-at">وقت استلام العميل</label>
                 <input id="customer-received-at" type="datetime-local" step="1" value={customerReceivedAt} disabled={frozen} onChange={(event) => setCustomerReceivedAt(event.target.value)} required />
               </div>
               <button type="submit" disabled={frozen || !customerReceivedAt}>تسجيل الطلب كمُسلّم</button>

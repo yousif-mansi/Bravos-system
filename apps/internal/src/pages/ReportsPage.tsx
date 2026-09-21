@@ -121,19 +121,15 @@ export default function ReportsPage({ workspace }: { workspace: WorkspaceDto }) 
 
   return (
     <main className="shell reports-page">
-      <header className="brand">
-        <div>
-          <h1>تقارير الإدارة</h1>
-          <p className="muted">المبيعات والمخزون والربح وفق يوم القاهرة والتكلفة التاريخية.</p>
-        </div>
-        <Link className="button secondary" to="/workspace">مساحة العمل</Link>
+      <header className="page-hero">
+        <h1>تقارير الإدارة</h1>
       </header>
 
       <form className="card report-filters" aria-label="فلاتر التقارير" onSubmit={applyFilters}>
         <div className="field">
           <label htmlFor="report-period">الفترة</label>
           <select id="report-period" value={period} onChange={(event) => setPeriod(event.target.value as PeriodKind)}>
-            <option value="today">اليوم الحالي في القاهرة</option>
+            <option value="today">اليوم</option>
             <option value="day">يوم محدد</option>
             <option value="month">شهر ميلادي</option>
           </select>

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 import type { PosPriceSnapshotDto, WorkspaceDto } from "@bravos/contracts";
 import { accountGeneration } from "../account-session.ts";
 import {
@@ -7,11 +7,16 @@ import {
   acknowledgeCountCoordination,
   ApiError,
   completeSale,
+  getManagementReport,
   getStockPause,
   getWorkspace,
   issuePosSnapshot,
+  listLowStock,
+  listOnlineOrders,
   recoverOfflineSale,
 } from "../api.ts";
+import { getBackupReadiness } from "../backup-api.ts";
+import { formatEgpFromPiasters } from "../money.ts";
 import { posCodeIsCached } from "../offline-ready.ts";
 import { acknowledgeRestoreDevice, getRestorePause } from "../restore-api.ts";
 import {
@@ -25,7 +30,7 @@ import {
   recoveryPayload,
   retryUnsyncedSales,
 } from "../pos.ts";
-import { signOutPreservingSales } from "../session.ts";
+
 
 export function WorkspacePage({
   workspace,
@@ -34,7 +39,6 @@ export function WorkspacePage({
   workspace: WorkspaceDto;
   onChanged: (workspace: WorkspaceDto | null) => void;
 }) {
-  const navigate = useNavigate();
   const [online, setOnline] = useState(typeof navigator === "undefined" ? true : navigator.onLine);
   const [ready, setReady] = useState(false);
   const [unsynced, setUnsynced] = useState(0);
@@ -56,6 +60,11 @@ export function WorkspacePage({
   const restoreAcknowledgementRef = useRef<{ previewId: string; pendingKey: string } | null>(null);
   const restoreSyncRef = useRef<{ previewId: string; pendingKey: string } | null>(null);
   const restoreGenerationRef = useRef<number | null>(null);
+  const [todaySales, setTodaySales] = useState<string | null>(null);
+  const [todayCount, setTodayCount] = useState<number | null>(null);
+  const [pendingOrders, setPendingOrders] = useState<number | null>(null);
+  const [lowStockCount, setLowStockCount] = useState<number | null>(null);
+  const [backupHint, setBackupHint] = useState<string | null>(null);
 
   useEffect(() => {
     function syncOnline() {
@@ -196,6 +205,57 @@ export function WorkspacePage({
       window.removeEventListener("focus", observe);
     };
   }, [workspace.staff.id, workspace.capabilities.cashier, online]);
+
+  useEffect(() => {
+    if (!online) return;
+    let cancelled = false;
+    const epoch = accountGeneration();
+    const staffId = workspace.staff.id;
+    const stillCurrent = () => !cancelled && accountGeneration() === epoch && workspace.staff.id === staffId;
+    void (async () => {
+      if (workspace.staff.role === "manager") {
+        try {
+          const report = await getManagementReport({ period: "today", detailPage: 1, detailPageSize: 1 });
+          if (!stillCurrent()) return;
+          setTodaySales(formatEgpFromPiasters(report.summary.netFinalSalesPiasters));
+          setTodayCount(report.summary.completedCount);
+        } catch {
+          if (stillCurrent()) {
+            setTodaySales(null);
+            setTodayCount(null);
+          }
+        }
+        try {
+          const orders = await listOnlineOrders();
+          if (!stillCurrent()) return;
+          setPendingOrders(orders.filter((order) => order.status === "pending").length);
+        } catch {
+          if (stillCurrent()) setPendingOrders(null);
+        }
+        try {
+          const low = await listLowStock();
+          if (!stillCurrent()) return;
+          setLowStockCount(low.length);
+        } catch {
+          if (stillCurrent()) setLowStockCount(null);
+        }
+        try {
+          const readiness = await getBackupReadiness();
+          if (!stillCurrent()) return;
+          setBackupHint(
+            readiness.knownUnsynchronizedTillCount > 0
+              ? `${readiness.knownUnsynchronizedTillCount} جهاز لسه عليه مبيعات`
+              : "الجهاز الحالي جاهز",
+          );
+        } catch {
+          if (stillCurrent()) setBackupHint(null);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [workspace.staff.id, workspace.staff.role, online]);
 
   async function runSync(stillCurrent: () => boolean) {
     syncingRef.current = true;
@@ -379,15 +439,6 @@ export function WorkspacePage({
     }
   }
 
-  async function logout() {
-    const accepted = await signOutPreservingSales(workspace.staff.id);
-    if (!accepted) {
-      return;
-    }
-    await onChanged(null);
-    navigate("/login");
-  }
-
   async function retryNow() {
     const staffId = workspace.staff.id;
     const epoch = accountGeneration();
@@ -467,85 +518,45 @@ export function WorkspacePage({
     }
   }
 
+  const needsAttention = Boolean(
+    observedPause
+    || observedRestorePause
+    || syncError
+    || updateDeferred
+    || (workspace.capabilities.manageStaff && otherPending > 0)
+    || unsynced > 0
+    || (pendingOrders ?? 0) > 0
+    || (lowStockCount ?? 0) > 0,
+  );
+  const showSyncDock = unsynced > 0 || Boolean(syncError) || Boolean(syncStatus) || !online;
+
   return (
-    <main className="shell">
-      <header className="brand">
+    <main className="shell dashboard-page">
+      <header className="page-hero">
         <div>
-          <h1>مساحة العمل</h1>
-          <p className="muted">{workspace.staff.displayName}</p>
-        </div>
-        <div className="actions">
-          <Link className="button secondary" to="/select-branch">تغيير الفرع</Link>
-          {online && workspace.capabilities.manageStaff ? (
-            <Link className="button secondary" to="/staff">الموظفون</Link>
-          ) : null}
-          {online && workspace.capabilities.manageCatalog ? (
-            <Link className="button secondary" to="/catalog">المنتجات</Link>
-          ) : null}
-          {online && workspace.capabilities.manageCatalog ? (
-            <Link className="button secondary" to="/storefront-settings">روابط المتجر</Link>
-          ) : null}
-          {online && workspace.capabilities.manageCatalog ? (
-            <Link className="button secondary" to="/delivery-areas">مناطق التوصيل</Link>
-          ) : null}
-          {online && (workspace.staff.role === "manager" || workspace.capabilities.orderRepresentative) ? (
-            <Link className="button secondary" to="/online-orders">الطلبات الأونلاين</Link>
-          ) : null}
-          {online && workspace.capabilities.manageInventory ? (
-            <Link className="button secondary" to="/receiving">استلام المخزون</Link>
-          ) : null}
-          {online && workspace.capabilities.managePricing ? (
-            <Link className="button secondary" to="/offers">العروض</Link>
-          ) : null}
-          {online && workspace.staff.role === "manager" && workspace.capabilities.manageInventory ? (
-            <Link className="button secondary" to="/returns">المرتجعات</Link>
-          ) : null}
-          {online && workspace.staff.role === "manager" && workspace.capabilities.manageInventory ? (
-            <Link className="button secondary" to="/corrections">تصحيح التسجيلات</Link>
-          ) : null}
-          {online && workspace.staff.role === "manager" && workspace.capabilities.manageInventory ? (
-            <Link className="button secondary" to="/stock-corrections">تصحيح كميات المخزون</Link>
-          ) : null}
-          {online
-            && workspace.staff.role === "manager"
-            && workspace.capabilities.manageInventory
-            && workspace.capabilities.manageCatalog ? (
-              <Link className="button secondary" to="/opening-import">استيراد بيانات البداية</Link>
-            ) : null}
-          {online && workspace.staff.role === "manager" ? (
-            <Link className="button secondary" to="/reports">التقارير</Link>
-          ) : null}
-          {workspace.capabilities.cashier ? (
-            <Link className="button secondary" to="/lookup">البحث عن منتج</Link>
-          ) : null}
-          {workspace.activeBranch ? (
-            <Link className="button secondary" to="/sales">المبيعات</Link>
-          ) : null}
-          {online && workspace.activeBranch ? (
-            <Link className="button secondary" to="/expenses">المصروفات</Link>
-          ) : null}
-          {online && workspace.staff.role === "manager" ? (
-            <Link className="button secondary" to="/analytics">تحليلات المتجر</Link>
-          ) : null}
-          {online && workspace.staff.role === "manager" ? (
-            <Link className="button secondary" to="/backup">نسخة احتياطية</Link>
-          ) : null}
-          {online && workspace.staff.role === "manager" ? (
-            <Link className="button secondary" to="/restore">استعادة البيانات</Link>
-          ) : null}
-          <button className="secondary" type="button" onClick={() => void logout()}>
-            تسجيل الخروج
-          </button>
+          <p className="eyebrow">أهلاً، {workspace.staff.displayName}</p>
+          <h1>الرئيسية<span className="sr-only"> مساحة العمل</span></h1>
+          <p className="page-subtitle">{workspace.staff.role === "manager" ? "ملخص الفرع اليوم" : "ابدأ البيع"}</p>
         </div>
       </header>
-      <div className="branch-banner" data-testid="active-branch">
-        الفرع النشط: {workspace.activeBranch?.nameAr}
-      </div>
-      <p data-testid="unsynced-count">مبيعات غير مزامنة: {unsynced}</p>
+
+      {workspace.capabilities.cashier ? (
+        <Link className="sell-now" to="/lookup" aria-label="بيع نقدي البحث عن منتج">
+          <strong>بيع نقدي</strong>
+          <span>ابدأ بيع من الكود</span>
+        </Link>
+      ) : null}
+      {workspace.capabilities.cashier && ready ? (
+        <p className="theme-hook" data-testid="offline-ready" role="status">جاهز للعمل دون اتصال</p>
+      ) : null}
+      {workspace.capabilities.cashier && !ready ? (
+        <p className="quiet-status" data-testid="offline-not-ready">نقطة البيع بتتجهز</p>
+      ) : null}
+
       {observedPause ? (
-        <div className="error" data-testid="stock-pause" role="alert">
-          <p>تغييرات المخزون متوقفة مؤقتاً لإجراء تصحيح كمية.</p>
-          <p>لا تبدأ بيعاً جديداً ولا تسلّم بضاعة حتى انتهاء التوقف.</p>
+        <div className="alert alert-danger" data-testid="stock-pause" role="alert">
+          <strong>تصحيح كمية شغال</strong>
+          <p>ما تبدأش بيع جديد لحد ما التصحيح يخلص.</p>
           {pauseAcknowledged ? (
             <p data-testid="stock-pause-acknowledged">تم تأكيد مزامنة هذا الجهاز والتوقف.</p>
           ) : (
@@ -555,55 +566,43 @@ export function WorkspacePage({
               disabled={syncing || unsynced > 0}
               onClick={() => void acknowledgePause()}
             >
-              تأكيد مزامنة هذا الجهاز والتوقف
-            </button> : <p className="muted">أعد مزامنة المبيعات لإصدار لقطة مرتبطة بهذا التوقف قبل التأكيد.</p>
+              أكّد إن الجهاز واقف
+            </button> : <p className="muted">إبعت المبيعات الأول عشان تقدر تؤكد.</p>
           )}
         </div>
       ) : null}
       {observedRestorePause ? (
-        <div className="error" data-testid="restore-pause" role="alert">
-          <p>العمل متوقف مؤقتاً لمراجعة استعادة نسخة البيانات.</p>
-          <p>لا تبدأ بيعاً جديداً ولا تسلّم بضاعة حتى انتهاء التوقف.</p>
+        <div className="alert alert-danger" data-testid="restore-pause" role="alert">
+          <strong>استعادة بيانات شغالة</strong>
+          <p>ما تبدأش بيع جديد لحد ما الاستعادة تخلص.</p>
           {restorePauseAcknowledged ? (
             <p data-testid="restore-pause-acknowledged">تم تأكيد حفظ مبيعات هذا الجهاز والتوقف.</p>
           ) : restorePauseSnapshot?.restorePause?.previewId === observedRestorePause.previewId ? (
             <>
-              {unsynced > 0 && restoreCustodyComplete ? <p>المبيعات غير المطبقة محفوظة لدى الخادم وستبقى ظاهرة لاسترداد المدير.</p> : null}
+              {unsynced > 0 && restoreCustodyComplete ? <p>المبيعات دي محفوظة وهتظهر للمدير.</p> : null}
               <button
                 type="button"
                 data-testid="acknowledge-restore-pause"
                 disabled={syncing || !restoreCustodyComplete}
                 onClick={() => void acknowledgeRestorePause()}
               >
-                تأكيد مزامنة هذا الجهاز والتوقف للاستعادة
+                أكّد إن الجهاز واقف للاستعادة
               </button>
             </>
-          ) : <p className="muted">أعد مزامنة المبيعات لإصدار لقطة مرتبطة بهذه الاستعادة قبل التأكيد.</p>}
+          ) : <p className="muted">إبعت المبيعات الأول عشان تقدر تؤكد.</p>}
         </div>
       ) : null}
-      {syncStatus ? (
-        <p data-testid="sync-status" role="status">{syncStatus}</p>
-      ) : null}
       {syncError ? (
-        <div className="error" data-testid="sync-error" role="alert">{syncError}</div>
+        <div className="alert alert-danger" data-testid="sync-error" role="alert">{syncError}</div>
       ) : null}
-      <p className="muted" data-testid="sync-foreground-note">
-        إغلاق المتصفح لا يضمن إرسال المبيعات. أعد المحاولة عند الاتصال.
-      </p>
-      <div className="actions">
-        <button
-          className="secondary"
-          type="button"
-          data-testid="retry-sync"
-          disabled={!online || syncing}
-          onClick={() => void retryNow()}
-        >
-          إعادة المحاولة
-        </button>
-      </div>
+      {updateDeferred ? (
+        <div className="alert alert-warn" data-testid="update-deferred" role="status">
+          في تحديث مستني المبيعات المتأخرة تتبعت.
+        </div>
+      ) : null}
       {workspace.capabilities.manageStaff && otherPending > 0 ? (
-        <div className="notice" data-testid="foreign-queue">
-          <p>مبيعات محفوظة لحساب آخر: {otherPending}</p>
+        <div className="alert alert-warn" data-testid="foreign-queue">
+          <p>مبيعات محفوظة لحساب تاني: {otherPending}</p>
           <button
             className="secondary"
             type="button"
@@ -611,33 +610,106 @@ export function WorkspacePage({
             disabled={!online || syncing}
             onClick={() => void recoverNow()}
           >
-            استرداد المبيعات المحفوظة
+            رجّع مبيعات الحساب التاني
           </button>
         </div>
       ) : null}
-      {ready ? (
-        <div className="notice" data-testid="offline-ready" role="status">
-          جاهز للعمل دون اتصال
-        </div>
-      ) : workspace.capabilities.cashier ? (
-        <p className="muted" data-testid="offline-not-ready">لم تكتمل جاهزية نقطة البيع دون اتصال بعد.</p>
-      ) : null}
-      {updateDeferred ? (
-        <div className="notice" data-testid="update-deferred" role="status">
-          تم تأجيل تحديث التطبيق للحفاظ على المبيعات غير المزامنة. أعد المحاولة بعد المزامنة.
-        </div>
-      ) : null}
-      {persistent === false ? (
-        <p className="muted">طلبنا حفظاً ثابتاً للمتصفح إن وُجد. هذا لا يحمي من حذف بيانات المتصفح.</p>
-      ) : null}
-      <section className="card">
-        <h2>ما المتاح الآن</h2>
-        <p>
-          {online
-            ? "يمكنك تسجيل الدخول، اختيار فرع مصرّح به، وصيانة المنتجات واستلام المخزون المركزي، والبحث عن منتج وإتمام بيع نقدي."
-            : "البيع النقدي من البيانات المحفوظة متاح للحساب المسجّل. الاستلام والإرجاع والمصروفات وتغيير الأسعار والصلاحيات تتطلب اتصالاً."}
+
+      {workspace.staff.role === "manager" ? (
+        <section className="kpi-grid" aria-label="ملخص اليوم">
+          <article className="kpi-card">
+            <span>مبيعات اليوم</span>
+            <strong>{todaySales ?? "—"}</strong>
+            <small>{todayCount === null ? "لحظات" : `${todayCount} عملية`}</small>
+          </article>
+          <article className="kpi-card">
+            <span>طلبات جديدة</span>
+            <strong>{pendingOrders === null ? "—" : pendingOrders}</strong>
+            <small>من غير تأكيد</small>
+          </article>
+          <article className="kpi-card">
+            <span>مخزون يحتاج متابعة</span>
+            <strong>{lowStockCount === null ? "—" : lowStockCount}</strong>
+            <small>أصناف قليلة</small>
+          </article>
+          <article className={`kpi-card${unsynced > 0 ? " is-warn" : ""}`}>
+            <span>مبيعات لسه متبعتش</span>
+            <strong>{unsynced}</strong>
+            <small data-testid="unsynced-count">مبيعات غير مزامنة: {unsynced}</small>
+          </article>
+        </section>
+      ) : (
+        <p data-testid="unsynced-count" className={`quiet-metric${unsynced > 0 ? " is-warn" : ""}`}>
+          مبيعات غير مزامنة: {unsynced}
         </p>
-      </section>
+      )}
+
+      {workspace.staff.role === "manager" && backupHint && backupHint !== "الجهاز الحالي جاهز" ? (
+        <p className="system-status">{backupHint}</p>
+      ) : null}
+
+      {needsAttention && workspace.staff.role === "manager" ? (
+        <section className="card attention-card" aria-label="محتاج متابعة">
+          <h2>محتاج متابعة</h2>
+          <ul>
+            {unsynced > 0 ? <li>{unsynced} بيعة لسه متبعتش</li> : null}
+            {(pendingOrders ?? 0) > 0 ? <li>{pendingOrders} طلب جديد</li> : null}
+            {(lowStockCount ?? 0) > 0 ? <li>{lowStockCount} صنف قليل</li> : null}
+            {otherPending > 0 ? <li>{otherPending} بيعة على حساب تاني</li> : null}
+          </ul>
+        </section>
+      ) : null}
+
+      {workspace.staff.role === "manager" || workspace.capabilities.orderRepresentative || workspace.capabilities.manageInventory ? (
+        <section className="card quick-actions" aria-label="اختصارات">
+          <h2>اختصارات</h2>
+          <div className="action-tiles">
+            {online && workspace.capabilities.manageInventory ? (
+              <Link className="action-tile" to="/receiving">
+                <strong>استلام مخزون</strong>
+                <span>زود الكمية</span>
+              </Link>
+            ) : null}
+            {online && workspace.capabilities.manageCatalog ? (
+              <Link className="action-tile" to="/catalog">
+                <strong>إضافة منتج</strong>
+                <span>القائمة</span>
+              </Link>
+            ) : null}
+            {online && workspace.staff.role === "manager" ? (
+              <Link className="action-tile" to="/reports">
+                <strong>التقارير</strong>
+                <span>اليوم</span>
+              </Link>
+            ) : null}
+          </div>
+        </section>
+      ) : null}
+
+      {showSyncDock ? (
+        <section className="sync-dock">
+          {syncStatus ? <p data-testid="sync-status" role="status">{syncStatus}</p> : null}
+          {unsynced > 0 ? (
+            <p className="muted" data-testid="sync-foreground-note">في مبيعات لسه متبعتش. ابعتها وأنت متصل.</p>
+          ) : <p className="sr-only" data-testid="sync-foreground-note"> </p>}
+          <button
+            className="secondary"
+            type="button"
+            data-testid="retry-sync"
+            disabled={!online || syncing}
+            onClick={() => void retryNow()}
+          >
+            إعادة المحاولة
+          </button>
+        </section>
+      ) : (
+        <>
+          <p className="sr-only" data-testid="sync-foreground-note"> </p>
+          <button className="sr-only" type="button" data-testid="retry-sync" disabled={!online || syncing} onClick={() => void retryNow()}>
+            إعادة المحاولة
+          </button>
+        </>
+      )}
     </main>
   );
 }

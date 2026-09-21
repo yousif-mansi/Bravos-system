@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import {
   BACKUP_SECTION_NAMES,
   type BackupSectionName,
@@ -539,12 +539,8 @@ export default function RestorePage({
   const pendingDeferred = deferred.filter((sale) => sale.status === "pending");
   return (
     <main className="shell restore-page">
-      <header className="brand">
-        <div>
-          <h1>استعادة نسخة البيانات</h1>
-          <p className="muted">للمدير فقط — الجيل الحالي للبيانات: {currentGeneration}</p>
-        </div>
-        <Link className="button secondary" to="/workspace">مساحة العمل</Link>
+      <header className="page-hero">
+        <h1>استعادة نسخة البيانات</h1>
       </header>
 
       {error ? <div className="error" role="alert">{error}</div> : null}

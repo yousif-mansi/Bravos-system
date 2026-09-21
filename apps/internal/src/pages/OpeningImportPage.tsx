@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+
 import type {
   OpeningImportFilesDto,
   OpeningImportLineErrorDto,
@@ -318,12 +318,8 @@ export default function OpeningImportPage({ workspace }: { workspace: WorkspaceD
 
   return (
     <main className="shell opening-import-page">
-      <header className="brand">
-        <div>
-          <h1>استيراد بيانات البداية</h1>
-          <p className="muted">رفع بيانات الإطلاق الحالية دون استيراد المبيعات الورقية القديمة.</p>
-        </div>
-        <Link className="button secondary" to="/workspace">مساحة العمل</Link>
+      <header className="page-hero">
+        <h1>استيراد بيانات البداية</h1>
       </header>
 
       {error ? <div className="error" role="alert">{error}</div> : null}

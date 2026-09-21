@@ -1,5 +1,5 @@
 import { type FormEvent, useEffect, useMemo, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+
 import type { BranchDto, StaffAccountDto, WorkspaceDto } from "@bravos/contracts";
 import {
   ApiError,
@@ -9,7 +9,6 @@ import {
   resetStaffPassword,
   setStaffGrants,
 } from "../api.ts";
-import { signOutPreservingSales } from "../session.ts";
 
 type GrantDraft = {
   assigned: boolean;
@@ -24,7 +23,6 @@ export default function StaffPage({
   workspace: WorkspaceDto;
   onChanged: (workspace: WorkspaceDto | null) => void;
 }) {
-  const navigate = useNavigate();
   const branches = workspace.authorizedBranches;
   const [staff, setStaff] = useState<StaffAccountDto[]>([]);
   const [error, setError] = useState("");
@@ -73,28 +71,10 @@ export default function StaffPage({
     }
   }
 
-  async function logout() {
-    const accepted = await signOutPreservingSales(workspace.staff.id);
-    if (!accepted) {
-      return;
-    }
-    await onChanged(null);
-    navigate("/login");
-  }
-
   return (
     <main className="shell">
-      <header className="brand">
-        <div>
-          <h1>إدارة الموظفين</h1>
-          <p className="muted">الفرع النشط: {workspace.activeBranch?.nameAr ?? "غير محدد"}</p>
-        </div>
-        <div className="actions">
-          <Link className="button secondary" to="/workspace">العودة لمساحة العمل</Link>
-          <button className="secondary" type="button" onClick={() => void logout()}>
-            تسجيل الخروج
-          </button>
-        </div>
+      <header className="page-hero">
+        <h1>إدارة الموظفين</h1>
       </header>
       {error ? <div className="error" role="alert">{error}</div> : null}
       {notice ? <div className="notice" role="status">{notice}</div> : null}

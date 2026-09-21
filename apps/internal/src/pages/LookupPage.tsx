@@ -1,5 +1,4 @@
 import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
 import type { CashierProductLookupDto, CashierVariantDto, PosPriceSnapshotDto, SaleDto, StockPauseDto, WorkspaceDto } from "@bravos/contracts";
 import { SaleSummary } from "./SaleSummary.tsx";
 import { ApiError, acceptOfflineSale, completeSale, getStockPause, getWorkspace, issuePosSnapshot, lookupProductByCode, lookupSaleOperation, prepareSale } from "../api.ts";
@@ -18,7 +17,7 @@ import {
 import { mergeVariantQuantities, SalesValidationError } from "@bravos/sales/browser";
 import { accountGeneration, subscribeAccount } from "../account-session.ts";
 import { getRestorePause } from "../restore-api.ts";
-import { isNetworkFailure, signOutPreservingSales } from "../session.ts";
+import { isNetworkFailure } from "../session.ts";
 import {
   createPendingSale,
   digestSalePayload,
@@ -84,7 +83,6 @@ export default function LookupPage({
   workspace: WorkspaceDto;
   onChanged: (workspace: WorkspaceDto | null) => void;
 }) {
-  const navigate = useNavigate();
   const [code, setCode] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -379,15 +377,6 @@ export default function LookupPage({
       cancelled = true;
     };
   }, [workspace.staff.id]);
-
-  async function logout() {
-    const accepted = await signOutPreservingSales(workspace.staff.id);
-    if (!accepted) {
-      return;
-    }
-    await onChanged(null);
-    navigate("/login");
-  }
 
   async function withLocalAvailability(found: CashierProductLookupDto): Promise<CashierProductLookupDto> {
     const next: Record<string, number> = {};
@@ -1236,18 +1225,8 @@ export default function LookupPage({
 
   return (
     <main className="shell">
-      <header className="brand">
-        <div>
-          <h1>البحث عن منتج</h1>
-          <p className="muted">الفرع النشط: {workspace.activeBranch?.nameAr ?? "غير محدد"}</p>
-        </div>
-        <div className="actions">
-          <Link className="button secondary" to="/sales">المبيعات</Link>
-          <Link className="button secondary" to="/workspace">العودة لمساحة العمل</Link>
-          <button className="secondary" type="button" onClick={() => void logout()}>
-            تسجيل الخروج
-          </button>
-        </div>
+      <header className="page-hero">
+        <h1>بيع نقدي<span className="sr-only"> البحث عن منتج</span></h1>
       </header>
       {error ? <div className="error" role="alert">{error}</div> : null}
       {stockPause ? (

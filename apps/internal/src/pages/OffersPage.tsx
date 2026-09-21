@@ -1,5 +1,5 @@
 import { type FormEvent, useEffect, useMemo, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+
 import type {
   AutomaticOfferDiscountType,
   AutomaticOfferDto,
@@ -17,7 +17,7 @@ import {
   updateAutomaticOffer,
 } from "../api.ts";
 import { egpInputToPiasters, formatEgpFromPiasters } from "../money.ts";
-import { signOutPreservingSales } from "../session.ts";
+
 import { CouponManager } from "./CouponManager.tsx";
 
 type FormState = {
@@ -80,7 +80,6 @@ export default function OffersPage({
   workspace: WorkspaceDto;
   onChanged: (workspace: WorkspaceDto | null) => void;
 }) {
-  const navigate = useNavigate();
   const [offers, setOffers] = useState<AutomaticOfferDto[]>([]);
   const [products, setProducts] = useState<ManagerProductDto[]>([]);
   const [categories, setCategories] = useState<CategoryDto[]>([]);
@@ -119,12 +118,6 @@ export default function OffersPage({
     } finally {
       setPending(false);
     }
-  }
-
-  async function logout() {
-    if (!(await signOutPreservingSales(workspace.staff.id))) return;
-    await onChanged(null);
-    navigate("/login");
   }
 
   function toggle(
@@ -288,12 +281,8 @@ export default function OffersPage({
 
   return (
     <main className="shell">
-      <header className="brand">
-        <div><h1>العروض التلقائية</h1><p className="muted">تُطبق أفضل قيمة مؤهلة فقط.</p></div>
-        <div className="actions">
-          <Link className="button secondary" to="/workspace">مساحة العمل</Link>
-          <button className="secondary" type="button" onClick={() => void logout()}>تسجيل الخروج</button>
-        </div>
+      <header className="page-hero">
+        <h1>العروض التلقائية</h1>
       </header>
       {error ? <div className="error" role="alert">{error}</div> : null}
       {notice ? <div className="notice" role="status">{notice}</div> : null}
@@ -308,8 +297,8 @@ export default function OffersPage({
           ) : form.discountType === "fixed" ? (
             <div className="field"><label htmlFor="offerFixed">الخصم بالجنيه</label><input id="offerFixed" inputMode="decimal" value={form.fixedEgp} onChange={(event) => setForm({ ...form, fixedEgp: event.target.value })} /></div>
           ) : null}
-          <div className="field"><label htmlFor="offerStart">من تاريخ (القاهرة)</label><input id="offerStart" type="date" value={form.startsOn} onChange={(event) => setForm({ ...form, startsOn: event.target.value })} /></div>
-          <div className="field"><label htmlFor="offerEnd">إلى تاريخ (القاهرة)</label><input id="offerEnd" type="date" value={form.endsOn} onChange={(event) => setForm({ ...form, endsOn: event.target.value })} /></div>
+          <div className="field"><label htmlFor="offerStart">من تاريخ</label><input id="offerStart" type="date" value={form.startsOn} onChange={(event) => setForm({ ...form, startsOn: event.target.value })} /></div>
+          <div className="field"><label htmlFor="offerEnd">إلى تاريخ</label><input id="offerEnd" type="date" value={form.endsOn} onChange={(event) => setForm({ ...form, endsOn: event.target.value })} /></div>
         </div>
         {form.discountType === "percentage" || form.discountType === "fixed" ? <>
           <fieldset className="offer-scope"><legend>المنتجات المؤهلة</legend>{products.map((product) => <label key={product.id}><input type="checkbox" checked={form.productIds.includes(product.id)} onChange={(event) => toggle("productIds", product.id, event.target.checked)} /> {product.code} — {product.nameAr}</label>)}</fieldset>

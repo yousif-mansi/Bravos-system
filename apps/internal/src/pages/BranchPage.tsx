@@ -34,13 +34,14 @@ export function BranchPage({
   }
 
   return (
-    <main className="shell">
-      <header className="brand">
+    <main className="auth-screen">
+      <section className="card auth-card">
+      <header className="page-hero">
         <div>
           <h1>اختيار الفرع النشط</h1>
           <p className="muted">{workspace.staff.displayName}</p>
         </div>
-        <button className="secondary" type="button" onClick={() => void logout()}>
+        <button className="ghost" type="button" onClick={() => void logout()}>
           تسجيل الخروج
         </button>
       </header>
@@ -48,8 +49,8 @@ export function BranchPage({
       {workspace.authorizedBranches.length === 0 ? (
         <div className="empty">لا توجد فروع مصرّح بها لهذا الحساب.</div>
       ) : (
-        <section className="card">
-          <p>اختر الفرع الذي ستعمل منه الآن. المبيعات والمصروفات ستُنسب إلى هذا الفرع لاحقاً.</p>
+        <>
+          <p>اختَر الفرع اللي هتشتغل منه دلوقتي.</p>
           <div className="actions">
             {workspace.authorizedBranches.map((branch) => (
               <button key={branch.id} type="button" onClick={() => void choose(branch.id)}>
@@ -57,8 +58,9 @@ export function BranchPage({
               </button>
             ))}
           </div>
-        </section>
+        </>
       )}
+      </section>
     </main>
   );
 }

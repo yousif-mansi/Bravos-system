@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { Link } from "react-router-dom";
+
 import type { AnalyticsMetricDto, AnalyticsSummaryDto, WorkspaceDto } from "@bravos/contracts";
 import { accountGeneration } from "../account-session.ts";
 import { ApiError, getAnalytics, type AnalyticsQuery } from "../api.ts";
@@ -71,12 +71,8 @@ export default function AnalyticsPage({ workspace }: { workspace: WorkspaceDto }
 
   return (
     <main className="shell analytics-page">
-      <header className="brand">
-        <div>
-          <h1>تحليلات المتجر</h1>
-          <p className="muted">أعداد مجمعة لفهم نشاط المتجر من دون ملفات شخصية للزوار.</p>
-        </div>
-        <Link className="button secondary" to="/workspace">مساحة العمل</Link>
+      <header className="page-hero">
+        <h1>تحليلات المتجر</h1>
       </header>
 
       <form className="card analytics-filters" aria-label="فترة تحليلات المتجر" onSubmit={applyDates}>

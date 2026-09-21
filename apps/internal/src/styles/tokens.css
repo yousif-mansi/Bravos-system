@@ -1,0 +1,96 @@
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+  --background-primary: #090b0f;
+  --background-secondary: #11151c;
+  --surface: #11151c;
+  --surface-elevated: #1c232d;
+  --text-primary: #f5f1e8;
+  --text-secondary: #a7adb8;
+  --border: #2a3340;
+  --brand-accent: #c6b48a;
+  --brand-on-accent: #090b0f;
+  --success: #8f9a6b;
+  --warning: #c4a35a;
+  --danger: #b56a5c;
+  --surface-muted: #1c232d;
+  --surface-warning: #2a2318;
+  --surface-danger: #2a1c1a;
+  --surface-success: #1c241c;
+  --focus-ring: #c6b48a;
+  --shadow: 0 18px 40px rgba(0, 0, 0, 0.35);
+  --radius: 14px;
+  --space: 8px;
+  --logo-mark: url("/brand/03_Logo-Mark_Ivory.svg");
+  --logo-primary: url("/brand/01_Primary-Logo_Vertical_Ivory.svg");
+  --logo-horizontal: url("/brand/02_Logo_Horizontal_Ivory.svg");
+  --logo-wordmark: url("/brand/04_Wordmark_Ivory.svg");
+  --bg: var(--background-primary);
+  --ink: var(--text-primary);
+  --muted: var(--text-secondary);
+  --line: var(--border);
+  --accent: var(--brand-accent);
+  --accent-ink: var(--brand-on-accent);
+  --ok: var(--success);
+  --warn: var(--warning);
+  --sidebar: var(--background-primary);
+  --sidebar-ink: var(--text-primary);
+  --sidebar-muted: var(--text-secondary);
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+  --background-primary: #f7f5f0;
+  --background-secondary: #efece4;
+  --surface: #ffffff;
+  --surface-elevated: #ffffff;
+  --text-primary: #101010;
+  --text-secondary: #5c5852;
+  --border: #ddd6c8;
+  --brand-accent: #8a7344;
+  --brand-on-accent: #f5f1e8;
+  --success: #4f5c32;
+  --warning: #8a6420;
+  --danger: #8b3d32;
+  --surface-muted: #efece4;
+  --surface-warning: #f7f0e4;
+  --surface-danger: #f6ece9;
+  --surface-success: #eef2e6;
+  --focus-ring: #8a7344;
+  --shadow: 0 12px 28px rgba(16, 16, 16, 0.08);
+  --logo-mark: url("/brand/03_Logo-Mark_Black.svg");
+  --logo-primary: url("/brand/01_Primary-Logo_Vertical_Black.svg");
+  --logo-horizontal: url("/brand/02_Logo_Horizontal_Black.svg");
+  --logo-wordmark: url("/brand/04_Wordmark_Black.svg");
+  --bg: var(--background-primary);
+  --ink: var(--text-primary);
+  --muted: var(--text-secondary);
+  --line: var(--border);
+  --accent: var(--brand-accent);
+  --accent-ink: var(--brand-on-accent);
+  --ok: var(--success);
+  --warn: var(--warning);
+  --sidebar: #11151c;
+  --sidebar-ink: #f5f1e8;
+  --sidebar-muted: #a7adb8;
+}
+
+:root,
+[data-theme="dark"] {
+  --logo-mark-sidebar: url("/brand/03_Logo-Mark_Ivory.svg");
+}
+
+[data-theme="light"] {
+  --sidebar: var(--background-primary);
+  --sidebar-ink: var(--text-primary);
+  --sidebar-muted: var(--text-secondary);
+  --logo-mark-sidebar: url("/brand/03_Logo-Mark_Black.svg");
+}
+
+:root {
+  --font: "Cairo", "Segoe UI", Tahoma, Arial, sans-serif;
+  --type-display: 700;
+  --type-heading: 600;
+  --type-label: 500;
+  --type-body: 400;
+}

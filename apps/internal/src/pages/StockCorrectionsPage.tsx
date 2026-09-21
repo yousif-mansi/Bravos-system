@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+
 import type {
   CashierProductLookupDto,
   CountCoordinationDto,
@@ -345,12 +345,8 @@ export default function StockCorrectionsPage({ workspace }: { workspace: Workspa
 
   return (
     <main className="shell stock-corrections-page">
-      <header className="brand">
-        <div>
-          <h1>تصحيح كميات المخزون</h1>
-          <p className="muted">تصحيح مدير موثق بعد مزامنة نقاط البيع المعروفة.</p>
-        </div>
-        <Link className="button secondary" to="/workspace">العودة لمساحة العمل</Link>
+      <header className="page-hero">
+        <h1>تصحيح كميات المخزون</h1>
       </header>
       {error ? <div className="error" role="alert">{error}</div> : null}
       {notice ? <div className="notice" role="status">{notice}</div> : null}
