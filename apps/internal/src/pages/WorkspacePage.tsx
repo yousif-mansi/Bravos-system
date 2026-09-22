@@ -65,6 +65,8 @@ export function WorkspacePage({
   const [pendingOrders, setPendingOrders] = useState<number | null>(null);
   const [lowStockCount, setLowStockCount] = useState<number | null>(null);
   const [backupHint, setBackupHint] = useState<string | null>(null);
+  const [summaryRetry, setSummaryRetry] = useState(0);
+  const [summaryStatus, setSummaryStatus] = useState<Record<string, "loading" | "ready" | "error">>({});
 
   useEffect(() => {
     function syncOnline() {
@@ -207,11 +209,21 @@ export function WorkspacePage({
   }, [workspace.staff.id, workspace.capabilities.cashier, online]);
 
   useEffect(() => {
-    if (!online) return;
+    setTodaySales(null);
+    setTodayCount(null);
+    setPendingOrders(null);
+    setLowStockCount(null);
+    setBackupHint(null);
+    setSummaryStatus({});
+    if (!online || workspace.staff.role !== "manager") return;
     let cancelled = false;
     const epoch = accountGeneration();
     const staffId = workspace.staff.id;
     const stillCurrent = () => !cancelled && accountGeneration() === epoch && workspace.staff.id === staffId;
+    setSummaryStatus({ sales: "loading", orders: "loading", stock: "loading", backup: "loading" });
+    function status(key: string, value: "ready" | "error") {
+      if (stillCurrent()) setSummaryStatus((current) => ({ ...current, [key]: value }));
+    }
     void (async () => {
       if (workspace.staff.role === "manager") {
         try {
@@ -219,25 +231,29 @@ export function WorkspacePage({
           if (!stillCurrent()) return;
           setTodaySales(formatEgpFromPiasters(report.summary.netFinalSalesPiasters));
           setTodayCount(report.summary.completedCount);
+          status("sales", "ready");
         } catch {
           if (stillCurrent()) {
             setTodaySales(null);
             setTodayCount(null);
+            status("sales", "error");
           }
         }
         try {
           const orders = await listOnlineOrders();
           if (!stillCurrent()) return;
           setPendingOrders(orders.filter((order) => order.status === "pending").length);
+          status("orders", "ready");
         } catch {
-          if (stillCurrent()) setPendingOrders(null);
+          status("orders", "error");
         }
         try {
           const low = await listLowStock();
           if (!stillCurrent()) return;
           setLowStockCount(low.length);
+          status("stock", "ready");
         } catch {
-          if (stillCurrent()) setLowStockCount(null);
+          status("stock", "error");
         }
         try {
           const readiness = await getBackupReadiness();
@@ -247,15 +263,23 @@ export function WorkspacePage({
               ? `${readiness.knownUnsynchronizedTillCount} جهاز لسه عليه مبيعات`
               : "الجهاز الحالي جاهز",
           );
+          status("backup", "ready");
         } catch {
-          if (stillCurrent()) setBackupHint(null);
+          status("backup", "error");
         }
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [workspace.staff.id, workspace.staff.role, online]);
+  }, [workspace.staff.id, workspace.staff.role, online, summaryRetry]);
+
+  function summaryDetail(key: string, readyLabel: string) {
+    if (!online) return "غير متاح بدون اتصال";
+    if (summaryStatus[key] === "error") return "تعذر تحميل البيانات";
+    if (summaryStatus[key] !== "ready") return "لحظات...";
+    return readyLabel;
+  }
 
   async function runSync(stillCurrent: () => boolean) {
     syncingRef.current = true;
@@ -536,7 +560,7 @@ export function WorkspacePage({
         <div>
           <p className="eyebrow">أهلاً، {workspace.staff.displayName}</p>
           <h1>الرئيسية<span className="sr-only"> مساحة العمل</span></h1>
-          <p className="page-subtitle">{workspace.staff.role === "manager" ? "ملخص الفرع اليوم" : "ابدأ البيع"}</p>
+          <p className="page-subtitle">{workspace.staff.role === "manager" ? "ملخص كل الفروع والمتجر" : "ابدأ البيع"}</p>
         </div>
       </header>
 
@@ -616,25 +640,25 @@ export function WorkspacePage({
       ) : null}
 
       {workspace.staff.role === "manager" ? (
-        <section className="kpi-grid" aria-label="ملخص اليوم">
+        <section className="kpi-grid" aria-label="ملخص كل الفروع والمتجر">
           <article className="kpi-card">
             <strong>{todaySales ?? "—"}</strong>
-            <span>مبيعات اليوم</span>
-            <small>{todayCount === null ? "لحظات" : `${todayCount} عملية`}</small>
+            <span>صافي مبيعات اليوم — كل الفروع والمتجر</span>
+            <small>{summaryDetail("sales", `${todayCount} عملية`)}</small>
           </article>
           <article className="kpi-card">
             <strong>{pendingOrders === null ? "—" : pendingOrders}</strong>
-            <span>طلبات جديدة</span>
-            <small>من غير تأكيد</small>
+            <span>طلبات المتجر المعلقة</span>
+            <small>{summaryDetail("orders", "كل الطلبات من غير تأكيد")}</small>
           </article>
           <article className="kpi-card">
             <strong>{lowStockCount === null ? "—" : lowStockCount}</strong>
-            <span>مخزون يحتاج متابعة</span>
-            <small>أصناف قليلة</small>
+            <span>المخزون المركزي يحتاج متابعة</span>
+            <small>{summaryDetail("stock", "أصناف قليلة حالياً")}</small>
           </article>
           <article className={`kpi-card${unsynced > 0 ? " is-warn" : ""}`}>
             <strong>{unsynced}</strong>
-            <span>مبيعات لسه متبعتش</span>
+            <span>مبيعات الجهاز الحالي لسه متبعتش</span>
             <small data-testid="unsynced-count">مبيعات غير مزامنة: {unsynced}</small>
           </article>
         </section>
@@ -643,6 +667,15 @@ export function WorkspacePage({
           مبيعات غير مزامنة: {unsynced}
         </p>
       )}
+
+      {workspace.staff.role === "manager" && online && Object.values(summaryStatus).includes("error") ? (
+        <div className="error" role="alert">
+          <p>تعذر تحميل بعض بيانات الملخص{summaryStatus.backup === "error" ? "، ومنها حالة النسخ الاحتياطي" : ""}. أعد المحاولة.</p>
+          <button type="button" className="secondary" onClick={() => setSummaryRetry((value) => value + 1)}>
+            إعادة تحميل الملخص
+          </button>
+        </div>
+      ) : null}
 
       {workspace.staff.role === "manager" && backupHint && backupHint !== "الجهاز الحالي جاهز" ? (
         <p className="system-status">{backupHint}</p>

@@ -38,6 +38,7 @@ export default function BackupPage({ workspace }: { workspace: WorkspaceDto }) {
   const [confirmation, setConfirmation] = useState("");
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState("");
+  const [invalidPasswordField, setInvalidPasswordField] = useState<"password" | "confirmation" | null>(null);
   const [completed, setCompleted] = useState<BackupDownload["manifest"] | null>(null);
   const lifecycle = useRef(0);
   const activeRequest = useRef<AbortController | null>(null);
@@ -112,13 +113,16 @@ export default function BackupPage({ workspace }: { workspace: WorkspaceDto }) {
     event.preventDefault();
     if (creating) return;
     setError("");
+    setInvalidPasswordField(null);
     setCompleted(null);
     const passwordLength = [...password].length;
     if (passwordLength < 12 || passwordLength > 128) {
+      setInvalidPasswordField("password");
       setError("كلمة حماية النسخة يجب أن تكون من 12 إلى 128 حرفاً.");
       return;
     }
     if (password !== confirmation) {
+      setInvalidPasswordField("confirmation");
       setError("كلمتا الحماية غير متطابقتين.");
       return;
     }
@@ -210,7 +214,8 @@ export default function BackupPage({ workspace }: { workspace: WorkspaceDto }) {
             required
             disabled={creating}
             value={password}
-            onChange={(event) => setPassword(event.currentTarget.value)}
+            aria-invalid={invalidPasswordField === "password" || undefined}
+            onChange={(event) => { setPassword(event.currentTarget.value); setInvalidPasswordField(null); }}
           />
         </div>
         <div className="field">
@@ -223,7 +228,8 @@ export default function BackupPage({ workspace }: { workspace: WorkspaceDto }) {
             required
             disabled={creating}
             value={confirmation}
-            onChange={(event) => setConfirmation(event.currentTarget.value)}
+            aria-invalid={invalidPasswordField === "confirmation" || undefined}
+            onChange={(event) => { setConfirmation(event.currentTarget.value); setInvalidPasswordField(null); }}
           />
         </div>
         <button type="submit" disabled={creating || readinessLoading || !readiness || Boolean(readinessError)}>

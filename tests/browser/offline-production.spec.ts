@@ -116,6 +116,20 @@ test("production precache serves first offline POS navigation and survives a sam
     const again = restarted.pages()[0] ?? (await restarted.newPage());
     await again.goto(`${PREVIEW_ORIGIN}/lookup`);
     await expect(again.getByRole("heading", { name: "البحث عن منتج" })).toBeVisible();
+    // Same-profile restart while offline must retain the actual Cairo font assets.
+    const typography = await again.evaluate(async () => {
+      const loaded = await Promise.all([400, 500, 600, 700, 800].map(async (weight) => {
+        const faces = await document.fonts.load(`${weight} 16px Cairo`, "برافوس Bravos");
+        return faces.length > 0 && faces.every((face) => face.status === "loaded");
+      }));
+      const assets = await Promise.all(["arabic", "latin", "latin-ext"].map(async (subset) => {
+        const response = await fetch(`/fonts/cairo-${subset}.woff2`, { cache: "no-store" });
+        return response.ok && (await response.arrayBuffer()).byteLength > 0;
+      }));
+      return { loaded, assets };
+    });
+    expect(typography.loaded).toEqual([true, true, true, true, true]);
+    expect(typography.assets).toEqual([true, true, true]);
     await again.getByRole("link", { name: "المبيعات" }).click();
     await expect(again.getByTestId("sale-list")).toContainText("كاشير تجريبي");
     await expect(again.getByTestId("sale-list")).toContainText("غير مزامن");
