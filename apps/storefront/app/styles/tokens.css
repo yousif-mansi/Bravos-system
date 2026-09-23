@@ -1,0 +1,49 @@
+@font-face {
+  font-family: "Amiri Editorial";
+  src: url("/fonts/amiri-arabic-regular.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: optional;
+  unicode-range: U+0600-06FF, U+0750-077F, U+08A0-08FF, U+FB50-FDFF, U+FE70-FEFC;
+}
+
+:root {
+  color-scheme: light;
+  --store-canvas: #fffffc;
+  --store-surface: #ffffff;
+  --store-ink: #121110;
+  --store-muted: #5f5b55;
+  --store-border: #d8d4cc;
+  --store-focus: #745337;
+  --store-error: #932f2c;
+  --store-success: #28613e;
+  --store-disabled: #e9e6e0;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+  --space-16: 64px;
+  --space-24: 96px;
+
+  --font-commerce: var(--font-cairo), "Segoe UI", Tahoma, Arial, sans-serif;
+  --font-editorial: "Amiri Editorial", var(--font-cairo), "Segoe UI", Tahoma, Arial, sans-serif;
+
+  /* Existing route styles keep these aliases while later tickets refine their layouts. */
+  --background-primary: var(--store-canvas);
+  --surface: var(--store-surface);
+  --text-primary: var(--store-ink);
+  --text-secondary: var(--store-muted);
+  --border: var(--store-border);
+  --brand-accent: var(--store-ink);
+  --canvas: var(--store-canvas);
+  --ink: var(--store-ink);
+  --muted: var(--store-muted);
+  --line: var(--store-border);
+  --accent: var(--store-ink);
+  --warm: #d9d4cc;
+  --danger: var(--store-error);
+}
