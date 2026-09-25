@@ -12,6 +12,7 @@ import type {
 } from "@bravos/contracts/public";
 import { useCart } from "../cart/cart-provider";
 import { formatEgp } from "../public-catalog";
+import styles from "./checkout.module.css";
 
 const CHECKOUT_STORAGE_KEY = "bravos-guest-checkout-v1";
 const CHECKOUT_STORAGE_VERSION = 1;
@@ -69,6 +70,7 @@ export default function CheckoutPage() {
   const [messageKind, setMessageKind] = useState<"status" | "error">("status");
   const [storageBlocked, setStorageBlocked] = useState(false);
   const [unresolved, setUnresolved] = useState(false);
+  const [invalidFields, setInvalidFields] = useState<string[]>([]);
   const recoveryStarted = useRef(false);
   const activeOperationId = useRef<string | null>(null);
   const currentInputKey = useMemo(
@@ -332,18 +334,18 @@ export default function CheckoutPage() {
   }
 
   if (!cart.hydrated || orderingState === "loading") {
-    return <main id="main-content" className="checkout-page"><p>جارٍ تحميل بيانات الطلب…</p></main>;
+    return <main id="main-content" className={`checkout-page ${styles.page}`}><p role="status" className={styles.loading}>لحظات... نجهّز بيانات الطلب.</p></main>;
   }
 
   if (result) {
     return (
-      <main id="main-content" className="checkout-page checkout-success">
+      <main id="main-content" className={`checkout-page checkout-success ${styles.page} ${styles.success}`}>
         <p className="eyebrow">طلب توصيل نقداً عند الاستلام</p>
         <h1>تم استلام طلبك</h1>
         <p className="order-reference">رقم الطلب: <strong>{result.reference}</strong></p>
-        <p role="status" className="success">الطلب قيد المراجعة، ولم تُحجز القطع حتى الآن.</p>
+        <p role="status" className={`success ${styles.pendingNotice}`}>الطلب قيد المراجعة، ولم تُحجز القطع حتى الآن.</p>
         <p>سيتواصل معك ممثل برافوس عبر واتساب لتأكيد الطلب والتأكد من توفر القطع.</p>
-        <p className="success-total">الإجمالي الذي راجعته: <strong>{formatEgp(result.quote.finalTotalPiasters)}</strong></p>
+        <p className="success-total">الإجمالي النقدي عند الاستلام الذي راجعته: <strong>{formatEgp(result.quote.finalTotalPiasters)}</strong></p>
         <Link className="button-link" href="/">العودة إلى المتجر</Link>
       </main>
     );
@@ -351,7 +353,7 @@ export default function CheckoutPage() {
 
   if (orderingState === "disabled" || orderingState === "unavailable") {
     return (
-      <main id="main-content" className="checkout-page">
+      <main id="main-content" className={`checkout-page ${styles.page}`}>
         <div className="empty-state">
           <p className="eyebrow">المتجر متاح للتصفح</p>
           <h1>الطلب عبر المتجر غير متاح حالياً</h1>
@@ -369,7 +371,7 @@ export default function CheckoutPage() {
 
   if (cart.items.length === 0) {
     return (
-      <main id="main-content" className="checkout-page">
+      <main id="main-content" className={`checkout-page ${styles.page}`}>
         <div className="empty-state">
           <h1>السلة فارغة</h1>
           <p>أضف منتجات إلى السلة قبل إتمام طلب التوصيل.</p>
@@ -382,33 +384,40 @@ export default function CheckoutPage() {
   const cartValid = cart.items.every((item) => item.orderable && item.quantity <= item.knownAvailableQuantity);
 
   return (
-    <main id="main-content" className="checkout-page">
-      <div className="page-title">
+    <main id="main-content" className={`checkout-page ${styles.page}`}>
+      <div className={`page-title ${styles.intro}`}>
         <p className="eyebrow">الدفع نقداً عند الاستلام</p>
         <h1>إتمام طلب التوصيل</h1>
-        <p>لا تحتاج إلى إنشاء حساب. نراجع السعر الآن، ثم يتواصل معك ممثل برافوس عبر واتساب لتأكيد الطلب.</p>
+        <p>لا تحتاج إلى إنشاء حساب. راجع إجمالي الدفع عند الاستلام، ثم أرسل طلبك ليتواصل معك ممثل برافوس عبر واتساب للتأكيد.</p>
       </div>
-      <div className="checkout-layout">
-        <form className="checkout-form" aria-label="بيانات طلب التوصيل" onSubmit={(event) => void submit(event)}>
+      <div className={`checkout-layout ${styles.layout}`}>
+        <form className={`checkout-form ${styles.form}`} aria-label="بيانات طلب التوصيل" onSubmit={(event) => void submit(event)} onInvalidCapture={markInvalidField} onChange={clearCorrectedField}>
           <fieldset disabled={submitting || storageBlocked || unresolved}>
             <legend>بيانات التواصل والتوصيل</legend>
-            <div className="checkout-fields">
-              <CheckoutInput label="الاسم" name="customerName" value={fields.customerName} required autoComplete="name" onChange={updateField} />
-              <CheckoutInput label="رقم الموبايل الأساسي" name="primaryPhone" value={fields.primaryPhone} required type="tel" inputMode="tel" autoComplete="tel" onChange={updateField} />
-              <CheckoutInput label="رقم بديل (اختياري)" name="alternatePhone" value={fields.alternatePhone} type="tel" inputMode="tel" onChange={updateField} />
-              <label className="checkout-field">
-                <span>منطقة التوصيل</span>
-                <select required value={fields.deliveryAreaId} disabled={areasLoading || areas.length === 0 || submitting || storageBlocked || unresolved} onChange={(event) => setField("deliveryAreaId", event.target.value)}>
-                  <option value="">{areasLoading ? "جارٍ تحميل المناطق…" : "اختر المنطقة"}</option>
+            <p className={styles.sectionHint}>البيانات المطلوبة للتواصل معك وتوصيل الطلب</p>
+            <div className={`checkout-fields ${styles.fields}`}>
+              <CheckoutInput label="الاسم" name="customerName" value={fields.customerName} required autoComplete="name" onChange={updateField} invalid={invalidFields.includes("customerName")} />
+              <CheckoutInput label="رقم الموبايل الأساسي" name="primaryPhone" value={fields.primaryPhone} required type="tel" inputMode="tel" autoComplete="tel" dir="ltr" onChange={updateField} invalid={invalidFields.includes("primaryPhone")} />
+              <label className={`checkout-field ${styles.field}`}>
+                <span>منطقة التوصيل <span className={styles.requiredTag} aria-hidden="true">مطلوب</span></span>
+                <select name="deliveryAreaId" required value={fields.deliveryAreaId} aria-invalid={invalidFields.includes("deliveryAreaId") || undefined} aria-describedby={invalidFields.includes("deliveryAreaId") ? "deliveryAreaId-error" : undefined} disabled={areasLoading || areas.length === 0 || submitting || storageBlocked || unresolved} onChange={(event) => setField("deliveryAreaId", event.target.value)}>
+                  <option value="">{areasLoading ? "لحظات... نحمّل المناطق" : "اختر المنطقة"}</option>
                   {areas.map((area) => <option key={area.id} value={area.id}>{area.nameAr} — {formatEgp(area.feePiasters)}</option>)}
                 </select>
+                {invalidFields.includes("deliveryAreaId") ? <small id="deliveryAreaId-error" className={styles.fieldError}>اختر منطقة التوصيل.</small> : null}
+                {!areasLoading && areas.length === 0 ? <small className={styles.areaHelp}>لا تظهر مناطق توصيل متاحة حالياً. لا يمكن مراجعة السعر قبل اختيار منطقة مدعومة.</small> : null}
               </label>
-              <label className="checkout-field checkout-wide">
-                <span>العنوان بالتفصيل</span>
-                <textarea required rows={3} autoComplete="street-address" value={fields.detailedAddress} onChange={(event) => setField("detailedAddress", event.target.value)} />
+              <label className={`checkout-field checkout-wide ${styles.field}`}>
+                <span>العنوان بالتفصيل <span className={styles.requiredTag} aria-hidden="true">مطلوب</span></span>
+                <textarea name="detailedAddress" required rows={3} autoComplete="street-address" value={fields.detailedAddress} aria-invalid={invalidFields.includes("detailedAddress") || undefined} aria-describedby={invalidFields.includes("detailedAddress") ? "detailedAddress-error" : undefined} onChange={(event) => setField("detailedAddress", event.target.value)} />
+                {invalidFields.includes("detailedAddress") ? <small id="detailedAddress-error" className={styles.fieldError}>اكتب العنوان بالتفصيل.</small> : null}
               </label>
+            </div>
+            <p className={styles.optionalHeading}>تفاصيل اختيارية تساعد في التوصيل</p>
+            <div className={`checkout-fields ${styles.fields}`}>
+              <CheckoutInput label="رقم بديل (اختياري)" name="alternatePhone" value={fields.alternatePhone} type="tel" inputMode="tel" autoComplete="tel" dir="ltr" onChange={updateField} />
               <CheckoutInput label="علامة مميزة (اختياري)" name="landmark" value={fields.landmark} onChange={updateField} />
-              <label className="checkout-field checkout-wide">
+              <label className={`checkout-field checkout-wide ${styles.field}`}>
                 <span>ملاحظات (اختياري)</span>
                 <textarea rows={3} value={fields.notes} onChange={(event) => setField("notes", event.target.value)} />
               </label>
@@ -416,26 +425,30 @@ export default function CheckoutPage() {
           </fieldset>
           <fieldset disabled={submitting || storageBlocked || unresolved}>
             <legend>الكوبون ومراجعة السعر</legend>
-            <label className="checkout-field coupon-field">
+            <label className={`checkout-field coupon-field ${styles.field}`}>
               <span>كود الكوبون (اختياري)</span>
               <input value={fields.couponCode} autoCapitalize="characters" onChange={(event) => setField("couponCode", event.target.value)} />
             </label>
+            <p className={styles.reviewHint}>رسوم التوصيل والخصومات والإجمالي النهائي تظهر بعد مراجعة السعر.</p>
             <button type="button" className="secondary-action review-price" disabled={!cartValid || !fields.deliveryAreaId || quoting} onClick={() => void reviewPrice()}>
-              {quoting ? "جارٍ حساب السعر…" : quote ? "مراجعة السعر من جديد" : "مراجعة السعر"}
+              {quoting ? "لحظات... نراجع السعر" : quote ? "مراجعة السعر من جديد" : "مراجعة السعر"}
             </button>
           </fieldset>
+          {quoting ? <p aria-live="polite" className={styles.processNotice}>لحظات... نراجع السعر ورسوم التوصيل الحالية.</p> : null}
           {quote && quoteKey === currentInputKey ? <PriceReview quote={quote} /> : null}
           {message ? <p className={messageKind === "error" ? "checkout-message error-message" : "checkout-message"} role={messageKind === "error" ? "alert" : "status"}>{message}</p> : null}
+          {submitting ? <p aria-live="polite" className={styles.processNotice}>لحظات... نتحقق من نتيجة إرسال نفس الطلب. يُرجى الانتظار.</p> : null}
+          {unresolved && !submitting ? <div className={styles.uncertainNotice}><strong>نتيجة الإرسال غير مؤكدة</strong><p>احتفظنا بنفس محاولة الطلب. استخدم التحقق أدناه قبل أي طلب جديد.</p></div> : null}
           {unresolved && !storageBlocked ? <button type="button" className="secondary-action" disabled={submitting} onClick={() => void recoverStoredAttempt()}>التحقق من نفس الطلب</button> : null}
           {storageBlocked ? <p className="recovery-help">لا يمكن بدء إرسال جديد بأمان من هذه الصفحة. لم نمسح أي بيانات محفوظة؛ تواصل مع برافوس عبر الروابط أسفل الصفحة قبل بدء طلب آخر.</p> : null}
           {quote && quoteKey === currentInputKey ? (
             <button type="submit" className="submit-order" disabled={submitting || !cartValid || storageBlocked || unresolved}>
-              {submitting ? "جارٍ إرسال نفس الطلب…" : "إرسال طلب التوصيل"}
+              {submitting ? "لحظات... نتحقق من نفس الطلب" : "إرسال طلب التوصيل"}
             </button>
           ) : null}
-          <p className="muted">إرسال الطلب لا يحجز المخزون ولا يستهلك الكوبون. يتم ذلك فقط بعد تأكيد ممثل برافوس عبر واتساب.</p>
+          <p className="muted">ترسل طلباً للمراجعة، والدفع نقداً عند الاستلام. لا تُحجز القطع ولا يُستهلك الكوبون عند الإرسال؛ يؤكد ممثل برافوس الطلب لاحقاً عبر واتساب.</p>
         </form>
-        <aside className="checkout-cart" aria-label="ملخص منتجات الطلب">
+        <aside className={`checkout-cart ${styles.summary}`} aria-label="ملخص منتجات الطلب">
           <div className="checkout-cart-heading"><h2>منتجاتك</h2><Link href="/cart">تعديل السلة</Link></div>
           {cart.items.map((item) => (
             <article key={item.variantId}>
@@ -444,8 +457,8 @@ export default function CheckoutPage() {
               {!item.orderable || item.quantity > item.knownAvailableQuantity ? <p className="stock-warning">هذه الكمية تحتاج إلى تعديل في السلة.</p> : null}
             </article>
           ))}
-          <p><span>المجموع المبدئي</span><strong>{formatEgp(cart.items.reduce((sum, item) => sum + item.unitPricePiasters * item.quantity, 0))}</strong></p>
-          <p className="muted">سيعاد التحقق من الأسعار والمخزون عند الإرسال.</p>
+          <p><span>مجموع المنتجات المبدئي</span><strong>{formatEgp(cart.items.reduce((sum, item) => sum + item.unitPricePiasters * item.quantity, 0))}</strong></p>
+          <p className="muted">هذا المجموع قبل الخصومات ورسوم التوصيل. راجع الإجمالي النقدي النهائي في تفاصيل السعر.</p>
         </aside>
       </div>
     </main>
@@ -458,21 +471,37 @@ export default function CheckoutPage() {
   function setField(name: keyof CheckoutFields, value: string) {
     setFields((current) => ({ ...current, [name]: value }));
   }
+
+  function markInvalidField(event: FormEvent<HTMLFormElement>) {
+    const target = event.target;
+    if ((target instanceof HTMLInputElement || target instanceof HTMLSelectElement || target instanceof HTMLTextAreaElement) && target.required) {
+      setInvalidFields((current) => current.includes(target.name) ? current : [...current, target.name]);
+    }
+  }
+
+  function clearCorrectedField(event: FormEvent<HTMLFormElement>) {
+    const target = event.target;
+    if ((target instanceof HTMLInputElement || target instanceof HTMLSelectElement || target instanceof HTMLTextAreaElement) && target.name && target.validity.valid) {
+      setInvalidFields((current) => current.includes(target.name) ? current.filter((name) => name !== target.name) : current);
+    }
+  }
 }
 
-function CheckoutInput({ label, name, value, onChange, ...input }: {
+function CheckoutInput({ label, name, value, onChange, invalid = false, ...input }: {
   label: string;
   name: keyof CheckoutFields;
   value: string;
   onChange: (event: ChangeEvent<HTMLInputElement>) => void;
+  invalid?: boolean;
 } & Omit<InputHTMLAttributes<HTMLInputElement>, "name" | "value" | "onChange">) {
-  return <label className="checkout-field"><span>{label}</span><input name={name} value={value} onChange={onChange} {...input} /></label>;
+  return <label className={`checkout-field ${styles.field}`}><span>{label} {input.required ? <span className={styles.requiredTag} aria-hidden="true">مطلوب</span> : null}</span><input name={name} value={value} onChange={onChange} aria-invalid={invalid || undefined} aria-describedby={invalid ? `${name}-error` : undefined} {...input} />{invalid ? <small id={`${name}-error`} className={styles.fieldError}>أكمل هذا الحقل.</small> : null}</label>;
 }
 
 function PriceReview({ quote }: { quote: CheckoutQuoteDto }) {
   return (
-    <section className="price-review" aria-label="تفاصيل السعر">
+    <section className={`price-review ${styles.priceReview}`} aria-label="تفاصيل السعر">
       <h2>تفاصيل السعر</h2>
+      <p className={styles.authoritativeHint}>المبلغ المحسوب عند آخر مراجعة، شاملاً الخصومات ورسوم التوصيل.</p>
       <p><span>إجمالي المنتجات قبل الخصم</span><strong>{formatEgp(quote.merchandiseOriginalPiasters)}</strong></p>
       {quote.appliedAutomaticOffer ? <p><span>{quote.appliedAutomaticOffer.nameAr}</span><strong>− {formatEgp(quote.automaticOfferDiscountPiasters)}</strong></p> : null}
       {quote.appliedCoupon ? <p><span>كوبون {quote.appliedCoupon.code}</span><strong>− {formatEgp(quote.couponDiscountPiasters)}</strong></p> : null}

@@ -1,6 +1,6 @@
 # Bravos storefront implementation roadmap
 
-**Status:** Approved with SF-00 and optional-storytelling adjustments; SF-00/SF-01 authorized to start after this revision.  
+**Status:** Approved roadmap; SF-02/SF-04/SF-05 authorized for local implementation on 25 September 2026. Earlier execution history and outstanding acceptance gates are recorded below.
 **Baseline:** `main`, `15fd3661b29249ca1fc7f3484654476d6c1b2b1d`, 23 September 2026.  
 **Authority:** [Approved Experience Evolution Report](../../bravos-experience-evolution-report.md), refined by the user's subsequent Phase 0–5 instructions. The report's internal-system proposals and original phase numbering are outside this roadmap. Its provisional audit hypotheses are not treated as verified defects.  
 **Evidence:** Current route/component/API inventory and [local product/design brief](bravos-storefront-design-brief.md). External reference-site claims are inspiration supplied by the report, not independently verified performance evidence.
@@ -88,6 +88,34 @@ Physical iOS Safari and Android Chrome verification remains a distinct release g
 The user approved the roadmap with SF-00 added, storytelling explicitly optional, product/purchase confidence prioritized, and SF-01–SF-12 order retained. This revision finalizes those adjustments before execution. Start SF-00 and SF-01 only in this work cycle. No internal redesign, backend changes, fake production content or catalog mutations are part of this approval.
 
 SF-00 specification/inventory is complete: [readiness report](storefront-content-readiness.md). Missing photography/copy remain explicit content gates. Main agent selected local Amiri Regular for editorial headings after Arabic sample review, with Cairo retained for commerce; SF-01 actual-page verification remains required.
+
+### 24 September 2026 execution exception
+
+The user deferred the current visual/font decision and intends to replace the Arabic font across the storefront at the end. Continue the other storefront issues using the current typography; do not treat the pending SF-02 visual proposal or future font replacement as completed.
+
+For this batch, SF-06 (product gallery) and SF-09 (cart) may proceed in parallel without waiting for SF-02. Use the existing media helpers and direct catalog media behavior; neither ticket depends on a proposed SF-02 `ProductMedia` component. This is a temporary dependency exception for those two tickets, not SF-02 acceptance or a general change to the ticket sequence. Keep each ticket's original acceptance criteria and verification. SF-07 still follows SF-06 and SF-10 still follows SF-09. Hero and campaign work remain gated by missing approved assets; this exception supplies no content or substitute imagery.
+
+SF-06 and SF-09 are implemented and locally verified, pending user review and commit. The [joint review](../reviews/storefront-gallery-cart-review.md) records the exact regression results and evidence. SF-02 and the storefront-wide Arabic font replacement remain pending; real garment imagery is still needed to accept the gallery's final art direction.
+
+SF-07 (persistent product commerce) and SF-10 (Arabic COD checkout) entered local implementation as the next batch. Their predecessor tickets SF-06 and SF-09 are implemented locally, pending user review and commit; this does not close those dependencies in Git. SF-02 and the storefront-wide Arabic font replacement remain deferred. No commit is authorized.
+
+SF-07/SF-10 are now implemented and locally verified: pinned typecheck, architecture, storefront build and checkout HTTP checks passed; affected browser cases passed across combined and targeted runs, with one known baseline checkout locator failure preventing a clean combined browser result. The main agent reviewed product and checkout viewport captures. The [joint review](../reviews/storefront-commerce-checkout-review.md) records exact counts, patches and visual evidence. User review/commit remain pending. SF-02 and the font change remain deferred; representative photography and physical-device checks remain later gates.
+
+### 25 September 2026 execution update
+
+The user authorized implementation of the reviewed [SF-02 product-wall proposal](sf02-product-wall-proposal.md) and then SF-04/SF-05. SF-02, SF-04 and SF-05 are in progress under their existing ticket boundaries; this authorization supersedes the earlier SF-02 proposal-approval gate and the temporary deferral of SF-02 implementation. Continue with the current typography. The storefront-wide Arabic font replacement remains deferred to the end and is not an acceptance result for this batch. Commits still require user approval.
+
+SF-04's required result is discovery using the real public catalog. Zero optional campaign/editorial stories is a valid delivery while approved assets and copy are absent. SF-03 hero/content and SF-08 factual product chapters remain gated by their specific approved inputs. Do not create campaign claims, product facts, placeholder stories or nonexistent content-present test results to close those tickets.
+
+The previously failing closed-ordering checkout locator was resolved on 25 September; its focused rerun passed 1/1 in [the checkout closeout log](../../.scratch/storefront-foundation/checkout-locator-closeout/focused-pass.log). The historical SF-06/SF-09 and SF-07/SF-10 combined browser results remain as recorded in their reviews. This focused pass does not establish a clean rerun of either full combined suite.
+
+SF-02/SF-04/SF-05 are now locally implemented and verified for user review. The [joint wall and discovery review](../reviews/storefront-wall-discovery-review.md) records the 12/12 combined browser pass, 2/2 sorting tests, 18/18 HTTP guards, typecheck, architecture and build results, independent reviews and viewport evidence. This verification covers current real-catalog discovery with zero optional stories. Approved campaign content, representative photography, final font selection and physical-device/performance gates remain separate. No commit is authorized or made.
+
+### Commit authorization
+
+After reviewing the completed batch, the user authorized a commit of the reviewed storefront work. This includes SF-02/SF-04/SF-05 and the previously reviewed SF-06/SF-07/SF-09/SF-10 changes covered by the latest combined regression run. Earlier pending-commit statements above describe the historical state. Unrelated local files and the protected original review are excluded. Push and further implementation are not part of this commit step.
+
+Next priorities are approved photography and factual copy for SF-03/SF-08, the remaining SF-11/SF-12 performance and integrated quality checks (including server-outage recovery and physical devices), and the user's deferred Arabic font replacement followed by layout verification. Missing representative assets still prevent final photography/performance acceptance; optional campaigns remain optional.
 
 | Ticket | GitHub issue |
 | --- | --- |

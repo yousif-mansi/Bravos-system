@@ -1,0 +1,387 @@
+.gallery {
+  display: grid;
+  gap: 0.75rem;
+  align-content: start;
+  min-width: 0;
+}
+
+.page {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  gap: clamp(1.5rem, 4vw, 3.5rem);
+  padding-block: 2rem 4.5rem;
+  min-width: 0;
+}
+
+.copy {
+  min-width: 0;
+  align-self: start;
+}
+
+.copy h1 {
+  font: 700 clamp(1.8rem, 4vw, 2.8rem)/1.45 var(--font-commerce);
+  margin: .3rem 0 1rem;
+}
+
+.purchasePanel {
+  margin-block-start: 1.5rem;
+  border-block-start: 1px solid var(--line);
+  padding-block-start: 1rem;
+}
+
+.selectionHeading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  justify-content: space-between;
+  gap: .5rem 1rem;
+  margin-block-end: 1rem;
+}
+
+.selectionHeading h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.selectedPrice {
+  display: grid;
+  gap: .1rem;
+  margin: 0;
+}
+
+.selectedPrice span,
+.pricePrompt {
+  color: var(--muted);
+  font-size: .875rem;
+}
+
+.selectedPrice strong {
+  font-size: clamp(1.25rem, 2.5vw, 1.65rem);
+  line-height: 1.35;
+  font-variant-numeric: tabular-nums;
+}
+
+.pricePrompt {
+  margin: 0;
+}
+
+.variantPicker {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: .55rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.variantOption {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: .2rem .55rem;
+  min-height: 68px;
+  padding: .65rem;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.variantOption:has(input:checked) {
+  border: 2px solid var(--accent);
+  padding: calc(.65rem - 1px);
+}
+
+.variantOption:has(input:disabled) {
+  color: var(--muted);
+  background: var(--store-disabled);
+  cursor: not-allowed;
+}
+
+.variantOption span {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.variantOption small {
+  color: var(--muted);
+}
+
+.variantOption strong {
+  grid-column: 2;
+  font-size: .88rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.variantOption em {
+  position: absolute;
+  inset-block-start: .25rem;
+  inset-inline-end: .35rem;
+  font-size: .72rem;
+  font-style: normal;
+}
+
+.addRow {
+  display: grid;
+  grid-template-columns: 80px minmax(0, 1fr);
+  gap: .4rem .65rem;
+  align-items: end;
+  margin-block-start: 1rem;
+}
+
+.addRow label {
+  grid-column: 1;
+  grid-row: 1;
+  font-size: .875rem;
+}
+
+.addRow input {
+  grid-column: 1;
+  grid-row: 2;
+  width: 100%;
+  min-height: 48px;
+  padding-inline: .5rem;
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.inlineAction {
+  grid-column: 2;
+  grid-row: 2;
+  min-height: 48px;
+}
+
+.successFeedback,
+.failureFeedback {
+  margin-block: .8rem 0;
+  padding: .7rem .9rem;
+  border-inline-start: 3px solid var(--store-success);
+  background: var(--surface);
+}
+
+.failureFeedback {
+  border-inline-start-color: var(--store-error);
+}
+
+.successFeedback a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  margin-inline-start: .4rem;
+  font-weight: 700;
+}
+
+.mobileBar {
+  display: none;
+}
+
+@media (min-width: 1024px) {
+  .page {
+    grid-template-columns: minmax(0, 1.15fr) minmax(330px, .85fr);
+    column-gap: clamp(1.5rem, 5vw, 4.5rem);
+  }
+
+  .copy[data-sticky="true"] {
+    position: sticky;
+    top: 1rem;
+  }
+}
+
+@media (max-width: 1023px) {
+  .page {
+    padding-block-end: 1rem;
+  }
+
+  .inlineAction {
+    display: none;
+  }
+
+  .addRow:focus-within .inlineAction {
+    display: block;
+  }
+
+  .page:has(.addRow:focus-within) .mobileBar {
+    visibility: hidden;
+    pointer-events: none;
+  }
+
+  .mobileBar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(130px, auto);
+    align-items: center;
+    gap: .5rem 1rem;
+    grid-column: 1 / -1;
+    position: sticky;
+    bottom: 0;
+    z-index: 5;
+    padding: .75rem 1rem calc(.75rem + env(safe-area-inset-bottom, 0px));
+    border-block-start: 1px solid var(--line);
+    background: var(--canvas);
+  }
+
+  .mobileSelection {
+    display: grid;
+    align-content: center;
+    min-width: 0;
+    line-height: 1.35;
+  }
+
+  .mobileSelection strong {
+    font-size: 1.1rem;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .mobileSelection span {
+    color: var(--muted);
+    font-size: .8rem;
+    overflow-wrap: anywhere;
+  }
+
+  .mobileSelection a,
+  .mobileCartLink,
+  .mobileFailure {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    width: fit-content;
+    font-size: .85rem;
+    font-weight: 700;
+  }
+
+  .mobileBar button {
+    min-height: 48px;
+    padding-inline: .5rem;
+  }
+
+  .mobileCartLink {
+    grid-column: 1 / -1;
+  }
+
+  .mobileFailure {
+    grid-column: 1 / -1;
+    color: var(--store-error);
+  }
+
+  .purchasePanel,
+  .variantOption input,
+  .addRow input {
+    scroll-margin-block: 1rem 10rem;
+  }
+}
+
+@media (max-width: 420px) {
+  .variantPicker {
+    grid-template-columns: 1fr;
+  }
+
+  .mobileBar {
+    gap: .25rem .5rem;
+    padding-inline: .5rem;
+  }
+}
+
+@media (max-width: 360px) {
+  .mobileBar {
+    grid-template-columns: 1fr;
+  }
+}
+
+.mainFrame {
+  position: relative;
+  overflow: hidden;
+  aspect-ratio: 4 / 5;
+  background: #e8e4dd;
+}
+
+.mainFrame img {
+  object-fit: contain;
+}
+
+.missingImage {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  color: var(--muted);
+  text-align: center;
+}
+
+.navigation {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.stepButton,
+.selector {
+  min-width: 44px;
+  min-height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 0;
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.stepButton {
+  padding-inline: 1rem;
+}
+
+.position {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.875rem;
+  text-align: center;
+}
+
+.selectors {
+  display: flex;
+  gap: 0.5rem;
+  overflow-x: auto;
+  padding: 6px;
+  scrollbar-width: thin;
+}
+
+.selector {
+  flex: 0 0 44px;
+  font-variant-numeric: tabular-nums;
+}
+
+.selector[aria-current="true"] {
+  border: 2px solid var(--accent);
+  background: var(--accent);
+  color: white;
+  font-weight: 700;
+}
+
+.stepButton:hover,
+.selector:hover {
+  border-color: var(--accent);
+  color: white;
+}
+
+.stepButton:focus-visible,
+.selector:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+@media (max-width: 420px) {
+  .navigation {
+    flex-wrap: wrap;
+  }
+
+  .position {
+    order: -1;
+    flex-basis: 100%;
+  }
+
+  .stepButton {
+    flex: 1;
+    padding-inline: 0.5rem;
+  }
+}

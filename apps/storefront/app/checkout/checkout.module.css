@@ -1,0 +1,222 @@
+.page {
+  max-width: 1120px;
+  margin-inline: auto;
+  padding-block: var(--space-8) var(--space-16);
+}
+
+.intro {
+  max-width: 690px;
+  margin-block-end: var(--space-8);
+}
+
+.intro h1 {
+  margin-block: var(--space-2) var(--space-3);
+}
+
+.intro > p:last-child {
+  margin: 0;
+  color: var(--store-muted);
+}
+
+.layout {
+  gap: var(--space-8);
+}
+
+.form {
+  gap: var(--space-6);
+  min-width: 0;
+}
+
+.form fieldset {
+  min-width: 0;
+  padding: var(--space-6);
+  background: var(--store-canvas);
+  border-color: var(--store-border);
+}
+
+.form legend {
+  padding-inline: var(--space-2);
+  font-size: 1.15rem;
+}
+
+.sectionHint,
+.reviewHint {
+  margin: 0 0 var(--space-4);
+  color: var(--store-muted);
+  font-size: .94rem;
+}
+
+.optionalHeading {
+  margin: var(--space-8) 0 var(--space-4);
+  padding-block-start: var(--space-6);
+  border-block-start: 1px solid var(--store-border);
+  font-weight: 700;
+}
+
+.fields {
+  gap: var(--space-4);
+}
+
+.field {
+  min-width: 0;
+  gap: var(--space-2);
+}
+
+.field > span {
+  color: var(--store-ink);
+  font-size: .94rem;
+}
+
+.requiredTag {
+  display: inline-block;
+  margin-inline-start: var(--space-2);
+  color: var(--store-muted);
+  font-size: .76rem;
+  font-weight: 400;
+}
+
+.page .field input,
+.page .field select,
+.page .field textarea {
+  background: var(--store-surface);
+  border-color: #817b72;
+  border-radius: 0;
+  min-height: 48px;
+}
+
+.page .field input[aria-invalid="true"],
+.page .field select[aria-invalid="true"],
+.page .field textarea[aria-invalid="true"] {
+  border: 2px solid var(--store-error);
+}
+
+.page .field input:focus-visible,
+.page .field select:focus-visible,
+.page .field textarea:focus-visible {
+  outline: 3px solid var(--store-focus);
+  outline-offset: 2px;
+}
+
+.fieldError {
+  color: var(--store-error);
+  font-size: .85rem;
+  font-weight: 700;
+}
+
+.areaHelp {
+  color: var(--store-muted);
+  font-size: .85rem;
+}
+
+.page .form button {
+  min-height: 48px;
+}
+
+.page .form button:focus-visible {
+  outline: 3px solid var(--store-focus);
+  outline-offset: 3px;
+}
+
+.priceReview {
+  background: #f4f1eb;
+  border-color: var(--store-ink);
+}
+
+.priceReview > p:not(.authoritativeHint) {
+  align-items: baseline;
+}
+
+.priceReview strong {
+  white-space: nowrap;
+}
+
+.authoritativeHint {
+  display: block !important;
+  margin-block: 0 var(--space-4) !important;
+  color: var(--store-muted);
+  font-size: .9rem;
+}
+
+.processNotice,
+.uncertainNotice,
+.pendingNotice {
+  padding: var(--space-4);
+  border-inline-start: 3px solid var(--store-ink);
+  background: #f4f1eb;
+}
+
+.processNotice,
+.uncertainNotice p {
+  margin: 0;
+}
+
+.uncertainNotice {
+  border-inline-start-color: var(--store-error);
+}
+
+.uncertainNotice p {
+  margin-block-start: var(--space-1);
+}
+
+.pendingNotice {
+  border-inline-start-color: var(--store-success);
+}
+
+.page .summary {
+  position: static;
+  min-width: 0;
+  padding: var(--space-6);
+  background: var(--store-canvas);
+}
+
+.summary article > span {
+  white-space: nowrap;
+}
+
+.summary article strong,
+.summary article small {
+  overflow-wrap: anywhere;
+}
+
+.success {
+  gap: var(--space-4);
+}
+
+.loading {
+  max-width: 34rem;
+  margin-block: var(--space-12);
+  color: var(--store-muted);
+}
+
+@media (max-width: 900px) {
+  .layout {
+    gap: var(--space-6);
+  }
+
+  .summary {
+    grid-row: auto;
+  }
+}
+
+@media (max-width: 580px) {
+  .page {
+    padding-block: var(--space-6) var(--space-12);
+  }
+
+  .intro {
+    margin-block-end: var(--space-6);
+  }
+
+  .form fieldset,
+  .summary {
+    padding: var(--space-4);
+  }
+
+  .priceReview {
+    padding: var(--space-4);
+  }
+
+  .priceReview > p:not(.authoritativeHint) {
+    flex-wrap: wrap;
+  }
+}

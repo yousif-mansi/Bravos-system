@@ -75,8 +75,9 @@ test("Arabic storefront browses, persists an aggregated guest cart and handles c
   await expect(page.getByRole("status")).toContainText("تمت إضافة الاختيار");
   await page.getByRole("button", { name: "أضف إلى السلة" }).click();
   await expect(page.getByRole("button", { name: "الكمية المتاحة في السلة" })).toBeDisabled();
-  await expect(page.getByRole("link", { name: /السلة/ })).toContainText("2");
-  await page.getByRole("link", { name: /السلة/ }).click();
+  const headerCart = page.getByRole("navigation", { name: "التنقل الرئيسي" }).getByRole("link", { name: /السلة/ });
+  await expect(headerCart).toContainText("2");
+  await headerCart.click();
   await expect(page.getByRole("heading", { name: "سلة التسوق" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "قميص برافوس اليومي" })).toHaveCount(1);
   await expect(page.locator(".cart-line output")).toHaveText("2");

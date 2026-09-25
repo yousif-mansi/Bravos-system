@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-test("guest reviews configured delivery and discounts while a newer cart item survives the accepted response", async ({ context, page }) => {
+test("guest reviews configured delivery and discounts while a newer cart item survives the accepted response", async ({ context, page }, testInfo) => {
   await signInManager(page);
   await page.getByRole("link", { name: "مناطق التوصيل" }).click();
   const areaForm = page.getByRole("form", { name: "بيانات منطقة التوصيل" });
@@ -71,12 +71,52 @@ test("guest reviews configured delivery and discounts while a newer cart item su
   await expect.poll(() => normalizedText(review)).toContain("30 ج.م.");
   await expect.poll(() => normalizedText(review)).toContain("355 ج.م.");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath("checkout-quote-phone-390.png"), fullPage: true });
 
+  const nameInput = checkout.getByLabel("الاسم");
+  const primaryPhoneInput = checkout.getByLabel("رقم الموبايل الأساسي");
+  const alternatePhoneInput = checkout.getByLabel("رقم بديل (اختياري)");
+  const addressInput = checkout.getByLabel("العنوان بالتفصيل");
+  expect(await nameInput.getAttribute("required")).not.toBeNull();
+  expect(await primaryPhoneInput.getAttribute("required")).not.toBeNull();
+  expect(await checkout.getByLabel("منطقة التوصيل").getAttribute("required")).not.toBeNull();
+  expect(await addressInput.getAttribute("required")).not.toBeNull();
+  expect(await alternatePhoneInput.getAttribute("required")).toBeNull();
+  await expect(primaryPhoneInput).toHaveAttribute("type", "tel");
+  let invalidSubmitRequests = 0;
+  const watchInvalidSubmit = (request: { url(): string; method(): string }) => {
+    if (request.method() === "POST" && request.url().includes("/api/public/checkout/orders")) invalidSubmitRequests += 1;
+  };
+  page.on("request", watchInvalidSubmit);
   await checkout.getByRole("button", { name: "إرسال طلب التوصيل" }).click();
-  await expect(checkout.getByLabel("الاسم")).toBeFocused();
-  await checkout.getByLabel("الاسم").fill("أحمد حسن");
-  await checkout.getByLabel("رقم الموبايل الأساسي").fill("01001234567");
-  await checkout.getByLabel("العنوان بالتفصيل").fill("شارع الجامعة، بجوار المكتبة");
+  await expect(nameInput).toBeFocused();
+  await expect(nameInput).toHaveAttribute("aria-invalid", "true");
+  const nameErrorId = await nameInput.getAttribute("aria-describedby");
+  expect(nameErrorId).toBeTruthy();
+  await expect(page.locator(`#${nameErrorId}`)).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("checkout-invalid-phone-390.png"), fullPage: true });
+  expect(invalidSubmitRequests).toBe(0);
+  await nameInput.fill("أحمد حسن");
+  await expect(nameInput).not.toHaveAttribute("aria-invalid", "true");
+  await expect(nameInput).toHaveValue("أحمد حسن");
+  await checkout.getByRole("button", { name: "إرسال طلب التوصيل" }).click();
+  await expect(primaryPhoneInput).toBeFocused();
+  await expect(primaryPhoneInput).toHaveAttribute("aria-invalid", "true");
+  await primaryPhoneInput.fill("01001234567");
+  await expect(primaryPhoneInput).not.toHaveAttribute("aria-invalid", "true");
+  await expect(primaryPhoneInput).toHaveValue("01001234567");
+  await checkout.getByRole("button", { name: "إرسال طلب التوصيل" }).click();
+  await expect(addressInput).toBeFocused();
+  await expect(addressInput).toHaveAttribute("aria-invalid", "true");
+  await addressInput.fill("شارع الجامعة، بجوار المكتبة");
+  await expect(addressInput).not.toHaveAttribute("aria-invalid", "true");
+  await expect(addressInput).toHaveValue("شارع الجامعة، بجوار المكتبة");
+  expect(invalidSubmitRequests).toBe(0);
+  page.off("request", watchInvalidSubmit);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath("checkout-quote-desktop-1440.png"), fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
 
   const operationIds: string[] = [];
   let releaseResponse: (() => void) | undefined;
@@ -241,7 +281,7 @@ test("closed public ordering keeps the cart and shows the Arabic closure screen"
   await page.getByRole("link", { name: "عرض السلة" }).click();
   await expect(page).toHaveURL(/\/cart$/);
   await expect(cartLink(page)).toContainText("1");
-  await expect(page.getByText(/CLOSED-ORDERING-E2E-28/)).toBeVisible();
+  await expect(page.getByRole("region", { name: "منتجات السلة" }).getByRole("heading", { name: "قميص CLOSED-ORDERING-E2E-28", exact: true })).toBeVisible();
 });
 
 async function signInManager(page: Page) {

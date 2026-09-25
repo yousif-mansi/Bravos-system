@@ -1,11 +1,15 @@
 "use client";
 
-export default function StorefrontError({ reset }: { error: Error & { digest?: string }; reset: () => void }) {
+import styles from "./components/collection-controls.module.css";
+
+export default function StorefrontError() {
   return (
-    <main id="main-content" style={{ padding: "3rem 0" }}>
-      <h1>تعذر تحميل المنتجات</h1>
-      <p>حاول مرة أخرى بعد قليل.</p>
-      <button type="button" onClick={reset}>إعادة المحاولة</button>
+    <main id="main-content" className="browse-panel">
+      <div className={styles.message} role="alert">
+        <h1>تعذر تحميل المنتجات</h1>
+        <p>حدث خطأ أثناء قراءة التشكيلة. حاول مرة أخرى.</p>
+        <button type="button" onClick={() => window.location.reload()}>إعادة المحاولة</button>
+      </div>
     </main>
   );
 }

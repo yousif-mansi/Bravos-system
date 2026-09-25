@@ -1,0 +1,15 @@
+# SF-06 gallery and SF-09 cart review — 24 September 2026
+
+**State:** Implemented and locally verified for user review; uncommitted. SF-02 and the storefront-wide Arabic font replacement remain pending. Real garment imagery is still needed for final gallery art-direction acceptance.
+
+The product page now leads with an ordered image gallery, with keyboard/touch navigation, responsive reserved image space, direct revocable catalog URLs, and stable empty/single/broken-image cases. The cart now presents variant details, quantity and stock repair actions, merchandise subtotals, and clear checkout-total and no-reservation guidance. Existing purchase-panel behavior, cart persistence/reconciliation, API and checkout logic were preserved.
+
+**App files:** `apps/storefront/app/products/[productId]/page.tsx`, `product-gallery.tsx`, `product-page.module.css`; `apps/storefront/app/cart/page.tsx`, `cart-line.tsx`, `cart-summary.tsx`, `cart.module.css`.
+
+**Tests:** New `tests/browser/storefront-gallery-cart.spec.ts`; adjusted `tests/browser/catalog-media.spec.ts` to normalize the browser's absolute image URL and assert the direct same-origin path. The media test still checks optimizer behavior, revocation and Hidden media. The [app patch](../../.scratch/storefront-foundation/sf06-sf09-verification/source-changes.diff), [test patch](../../.scratch/storefront-foundation/sf06-sf09-verification/test-changes.diff) and [visual evidence](../../.scratch/storefront-foundation/sf06-sf09-verification/evidence/) are saved separately for review. Evidence contains 390px and 1440px gallery/cart screenshots and computed-style JSON for each page.
+
+**Verification:** Focused gallery and cart scenarios passed. A combined 10-test browser run against the real test PostgreSQL passed 8 and failed 2. One failure was the catalog-media assertion comparing a relative source with the browser's absolute `img.src`; after normalizing to a same-origin URL/path assertion, its targeted rerun passed 1/1. The other failure is the known, untouched `tests/browser/checkout.spec.ts:244` strict duplicate locator. Thus the nine affected scenarios passed across the combined and targeted runs; the full combined run was not clean. Pinned typecheck and architecture checks passed in the isolated QA checkout before a semantic-only gallery fix; targeted storefront TypeScript passed after it. Independent standards and spec reviews found no remaining actionable issue.
+
+**Remaining gates:** User review/commit; representative garment photography for final art direction; later SF-07 product commerce and SF-10 checkout work. Hero/campaign assets still gate their own storytelling tickets. No catalog, pricing, inventory, cart model or checkout behavior was changed by this batch.
+
+**25 September checkout locator closeout:** The previously failing closed-ordering locator was corrected in later test work; its focused rerun passed 1/1 in [the focused log](../../.scratch/storefront-foundation/checkout-locator-closeout/focused-pass.log). The 8/10 combined-run result above is the historical result of this review and has not been replaced by a clean full combined rerun.

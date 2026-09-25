@@ -103,11 +103,15 @@ test("manager publishes product media and customers see only selectable stocked 
   const productImage = page.getByRole("img", { name: /قميص برافوس المصور — صورة 1/ });
   await expect(productImage).toBeVisible();
   const renderedImageUrl = await productImage.getAttribute("src");
-  expect(renderedImageUrl).toBe(`/api/public/catalog/media/${product.imageRefs[0]}`);
-  const publicImage = await page.request.get(`http://127.0.0.1:3001${renderedImageUrl}`);
+  expect(renderedImageUrl).not.toBeNull();
+  const renderedImage = new URL(renderedImageUrl ?? "", page.url());
+  expect(renderedImage.origin).toBe("http://127.0.0.1:3001");
+  const renderedImagePath = renderedImage.pathname;
+  expect(renderedImagePath).toBe(`/api/public/catalog/media/${product.imageRefs[0]}`);
+  const publicImage = await page.request.get(`http://127.0.0.1:3001${renderedImagePath}`);
   expect(publicImage.status()).toBe(200);
   const optimizerAttempt = await page.request.get(
-    `http://127.0.0.1:3001/_next/image?url=${encodeURIComponent(renderedImageUrl ?? "")}&w=640&q=75`,
+    `http://127.0.0.1:3001/_next/image?url=${encodeURIComponent(renderedImagePath)}&w=640&q=75`,
   );
   expect(optimizerAttempt.status()).toBe(404);
   const stockedChoice = page.locator("label.variant-option").filter({ hasText: "أخضر 17" }).getByRole("radio");
@@ -123,7 +127,7 @@ test("manager publishes product media and customers see only selectable stocked 
     productWrite(product, "available", []),
   );
   expect(withoutMedia.status).toBe(200);
-  const removedMedia = await page.request.get(`http://127.0.0.1:3001${renderedImageUrl}`);
+  const removedMedia = await page.request.get(`http://127.0.0.1:3001${renderedImagePath}`);
   expect(removedMedia.status()).toBe(404);
   await page.reload();
   await expect(page.getByRole("img", { name: /قميص برافوس المصور/ })).toHaveCount(0);
@@ -154,7 +158,7 @@ test("manager publishes product media and customers see only selectable stocked 
   await expect(page.getByText("قميص برافوس المصور", { exact: true })).toHaveCount(0);
   await page.goto(`http://127.0.0.1:3001/products/${product.id}`);
   await expect(page.getByRole("heading", { name: "المنتج غير موجود" })).toBeVisible();
-  const hiddenMedia = await page.request.get(`http://127.0.0.1:3001${renderedImageUrl}`);
+  const hiddenMedia = await page.request.get(`http://127.0.0.1:3001${renderedImagePath}`);
   expect(hiddenMedia.status()).toBe(404);
 });
 
