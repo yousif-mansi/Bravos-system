@@ -3,6 +3,8 @@ import { evaluateAutomaticOffers, evaluateCoupon, normalizeCouponCode, PricingVa
 import { assertMergedSaleQuantities, priceSaleLines } from "../domain/discount.ts";
 import { SalesValidationError } from "../domain/errors.ts";
 import { digestOfflineSale } from "../domain/offline-digest.ts";
+import { validatePayment } from "../domain/payment.ts";
+import { POS_SCHEMA_VERSION } from "../domain/pos-update.ts";
 import type { CompleteOfflineSaleInput, OfflineCompletedSale, OfflinePosStore } from "./offline-ports.ts";
 
 export type RecoveredSaleAck = Pick<
@@ -35,6 +37,9 @@ export function createOfflinePosServices(store: OfflinePosStore) {
       submit: (sale: OfflineCompletedSale) => Promise<RecoveredSaleAck>,
       stillCurrent?: () => boolean,
     ) {
+      if (!(await store.canUpgradeSafely(POS_SCHEMA_VERSION))) {
+        return { recovered: 0, remaining: await store.countOtherPending(staffId) };
+      }
       const rows = await store.listPreservedPending(staffId);
       let recovered = 0;
       for (const local of rows) {
@@ -47,6 +52,7 @@ export function createOfflinePosServices(store: OfflinePosStore) {
         }
         const { acknowledgement, ...sale } = synced;
         await store.applyAcknowledgement({
+          branchId: local.branch.id,
           acknowledgedOperationIds: acknowledgement.acknowledgedOperationIds,
           stockVersion: acknowledgement.stockVersion,
           includedOperationIds: acknowledgement.includedOperationIds,
@@ -87,6 +93,7 @@ export function createOfflinePosServices(store: OfflinePosStore) {
         couponCode: sale.couponCode,
         employeeDiscountPiasters: sale.employeeDiscountPiasters,
         discountReason: sale.discountReason,
+        ...(sale.payment ? { payment: sale.payment } : {}),
         lines: sale.lines,
         payloadFingerprint: null,
       });
@@ -99,6 +106,7 @@ export function createOfflinePosServices(store: OfflinePosStore) {
         : null;
       const localUses = coupon ? await store.countUnaccountedCouponUses(coupon.id, input.snapshot.issuedAt) : 0;
       const priced = priceOfflineCart(input, localUses);
+      const payment = validatePayment(input.payment, priced.finalTotalPiasters);
       const payloadFingerprint = await digestOfflineSale({
         id: input.saleId,
         kind: input.kind,
@@ -111,6 +119,7 @@ export function createOfflinePosServices(store: OfflinePosStore) {
         couponCode: input.couponCode,
         employeeDiscountPiasters: input.employeeDiscountPiasters,
         discountReason: input.discountReason,
+        ...(input.payment ? { payment } : {}),
         lines: input.lines.map((line) => ({
           variantId: line.variantId,
           quantity: line.quantity,
@@ -119,7 +128,7 @@ export function createOfflinePosServices(store: OfflinePosStore) {
             : {}),
         })),
       });
-      return store.completeSale(input, {
+      return store.completeSale(input.payment ? { ...input, payment } : input, {
         originalTotalPiasters: priced.originalTotalPiasters,
         automaticOfferDiscountPiasters: priced.automaticOfferDiscountPiasters,
         appliedAutomaticOffer: priced.appliedAutomaticOffer,

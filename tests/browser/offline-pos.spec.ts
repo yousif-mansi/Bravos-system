@@ -26,13 +26,13 @@ test("cashier completes an offline cash sale from an issued snapshot and keeps 2
   await page.getByLabel("المقاس").selectOption({ label: seed.sizeName });
   await page.getByLabel("اللون").selectOption({ label: seed.whiteName });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
-  const checkout = page.getByRole("form", { name: "إتمام البيع النقدي" });
+  const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByLabel("خصم الموظف بالجنيه").fill("50");
   await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
   await expect(page.getByTestId("accepted-prices")).toContainText("450");
-  await checkout.getByLabel("استلم الزبون البضاعة ودفع نقداً").check();
+  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
-  await expect(page.getByRole("status")).toContainText("تم حفظ البيع النقدي.");
+  await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   await expect(page.getByTestId("sale-details")).toContainText("275");
   await expect(page.getByTestId("sale-details")).toContainText("175");
 
@@ -58,12 +58,12 @@ test("local stock effects reject selling three of two remaining units across rep
   await page.getByLabel("اللون").selectOption({ label: seed.colorName });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
-  const checkout = page.getByRole("form", { name: "إتمام البيع النقدي" });
+  const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByLabel("الكمية").first().fill("2");
   await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
   await expect(page.getByRole("alert")).toContainText("الكمية المتاحة غير كافية.");
   await expect(page.getByTestId("accepted-prices")).toHaveCount(0);
-  await expect(checkout.getByLabel("استلم الزبون البضاعة ودفع نقداً")).toBeDisabled();
+  await expect(checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة")).toBeDisabled();
   await expect(page.getByRole("status")).toHaveCount(0);
   const state = await readPosState(page);
   expect(state.sales).toEqual([]);
@@ -93,16 +93,16 @@ test("two tabs cannot sell the same remaining cached unit", async ({ context }) 
     await tab.getByLabel("المقاس").selectOption({ label: seed.sizeName });
     await tab.getByLabel("اللون").selectOption({ label: seed.colorName });
     await tab.getByRole("button", { name: "إضافة إلى السلة" }).click();
-    const checkout = tab.getByRole("form", { name: "إتمام البيع النقدي" });
+    const checkout = tab.getByRole("form", { name: "إتمام البيع" });
     await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
     await expect(tab.getByTestId("accepted-prices")).toBeVisible();
-    await checkout.getByLabel("استلم الزبون البضاعة ودفع نقداً").check();
+    await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   }
-  await page.getByRole("form", { name: "إتمام البيع النقدي" }).getByRole("button", { name: "إتمام البيع" }).click();
-  await expect(page.getByRole("status")).toContainText("تم حفظ البيع النقدي.");
-  await page2.getByRole("form", { name: "إتمام البيع النقدي" }).getByRole("button", { name: "إتمام البيع" }).click();
+  await page.getByRole("form", { name: "إتمام البيع" }).getByRole("button", { name: "إتمام البيع" }).click();
+  await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
+  await page2.getByRole("form", { name: "إتمام البيع" }).getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page2.getByRole("alert")).toContainText("الكمية المتاحة غير كافية.");
-  await expect(page2.getByRole("status")).toHaveCount(0);
+  await expect(page2.getByRole("status").filter({ hasText: "تم حفظ البيع." })).toHaveCount(0);
   await expect(page2.getByTestId("sale-cart")).toContainText(seed.code);
   await expect(page2.getByRole("button", { name: "إعادة المحاولة" })).toBeVisible();
   const state = await readPosState(page);
@@ -125,7 +125,7 @@ test("storage failure does not claim a saved sale", async ({ page }) => {
   await page.getByLabel("المقاس").selectOption({ label: seed.sizeName });
   await page.getByLabel("اللون").selectOption({ label: seed.colorName });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
-  const checkout = page.getByRole("form", { name: "إتمام البيع النقدي" });
+  const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
   await expect(page.getByTestId("accepted-prices")).toBeVisible();
   await page.evaluate(() => {
@@ -144,10 +144,10 @@ test("storage failure does not claim a saved sale", async ({ page }) => {
       return put.apply(this, args as [IDBValidKey]);
     };
   });
-  await checkout.getByLabel("استلم الزبون البضاعة ودفع نقداً").check();
+  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("alert")).toContainText(/تعذر حفظ البيع محلياً|لم تكتمل جاهزية/);
-  await expect(page.getByRole("status")).toHaveCount(0);
+  await expect(page.getByRole("status").filter({ hasText: "تم حفظ البيع." })).toHaveCount(0);
   await expect(page.getByTestId("sale-cart")).toContainText(seed.code);
   const state = await readPosState(page);
   expect(state.sales).toEqual([]);
@@ -169,7 +169,7 @@ test("aborted IndexedDB writes roll back and retry the same completed sale ident
   await page.getByLabel("المقاس").selectOption({ label: seed.sizeName });
   await page.getByLabel("اللون").selectOption({ label: seed.colorName });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
-  const checkout = page.getByRole("form", { name: "إتمام البيع النقدي" });
+  const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
   await expect(page.getByTestId("accepted-prices")).toBeVisible();
   const pendingBefore = await readPosState(page);
@@ -193,10 +193,10 @@ test("aborted IndexedDB writes roll back and retry the same completed sale ident
       return put.apply(this, args as [IDBValidKey]);
     };
   });
-  await checkout.getByLabel("استلم الزبون البضاعة ودفع نقداً").check();
+  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("alert")).toContainText("تعذر حفظ البيع محلياً");
-  await expect(page.getByRole("status")).toHaveCount(0);
+  await expect(page.getByRole("status").filter({ hasText: "تم حفظ البيع." })).toHaveCount(0);
   const afterAbort = await readPosState(page);
   expect(afterAbort.sales).toEqual([]);
   expect(afterAbort.effects).toEqual([]);
@@ -213,7 +213,7 @@ test("aborted IndexedDB writes roll back and retry the same completed sale ident
     }
   });
   await checkout.getByRole("button", { name: "إعادة المحاولة" }).click();
-  await expect(page.getByRole("status")).toContainText("تم حفظ البيع النقدي.");
+  await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   const saved = await readPosState(page);
   expect(saved.sales).toHaveLength(1);
   expect(saved.sales[0]?.id).toBe(pendingBefore.pending[0]?.saleId ?? saved.sales[0]?.id);
@@ -237,11 +237,11 @@ test("sign-out preserves queued sales and another cashier cannot read or submit 
   await page.getByLabel("المقاس").selectOption({ label: seed.sizeName });
   await page.getByLabel("اللون").selectOption({ label: seed.colorName });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
-  const checkout = page.getByRole("form", { name: "إتمام البيع النقدي" });
+  const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
-  await checkout.getByLabel("استلم الزبون البضاعة ودفع نقداً").check();
+  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
-  await expect(page.getByRole("status")).toContainText("تم حفظ البيع النقدي.");
+  await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   const original = (await readPosState(page)).sales[0];
   expect(original?.soldByDisplayName).toBe("كاشير تجريبي");
   const lookupForm = page.getByRole("form", { name: "البحث برمز المنتج" });
@@ -347,11 +347,11 @@ test("a delayed manager sales response cannot overwrite a cashier after another 
   await page.getByLabel("المقاس").selectOption({ label: "مقاس تكلفة" });
   await page.getByLabel("اللون").selectOption({ label: "لون تكلفة" });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
-  const checkout = page.getByRole("form", { name: "إتمام البيع النقدي" });
+  const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
-  await checkout.getByLabel("استلم الزبون البضاعة ودفع نقداً").check();
+  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
-  await expect(page.getByRole("status")).toContainText("تم حفظ البيع النقدي.");
+  await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   let releaseSales: () => void = () => undefined;
   const heldSales = new Promise<void>((resolve) => {
     releaseSales = resolve;
@@ -573,7 +573,7 @@ test("explicit logout from catalog, staff and receiving pages marks the session 
     ["استلام المخزون", "استلام المخزون"],
   ] as const) {
     await page.getByRole("link", { name: linkName }).click();
-    await expect(page.getByRole("heading", { name: heading })).toBeVisible();
+    await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible();
     await page.getByRole("button", { name: "تسجيل الخروج" }).click();
     await expect(page.getByRole("heading", { name: "تسجيل الدخول" })).toBeVisible();
     const current = await readPosSession(page);
@@ -601,11 +601,11 @@ test("a fresh cashier login keeps an old cached session from becoming current", 
   await page.getByLabel("المقاس").selectOption({ label: seed.sizeName });
   await page.getByLabel("اللون").selectOption({ label: seed.colorName });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
-  const checkout = page.getByRole("form", { name: "إتمام البيع النقدي" });
+  const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
-  await checkout.getByLabel("استلم الزبون البضاعة ودفع نقداً").check();
+  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
-  await expect(page.getByRole("status")).toContainText("تم حفظ البيع النقدي.");
+  await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   const original = (await readPosState(page)).sales[0];
   expect(original?.staffId).toBeTruthy();
   const expired = await page.request.fetch("http://127.0.0.1:5174/api/auth/sign-out", {
@@ -660,13 +660,13 @@ test("cached availability stays distinct from local effects so 5 then 1 then 4 s
     await result.getByLabel("المقاس").selectOption({ label: seed.sizeName });
     await result.getByLabel("اللون").selectOption({ label: seed.colorName });
     await result.getByRole("button", { name: "إضافة إلى السلة" }).click();
-    const checkout = page.getByRole("form", { name: "إتمام البيع النقدي" });
+    const checkout = page.getByRole("form", { name: "إتمام البيع" });
     await checkout.getByLabel("الكمية").fill(String(quantity));
     await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
     await expect(page.getByTestId("accepted-prices")).toBeVisible();
-    await checkout.getByLabel("استلم الزبون البضاعة ودفع نقداً").check();
+    await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
     await checkout.getByRole("button", { name: "إتمام البيع" }).click();
-    await expect(page.getByRole("status")).toContainText("تم حفظ البيع النقدي.");
+    await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   }
   await sell(1);
   const afterFirst = await searchProduct(page, seed.code);
@@ -700,11 +700,11 @@ test("retrying a committed last-unit sale recovers the original fact", async ({ 
   await page.getByLabel("المقاس").selectOption({ label: seed.sizeName });
   await page.getByLabel("اللون").selectOption({ label: seed.colorName });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
-  const checkout = page.getByRole("form", { name: "إتمام البيع النقدي" });
+  const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
-  await checkout.getByLabel("استلم الزبون البضاعة ودفع نقداً").check();
+  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
-  await expect(page.getByRole("status")).toContainText("تم حفظ البيع النقدي.");
+  await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   const first = (await readPosState(page)).sales[0];
   await page.evaluate(async () => {
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
@@ -762,7 +762,7 @@ test("retrying a committed last-unit sale recovers the original fact", async ({ 
   await page.reload();
   await expect(page.getByRole("heading", { name: "البحث عن منتج" })).toBeVisible();
   await page.getByRole("button", { name: "إعادة المحاولة" }).click();
-  await expect(page.getByRole("status")).toContainText(/تم حفظ البيع النقدي|تم العثور على البيع المحفوظ/);
+  await expect(page.getByRole("status")).toContainText(/تم حفظ البيع|تم العثور على البيع المحفوظ/);
   const after = await readPosState(page);
   expect(after.sales).toHaveLength(1);
   expect(after.sales[0]?.id).toBe(first?.id);
@@ -788,7 +788,7 @@ test("another tab replacing the snapshot cannot reprice an accepted quote", asyn
   await page.getByLabel("المقاس").selectOption({ label: seed.sizeName });
   await page.getByLabel("اللون").selectOption({ label: seed.whiteName });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
-  const checkout = page.getByRole("form", { name: "إتمام البيع النقدي" });
+  const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByLabel("خصم الموظف بالجنيه").fill("50");
   await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
   await expect(page.getByTestId("accepted-prices")).toContainText("450");
@@ -827,9 +827,9 @@ test("another tab replacing the snapshot cannot reprice an accepted quote", asyn
     db.close();
   });
   await page2.close();
-  await checkout.getByLabel("استلم الزبون البضاعة ودفع نقداً").check();
+  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
-  await expect(page.getByRole("status")).toContainText("تم حفظ البيع النقدي.");
+  await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   await expect(page.getByTestId("sale-details")).toContainText("أبشواي");
   await expect(page.getByTestId("sale-details")).toContainText("275");
   await expect(page.getByTestId("sale-details")).toContainText("175");
@@ -937,7 +937,7 @@ test("legacy pending markers survive failed writes and colliding staff rows", as
   expect(pendingIds).toContain(firstSale);
   expect(pendingIds).toContain(secondSale);
   await expect(page.getByRole("button", { name: "التحقق من النتيجة" })).toBeVisible();
-  await expect(page.getByRole("alert")).toContainText("تم تسليم البضاعة واستلام النقد");
+  await expect(page.getByRole("alert")).toContainText("تم تسليم البضاعة واستلام المبلغ");
   void seed;
 });
 
@@ -1004,11 +1004,11 @@ test("explicit offline sign-out blocks POS until online reauthentication", async
   await page.getByLabel("المقاس").selectOption({ label: seed.sizeName });
   await page.getByLabel("اللون").selectOption({ label: seed.colorName });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
-  const checkout = page.getByRole("form", { name: "إتمام البيع النقدي" });
+  const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
-  await checkout.getByLabel("استلم الزبون البضاعة ودفع نقداً").check();
+  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
-  await expect(page.getByRole("status")).toContainText("تم حفظ البيع النقدي.");
+  await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   const original = (await readPosState(page)).sales[0];
   await page.context().setOffline(true);
   await page.getByRole("button", { name: "تسجيل الخروج" }).click();
@@ -1039,23 +1039,23 @@ test("reconnect retries the original accepted sale once without repricing", asyn
   await page.getByLabel("المقاس").selectOption({ label: seed.sizeName });
   await page.getByLabel("اللون").selectOption({ label: seed.colorName });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
-  const checkout = page.getByRole("form", { name: "إتمام البيع النقدي" });
+  const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
-  await checkout.getByLabel("استلم الزبون البضاعة ودفع نقداً").check();
+  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
-  await expect(page.getByRole("status")).toContainText("تم حفظ البيع النقدي.");
+  await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   const local = (await readPosState(page)).sales[0];
   expect(local?.finalTotalPiasters).toBe(21000);
   await page.unroute("**/api/internal/sales/accepted");
   await page.unroute("**/api/internal/sales");
   await page.unroute("**/api/internal/sales/prepare");
-  await page.getByRole("link", { name: "العودة لمساحة العمل" }).click();
   await expect
     .poll(async () => {
       const listed = await staffApi(page, "GET", "/api/internal/sales");
       return listed.body.filter((sale: { id: string }) => sale.id === local?.id).length;
-    })
+    }, { timeout: 30_000 })
     .toBe(1);
+  await page.getByRole("link", { name: "العودة لمساحة العمل" }).click();
   const listed = await staffApi(page, "GET", "/api/internal/sales");
   const synced = listed.body.find((sale: { id: string }) => sale.id === local?.id);
   expect(synced.soldByDisplayName).toBe("كاشير تجريبي");
@@ -1064,6 +1064,75 @@ test("reconnect retries the original accepted sale once without repricing", asyn
   expect(synced.finalTotalPiasters).toBe(21000);
   const lookupAfter = await staffApi(page, "GET", `/api/internal/catalog/lookup?code=${encodeURIComponent(seed.code)}`);
   expect(lookupAfter.body.variants[0].availableQuantity).toBe(2);
+});
+
+test("offline stock cache keeps each branch balance separate for the same variant", async ({ page }) => {
+  const seed = await seedSingleProduct(page, { quantity: 3, price: 21000, code: "OFF-BRANCH-CACHE" });
+  const workspace = await staffApi(page, "GET", "/api/internal/workspace");
+  const branches = workspace.body.authorizedBranches as Array<{ id: string; code: string }>;
+  const abshwayId = branches.find((branch) => branch.code === "abshway")?.id;
+  const fayoumId = branches.find((branch) => branch.code === "fayoum")?.id;
+  expect(abshwayId && fayoumId).toBeTruthy();
+  const product = await staffApi(page, "GET", `/api/internal/catalog/lookup?code=${seed.code}`);
+  const variantId = product.body.variants[0].id as string;
+  const fayoumReceipt = await staffApi(page, "POST", "/api/internal/receiving/receipts", {
+    operationId: crypto.randomUUID(), branchId: fayoumId, receiptDate: "2026-09-11",
+    lines: [{ variantId, quantity: 1, unitCostPiasters: 4000 }],
+  });
+  expect(fayoumReceipt.status).toBe(201);
+
+  const loginName = `branch.cache.${crypto.randomUUID().slice(0, 8)}`;
+  const staff = await staffApi(page, "POST", "/api/internal/staff", {
+    loginName,
+    displayName: "كاشير الفرعين",
+    password: "e2e-both-branch-pass",
+    grants: [
+      { branchId: abshwayId, cashier: true, orderRepresentative: false },
+      { branchId: fayoumId, cashier: true, orderRepresentative: false },
+    ],
+  });
+  expect(staff.status).toBe(201);
+  await page.getByRole("button", { name: "تسجيل الخروج" }).click();
+  await page.getByLabel("اسم الدخول").fill(loginName);
+  await page.getByLabel("كلمة المرور").fill("e2e-both-branch-pass");
+  await page.getByRole("button", { name: "دخول" }).click();
+  await expect(page.getByRole("heading", { name: "اختيار الفرع النشط" })).toBeVisible();
+  await page.getByRole("button", { name: "أبشواي" }).click();
+  await expect(page.getByTestId("offline-ready")).toBeVisible({ timeout: 30_000 });
+  await page.getByRole("link", { name: "البحث عن منتج" }).click();
+  const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
+  await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill(seed.code);
+  await lookup.getByRole("button", { name: "بحث" }).click();
+  await page.getByLabel("المقاس").selectOption({ label: seed.sizeName });
+  await page.getByLabel("اللون").selectOption({ label: seed.colorName });
+  await expect(page.getByTestId("available-quantity")).toHaveText("الكمية المتاحة: 3");
+
+  await page.getByRole("link", { name: "العودة لمساحة العمل" }).click();
+  await page.getByRole("link", { name: "تغيير الفرع" }).click();
+  await page.getByRole("button", { name: "الفيوم" }).click();
+  await expect(page.getByTestId("offline-ready")).toBeVisible({ timeout: 30_000 });
+  await page.getByRole("link", { name: "البحث عن منتج" }).click();
+  await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill(seed.code);
+  await lookup.getByRole("button", { name: "بحث" }).click();
+  await page.getByLabel("المقاس").selectOption({ label: seed.sizeName });
+  await page.getByLabel("اللون").selectOption({ label: seed.colorName });
+  await expect(page.getByTestId("available-quantity")).toHaveText("الكمية المتاحة: 1");
+  const availability = await page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open("bravos-pos");
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const raw = await new Promise<string | undefined>((resolve, reject) => {
+      const request = db.transaction("meta", "readonly").objectStore("meta").get("stockCache");
+      request.onsuccess = () => resolve((request.result as { value?: string } | undefined)?.value);
+      request.onerror = () => reject(request.error);
+    });
+    db.close();
+    return JSON.parse(raw ?? "{}") as { availability: Record<string, number> };
+  });
+  expect(availability.availability[`${abshwayId}:${variantId}`]).toBe(3);
+  expect(availability.availability[`${fayoumId}:${variantId}`]).toBe(1);
 });
 
 test("queued sales survive a preserving schema upgrade and unsafe upgrades stay deferred", async ({ page }) => {
@@ -1081,11 +1150,11 @@ test("queued sales survive a preserving schema upgrade and unsafe upgrades stay 
   await page.getByLabel("المقاس").selectOption({ label: seed.sizeName });
   await page.getByLabel("اللون").selectOption({ label: seed.colorName });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
-  const checkout = page.getByRole("form", { name: "إتمام البيع النقدي" });
+  const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
-  await checkout.getByLabel("استلم الزبون البضاعة ودفع نقداً").check();
+  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
-  await expect(page.getByRole("status")).toContainText("تم حفظ البيع النقدي.");
+  await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   const original = (await readPosState(page)).sales[0];
   const version = await page.evaluate(async () => {
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
@@ -1388,6 +1457,10 @@ async function readPosState(page: Page) {
 }
 
 async function staffApi(page: Page, method: "GET" | "POST", url: string, payload?: unknown) {
+  if (method === "POST" && url === "/api/internal/receiving/receipts" && payload && typeof payload === "object" && !("branchId" in payload)) {
+    const current = await staffApi(page, "GET", "/api/internal/workspace");
+    payload = { ...payload, branchId: current.body.activeBranch?.id };
+  }
   const response = await page.request.fetch(`http://127.0.0.1:5174${url}`, {
     method,
     headers: {

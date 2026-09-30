@@ -186,14 +186,30 @@ function validatePayload(value: unknown): DecodedBackupArchive {
     throw new Error("Invalid backup manifest.");
   }
   validateKnownTills(manifest.knownUnsynchronizedTills);
-  // Two strict profiles: archives made before restore generations existed (028, no generation)
-  // and generation-aware archives (029). Mixed profiles are rejected.
+  // Format 1 retains explicit schema profiles. A previous schema can be authenticated and
+  // diagnosed by restore, but cannot be silently interpreted as the current schema.
+  const knownSchemas = [
+    "028_aggregate_analytics.sql", "029_restore.sql", "030_branch_inventory.sql",
+    "031_sale_payments.sql", "032_catalog_online_variants.sql",
+    "033_human_references.sql", "034_order_recognition_branch.sql",
+  ];
+  const schemaNumber = knownSchemas.indexOf(manifest.schemaVersion as string) + 28;
+  if (schemaNumber < 28) {
+    throw new Error("Unsupported backup schema version. Use a backup made by a compatible server.");
+  }
   const legacy028 = manifest.schemaVersion === "028_aggregate_analytics.sql" && manifest.sourceGeneration === null;
-  const generationAware = manifest.schemaVersion === "029_restore.sql" && isCount(manifest.sourceGeneration);
+  const generationAware = schemaNumber >= 29 && isCount(manifest.sourceGeneration);
   if (!legacy028 && !generationAware) throw new Error("Unsupported backup schema or generation profile.");
-  const expectedTables = legacy028
-    ? new Set([...EXPECTED_BACKUP_TABLES].filter((name) => name !== "sales_restore_deferred_completion"))
-    : EXPECTED_BACKUP_TABLES;
+  const referenceAware = schemaNumber >= 33;
+  if (referenceAware) {
+    validateReferenceSequence(manifest.salesSaleReferenceSequence, "physical-sale");
+    validateReferenceSequence(manifest.returnsReturnReferenceSequence, "return");
+  } else if ("salesSaleReferenceSequence" in manifest || "returnsReturnReferenceSequence" in manifest) {
+    throw new Error("Backup reference sequences do not match its schema version.");
+  }
+  const expectedTables = new Set([...EXPECTED_BACKUP_TABLES].filter((name) =>
+    !(legacy028 && name === "sales_restore_deferred_completion")
+    && !(schemaNumber < 30 && name === "inventory_batch_balance")));
   const data = value.data;
   const sectionKeys = Object.keys(data);
   if (sectionKeys.length !== BACKUP_SECTION_NAMES.length || BACKUP_SECTION_NAMES.some((name) => !isRecord(data[name]))) {
@@ -237,6 +253,14 @@ function validatePayload(value: unknown): DecodedBackupArchive {
   validateGenerationColumns(data, generationAware);
   validateActorProjection((data.identity as Record<string, unknown>).identity_actor);
   return value as unknown as DecodedBackupArchive;
+}
+
+function validateReferenceSequence(value: unknown, label: string): void {
+  if (!isRecord(value) || Object.keys(value).length !== 2
+    || typeof value.lastValue !== "string" || !/^(0|[1-9]\d*)$/.test(value.lastValue)
+    || typeof value.isCalled !== "boolean") {
+    throw new Error(`Invalid ${label} reference sequence in backup manifest.`);
+  }
 }
 
 function validateGenerationColumns(data: Record<string, unknown>, generationAware: boolean) {

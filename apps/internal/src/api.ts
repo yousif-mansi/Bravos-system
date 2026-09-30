@@ -269,6 +269,7 @@ export function createProduct(input: {
   variants: Array<{
     sizeId: string;
     colorId: string;
+    onlineVisible?: boolean;
     sellingPricePiastersOverride: number | null;
   }>;
 }) {
@@ -281,6 +282,8 @@ export function createProduct(input: {
 export function updateProduct(
   productId: string,
   input: {
+    expectedRevision?: number;
+    expectedVariantIds?: string[];
     code: string;
     nameAr: string;
     descriptionAr: string;
@@ -292,6 +295,7 @@ export function updateProduct(
     variants: Array<{
       sizeId: string;
       colorId: string;
+      onlineVisible?: boolean;
       sellingPricePiastersOverride: number | null;
     }>;
   },
@@ -403,6 +407,7 @@ export function confirmOnlineOrder(orderId: string, input: {
   expectedRevision: number;
   agreedRevision: number;
   itemsLocatedAndSetAside: true;
+  fulfillmentBranchId: string;
 }) {
   return request<OnlineOrderDto>(`/api/internal/online-orders/${orderId}/confirm`, {
     method: "POST",
@@ -457,6 +462,7 @@ export function cancelOnlineOrderBeforeShipment(orderId: string, input: {
   operationId: string;
   expectedRevision: number;
   reason: string;
+  itemsReturnedAndInspected?: boolean;
 }) {
   return request<OnlineOrderMutationResponseDto>(`/api/internal/online-orders/${orderId}/cancel-before-shipment`, {
     method: "POST",
@@ -478,6 +484,7 @@ export function draftOnlineOrderFailedReturnInspection(orderId: string, input: {
 export function postOnlineOrderFailedReturnInspection(orderId: string, inspectionId: string, input: {
   operationId: string;
   expectedRevision: number;
+  receivingBranchId: string;
 }) {
   return request<OnlineOrderMutationResponseDto>(`/api/internal/online-orders/${orderId}/failed-return-inspections/${inspectionId}/post`, {
     method: "POST",
@@ -600,6 +607,7 @@ export function lookupProductByCode(code: string) {
 
 export function finalizeReceipt(input: {
   operationId: string;
+  branchId: string;
   receiptDate: string;
   lines: Array<{ variantId: string; quantity: number; unitCostPiasters: number }>;
 }) {
@@ -730,6 +738,7 @@ export function reconcileLateSale(input: {
   operationId: string;
   correctionId: string;
   saleId: string;
+  branchId: string;
   variantId: string;
   resolution: "included_in_count" | "allocate_missing_source";
   quantity: number;
@@ -747,6 +756,7 @@ export type SaleWrite = {
   customerPhone?: string | null;
   couponCode?: string | null;
   employeeDiscountPiasters: number;
+  payment?: { method: "cash" | "online" | "split"; cashPiasters: number; onlinePiasters: number };
   discountReason?: string | null;
   occurredAt?: string | null;
   pendingOperationIds?: string[];

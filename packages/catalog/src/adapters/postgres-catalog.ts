@@ -27,6 +27,7 @@ type NamedRow = {
 
 type ProductRow = {
   id: string;
+  edit_revision: number;
   code: string;
   name_ar: string;
   description_ar: string;
@@ -48,6 +49,7 @@ type VariantRow = {
   size_name_ar: string;
   color_id: string;
   color_name_ar: string;
+  online_visible: boolean;
   selling_price_piasters_override: number | null;
 };
 
@@ -68,6 +70,7 @@ type ProductJoinRow = ProductRow & {
   size_name_ar: string | null;
   color_id: string | null;
   color_name_ar: string | null;
+  online_visible: boolean | null;
   selling_price_piasters_override: number | null;
 };
 
@@ -289,6 +292,28 @@ export function createPostgresCatalogStore(pool: Pool): CatalogStore {
       try {
         await client.query("BEGIN");
         await client.query("SELECT restore_enter_business_write()");
+        const locked = await client.query<{ edit_revision: number }>(
+          `SELECT edit_revision FROM catalog_product WHERE id = $1 FOR UPDATE`,
+          [id],
+        );
+        if (!locked.rows[0]) {
+          await client.query("ROLLBACK");
+          return null;
+        }
+        if (input.expectedRevision !== undefined && locked.rows[0].edit_revision !== input.expectedRevision) {
+          throw new CatalogValidationError("تغير المنتج أثناء التعديل. أعد تحميله وراجع المقاسات والألوان قبل الحفظ.");
+        }
+        if (input.expectedVariantIds !== undefined) {
+          const rows = await client.query<{ id: string }>(
+            `SELECT id FROM catalog_product_variant WHERE product_id = $1 ORDER BY id`,
+            [id],
+          );
+          const actual = rows.rows.map((row) => row.id);
+          const expected = [...input.expectedVariantIds].sort();
+          if (actual.length !== expected.length || actual.some((variantId, index) => variantId !== expected[index])) {
+            throw new CatalogValidationError("تغيرت تركيبات المقاس واللون أثناء التعديل. أعد تحميل المنتج قبل الحفظ.");
+          }
+        }
         const updated = await client.query<{ id: string }>(
           `UPDATE catalog_product
            SET code = $2,
@@ -301,6 +326,7 @@ export function createPostgresCatalogStore(pool: Pool): CatalogStore {
                size_guide_ar = $9,
                last_changed_by_staff_id = $10,
                last_changed_at = now(),
+               edit_revision = edit_revision + 1,
                updated_at = now()
            WHERE id = $1
            RETURNING id`,
@@ -378,12 +404,14 @@ export function createPostgresCheckoutCatalogReader(queryable: Queryable) {
         category_id: string;
         default_selling_price_piasters: number | string;
         selling_price_piasters_override: number | string | null;
+        online_visible: boolean;
         publication: "available" | "coming_soon" | "hidden";
       }>(
         `SELECT v.id, p.id AS product_id, p.code AS product_code, p.name_ar AS product_name_ar,
                 s.id AS size_id, s.name_ar AS size_name_ar,
                 col.id AS color_id, col.name_ar AS color_name_ar,
                 p.category_id, p.default_selling_price_piasters, v.selling_price_piasters_override,
+                v.online_visible,
                 p.publication
          FROM catalog_product_variant v
          JOIN catalog_product p ON p.id = v.product_id
@@ -404,6 +432,7 @@ export function createPostgresCheckoutCatalogReader(queryable: Queryable) {
           row.selling_price_piasters_override === null ? null : asSafeInteger(row.selling_price_piasters_override),
         ),
         publication: row.publication,
+        onlineVisible: row.online_visible,
       }));
     },
   };
@@ -444,8 +473,8 @@ async function replaceVariants(
   productId: string,
   variants: ProductWrite["variants"],
 ): Promise<void> {
-  const existing = await client.query<{ id: string; size_id: string; color_id: string }>(
-    `SELECT id, size_id, color_id FROM catalog_product_variant WHERE product_id = $1`,
+  const existing = await client.query<{ id: string; size_id: string; color_id: string; online_visible: boolean }>(
+    `SELECT id, size_id, color_id, online_visible FROM catalog_product_variant WHERE product_id = $1`,
     [productId],
   );
   const keep = new Set<string>();
@@ -457,17 +486,17 @@ async function replaceVariants(
       keep.add(match.id);
       await client.query(
         `UPDATE catalog_product_variant
-         SET selling_price_piasters_override = $2, updated_at = now()
+         SET selling_price_piasters_override = $2, online_visible = $3, updated_at = now()
          WHERE id = $1`,
-        [match.id, variant.sellingPricePiastersOverride],
+        [match.id, variant.sellingPricePiastersOverride, variant.onlineVisible ?? match.online_visible],
       );
     } else {
       const inserted = await client.query<{ id: string }>(
         `INSERT INTO catalog_product_variant (
-           id, product_id, size_id, color_id, selling_price_piasters_override
-         ) VALUES (gen_random_uuid(), $1, $2, $3, $4)
+           id, product_id, size_id, color_id, selling_price_piasters_override, online_visible
+         ) VALUES (gen_random_uuid(), $1, $2, $3, $4, $5)
          RETURNING id`,
-        [productId, variant.sizeId, variant.colorId, variant.sellingPricePiastersOverride],
+        [productId, variant.sizeId, variant.colorId, variant.sellingPricePiastersOverride, variant.onlineVisible ?? true],
       );
       keep.add(mustRow(inserted.rows[0]).id);
     }
@@ -515,6 +544,7 @@ function foldProducts(rows: ProductJoinRow[]): ManagerProductDto[] {
             size_name_ar: row.size_name_ar,
             color_id: row.color_id,
             color_name_ar: row.color_name_ar,
+            online_visible: row.online_visible ?? true,
             selling_price_piasters_override: row.selling_price_piasters_override,
           },
           row.default_selling_price_piasters,
@@ -534,6 +564,7 @@ function foldProducts(rows: ProductJoinRow[]): ManagerProductDto[] {
 function productJoinSelect(): string {
   return `SELECT
      p.id,
+     p.edit_revision,
      p.code,
      p.name_ar,
      p.description_ar,
@@ -551,6 +582,7 @@ function productJoinSelect(): string {
      s.name_ar AS size_name_ar,
      v.color_id,
      col.name_ar AS color_name_ar,
+     v.online_visible,
      v.selling_price_piasters_override
    FROM catalog_product p
    JOIN catalog_category c ON c.id = p.category_id
@@ -576,6 +608,7 @@ function toVariant(row: VariantRow, defaultSellingPricePiasters: number): Manage
     id: row.id,
     size: { id: row.size_id, nameAr: row.size_name_ar },
     color: { id: row.color_id, nameAr: row.color_name_ar },
+    onlineVisible: row.online_visible,
     sellingPricePiastersOverride: row.selling_price_piasters_override,
     sellingPricePiasters: resolvedSellingPricePiasters(
       defaultSellingPricePiasters,
@@ -587,6 +620,7 @@ function toVariant(row: VariantRow, defaultSellingPricePiasters: number): Manage
 function toProduct(row: ProductRow, variants: ManagerVariantDto[]): ManagerProductDto {
   return {
     id: row.id,
+    editRevision: row.edit_revision,
     code: row.code,
     nameAr: row.name_ar,
     descriptionAr: row.description_ar,

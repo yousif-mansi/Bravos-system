@@ -14,6 +14,7 @@ type Queryable = Pick<Pool, "query"> | PoolClient;
 
 type ReceiptRow = {
   id: string;
+  branch_id: string;
   operation_id: string;
   receipt_date: string;
   received_by_staff_id: string;
@@ -58,9 +59,9 @@ export function createPostgresReceiptStore(queryable: Queryable): ReceiptStore {
     async insert(input) {
       await queryable.query(
         `INSERT INTO receiving_receipt (
-           id, operation_id, receipt_date, received_by_staff_id, recorded_at
-         ) VALUES ($1, $2, $3::date, $4, $5)`,
-        [input.id, input.operationId, input.receiptDate, input.receivedByStaffId, input.recordedAt],
+           id, branch_id, operation_id, receipt_date, received_by_staff_id, recorded_at
+         ) VALUES ($1, $2, $3, $4::date, $5, $6)`,
+        [input.id, input.branchId, input.operationId, input.receiptDate, input.receivedByStaffId, input.recordedAt],
       );
       for (const [index, line] of input.lines.entries()) {
         await queryable.query(
@@ -81,7 +82,7 @@ export function createPostgresReceiptStore(queryable: Queryable): ReceiptStore {
     getById: (id, lock = false) => loadById(queryable, id, lock),
     async list() {
       const receipts = await queryable.query<ReceiptRow>(
-        `SELECT id, operation_id, receipt_date::text AS receipt_date, received_by_staff_id, recorded_at
+        `SELECT id, branch_id, operation_id, receipt_date::text AS receipt_date, received_by_staff_id, recorded_at
          FROM receiving_receipt
          ORDER BY recorded_at DESC, id DESC`,
       );
@@ -162,7 +163,7 @@ export function createPostgresReceivingUnitOfWork(
 
 async function loadById(queryable: Queryable, id: string, lock = false): Promise<ReceiptRecord | null> {
   const receipt = await queryable.query<ReceiptRow>(
-    `SELECT id, operation_id, receipt_date::text AS receipt_date, received_by_staff_id, recorded_at
+    `SELECT id, branch_id, operation_id, receipt_date::text AS receipt_date, received_by_staff_id, recorded_at
      FROM receiving_receipt
      WHERE id = $1 ${lock ? "FOR UPDATE" : ""}`,
     [id],
@@ -249,7 +250,7 @@ function toCorrection(row: CorrectionRow, lines: ReceiptCorrectionLineRecord[]):
 
 async function loadByOperationId(queryable: Queryable, operationId: string): Promise<ReceiptRecord | null> {
   const receipt = await queryable.query<ReceiptRow>(
-    `SELECT id, operation_id, receipt_date::text AS receipt_date, received_by_staff_id, recorded_at
+    `SELECT id, branch_id, operation_id, receipt_date::text AS receipt_date, received_by_staff_id, recorded_at
      FROM receiving_receipt
      WHERE operation_id = $1`,
     [operationId],
@@ -285,6 +286,7 @@ function toLine(row: LineRow): ReceiptLineWrite {
 function toReceipt(row: ReceiptRow, lines: ReceiptLineWrite[]): ReceiptRecord {
   return {
     id: row.id,
+    branchId: row.branch_id,
     operationId: row.operation_id,
     receiptDate: row.receipt_date,
     receivedByStaffId: row.received_by_staff_id,

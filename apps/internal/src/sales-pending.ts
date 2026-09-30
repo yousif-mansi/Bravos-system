@@ -8,6 +8,7 @@ export type SalePayload = {
   couponCode?: string | null;
   employeeDiscountPiasters: number;
   discountReason: string | null;
+  payment?: { method: "cash" | "online" | "split"; cashPiasters: number; onlinePiasters: number };
   lines: SalePayloadLines;
 };
 
@@ -157,6 +158,7 @@ export async function digestSalePayload(input: SalePayload): Promise<string> {
     ...(couponCode ? { couponCode } : {}),
     employeeDiscountPiasters: input.employeeDiscountPiasters,
     discountReason: input.discountReason,
+    ...(input.payment ? { payment: input.payment } : {}),
     lines,
   });
   const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonical));

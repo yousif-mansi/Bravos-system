@@ -236,7 +236,7 @@ export default function CorrectionsPage({ workspace }: { workspace: WorkspaceDto
       <section className="card">
         <h2>فتح التسجيل الأصلي</h2>
         <form aria-label="فتح تسجيل للتصحيح" className="grid two" onSubmit={(event) => void load(event)}>
-          <div className="field"><label htmlFor="correction-target">نوع التسجيل</label><select id="correction-target" value={target} onChange={(event) => { setTarget(event.target.value as "sale" | "return"); setDetail(null); }}><option value="sale">بيع نقدي مكتمل</option><option value="return">إرجاع مرحّل</option></select></div>
+          <div className="field"><label htmlFor="correction-target">نوع التسجيل</label><select id="correction-target" value={target} onChange={(event) => { setTarget(event.target.value as "sale" | "return"); setDetail(null); }}><option value="sale">بيع فرع مكتمل</option><option value="return">إرجاع مرحّل</option></select></div>
           <div className="field"><label htmlFor="correction-record">مرجع التسجيل</label><input id="correction-record" value={recordId} onChange={(event) => setRecordId(event.target.value)} /></div>
           <button type="submit" disabled={busy}>فتح التفاصيل</button>
         </form>
@@ -247,7 +247,7 @@ export default function CorrectionsPage({ workspace }: { workspace: WorkspaceDto
           <section className="card" data-testid="correction-details">
             <h2>الأصل والقيمة المستخدمة حالياً</h2>
             <p>المرجع: {detail.reference}</p>
-            {detail.targetType === "return" ? <p>مصدر الشراء: {detail.source.kind === "delivered_online_order" ? "طلب أونلاين مُسلّم" : "بيع نقدي مكتمل"}</p> : null}
+            {detail.targetType === "return" ? <p>مصدر الشراء: {detail.source.kind === "delivered_online_order" ? "طلب أونلاين مُسلّم" : "بيع فرع مكتمل"}</p> : null}
             <p>القيمة الأصلية المسجلة: {formatEgpFromPiasters(originalAmount ?? 0)}</p>
             <p>القيمة المستخدمة حالياً: {currentAmount === null || currentAmount === undefined ? "ملغاة" : formatEgpFromPiasters(currentAmount)}</p>
             {detail.targetType === "return" ? <p>تفصيل الأصل: بضاعة {formatEgpFromPiasters(detail.original.authorizedRefund.merchandisePiasters)} · رسوم توصيل {formatEgpFromPiasters(detail.original.authorizedRefund.checkoutChargePiasters)}. {detail.effective ? <>التفصيل المستخدم: بضاعة {formatEgpFromPiasters(detail.effective.authorizedRefund.merchandisePiasters)} · رسوم توصيل {formatEgpFromPiasters(detail.effective.authorizedRefund.checkoutChargePiasters)}.</> : null}</p> : null}

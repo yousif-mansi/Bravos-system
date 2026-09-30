@@ -1,28 +1,41 @@
 import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import type {
+  CategoryDto,
+  ColorDto,
   InventoryBatchDto,
   InventorySettingsDto,
   LowStockVariantDto,
   ManagerProductDto,
   ReceiptDto,
+  SizeDto,
   WorkspaceDto,
 } from "@bravos/contracts";
 import {
   ApiError,
   correctReceipt,
+  createCategory,
+  createColor,
+  createProduct,
+  createSize,
   finalizeReceipt,
+  getReceipt,
   getInventorySettings,
   listBatches,
+  listCategories,
+  listColors,
   listLowStock,
   listProducts,
   listReceipts,
+  listSizes,
   lookupReceivingOperation,
   setVariantLowStockThreshold,
   updateInventorySettings,
+  updateProduct,
 } from "../api.ts";
 import { egpInputToPiasters, formatEgpFromPiasters, piastersToEgpInput } from "../money.ts";
 import { EmptyState } from "../ui/EmptyState.tsx";
+import { useRevealFeedback } from "../ui/useRevealFeedback.ts";
 
 import {
   assignPendingReceive,
@@ -43,6 +56,30 @@ type DraftLine = {
   quantity: string;
   costEgp: string;
 };
+
+type NewInventoryVariant = {
+  key: string;
+  sizeId: string;
+  colorId: string;
+  quantity: string;
+  costEgp: string;
+};
+
+type NewInventoryProduct = {
+  code: string;
+  nameAr: string;
+  categoryId: string;
+  defaultEgp: string;
+  variants: NewInventoryVariant[];
+};
+
+function emptyNewInventoryVariant(): NewInventoryVariant {
+  return { key: crypto.randomUUID(), sizeId: "", colorId: "", quantity: "", costEgp: "" };
+}
+
+function emptyNewInventoryProduct(): NewInventoryProduct {
+  return { code: "", nameAr: "", categoryId: "", defaultEgp: "", variants: [emptyNewInventoryVariant()] };
+}
 
 type CorrectionDraftLine = {
   lineId: string;
@@ -93,6 +130,20 @@ export default function ReceivingPage({
   const [notice, setNotice] = useState("");
   const [pending, setPending] = useState("");
   const [products, setProducts] = useState<ManagerProductDto[]>([]);
+  const [categories, setCategories] = useState<CategoryDto[]>([]);
+  const [sizes, setSizes] = useState<SizeDto[]>([]);
+  const [colors, setColors] = useState<ColorDto[]>([]);
+  const [newInventoryProduct, setNewInventoryProduct] = useState<NewInventoryProduct>(emptyNewInventoryProduct);
+  const [intakeMode, setIntakeMode] = useState<"new" | "existing">("new");
+  const [categoryName, setCategoryName] = useState("");
+  const [categoryParentId, setCategoryParentId] = useState("");
+  const [sizeName, setSizeName] = useState("");
+  const [colorName, setColorName] = useState("");
+  const [savedNewProduct, setSavedNewProduct] = useState<ManagerProductDto | null>(null);
+  const [savedNewReceipt, setSavedNewReceipt] = useState<{ branchId: string; receiptDate: string; lines: ReceivePayloadLines } | null>(null);
+  const [branchId, setBranchId] = useState(workspace.activeBranch?.id ?? workspace.authorizedBranches[0]?.id ?? "");
+  const receiptFeedback = useRevealFeedback<HTMLElement>();
+  const [detailLoadingId, setDetailLoadingId] = useState<string | null>(null);
   const [receipts, setReceipts] = useState<ReceiptDto[]>([]);
   const [batches, setBatches] = useState<InventoryBatchDto[]>([]);
   const [lowStock, setLowStock] = useState<LowStockVariantDto[]>([]);
@@ -109,12 +160,14 @@ export default function ReceivingPage({
   const [correctionRetryReady, setCorrectionRetryReady] = useState(false);
   const [pendingReceive, setPendingReceive] = useState<PendingReceive | null>(null);
   const [frozenPayload, setFrozenPayload] = useState<{
+    branchId: string;
     receiptDate: string;
     lines: ReceivePayloadLines;
   } | null>(null);
   const inFlightRef = useRef(false);
   const pendingReceiveRef = useRef<PendingReceive | null>(null);
   const frozenPayloadRef = useRef<{
+    branchId: string;
     receiptDate: string;
     lines: ReceivePayloadLines;
   } | null>(null);
@@ -122,18 +175,24 @@ export default function ReceivingPage({
   const correctionInFlightRef = useRef(false);
 
   async function refresh() {
-    const [nextProducts, nextReceipts, nextBatches, nextLowStock, nextSettings] = await Promise.all([
+    const [nextProducts, nextReceipts, nextBatches, nextLowStock, nextSettings, nextCategories, nextSizes, nextColors] = await Promise.all([
       listProducts(),
       listReceipts(),
       listBatches(),
       listLowStock(),
       getInventorySettings(),
+      listCategories(),
+      listSizes(),
+      listColors(),
     ]);
     setProducts(nextProducts);
     setReceipts(nextReceipts);
     setBatches(nextBatches);
     setLowStock(nextLowStock);
     setSettings(nextSettings);
+    setCategories(nextCategories);
+    setSizes(nextSizes);
+    setColors(nextColors);
     setThresholdInput(String(nextSettings.lowStockThreshold));
   }
 
@@ -248,10 +307,14 @@ export default function ReceivingPage({
     setError("");
     setLines([emptyLine()]);
     setSelectedReceiptId(receipt.id);
+    setSavedNewProduct(null);
+    setSavedNewReceipt(null);
+    setNewInventoryProduct(emptyNewInventoryProduct());
+    setIntakeMode("new");
     await refresh();
   }
 
-  async function submitPayload(payload: { receiptDate: string; lines: ReceivePayloadLines }) {
+  async function submitPayload(payload: { branchId: string; receiptDate: string; lines: ReceivePayloadLines }) {
     let digest: string;
     try {
       digest = await digestReceivePayload(payload);
@@ -292,6 +355,7 @@ export default function ReceivingPage({
     try {
       const created = await finalizeReceipt({
         operationId: nextPending.operationId,
+        branchId: payload.branchId,
         receiptDate: payload.receiptDate,
         lines: payload.lines,
       });
@@ -348,13 +412,17 @@ export default function ReceivingPage({
     setError("");
     setNotice("");
     try {
+      if (!branchId || !workspace.authorizedBranches.some((branch) => branch.id === branchId)) {
+        setError("اختر فرع الاستلام قبل الحفظ.");
+        return;
+      }
       const payload =
         frozenPayloadRef.current ??
         (pendingReceiveRef.current?.phase === "uncertain" && frozenPayload
           ? frozenPayload
           : (() => {
               const parsed = parseDraftLines();
-              return parsed ? { receiptDate, lines: parsed } : null;
+              return parsed ? { branchId, receiptDate, lines: parsed } : null;
             })());
       if (!payload) {
         return;
@@ -362,6 +430,193 @@ export default function ReceivingPage({
       await submitPayload(payload);
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.messageAr : "تعذر حفظ الاستلام.");
+    } finally {
+      inFlightRef.current = false;
+      setPending("");
+    }
+  }
+
+  async function addTaxonomy(event: FormEvent, kind: "category" | "size" | "color") {
+    event.preventDefault();
+    setError("");
+    setNotice("");
+    setPending(`taxonomy-${kind}`);
+    try {
+      if (kind === "category") {
+        const created = await createCategory({ nameAr: categoryName, ...(categoryParentId ? { parentId: categoryParentId } : {}) });
+        setCategories(await listCategories());
+        setCategoryName("");
+        setCategoryParentId("");
+        setNewInventoryProduct((current) => ({ ...current, categoryId: created.id }));
+      } else if (kind === "size") {
+        const created = await createSize(sizeName);
+        setSizes(await listSizes());
+        setSizeName("");
+        setNewInventoryProduct((current) => ({ ...current, variants: current.variants.map((row, index) => index === 0 && !row.sizeId ? { ...row, sizeId: created.id } : row) }));
+      } else {
+        const created = await createColor(colorName);
+        setColors(await listColors());
+        setColorName("");
+        setNewInventoryProduct((current) => ({ ...current, variants: current.variants.map((row, index) => index === 0 && !row.colorId ? { ...row, colorId: created.id } : row) }));
+      }
+      setNotice("تم حفظ الاختيار وإتاحته لنموذج المخزون.");
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.messageAr : "تعذر حفظ الاختيار.");
+    } finally {
+      setPending("");
+    }
+  }
+
+  function parseNewInventoryProduct() {
+    const price = egpInputToPiasters(newInventoryProduct.defaultEgp);
+    if (!branchId || !workspace.authorizedBranches.some((branch) => branch.id === branchId)) {
+      setError("اختر الفرع الذي ستدخل إليه الكمية.");
+      return null;
+    }
+    if (!newInventoryProduct.code.trim() || !newInventoryProduct.nameAr.trim() || !newInventoryProduct.categoryId || price === null) {
+      setError("أدخل رمز المنتج واسمه وتصنيفه وسعر بيعه.");
+      return null;
+    }
+    const seen = new Set<string>();
+    const variants: Array<{ sizeId: string; colorId: string; quantity: number; unitCostPiasters: number }> = [];
+    for (const row of newInventoryProduct.variants) {
+      const quantity = Number(row.quantity);
+      const unitCostPiasters = egpInputToPiasters(row.costEgp);
+      const pair = `${row.sizeId}:${row.colorId}`;
+      if (!row.sizeId || !row.colorId || !Number.isInteger(quantity) || quantity < 1 || unitCostPiasters === null) {
+        setError("أدخل المقاس واللون والكمية وتكلفة الشراء لكل تركيبة.");
+        return null;
+      }
+      if (seen.has(pair)) {
+        setError("لا يمكن تكرار نفس المقاس واللون للمنتج.");
+        return null;
+      }
+      seen.add(pair);
+      variants.push({ sizeId: row.sizeId, colorId: row.colorId, quantity, unitCostPiasters });
+    }
+    return { price, variants };
+  }
+
+  function receiptForNewProduct(product: ManagerProductDto, variants: NonNullable<ReturnType<typeof parseNewInventoryProduct>>["variants"]) {
+    const receiptLines: ReceivePayloadLines = [];
+    for (const row of variants) {
+      const match = product.variants.find((variant) => variant.size.id === row.sizeId && variant.color.id === row.colorId);
+      if (!match) return null;
+      receiptLines.push({ variantId: match.id, quantity: row.quantity, unitCostPiasters: row.unitCostPiasters });
+    }
+    return { branchId, receiptDate, lines: receiptLines };
+  }
+
+  async function onCreateAndReceive(event: FormEvent) {
+    event.preventDefault();
+    if (inFlightRef.current) return;
+    if (pendingReceiveRef.current && !savedNewReceipt && !(savedNewProduct && pendingReceiveRef.current.phase === "rejected")) {
+      setError("تحقق من عملية الاستلام السابقة قبل إضافة منتج جديد.");
+      return;
+    }
+    inFlightRef.current = true;
+    setPending("new-product");
+    setError("");
+    setNotice("");
+    try {
+      if (savedNewReceipt) {
+        await submitPayload(savedNewReceipt);
+        return;
+      }
+      const parsed = parseNewInventoryProduct();
+      if (!parsed) return;
+      let created: ManagerProductDto;
+      if (savedNewProduct) {
+        created = savedNewProduct;
+      } else if (intakeMode === "new") {
+        if (products.some((item) => item.code.trim().toLocaleLowerCase() === newInventoryProduct.code.trim().toLocaleLowerCase())) {
+          setError("رمز المنتج موجود بالفعل. اختره من إذن الاستلام أدناه أو استخدم استعادة المنتج المحفوظ.");
+          return;
+        }
+        created = await createProduct({
+          code: newInventoryProduct.code.trim(),
+          nameAr: newInventoryProduct.nameAr.trim(),
+          descriptionAr: "",
+          categoryId: newInventoryProduct.categoryId,
+          defaultSellingPricePiasters: parsed.price,
+          publication: "hidden",
+          imageRefs: [],
+          sizeGuideAr: null,
+          variants: parsed.variants.map((row) => ({ sizeId: row.sizeId, colorId: row.colorId, onlineVisible: false, sellingPricePiastersOverride: null })),
+        });
+      } else {
+        const latest = await listProducts();
+        const existing = latest.find((item) => item.code.trim().toLocaleLowerCase() === newInventoryProduct.code.trim().toLocaleLowerCase());
+        if (!existing) {
+          setError("اختر منتجاً موجوداً لإضافة تركيبة جديدة.");
+          return;
+        }
+        if (parsed.variants.some((row) => existing.variants.some((variant) => variant.size.id === row.sizeId && variant.color.id === row.colorId))) {
+          setError("هذه التركيبة موجودة بالفعل. استخدم إذن الاستلام المعتاد لإضافة كميتها.");
+          return;
+        }
+        created = await updateProduct(existing.id, {
+          expectedRevision: existing.editRevision,
+          expectedVariantIds: existing.variants.map((variant) => variant.id),
+          code: existing.code,
+          nameAr: existing.nameAr,
+          descriptionAr: existing.descriptionAr,
+          categoryId: existing.category.id,
+          defaultSellingPricePiasters: existing.defaultSellingPricePiasters,
+          publication: existing.publication,
+          imageRefs: existing.imageRefs,
+          sizeGuideAr: existing.sizeGuideAr,
+          variants: [
+            ...existing.variants.map((variant) => ({ sizeId: variant.size.id, colorId: variant.color.id, sellingPricePiastersOverride: variant.sellingPricePiastersOverride, onlineVisible: variant.onlineVisible })),
+            ...parsed.variants.map((row) => ({ sizeId: row.sizeId, colorId: row.colorId, sellingPricePiastersOverride: null, onlineVisible: false })),
+          ],
+        });
+      }
+      const payload = receiptForNewProduct(created, parsed.variants);
+      if (!payload) throw new Error("Variant identity missing after product creation.");
+      setSavedNewProduct(created);
+      setSavedNewReceipt(payload);
+      setProducts((current) => [...current.filter((item) => item.id !== created.id), created]);
+      setLines(payload.lines.map((line) => ({
+        key: crypto.randomUUID(),
+        productId: created.id,
+        variantId: line.variantId,
+        quantity: String(line.quantity),
+        costEgp: piastersToEgpInput(line.unitCostPiasters),
+      })));
+      setNotice(`حُفظ المنتج ${created.code}. يجري تسجيل الكمية في ${workspace.authorizedBranches.find((branch) => branch.id === branchId)?.nameAr ?? "الفرع"}.`);
+      await submitPayload(payload);
+    } catch (caught) {
+      setError(caught instanceof ApiError ? `${caught.messageAr} تحقق من رمز المنتج قبل إعادة الإنشاء؛ قد يكون حُفظ بالفعل.` : "تعذر إكمال إنشاء المنتج. تحقق من رمزه في القائمة ثم أكمل الاستلام للمنتج المحفوظ.");
+    } finally {
+      inFlightRef.current = false;
+      setPending("");
+    }
+  }
+
+  async function recoverNewInventoryProduct() {
+    if (inFlightRef.current) return;
+    const parsed = parseNewInventoryProduct();
+    if (!parsed) return;
+    inFlightRef.current = true;
+    setPending("recover-product");
+    setError("");
+    try {
+      const current = await listProducts();
+      setProducts(current);
+      const found = current.find((item) => item.code.trim().toLocaleLowerCase() === newInventoryProduct.code.trim().toLocaleLowerCase());
+      if (!found || found.nameAr !== newInventoryProduct.nameAr.trim() || (intakeMode === "new" && found.variants.length !== parsed.variants.length) || parsed.variants.some((row) => !found.variants.some((variant) => variant.size.id === row.sizeId && variant.color.id === row.colorId))) {
+        setError("لم نجد منتجاً محفوظاً يطابق الرمز والاسم وتركيبات المقاس واللون. راجع البيانات قبل الاستلام.");
+        return;
+      }
+      const payload = receiptForNewProduct(found, parsed.variants);
+      if (!payload) return;
+      setSavedNewProduct(found);
+      setSavedNewReceipt(payload);
+      setLines(payload.lines.map((line) => ({ key: crypto.randomUUID(), productId: found.id, variantId: line.variantId, quantity: String(line.quantity), costEgp: piastersToEgpInput(line.unitCostPiasters) })));
+      setNotice(`وُجد المنتج ${found.code}. اضغط «حفظ كمية المنتج» لإكمال الاستلام دون إنشاء المنتج مرة أخرى.`);
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.messageAr : "تعذر البحث عن المنتج المحفوظ.");
     } finally {
       inFlightRef.current = false;
       setPending("");
@@ -521,6 +776,24 @@ export default function ReceivingPage({
     }
   }
 
+  async function openReceiptDetails(receiptId: string) {
+    if (detailLoadingId) return;
+    setDetailLoadingId(receiptId);
+    setError("");
+    try {
+      const detail = await getReceipt(receiptId);
+      setReceipts((current) => current.map((item) => item.id === receiptId ? detail : item));
+      setSelectedReceiptId(receiptId);
+      setEditingCorrection(false);
+      resetCorrectionAttempt();
+      receiptFeedback.reveal();
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.messageAr : "تعذر تحميل تفاصيل الاستلام.");
+    } finally {
+      setDetailLoadingId(null);
+    }
+  }
+
   return (
     <main className="shell">
       <header className="page-hero">
@@ -531,6 +804,96 @@ export default function ReceivingPage({
       ) : null}
       {error ? <div className="error" role="alert">{error}</div> : null}
       {notice ? <div className="notice" role="status">{notice}</div> : null}
+
+      <section className="card">
+        <h2>فرع استلام المخزون</h2>
+        <div className="field">
+          <label htmlFor="receivingBranch">الفرع الذي ستدخل إليه الكمية</label>
+          <select id="receivingBranch" value={branchId} onChange={(event) => setBranchId(event.target.value)} disabled={formLocked || Boolean(savedNewReceipt) || Boolean(pending)} required>
+            <option value="">اختر الفرع</option>
+            {workspace.authorizedBranches.map((branch) => <option key={branch.id} value={branch.id}>{branch.nameAr}</option>)}
+          </select>
+        </div>
+      </section>
+
+      <section className="card" aria-label="تجهيز تصنيفات المخزون">
+        <h2>تجهيز التصنيف والمقاس واللون</h2>
+        <p className="muted">إذا كان أحد الاختيارات غير موجود، أضفه هنا ثم استخدمه في المنتج.</p>
+        <div className="grid two">
+          <form aria-label="إضافة تصنيف للمخزون" onSubmit={(event) => void addTaxonomy(event, "category")}>
+            <div className="field"><label htmlFor="intakeCategoryName">تصنيف جديد</label><input id="intakeCategoryName" value={categoryName} onChange={(event) => setCategoryName(event.target.value)} required /></div>
+            <div className="field"><label htmlFor="intakeCategoryParent">التصنيف الرئيسي (اختياري)</label><select id="intakeCategoryParent" value={categoryParentId} onChange={(event) => setCategoryParentId(event.target.value)}><option value="">تصنيف رئيسي</option>{categories.filter((item) => item.parentId === null).map((item) => <option key={item.id} value={item.id}>{item.nameAr}</option>)}</select></div>
+            <button type="submit" disabled={Boolean(pending)}>{pending === "taxonomy-category" ? "جارٍ الحفظ…" : "إضافة التصنيف"}</button>
+          </form>
+          <form aria-label="إضافة مقاس للمخزون" onSubmit={(event) => void addTaxonomy(event, "size")}>
+            <div className="field"><label htmlFor="intakeSizeName">مقاس جديد</label><input id="intakeSizeName" value={sizeName} onChange={(event) => setSizeName(event.target.value)} required /></div>
+            <button type="submit" disabled={Boolean(pending)}>{pending === "taxonomy-size" ? "جارٍ الحفظ…" : "إضافة المقاس"}</button>
+          </form>
+          <form aria-label="إضافة لون للمخزون" onSubmit={(event) => void addTaxonomy(event, "color")}>
+            <div className="field"><label htmlFor="intakeColorName">لون جديد</label><input id="intakeColorName" value={colorName} onChange={(event) => setColorName(event.target.value)} required /></div>
+            <button type="submit" disabled={Boolean(pending)}>{pending === "taxonomy-color" ? "جارٍ الحفظ…" : "إضافة اللون"}</button>
+          </form>
+        </div>
+      </section>
+
+      <form className="card stacked-form" aria-label="إضافة منتج إلى المخزون" aria-busy={pending === "new-product"} onSubmit={(event) => void onCreateAndReceive(event)}>
+        <h2>إضافة منتج أو تركيبة إلى المخزون</h2>
+        <p className="muted">سجّل المنتج أو مقاساً ولوناً جديدين له مع الكمية وتكلفة الشراء. يُحفظ المنتج أولاً ثم إذن الاستلام؛ إذا توقف الاتصال بين الخطوتين، استعد الرمز وأكمل الاستلام.</p>
+        <fieldset>
+          <legend>نوع الإضافة</legend>
+          <label><input type="radio" name="inventory-intake-mode" checked={intakeMode === "new"} disabled={Boolean(savedNewReceipt) || Boolean(pending)} onChange={() => { setIntakeMode("new"); setNewInventoryProduct(emptyNewInventoryProduct()); }} /> منتج جديد</label>
+          <label><input type="radio" name="inventory-intake-mode" checked={intakeMode === "existing"} disabled={Boolean(savedNewReceipt) || Boolean(pending)} onChange={() => { setIntakeMode("existing"); setNewInventoryProduct(emptyNewInventoryProduct()); }} /> مقاس ولون جديدان لمنتج موجود</label>
+        </fieldset>
+        {intakeMode === "existing" ? <div className="field">
+          <label htmlFor="existingInventoryProduct">اختر المنتج الموجود برمزه</label>
+          <select id="existingInventoryProduct" value={products.find((item) => item.code === newInventoryProduct.code)?.id ?? ""} disabled={Boolean(savedNewReceipt) || Boolean(pending)} onChange={(event) => {
+            const selected = products.find((item) => item.id === event.target.value);
+            setNewInventoryProduct(selected ? { code: selected.code, nameAr: selected.nameAr, categoryId: selected.category.id, defaultEgp: piastersToEgpInput(selected.defaultSellingPricePiasters), variants: [emptyNewInventoryVariant()] } : emptyNewInventoryProduct());
+          }} required>
+            <option value="">اختر المنتج</option>
+            {products.map((item) => <option key={item.id} value={item.id}>{item.code} — {item.nameAr}</option>)}
+          </select>
+        </div> : null}
+        {savedNewProduct ? <p className="notice" role="status">المنتج محفوظ: {savedNewProduct.code}. أكمل تسجيل الكمية لهذا المنتج دون إنشائه مرة أخرى.</p> : null}
+        <div className="field"><label htmlFor="newInventoryReceiptDate">تاريخ الاستلام</label><input id="newInventoryReceiptDate" type="date" value={receiptDate} onChange={(event) => setReceiptDate(event.target.value)} disabled={Boolean(savedNewReceipt) || Boolean(pending)} required /></div>
+        <div className="grid two">
+          <div className="field">
+            <label htmlFor="newInventoryCode">رمز المنتج / SKU</label>
+            <input id="newInventoryCode" value={newInventoryProduct.code} onChange={(event) => setNewInventoryProduct((current) => ({ ...current, code: event.target.value }))} disabled={intakeMode === "existing" || Boolean(savedNewReceipt) || Boolean(pending)} required />
+          </div>
+          <div className="field">
+            <label htmlFor="newInventoryName">اسم المنتج</label>
+            <input id="newInventoryName" value={newInventoryProduct.nameAr} onChange={(event) => setNewInventoryProduct((current) => ({ ...current, nameAr: event.target.value }))} disabled={intakeMode === "existing" || Boolean(savedNewReceipt) || Boolean(pending)} required />
+          </div>
+          <div className="field">
+            <label htmlFor="newInventoryCategory">التصنيف</label>
+            <select id="newInventoryCategory" value={newInventoryProduct.categoryId} onChange={(event) => setNewInventoryProduct((current) => ({ ...current, categoryId: event.target.value }))} disabled={intakeMode === "existing" || Boolean(savedNewReceipt) || Boolean(pending)} required>
+              <option value="">اختر تصنيفاً</option>
+              {categories.map((category) => <option key={category.id} value={category.id}>{category.nameAr}</option>)}
+            </select>
+          </div>
+          <div className="field">
+            <label htmlFor="newInventoryPrice">سعر البيع الافتراضي بالجنيه</label>
+            <input id="newInventoryPrice" inputMode="decimal" value={newInventoryProduct.defaultEgp} onChange={(event) => setNewInventoryProduct((current) => ({ ...current, defaultEgp: event.target.value }))} disabled={intakeMode === "existing" || Boolean(savedNewReceipt) || Boolean(pending)} required />
+          </div>
+        </div>
+        <fieldset className="grant-editor">
+          <legend>المقاسات والألوان والكميات</legend>
+          {newInventoryProduct.variants.map((row, index) => <div className="variant-row" key={row.key}>
+            <div className="field"><label htmlFor={`new-size-${row.key}`}>المقاس</label><select id={`new-size-${row.key}`} value={row.sizeId} onChange={(event) => setNewInventoryProduct((current) => ({ ...current, variants: current.variants.map((item) => item.key === row.key ? { ...item, sizeId: event.target.value } : item) }))} disabled={Boolean(savedNewReceipt) || Boolean(pending)} required><option value="">اختر مقاساً</option>{sizes.map((item) => <option key={item.id} value={item.id}>{item.nameAr}</option>)}</select></div>
+            <div className="field"><label htmlFor={`new-color-${row.key}`}>اللون</label><select id={`new-color-${row.key}`} value={row.colorId} onChange={(event) => setNewInventoryProduct((current) => ({ ...current, variants: current.variants.map((item) => item.key === row.key ? { ...item, colorId: event.target.value } : item) }))} disabled={Boolean(savedNewReceipt) || Boolean(pending)} required><option value="">اختر لوناً</option>{colors.map((item) => <option key={item.id} value={item.id}>{item.nameAr}</option>)}</select></div>
+            <div className="field"><label htmlFor={`new-qty-${row.key}`}>الكمية</label><input id={`new-qty-${row.key}`} type="number" min="1" step="1" value={row.quantity} onChange={(event) => setNewInventoryProduct((current) => ({ ...current, variants: current.variants.map((item) => item.key === row.key ? { ...item, quantity: event.target.value } : item) }))} disabled={Boolean(savedNewReceipt) || Boolean(pending)} required /></div>
+            <div className="field"><label htmlFor={`new-cost-${row.key}`}>تكلفة الشراء بالجنيه</label><input id={`new-cost-${row.key}`} inputMode="decimal" value={row.costEgp} onChange={(event) => setNewInventoryProduct((current) => ({ ...current, variants: current.variants.map((item) => item.key === row.key ? { ...item, costEgp: event.target.value } : item) }))} disabled={Boolean(savedNewReceipt) || Boolean(pending)} required /></div>
+            <button type="button" className="secondary" disabled={Boolean(savedNewReceipt) || Boolean(pending) || newInventoryProduct.variants.length <= 1} onClick={() => setNewInventoryProduct((current) => ({ ...current, variants: current.variants.filter((item) => item.key !== row.key) }))}>حذف التركيبة {index + 1}</button>
+          </div>)}
+          <button type="button" className="secondary" disabled={Boolean(savedNewReceipt) || Boolean(pending)} onClick={() => setNewInventoryProduct((current) => ({ ...current, variants: [...current.variants, emptyNewInventoryVariant()] }))}>إضافة مقاس ولون</button>
+        </fieldset>
+        <div className="actions">
+          <button type="submit" disabled={Boolean(pending) || !branchId}>{pending === "new-product" ? "جارٍ الحفظ…" : savedNewProduct ? "حفظ كمية المنتج" : intakeMode === "existing" ? "حفظ التركيبة والكمية" : "حفظ المنتج والكمية"}</button>
+          {savedNewReceipt && pendingReceive?.phase === "rejected" ? <button type="button" className="secondary" disabled={Boolean(pending)} onClick={() => { setSavedNewReceipt(null); setError(""); setNotice("راجع تاريخ الاستلام والفرع والكميات والتكلفة، ثم احفظ الكمية للمنتج المحفوظ."); }}>تعديل بيانات الاستلام المرفوض</button> : null}
+          {!savedNewReceipt ? <button type="button" className="secondary" disabled={Boolean(pending) || !newInventoryProduct.code.trim()} onClick={() => void recoverNewInventoryProduct()}>استعادة منتج محفوظ برمزه</button> : null}
+        </div>
+      </form>
 
       <form className="card" aria-label="تسجيل إذن استلام" onSubmit={(event) => void onSubmit(event)}>
         <h2>{pendingReceive ? "عملية استلام غير مؤكدة" : "إذن استلام جديد"}</h2>
@@ -665,14 +1028,11 @@ export default function ReceivingPage({
             <div className="staff-list" data-testid="receipt-list">
               {receipts.map((receipt) => (
                 <article className="staff-item" key={receipt.id}>
-                  <button type="button" className="secondary" onClick={() => {
-                    resetCorrectionAttempt();
-                    setSelectedReceiptId(receipt.id);
-                    setEditingCorrection(false);
-                  }}>
-                    عرض التفاصيل
+                  <button type="button" className="secondary" disabled={Boolean(detailLoadingId)} aria-busy={detailLoadingId === receipt.id} onClick={() => void openReceiptDetails(receipt.id)}>
+                    {detailLoadingId === receipt.id ? "جارٍ تحميل التفاصيل…" : "عرض التفاصيل"}
                   </button>
                   <p>التاريخ: {receipt.receiptDate}</p>
+                  <p>الفرع: {workspace.authorizedBranches.find((branch) => branch.id === receipt.branchId)?.nameAr ?? receipt.branchId}</p>
                   <p>{receipt.lines.map((line) => line.variant.product.code).join("، ")}</p>
                   <p className="muted">أصناف: {receipt.lines.length}</p>
                 </article>
@@ -680,15 +1040,16 @@ export default function ReceivingPage({
             </div>
           )}
           {selectedReceipt ? (
-            <div data-testid="receipt-details">
-              <h3>تفاصيل الإذن</h3>
+            <section ref={receiptFeedback.regionRef} className={`reveal-feedback${receiptFeedback.highlighted ? " is-highlighted" : ""}`} data-testid="receipt-details">
+              <h3 ref={receiptFeedback.headingRef} tabIndex={-1}>تفاصيل الإذن</h3>
               <p>تاريخ الاستلام: {selectedReceipt.receiptDate}</p>
+              <p>الفرع: {workspace.authorizedBranches.find((branch) => branch.id === selectedReceipt.branchId)?.nameAr ?? selectedReceipt.branchId}</p>
               {selectedReceipt.lines.map((line) => (
                 <div key={line.id} className="staff-item">
                   <p>{line.variant.product.code} / {line.variant.size.nameAr} / {line.variant.color.nameAr}</p>
                   <p>الأصل: {line.quantity} × {formatEgpFromPiasters(line.unitCostPiasters)}</p>
                   <p>الفعلي: {line.effectiveQuantity} × {formatEgpFromPiasters(line.effectiveUnitCostPiasters)}</p>
-                  <p className="muted">المتاح: {line.remainingQuantity} — المستهلك حالياً: {line.allocatedQuantity}</p>
+                  <p className="muted">المتاح من الدفعة بكل الفروع: {line.remainingQuantity} — المستهلك حالياً: {line.allocatedQuantity}</p>
                 </div>
               ))}
               <div className="actions">
@@ -768,7 +1129,7 @@ export default function ReceivingPage({
                   ))}
                 </div>
               ) : null}
-            </div>
+            </section>
           ) : null}
         </section>
 
@@ -784,6 +1145,7 @@ export default function ReceivingPage({
                     {batch.variant.product.code} / {batch.variant.size.nameAr} / {batch.variant.color.nameAr}
                   </p>
                   <p>المتبقي: {batch.remainingQuantity} من {batch.effectiveReceivedQuantity}</p>
+                  <p>حسب الفرع: {batch.branchBalances.map((balance) => `${workspace.authorizedBranches.find((branch) => branch.id === balance.branchId)?.nameAr ?? balance.branchId}: ${balance.availableQuantity}`).join("، ")}</p>
                   <p>الكمية الأصلية: {batch.receivedQuantity} — الكمية الفعالة: {batch.effectiveReceivedQuantity}</p>
                   <p>تكلفة الشراء الأصلية: {formatEgpFromPiasters(batch.unitCostPiasters)}</p>
                   <p>التكلفة الفعالة: {formatEgpFromPiasters(batch.effectiveUnitCostPiasters)}</p>
@@ -830,11 +1192,11 @@ export default function ReceivingPage({
           ) : (
             <div className="staff-list" data-testid="low-stock-list">
               {lowStock.map((item) => (
-                <article className="staff-item" key={item.variantId}>
+                <article className="staff-item" key={`${item.branchId}:${item.variantId}`}>
                   <p>
                     {item.variant.product.code} / {item.variant.size.nameAr} / {item.variant.color.nameAr}
                   </p>
-                  <p>المتاح: {item.availableQuantity} — الحد: {item.threshold}</p>
+                  <p>الفرع: {workspace.authorizedBranches.find((branch) => branch.id === item.branchId)?.nameAr ?? item.branchId} — المتاح: {item.availableQuantity} — الحد: {item.threshold}</p>
                 </article>
               ))}
             </div>
@@ -843,8 +1205,7 @@ export default function ReceivingPage({
         <section className="card">
           <h2>تنبيه</h2>
           <p>
-            الاستلام متصل ويتطلب صلاحية المدير. الكميات متاحة لكل الفروع والمتجر من مخزون مركزي واحد،
-            وتبقى تكاليف الشراء في دفعات منفصلة.
+            الاستلام متصل ويتطلب صلاحية المدير. كل فرع له رصيد مستقل، وتبقى تكاليف الشراء في دفعات منفصلة.
           </p>
         </section>
       </div>

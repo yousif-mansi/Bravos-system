@@ -63,6 +63,7 @@ test("protected confirmation cannot be re-exposed by a positive count correction
   const rejected = await api(manager, "POST", "/api/internal/inventory/stock-corrections", {
     operationId: crypto.randomUUID(),
     coordinationId: coordination.body.id,
+    branchId,
     variantId: seeded.variantId,
     previousAvailableQuantity: 3,
     correctedAvailableQuantity: 5,
@@ -282,6 +283,7 @@ async function receive(
 ) {
   const receipt = await api(manager, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
+    branchId,
     receiptDate,
     lines: [{ variantId, quantity, unitCostPiasters }],
   });
@@ -358,6 +360,7 @@ async function confirmOrder(manager: Session, orderId: string, agreedRevision: n
     expectedRevision: agreedRevision,
     agreedRevision,
     itemsLocatedAndSetAside: true,
+    fulfillmentBranchId: branchId,
   });
 }
 

@@ -557,6 +557,7 @@ async function seedCatalog(manager: Session, prefix: string, prices: number[]) {
 async function receive(manager: Session, variantId: string, quantity: number) {
   const response = await api(manager, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
+    branchId: abshwayId,
     receiptDate: cairoDate(),
     lines: [{ variantId, quantity, unitCostPiasters: 500 }],
   });

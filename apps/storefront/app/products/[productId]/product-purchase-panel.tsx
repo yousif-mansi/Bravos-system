@@ -40,14 +40,14 @@ export function ProductPurchasePanel({ product, gallery, introduction, sizeGuide
   );
   const remaining = Math.max(0, (selected?.availableQuantity ?? 0) - alreadyInCart);
   const addDisabled = !product.orderable || !selected || remaining === 0 || !Number.isInteger(quantity) || quantity < 1 || quantity > remaining || adding;
-  const addLabel = remaining === 0 && selected ? "الكمية المتاحة في السلة" : "أضف إلى السلة";
+  const addLabel = adding ? "جارٍ الإضافة…" : remaining === 0 && selected ? "الكمية المتاحة في السلة" : "أضف إلى السلة";
 
   useEffect(() => {
     const copy = copyRef.current;
     if (!copy) return;
     function measure() {
       const viewportHeight = Math.min(window.innerHeight, window.visualViewport?.height ?? window.innerHeight);
-      setCanStick(copy!.getBoundingClientRect().height <= viewportHeight - 32);
+      setCanStick(copy!.getBoundingClientRect().height <= viewportHeight - 48);
     }
     const resizeObserver = new ResizeObserver(measure);
     resizeObserver.observe(copy);
@@ -85,6 +85,9 @@ export function ProductPurchasePanel({ product, gallery, introduction, sizeGuide
       });
       setAddedSuccessfully(added);
       setMessage(added ? "تمت إضافة الاختيار إلى السلة." : "لا يمكن إضافة هذه الكمية حسب المخزون الحالي. راجع الاختيار والكمية.");
+    } catch {
+      setAddedSuccessfully(false);
+      setMessage("تعذر إضافة الاختيار إلى السلة. حاول مرة أخرى.");
     } finally {
       addingRef.current = false;
       setAdding(false);
@@ -108,6 +111,7 @@ export function ProductPurchasePanel({ product, gallery, introduction, sizeGuide
               <p className={styles.pricePrompt}>اختر المقاس واللون لمعرفة السعر.</p>
             )}
           </div>
+          <p className={styles.selectionHint}>المقاس واللون في اختيار واحد.</p>
           <fieldset className={`variant-picker ${styles.variantPicker}`} disabled={!product.orderable}>
             <legend className="sr-only">تركيبات المقاس واللون</legend>
             {product.variants.map((variant) => (
@@ -125,7 +129,7 @@ export function ProductPurchasePanel({ product, gallery, introduction, sizeGuide
                     setAddedSuccessfully(false);
                   }}
                 />
-                <span><b>{variant.size.nameAr}</b><small>{variant.color.nameAr}</small></span>
+                <span><b dir="auto">{variant.size.nameAr}</b><small dir="auto">{variant.color.nameAr}</small></span>
                 <strong>{formatEgp(variant.sellingPricePiasters)}</strong>
                 {!variant.orderable ? <em>غير متوفر</em> : null}
               </label>
@@ -141,6 +145,8 @@ export function ProductPurchasePanel({ product, gallery, introduction, sizeGuide
                 min={1}
                 max={remaining}
                 step={1}
+                aria-describedby="product-availability"
+                aria-invalid={!Number.isInteger(quantity) || quantity < 1 || (remaining > 0 && quantity > remaining) ? true : undefined}
                 value={quantity}
                 disabled={!selected || remaining === 0}
                 onChange={(event) => {
@@ -154,14 +160,19 @@ export function ProductPurchasePanel({ product, gallery, introduction, sizeGuide
               </button>
             </div>
           ) : null}
-          {message ? (
-            <p className={addedSuccessfully ? styles.successFeedback : styles.failureFeedback} role="status">
-              {message} {addedSuccessfully ? <Link href="/cart">عرض السلة</Link> : null}
+          {product.orderable ? (
+            <p id="product-availability" className={styles.stockNote}>
+              {selected ? remaining > 0 ? `يمكن إضافة حتى ${remaining} من هذا الاختيار.` : "أضفت الكمية المتاحة من هذا الاختيار إلى السلة." : "اختر المقاس واللون أولاً."}
+              {alreadyInCart > 0 ? <span> في سلتك: {alreadyInCart}.</span> : null}
             </p>
           ) : null}
+          <p className={message ? addedSuccessfully ? styles.successFeedback : styles.failureFeedback : styles.emptyFeedback} role="status" aria-live="polite" aria-atomic="true">
+            {message} {addedSuccessfully ? <Link href="/cart">عرض السلة</Link> : null}
+          </p>
+          {product.orderable ? <p className={styles.purchaseNote}>الإضافة إلى السلة لا تحجز القطعة. يُراجع التوفر عند إرسال الطلب.</p> : null}
         </section>
-        {sizeGuide}
       </section>
+      {sizeGuide ? <section className={styles.chapters} aria-label="معلومات المنتج">{sizeGuide}</section> : null}
       {product.orderable ? (
         <div className={styles.mobileBar} aria-label="إضافة المنتج إلى السلة">
           <div className={styles.mobileSelection}>

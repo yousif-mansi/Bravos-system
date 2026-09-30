@@ -37,7 +37,7 @@ test("manager pauses every known till and retries one documented positive stock 
     await otherTill.reload();
     const pausedSnapshot = (await (await pausedSnapshotResponse).json()) as Snapshot;
     expect(pausedSnapshot.stockPause).not.toBeNull();
-    await expect(otherTill.getByTestId("stock-pause")).toContainText("تغييرات المخزون متوقفة مؤقتاً");
+    await expect(otherTill.getByTestId("stock-pause")).toContainText("تصحيح كمية شغال");
     await otherTill.getByTestId("acknowledge-stock-pause").click();
     await expect(otherTill.getByTestId("stock-pause-acknowledged")).toBeVisible();
 
@@ -66,8 +66,9 @@ test("manager pauses every known till and retries one documented positive stock 
         await route.continue();
         return;
       }
-      const body = route.request().postDataJSON() as { operationId: string };
+      const body = route.request().postDataJSON() as { operationId: string; branchId: string };
       submittedOperationIds.push(body.operationId);
+      expect(body.branchId).toBe(seeded.branchId);
       if (dropFirstResponse) {
         dropFirstResponse = false;
         const response = await route.fetch();
@@ -97,6 +98,7 @@ test("manager pauses every known till and retries one documented positive stock 
     const matching = corrections.body.filter((item: { variantId: string }) => item.variantId === seeded.variantId);
     expect(matching).toHaveLength(1);
     expect(matching[0]).toMatchObject({
+      branchId: seeded.branchId,
       previousAvailableQuantity: 4,
       correctedAvailableQuantity: 5,
       positiveSourceBatchId: seeded.batchId,
@@ -119,6 +121,7 @@ async function signInAndRegisterTill(page: Page, loginName: string, password: st
 }
 
 async function seedVariant(page: Page) {
+  const branchId = (await staffApi(page, "GET", "/api/internal/workspace")).body.activeBranch.id as string;
   const suffix = crypto.randomUUID().slice(0, 6);
   const category = await staffApi(page, "POST", "/api/internal/catalog/categories", { nameAr: `عد مخزون ${suffix}` });
   const size = await staffApi(page, "POST", "/api/internal/catalog/sizes", { nameAr: `مقاس عد ${suffix}` });
@@ -137,6 +140,7 @@ async function seedVariant(page: Page) {
   const variantId = product.body.variants[0].id as string;
   await staffApi(page, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
+    branchId,
     receiptDate: cairoDate(),
     lines: [{ variantId, quantity: 5, unitCostPiasters: 7000 }],
   });
@@ -150,7 +154,7 @@ async function seedVariant(page: Page) {
   const batches = await staffApi(page, "GET", "/api/internal/inventory/batches");
   const batch = batches.body.find((item: { variantId: string }) => item.variantId === variantId);
   expect(batch).toBeTruthy();
-  return { code, variantId, batchId: batch.id as string };
+  return { code, branchId, variantId, batchId: batch.id as string };
 }
 
 async function acknowledgeAnyEarlierTestTills(page: Page, exercisedDevices: Set<string>) {

@@ -16,19 +16,20 @@ export default async function ProductPage({ params }: { params: Promise<{ produc
   return (
     <main id="main-content" className={styles.page}>
       <ProductViewAnalytics productId={product.id} />
-      <nav className="breadcrumbs" aria-label="مسار الصفحة">
-        <Link href="/">المتجر</Link><span aria-hidden="true">/</span><span>{product.category.nameAr}</span>
+      <nav className={`breadcrumbs ${styles.breadcrumbs}`} aria-label="مسار الصفحة">
+        <Link href="/">المتجر</Link><span aria-hidden="true">/</span>
+        <Link href={`/?category=${encodeURIComponent(product.category.id)}`}>{product.category.nameAr}</Link>
+        <span aria-hidden="true">/</span><span aria-current="page">{product.nameAr}</span>
       </nav>
       <ProductPurchasePanel
         gallery={<ProductGallery key={JSON.stringify([product.id, product.imageRefs])} productNameAr={product.nameAr} imageRefs={product.imageRefs} />}
         introduction={(
           <>
-            <p className="eyebrow">{product.category.nameAr}</p>
+            <p className={`eyebrow ${styles.eyebrow}`}>{product.category.nameAr}</p>
             <h1>{product.nameAr}</h1>
-            <span className={`availability-badge inline ${product.availability}`}>{availabilityLabel(product)}</span>
-            {product.descriptionAr ? <p className="description">{product.descriptionAr}</p> : null}
-            {product.availability === "coming_soon" ? <p className="availability-note">هذا المنتج للعرض المسبق وسيكون متاحاً للطلب لاحقاً.</p> : null}
-            {product.availability === "out_of_stock" ? <p className="availability-note">المنتج غير متوفر حالياً، ويمكنك تصفح تفاصيله.</p> : null}
+            <span className={`availability-badge inline ${product.availability} ${styles.availability}`}>{availabilityLabel(product)}</span>
+            {product.availability === "coming_soon" ? <p className={styles.availabilityNote}>هذا المنتج للعرض المسبق وسيكون متاحاً للطلب لاحقاً.</p> : null}
+            {product.availability === "out_of_stock" ? <p className={styles.availabilityNote}>المنتج غير متوفر حالياً، ويمكنك تصفح تفاصيله.</p> : null}
           </>
         )}
         product={{
@@ -38,11 +39,21 @@ export default async function ProductPage({ params }: { params: Promise<{ produc
           imageRef: product.imageRefs[0] ?? null,
           variants: product.variants,
         }}
-        sizeGuide={product.sizeGuideAr ? (
-          <details className="size-guide" open>
-            <summary>دليل المقاسات</summary>
-            <p>{product.sizeGuideAr}</p>
-          </details>
+        sizeGuide={product.descriptionAr || product.sizeGuideAr ? (
+          <>
+            {product.descriptionAr ? (
+              <details className={styles.chapter} open>
+                <summary>عن القطعة</summary>
+                <p>{product.descriptionAr}</p>
+              </details>
+            ) : null}
+            {product.sizeGuideAr ? (
+              <details className={`size-guide ${styles.chapter}`} open>
+                <summary>دليل المقاسات</summary>
+                <p>{product.sizeGuideAr}</p>
+              </details>
+            ) : null}
+          </>
         ) : null}
       />
     </main>

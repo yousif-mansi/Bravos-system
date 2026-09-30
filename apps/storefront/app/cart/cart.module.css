@@ -1,14 +1,17 @@
 .page {
+  min-height: 100vh;
+  min-height: 100svh;
   padding-block: clamp(24px, 4vw, 48px) 80px;
+  color: var(--store-ink);
 }
 
 .heading {
   max-width: 720px;
-  margin-bottom: 32px;
+  margin-bottom: clamp(32px, 5vw, 64px);
 }
 
 .heading h1 {
-  font-size: clamp(2rem, 4vw, 3rem);
+  font: 400 clamp(2.4rem, 5vw, 4rem)/1.45 var(--font-editorial);
 }
 
 .heading p:last-child {
@@ -17,9 +20,33 @@
 
 .hydrating,
 .empty {
-  border: 1px solid var(--line);
-  background: var(--surface);
+  border: 1px solid var(--store-border);
+  background: var(--store-surface);
   padding: clamp(32px, 7vw, 64px);
+  max-width: 760px;
+  margin-inline: auto;
+  text-align: center;
+}
+
+.hydrating h2,
+.empty h2 {
+  font: 400 clamp(1.8rem, 4vw, 2.7rem)/1.5 var(--font-editorial);
+}
+
+.emptyMark {
+  font: 400 clamp(2.6rem, 8vw, 5rem)/1 var(--font-display);
+  letter-spacing: .06em;
+  color: var(--store-accent) !important;
+}
+
+.page .empty :global(.button-link) {
+  background: var(--store-accent);
+  color: var(--store-canvas);
+}
+
+.page .empty :global(.button-link):hover {
+  background: var(--store-ink);
+  color: var(--store-canvas);
 }
 
 .empty h2 {
@@ -27,7 +54,7 @@
 }
 
 .empty p {
-  color: var(--muted);
+  color: var(--store-muted);
   margin-block: 0 24px;
 }
 
@@ -36,14 +63,23 @@
   max-width: 780px;
   margin-block: 0 24px;
   padding: 12px 16px;
-  border-inline-start: 3px solid var(--ink);
-  background: var(--surface);
+  border-inline-start: 3px solid var(--store-ink);
+  background: var(--store-surface);
 }
 
 .storageWarning,
 .status.errorStatus:global(.cart-status) {
-  border-inline-start-color: var(--danger);
-  color: var(--danger);
+  border-inline-start-color: var(--store-error);
+  color: var(--store-error);
+}
+
+.statusSlot {
+  min-height: calc(2lh + 24px);
+  margin-block-end: 24px;
+}
+
+.statusSlot .status:global(.cart-status) {
+  margin-block: 0;
 }
 
 .layout {
@@ -55,7 +91,7 @@
 
 .lines {
   min-width: 0;
-  border-top: 1px solid var(--line);
+  border-top: 1px solid var(--store-border);
 }
 
 .line:global(.cart-line) {
@@ -65,7 +101,7 @@
   gap: 8px 24px;
   padding: 24px 0;
   border: 0;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid var(--store-border);
   background: transparent;
 }
 
@@ -78,8 +114,8 @@
   display: grid;
   place-items: center;
   overflow: hidden;
-  background: #e9e5de;
-  color: var(--muted);
+  background: var(--store-disabled);
+  color: var(--store-muted);
   text-align: center;
   font-size: .875rem;
 }
@@ -106,14 +142,15 @@
 
 .productLink h2 {
   margin: 0;
-  font-size: 1.125rem;
+  font-size: 1.25rem;
   line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .variant,
 .unitPrice {
   margin-block: 4px 0;
-  color: var(--muted);
+  color: var(--store-muted);
   font-size: .875rem;
 }
 
@@ -122,14 +159,14 @@
 }
 
 .unitPrice strong {
-  color: var(--ink);
+  color: var(--store-ink);
   font-weight: 700;
   margin-inline-start: 8px;
   white-space: nowrap;
 }
 
 .stockWarning {
-  color: var(--danger);
+  color: var(--store-error);
   font-size: .875rem;
   font-weight: 700;
   line-height: 1.6;
@@ -150,7 +187,7 @@
   display: grid;
   grid-template-columns: 44px 44px 44px;
   align-items: center;
-  border: 1px solid var(--line);
+  border: 1px solid var(--store-border);
   text-align: center;
 }
 
@@ -158,8 +195,8 @@
   min-width: 44px;
   min-height: 44px;
   padding: 0;
-  background: var(--surface);
-  color: var(--ink);
+  background: var(--store-surface);
+  color: var(--store-ink);
   font-size: 1.25rem;
 }
 
@@ -168,8 +205,13 @@
 }
 
 .quantity button:disabled {
-  color: var(--muted);
+  color: var(--store-muted);
   background: var(--store-disabled);
+}
+
+.page :focus-visible {
+  outline: 3px solid var(--store-focus);
+  outline-offset: 3px;
 }
 
 .quantity output {
@@ -182,14 +224,14 @@
   min-height: 44px;
   padding: 8px;
   background: transparent;
-  color: var(--ink);
+  color: var(--store-ink);
   text-decoration: underline;
   text-underline-offset: 3px;
   font-size: .875rem;
 }
 
 .fitStock {
-  color: var(--danger);
+  color: var(--store-error);
 }
 
 .fitStock:hover,
@@ -209,22 +251,23 @@
 }
 
 .lineTotal span {
-  color: var(--muted);
+  color: var(--store-muted);
 }
 
 .lineTotal strong {
-  color: var(--ink);
-  font-size: 1rem;
+  color: var(--store-ink);
+  font-size: 1.2rem;
   white-space: nowrap;
 }
 
 .summary:global(.cart-summary) {
   position: sticky;
-  top: 24px;
-  padding: 24px;
-  border: 1px solid var(--line);
-  background: var(--surface);
-  color: var(--ink);
+  top: 112px;
+  padding: clamp(24px, 3vw, 32px);
+  border: 1px solid var(--store-border);
+  background: var(--store-surface);
+  color: var(--store-ink);
+  border-block-start: 2px solid var(--store-accent);
 }
 
 .summary:global(.cart-summary) :focus-visible {
@@ -239,7 +282,13 @@
 
 .summary h2 {
   margin-block: 0 16px;
-  font-size: 1.25rem;
+  font: 400 1.7rem/1.5 var(--font-editorial);
+}
+
+.summary .summaryEyebrow {
+  color: var(--store-accent);
+  font-size: .8rem;
+  margin: 0 0 4px;
 }
 
 .summaryRows {
@@ -250,13 +299,14 @@
   display: flex;
   justify-content: space-between;
   align-items: baseline;
-  gap: 16px;
+  gap: 12px;
+  flex-wrap: wrap;
   padding-block: 12px;
-  border-top: 1px solid var(--line);
+  border-top: 1px solid var(--store-border);
 }
 
 .summaryRows dt {
-  color: var(--muted);
+  color: var(--store-muted);
 }
 
 .summaryRows dd {
@@ -267,12 +317,13 @@
 }
 
 .merchandiseTotal dd {
-  font-size: 1.25rem;
+  font-size: 1.6rem;
+  color: var(--store-accent);
 }
 
 .summaryNote,
 .reservationNote {
-  color: var(--muted);
+  color: var(--store-muted);
   font-size: .875rem;
   line-height: 1.7;
 }
@@ -285,23 +336,23 @@
   width: 100%;
   min-height: 52px;
   margin: 0;
-  background: var(--ink);
-  color: var(--surface);
+  background: var(--store-accent);
+  color: var(--store-canvas);
   font-weight: 700;
   text-align: center;
 }
 
 .summary .checkoutLink:global(.cart-checkout-link):hover:not([aria-disabled="true"]):not([aria-busy="true"]) {
-  background: #302d29;
-  color: var(--surface);
+  background: var(--store-ink);
+  color: var(--store-canvas);
 }
 
 .refreshButton {
   width: 100%;
   margin-block: 12px 0;
-  border: 1px solid var(--ink);
+  border: 1px solid var(--store-border);
   background: transparent;
-  color: var(--ink);
+  color: var(--store-ink);
   font-weight: 700;
 }
 
@@ -310,12 +361,12 @@
 }
 
 .refreshButton:disabled {
-  border-color: var(--line);
+  border-color: var(--store-border);
 }
 
 .summaryWarning {
   margin-block: 0;
-  color: var(--danger);
+  color: var(--store-error);
   font-size: .875rem;
   font-weight: 700;
 }
@@ -335,6 +386,15 @@
 }
 
 @media (max-width: 580px) {
+  .statusSlot {
+    min-height: calc(3lh + 24px);
+  }
+
+  .heading {
+    text-align: center;
+    margin-inline: auto;
+  }
+
   .line:global(.cart-line) {
     grid-template-columns: 88px minmax(0, 1fr);
     grid-template-rows: auto auto auto;

@@ -24,6 +24,7 @@ test("manager creates an offer and the connected cashier keeps its accepted valu
   expect(product.status).toBe(201);
   const receiving = await staffApi(page, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
+    branchId: (await staffApi(page, "GET", "/api/internal/workspace")).body.activeBranch.id,
     receiptDate: cairoDate(),
     lines: [{ variantId: product.body.variants[0].id, quantity: 5, unitCostPiasters: 12000 }],
   });
@@ -58,7 +59,7 @@ test("manager creates an offer and the connected cashier keeps its accepted valu
   await page.getByLabel("اللون").selectOption({ label: "لون عرض متصفح" });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
 
-  const checkout = page.getByRole("form", { name: "إتمام البيع النقدي" });
+  const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByLabel("الكمية").fill("2");
   await checkout.getByLabel("خصم الموظف بالجنيه").fill("20");
   await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
@@ -84,7 +85,7 @@ test("manager creates an offer and the connected cashier keeps its accepted valu
   }
 
   await expect(quote.getByTestId("automatic-offer-breakdown")).toContainText("50 ج.م.");
-  await checkout.getByLabel("استلم الزبون البضاعة ودفع نقداً").check();
+  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
   const completed = page.getByTestId("sale-details");
   await expect(completed).toContainText("خمسون جنيهاً للمتصفح — 50 ج.م.");

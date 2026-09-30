@@ -5,10 +5,11 @@ export function StoreHeader() {
   return (
     <header className="store-header">
       <Link className="wordmark" href="/" aria-label="برافوس">
-        <img src="/brand/02_Logo_Horizontal_Black.svg" alt="" width={168} height={71} />
+        <img src="/brand/02_Logo_Horizontal_Ivory.svg" alt="" width={168} height={71} />
       </Link>
       <nav className="store-nav" aria-label="التنقل الرئيسي">
         <Link href="/">المتجر</Link>
+        <Link href="/#catalog-title">التشكيلة</Link>
         <CartLink />
       </nav>
     </header>

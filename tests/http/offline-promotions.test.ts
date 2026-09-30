@@ -418,6 +418,7 @@ async function seedProduct(manager: Session, code: string, price: number, quanti
   const variantId = product.body.variants[0].id as string;
   const received = await api(manager, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
+    branchId: abshwayId,
     receiptDate: "2026-09-15",
     lines: [{ variantId, quantity, unitCostPiasters: 10_000 }],
   });

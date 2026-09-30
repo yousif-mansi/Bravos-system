@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 export type ReceivePayload = {
+  branchId: string;
   receiptDate: string;
   lines: Array<{
     variantId: string;
@@ -25,7 +26,7 @@ export function normalizeReceivePayload(input: ReceivePayload): ReceivePayload {
       }
       return left.quantity - right.quantity;
     });
-  return { receiptDate: input.receiptDate, lines };
+  return { branchId: input.branchId, receiptDate: input.receiptDate, lines };
 }
 
 export function fingerprintReceivePayload(input: ReceivePayload): string {

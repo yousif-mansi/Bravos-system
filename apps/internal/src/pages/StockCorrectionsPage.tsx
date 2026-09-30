@@ -12,6 +12,7 @@ import type {
   WorkspaceDto,
 } from "@bravos/contracts";
 import { EmptyState } from "../ui/EmptyState.tsx";
+import { useRevealFeedback } from "../ui/useRevealFeedback.ts";
 import {
   acknowledgeCountCoordination,
   ApiError,
@@ -43,6 +44,7 @@ type Loaded = {
 type CorrectionAttempt = {
   operationId: string;
   coordinationId: string;
+  branchId: string;
   variantId: string;
   previousAvailableQuantity: number;
   correctedAvailableQuantity: number;
@@ -65,6 +67,7 @@ export default function StockCorrectionsPage({ workspace }: { workspace: Workspa
   const [pending, setPending] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [initialLoading, setInitialLoading] = useState(true);
   const [variantId, setVariantId] = useState("");
   const [correctedQuantity, setCorrectedQuantity] = useState("");
   const [reason, setReason] = useState("");
@@ -76,6 +79,8 @@ export default function StockCorrectionsPage({ workspace }: { workspace: Workspa
   const [reconciliationQuantities, setReconciliationQuantities] = useState<Record<string, string>>({});
   const reconciliationOperations = useRef(new Map<string, string>());
   const correctionInFlight = useRef(false);
+  const correctionFeedback = useRevealFeedback<HTMLFormElement>();
+  const activeBranch = workspace.activeBranch;
 
   async function load() {
     const [coordination, pause, catalog, batches, corrections, cases, reconciliations] = await Promise.all([
@@ -105,9 +110,18 @@ export default function StockCorrectionsPage({ workspace }: { workspace: Workspa
       setCorrectedQuantity(String(saved.correctedAvailableQuantity));
       setReason(saved.reason);
       setPositiveSourceBatchId(saved.positiveSourceBatchId ?? "");
+    } else {
+      setCorrectionAttempt(null);
+      setVariantId("");
+      setCorrectedQuantity("");
+      setReason("");
+      setPositiveSourceBatchId("");
     }
-    void load().catch((caught) => setError(message(caught, "تعذر تحميل تصحيحات المخزون.")));
-  }, [workspace.staff.id]);
+    setInitialLoading(true);
+    void load()
+      .catch((caught) => setError(message(caught, "تعذر تحميل تصحيحات المخزون.")))
+      .finally(() => setInitialLoading(false));
+  }, [workspace.staff.id, activeBranch?.id]);
 
   useEffect(() => {
     function onStorage(event: StorageEvent) {
@@ -128,7 +142,8 @@ export default function StockCorrectionsPage({ workspace }: { workspace: Workspa
     })));
   }, [data.catalog]);
   const selected = variants.find((item) => item.id === variantId) ?? null;
-  const sourceBatches = data.batches.filter((batch) => batch.variantId === variantId);
+  const sourceBatches = data.batches.filter((batch) => batch.variantId === variantId
+    && batch.branchBalances.some((balance) => balance.branchId === activeBranch?.id));
   const coordination = data.coordination?.status === "active" ? data.coordination : null;
   const allAcknowledged = Boolean(coordination) && coordination!.devices.every(
     (device) => device.acknowledgedStockVersion === coordination!.boundaryStockVersion,
@@ -160,6 +175,10 @@ export default function StockCorrectionsPage({ workspace }: { workspace: Workspa
   }
 
   async function start() {
+    if (!activeBranch) {
+      setError("اختر الفرع النشط قبل بدء تصحيح المخزون.");
+      return;
+    }
     const operationId = startOperationId || crypto.randomUUID();
     setStartOperationId(operationId);
     await run("start", async () => {
@@ -167,6 +186,7 @@ export default function StockCorrectionsPage({ workspace }: { workspace: Workspa
       setStartOperationId("");
       await load();
       setNotice("بدأ التوقف المؤقت. يجب مزامنة كل نقطة بيع معروفة وتأكيد توقفها.");
+      correctionFeedback.reveal();
     });
   }
 
@@ -176,6 +196,7 @@ export default function StockCorrectionsPage({ workspace }: { workspace: Workspa
       if (refreshed.coordination?.status === "active") {
         setStartOperationId("");
         setNotice("استُرد تنسيق العد النشط. أكمل تأكيد نقاط البيع أو ألغِ التوقف.");
+        correctionFeedback.reveal();
       } else {
         setNotice("لا يوجد تنسيق عد نشط لاسترداده.");
       }
@@ -222,10 +243,11 @@ export default function StockCorrectionsPage({ workspace }: { workspace: Workspa
   }
 
   async function finalize() {
-    if (!coordination || !selected || numericCorrection === null || correctionInFlight.current) return;
+    if (!coordination || !selected || !activeBranch || numericCorrection === null || correctionInFlight.current) return;
     const draft: CorrectionAttempt = {
       operationId: crypto.randomUUID(),
       coordinationId: coordination.id,
+      branchId: activeBranch.id,
       variantId: selected.id,
       previousAvailableQuantity: selected.available,
       correctedAvailableQuantity: numericCorrection,
@@ -322,12 +344,13 @@ export default function StockCorrectionsPage({ workspace }: { workspace: Workspa
     resolution: "included_in_count" | "allocate_missing_source",
     quantity: number,
   ) {
-    const key = `${item.correctionId}:${item.saleId}:${item.variantId}:${resolution}`;
+    const key = `${item.branchId}:${item.correctionId}:${item.saleId}:${item.variantId}:${resolution}`;
     const operationId = reconciliationOperations.current.get(key) ?? crypto.randomUUID();
     reconciliationOperations.current.set(key, operationId);
     await run(`reconcile-${item.saleId}`, async () => {
       await reconcileLateSale({
         operationId,
+        branchId: item.branchId,
         correctionId: item.correctionId,
         saleId: item.saleId,
         variantId: item.variantId,
@@ -349,8 +372,12 @@ export default function StockCorrectionsPage({ workspace }: { workspace: Workspa
       <header className="page-hero">
         <h1>تصحيح كميات المخزون</h1>
       </header>
+      <p className="notice" data-testid="stock-correction-active-branch">
+        الفرع النشط للتصحيح: <strong>{activeBranch?.nameAr ?? "اختر فرعاً من مساحة العمل"}</strong>
+      </p>
       {error ? <div className="error" role="alert">{error}</div> : null}
       {notice ? <div className="notice" role="status">{notice}</div> : null}
+      {initialLoading ? <p role="status">جارٍ تحميل المخزون والتصحيحات…</p> : null}
 
       <section className="card">
         <h2>تنسيق العد القصير</h2>
@@ -361,7 +388,7 @@ export default function StockCorrectionsPage({ workspace }: { workspace: Workspa
         ) : null}
         {!coordination ? (
           <div className="actions">
-            <button type="button" disabled={Boolean(pending)} onClick={() => void start()}>
+            <button type="button" disabled={Boolean(pending) || !activeBranch || initialLoading} onClick={() => void start()}>
               {pending === "start" ? "جارٍ البدء…" : startOperationId ? "إعادة محاولة بدء التوقف" : "مزامنة النقاط وبدء التوقف"}
             </button>
             <button className="secondary" type="button" disabled={Boolean(pending)} onClick={() => void recover()}>
@@ -410,8 +437,9 @@ export default function StockCorrectionsPage({ workspace }: { workspace: Workspa
       </section>
 
       {coordination ? (
-        <form className="card" aria-label="تصحيح الكمية الفعلية" onSubmit={(event) => { event.preventDefault(); void finalize(); }}>
-          <h2>الكمية الفعلية</h2>
+        <form ref={correctionFeedback.regionRef} className={`card reveal-feedback${correctionFeedback.highlighted ? " is-highlighted" : ""}`} aria-label="تصحيح الكمية الفعلية" onSubmit={(event) => { event.preventDefault(); void finalize(); }}>
+          <h2 ref={correctionFeedback.headingRef} tabIndex={-1}>الكمية الفعلية</h2>
+          <p data-testid="correction-form-branch">الفرع: <strong>{workspace.authorizedBranches.find((branch) => branch.id === (correctionAttempt?.branchId ?? activeBranch?.id))?.nameAr ?? "—"}</strong></p>
           {correctionAttempt ? (
             <div className="notice">هذه محاولة غير مؤكدة. جُمّدت القيم وسيُعاد إرسال معرّف العملية نفسه.</div>
           ) : null}
@@ -472,10 +500,11 @@ export default function StockCorrectionsPage({ workspace }: { workspace: Workspa
               onChange={(event) => setReason(event.target.value)}
             />
           </div>
-          <button type="submit" disabled={Boolean(pending) || (!correctionAttempt && (!allAcknowledged || !correctionValid))}>
+          <button type="submit" disabled={Boolean(pending) || !activeBranch || (Boolean(correctionAttempt) && correctionAttempt?.branchId !== activeBranch.id) || (!correctionAttempt && (!allAcknowledged || !correctionValid))}>
             {pending === "finalize" ? "جارٍ التحقق…" : correctionAttempt ? "إعادة محاولة حفظ التصحيح" : "حفظ التصحيح وإنهاء التوقف"}
           </button>
           {!allAcknowledged ? <p className="muted">لا يمكن الحفظ حتى تؤكد كل نقطة بيع معروفة مزامنتها وتوقفها.</p> : null}
+          {correctionAttempt && correctionAttempt.branchId !== activeBranch?.id ? <p className="error">اختر فرع المحاولة الأصلية لإعادة إرسالها بأمان.</p> : null}
           {isIncrease && !positiveSourceBatchId ? <p className="muted">اختر دفعة التكلفة الفعلية قبل حفظ الزيادة.</p> : null}
         </form>
       ) : null}
@@ -553,7 +582,7 @@ export default function StockCorrectionsPage({ workspace }: { workspace: Workspa
         <h2>سجل التصحيحات</h2>
         {data.corrections.length === 0 ? <EmptyState title="لسه مفيش تصحيحات" message="أول تصحيح هيتسجل هنا." /> : data.corrections.map((item) => (
           <article className="history-item" key={item.id} data-testid="stock-correction-row">
-            <p><strong>{item.variant.product.code}</strong> — من {item.previousAvailableQuantity} إلى {item.correctedAvailableQuantity} ({signed(item.quantityDelta)})</p>
+            <p><strong>{item.variant.product.code}</strong> — {workspace.authorizedBranches.find((branch) => branch.id === item.branchId)?.nameAr ?? "فرع غير معروف"} — من {item.previousAvailableQuantity} إلى {item.correctedAvailableQuantity} ({signed(item.quantityDelta)})</p>
             <p>{item.reason}</p>
             <p className="muted">{item.changedBy.displayName} — {formatDate(item.changedAt)} — حد المخزون {item.boundaryStockVersion}</p>
             <p>نقاط البيع المؤكدة: {item.devices.filter((device) => device.acknowledgedAt).length} من {item.devices.length}</p>
@@ -598,6 +627,7 @@ function readCorrectionAttempt(staffId: string): CorrectionAttempt | null {
     if (
       typeof parsed.operationId !== "string"
       || typeof parsed.coordinationId !== "string"
+      || typeof parsed.branchId !== "string"
       || typeof parsed.variantId !== "string"
       || typeof parsed.previousAvailableQuantity !== "number"
       || typeof parsed.correctedAvailableQuantity !== "number"
@@ -622,6 +652,7 @@ function clearCorrectionAttempt(staffId: string, expectedOperationId: string) {
 
 function sameCorrectionRequest(left: CorrectionAttempt, right: CorrectionAttempt) {
   return left.coordinationId === right.coordinationId
+    && left.branchId === right.branchId
     && left.variantId === right.variantId
     && left.previousAvailableQuantity === right.previousAvailableQuantity
     && left.correctedAvailableQuantity === right.correctedAvailableQuantity

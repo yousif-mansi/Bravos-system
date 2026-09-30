@@ -37,7 +37,9 @@ test("product wall keeps honest prices, publication states, media space, and res
   })).status).toBe(201);
   const stockedVariantId = created[3].variants[0].id as string;
   expect((await staffApi(page, "POST", "/api/internal/receiving/receipts", {
-    operationId: crypto.randomUUID(), receiptDate: "2026-09-25",
+    operationId: crypto.randomUUID(),
+    branchId: (await (await page.request.get("http://127.0.0.1:5174/api/internal/workspace")).json()).activeBranch.id,
+    receiptDate: "2026-09-25",
     lines: [{ variantId: stockedVariantId, quantity: 2, unitCostPiasters: 5000 }],
   })).status).toBe(201);
 
@@ -66,12 +68,12 @@ test("product wall keeps honest prices, publication states, media space, and res
   await expect(cards.first()).toBeFocused();
   await page.screenshot({ path: testInfo.outputPath("wall-1440.png"), fullPage: true });
 
-  for (const [width, columns] of [[1440, 4], [768, 3], [390, 2], [320, 1]] as const) {
+  for (const [width, columns] of [[1440, 4], [768, 2], [390, 2], [320, 1]] as const) {
     await page.setViewportSize({ width, height: 900 });
     await expect.poll(() => cards.first().locator("..").evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(" ").length)).toBe(columns);
     const dimensions = await cards.first().locator("[data-product-media]").boundingBox();
     expect(dimensions).not.toBeNull();
-    if (dimensions) expect(dimensions.height / dimensions.width).toBeCloseTo(1.25, 1);
+    if (dimensions) expect(dimensions.height / dimensions.width).toBeCloseTo(width >= 900 ? .625 : 1.25, 1);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     if (width === 390) await page.screenshot({ path: testInfo.outputPath("wall-390.png"), fullPage: true });
   }
@@ -125,9 +127,12 @@ test("product wall keeps honest prices, publication states, media space, and res
   }
   await expect(wall.locator("a.product-card").filter({ hasText: "اختبار واجهة معطف" })).toBeVisible();
   await expect(wall.locator("a.product-card").filter({ hasText: "اختبار واجهة مخفي" })).toHaveCount(0);
+  await expect(page.getByLabel("ترتيب المنتجات")).toBeEnabled();
   await page.getByLabel("ترتيب المنتجات").selectOption("default");
   await expect(page).toHaveURL(STORE + "/");
-  await expect(page.locator("main#main-content > section")).toHaveCount(2);
+  await expect(page.getByRole("heading", { name: "اختيارات هادئة. حضور واضح." })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "اكتشف تصنيفات المتجر" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "كل المنتجات", exact: true })).toBeVisible();
 });
 
 async function signInManager(page: Page) {

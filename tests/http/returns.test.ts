@@ -156,19 +156,23 @@ test("an inspected return credits current-offer replacement merchandise and reco
 test("a cheaper replacement applies only its merchandise value as credit and pays the remaining cash refund", async () => {
   const manager = await signIn("owner", "owner-pass-1");
   await api(manager, "POST", "/api/internal/active-branch", { branchId: abshwayId });
+  await built.pool.query("SELECT setval('sales_sale_reference_number_seq', 999998, TRUE)");
+  await built.pool.query("SELECT setval('returns_return_reference_number_seq', 999999, TRUE)");
   const products = await seedProduct(manager, [28000, 20000]);
   const originalBatch = await receive(manager, products.variantIds[0]!, 1, 10000);
-  const replacementBatch = await receive(manager, products.variantIds[1]!, 1, 9000);
+  const replacementBatch = await receive(manager, products.variantIds[1]!, 1, 9000, fayoumId);
   const originalSale = await sale(manager, {
     occurredAt: "2026-09-10T12:00:00.000Z",
     lines: [{ variantId: products.variantIds[0]!, quantity: 1 }],
   });
+  expect(originalSale.body.reference).toBe("POS-999999");
   const source = (await api(manager, "GET", `/api/internal/returns/sources?reference=${originalSale.body.id}`)).body[0];
   const drafted = await api(manager, "POST", "/api/internal/returns", {
     returnId: crypto.randomUUID(), operationId: crypto.randomUUID(), sourceSaleId: originalSale.body.id,
     handlingBranchId: fayoumId, authorizedRefundPiasters: 28000,
     lines: [{ sourceSaleLineId: source.lines[0].saleLineId, quantity: 1, sellableQuantity: 0 }],
   });
+  expect(drafted.body.reference).toBe("RET-1000000");
   const quote = await exchangeQuote(manager, drafted.body.id, drafted.body.revision, [
     { variantId: products.variantIds[1], quantity: 1 },
   ]);
@@ -194,6 +198,7 @@ test("a cheaper replacement applies only its merchandise value as credit and pay
   expect((await batches(manager)).find((batch: { id: string }) => batch.id === originalBatch.lines[0].batchId).remainingQuantity).toBe(0);
   const replacementSale = await api(manager, "GET", `/api/internal/sales/${command.replacementSaleId}`);
   expect(replacementSale.body).toMatchObject({
+    reference: "POS-1000000",
     finalTotalPiasters: 20000,
     exchangeCreditAppliedPiasters: 20000,
     cashReceivedPiasters: 0,
@@ -217,11 +222,13 @@ test("a cheaper replacement applies only its merchandise value as credit and pay
   expect(returnCorrection.body.actual).toMatchObject({ originalRefundPaidPiasters: 8000, netRefundPaidPiasters: 8000 });
 
   const appliedBeforeDowngrade = await listAppliedMigrations(built.pool);
-  while ((await listAppliedMigrations(built.pool)).at(-1) !== "018_exchanges.sql") {
+  while ((await listAppliedMigrations(built.pool)).at(-1) !== "030_branch_inventory.sql") {
     expect(await revertLastMigration(built.pool)).toBeTruthy();
   }
   const beforeGuard = await listAppliedMigrations(built.pool);
-  await expect(revertLastMigration(built.pool)).rejects.toMatchObject({ code: "55000" });
+  await expect(revertLastMigration(built.pool)).rejects.toMatchObject({
+    code: "P0001", message: "Cannot roll back branch inventory after stock activity.",
+  });
   expect(await listAppliedMigrations(built.pool)).toEqual(beforeGuard);
   await applyMigrations(built.pool);
   expect(await listAppliedMigrations(built.pool)).toEqual(appliedBeforeDowngrade);
@@ -619,7 +626,7 @@ test("manager picks an unattributed-phone sale, drafts cross-branch, restores th
   const denied = await api(cashier, "GET", "/api/internal/returns/sources");
   expect(denied.status).toBe(403);
 
-  const picked = await api(manager, "GET", `/api/internal/returns/sources?reference=${originalSale.body.id}&date=2026-09-01&branchId=${abshwayId}&item=${encodeURIComponent("قميص مرتجع")}&amountPiasters=45000`);
+  const picked = await api(manager, "GET", `/api/internal/returns/sources?reference=${originalSale.body.id}&date=2026-09-01&branchId=${abshwayId}&amountPiasters=45000`);
   expect(picked.status).toBe(200);
   expect(picked.body).toHaveLength(1);
   expect(picked.body[0]).toMatchObject({ saleId: originalSale.body.id, customerPhone: null, soldByStaffId: expect.any(String) });
@@ -707,7 +714,10 @@ test("manager picks an unattributed-phone sale, drafts cross-branch, restores th
     expect.objectContaining({ batchId: oldReceipt.lines[0].batchId, quantity: 1, unitCostPiasters: 10000 }),
   ]);
   const afterPost = await batches(manager);
-  expect(afterPost.find((batch: { id: string }) => batch.id === oldReceipt.lines[0].batchId).remainingQuantity).toBe(1);
+  const restoredBatch = afterPost.find((batch: { id: string }) => batch.id === oldReceipt.lines[0].batchId);
+  expect(restoredBatch.remainingQuantity).toBe(1);
+  expect(restoredBatch.branchBalances).toEqual(expect.arrayContaining([{ branchId: fayoumId, availableQuantity: 1 }]));
+  expect(restoredBatch.branchBalances.find((balance: { branchId: string }) => balance.branchId === abshwayId)?.availableQuantity ?? 0).toBe(0);
   const stockVersion = await built.pool.query<{ version: string }>("SELECT version FROM inventory_stock_clock WHERE id = true");
   expect(Number(stockVersion.rows[0]?.version)).toBe(5);
 
@@ -833,14 +843,52 @@ test("return history uses bounded summaries and a stable cursor", async () => {
   expect(first.body.items).toHaveLength(1);
   expect(first.body.nextCursor).toEqual(expect.any(String));
   expect(first.body.items[0]).toMatchObject({ status: "draft", refundStatus: "none" });
+  expect(first.body.items[0]).toMatchObject({ reference: expect.stringMatching(/^RET-\d+$/), customerName: null });
   expect(first.body.items[0]).toMatchObject({ source: { kind: "physical_sale", id: original.body.id } });
   expect(first.body.items[0]).not.toHaveProperty("lines");
+  const detail = await api(manager, "GET", `/api/internal/returns/${first.body.items[0].id}`);
+  expect(detail.status).toBe(200);
+  expect(detail.body.reference).toBe(first.body.items[0].reference);
 
   const second = await api(manager, "GET", `/api/internal/returns?limit=1&cursor=${first.body.nextCursor}`);
   expect(second.status).toBe(200);
   expect(second.body.items).toHaveLength(1);
   expect(second.body.items[0].id).not.toBe(first.body.items[0].id);
+  expect(second.body.items[0].reference).not.toBe(first.body.items[0].reference);
   expect(second.body.nextCursor).toBeNull();
+});
+
+test("returns lookup finds physical orders by phone or readable order number while date finds anonymous sales", async () => {
+  const manager = await signIn("owner", "owner-pass-1");
+  await api(manager, "POST", "/api/internal/active-branch", { branchId: abshwayId });
+  const product = await seedProduct(manager, [12000]);
+  await receive(manager, product.variantIds[0]!, 3, 5000);
+  const first = await sale(manager, {
+    occurredAt: "2026-09-10T12:00:00.000Z", customerName: "أحمد", customerPhone: "01012345678",
+    lines: [{ variantId: product.variantIds[0]!, quantity: 1 }],
+  });
+  const second = await sale(manager, {
+    occurredAt: "2026-09-11T12:00:00.000Z", customerName: "أحمد", customerPhone: "01012345678",
+    lines: [{ variantId: product.variantIds[0]!, quantity: 1 }],
+  });
+  const anonymous = await sale(manager, {
+    occurredAt: "2026-09-12T12:00:00.000Z",
+    lines: [{ variantId: product.variantIds[0]!, quantity: 1 }],
+  });
+  expect(first.body.reference).toMatch(/^POS-\d+$/);
+  expect(second.body.reference).not.toBe(first.body.reference);
+  const byPhone = await api(manager, "GET", "/api/internal/returns/sources?phone=01012345678");
+  expect(byPhone.status).toBe(200);
+  expect(byPhone.body.map((row: { reference: string }) => row.reference).sort()).toEqual([first.body.reference, second.body.reference].sort());
+  expect(byPhone.body[0]).toMatchObject({ customerName: "أحمد", customerPhone: "01012345678" });
+  const byNumber = await api(manager, "GET", `/api/internal/returns/sources?reference=${first.body.reference}`);
+  expect(byNumber.body).toHaveLength(1);
+  expect(byNumber.body[0].source.id).toBe(first.body.id);
+  const legacy = await api(manager, "GET", `/api/internal/returns/sources?reference=${first.body.id}`);
+  expect(legacy.body).toHaveLength(1);
+  const byDate = await api(manager, "GET", `/api/internal/returns/sources?date=2026-09-12&branchId=${abshwayId}`);
+  expect(byDate.body).toHaveLength(1);
+  expect(byDate.body[0]).toMatchObject({ source: { id: anonymous.body.id }, customerPhone: null });
 });
 
 test("a partial sellable return spanning FIFO costs restores each original batch without averaging", async () => {
@@ -963,20 +1011,22 @@ async function seedProduct(session: Session, prices: number[]) {
   };
 }
 
-async function receive(session: Session, variantId: string, quantity: number, unitCostPiasters: number) {
+async function receive(session: Session, variantId: string, quantity: number, unitCostPiasters: number, branchId = abshwayId) {
   const result = await api(session, "POST", "/api/internal/receiving/receipts", {
-    operationId: crypto.randomUUID(), receiptDate: "2026-08-01", lines: [{ variantId, quantity, unitCostPiasters }],
+    operationId: crypto.randomUUID(), receiptDate: "2026-08-01", branchId,
+    lines: [{ variantId, quantity, unitCostPiasters }],
   });
   expect(result.status).toBe(201);
   return result.body;
 }
 
-async function sale(session: Session, input: { occurredAt: string; employeeDiscountPiasters?: number; lines: Array<{ variantId: string; quantity: number }> }) {
+async function sale(session: Session, input: { occurredAt: string; customerName?: string; customerPhone?: string; employeeDiscountPiasters?: number; lines: Array<{ variantId: string; quantity: number }> }) {
   const result = await api(session, "POST", "/api/internal/sales", {
     saleId: crypto.randomUUID(), operationId: crypto.randomUUID(), physicallyCompleted: true,
-    occurredAt: input.occurredAt, employeeDiscountPiasters: input.employeeDiscountPiasters ?? 0, lines: input.lines,
+    occurredAt: input.occurredAt, customerName: input.customerName, customerPhone: input.customerPhone,
+    employeeDiscountPiasters: input.employeeDiscountPiasters ?? 0, lines: input.lines,
   });
-  expect(result.status).toBe(201);
+  expect(result.status, JSON.stringify(result.body)).toBe(201);
   return result;
 }
 

@@ -22,10 +22,15 @@ export function ProductMedia({ src, priority = false }: ProductMediaProps) {
           unoptimized
           priority={priority}
           loading={priority ? "eager" : "lazy"}
-          sizes="(max-width: 359px) 100vw, (max-width: 767px) calc((100vw - 2px) / 2), (max-width: 1199px) calc((100vw - 4px) / 3), 309px"
+          sizes="(max-width: 359px) calc(100vw - 32px), (max-width: 899px) calc((100vw - 48px) / 2), (max-width: 1399px) 50vw, 660px"
           onError={() => setFailed(true)}
         />
-      ) : <span className={styles.mediaFallback}>الصورة غير متاحة</span>}
+      ) : (
+        <span className={styles.mediaFallback}>
+          <span className={styles.fallbackWordmark} aria-hidden="true">BRAVOS</span>
+          <span>الصورة غير متاحة</span>
+        </span>
+      )}
     </span>
   );
 }

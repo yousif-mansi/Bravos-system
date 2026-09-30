@@ -11,6 +11,7 @@ const TABLES = [
   { tableName: "inventory_stock_clock", orderBy: "id" },
   { tableName: "inventory_operation", orderBy: "recorded_at, id" },
   { tableName: "inventory_batch", orderBy: "recorded_at, id" },
+  { tableName: "inventory_batch_balance", orderBy: "batch_id, branch_id" },
   { tableName: "inventory_movement", orderBy: "recorded_at, id" },
   { tableName: "inventory_allocation", orderBy: "recorded_at, id" },
   { tableName: "inventory_discrepancy", orderBy: "recorded_at, id" },

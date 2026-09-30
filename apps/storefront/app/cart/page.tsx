@@ -59,7 +59,7 @@ export default function CartPage() {
         ) changed = true;
         await cart.refreshLine(item.variantId, next);
       }
-      setAvailabilityMessage(changed ? "تغيّرت بعض بيانات السلة حسب المخزون الحالي. راجع التنبيهات قبل المتابعة." : "السلة مطابقة للمخزون الحالي.");
+      setAvailabilityMessage(changed ? "تم تحديث بيانات المنتجات. راجع التغييرات والتنبيهات قبل المتابعة." : "تم تحديث بيانات المنتجات والأسعار. يُراجع توفر السلة كاملة عند مراجعة السعر.");
     } catch {
       setAvailabilityMessage("تعذر التحقق من المخزون الآن. أعد المحاولة قبل متابعة الطلب.");
     } finally {
@@ -67,29 +67,36 @@ export default function CartPage() {
     }
   }
 
+  const heading = (
+    <div className={`page-title ${styles.heading}`}>
+      <p className="eyebrow">اختياراتك</p>
+      <h1>سلة التسوق</h1>
+      <p>{!cart.hydrated || cart.storageStatus === "ready"
+        ? "راجع اختياراتك، ثم أضف بيانات التوصيل لمراجعة السعر النهائي."
+        : "يمكنك استخدام السلة الآن، لكن اختياراتك الحالية محفوظة مؤقتاً في هذه الصفحة فقط."}</p>
+    </div>
+  );
+
   if (!cart.hydrated) {
-    return <main id="main-content" className={`cart-page ${styles.page}`}><p className={styles.hydrating} role="status">لحظات...</p></main>;
+    return <main id="main-content" className={`cart-page ${styles.page}`}>{heading}<div key="hydrating" className={styles.hydrating} role="status"><h2>نجهّز سلتك</h2><p>لحظات... نستعيد المنتجات المحفوظة في هذا المتصفح.</p></div></main>;
   }
 
   return (
     <main id="main-content" className={`cart-page ${styles.page}`}>
-      <div className={`page-title ${styles.heading}`}>
-        <p className="eyebrow">اختياراتك</p>
-        <h1>سلة التسوق</h1>
-        <p>{cart.storageStatus === "ready"
-          ? "السلة تحفظ اختياراتك في هذا المتصفح لتراجع المقاسات والألوان والكميات."
-          : "يمكنك استخدام السلة الآن، لكن اختياراتك الحالية محفوظة مؤقتاً في هذه الصفحة فقط."}</p>
-      </div>
+      {heading}
       {cart.storageStatus === "unavailable" ? (
         <p className={styles.storageWarning} role="alert">يتعذر حفظ السلة في هذا المتصفح الآن. ستفقد اختياراتك عند إغلاق الصفحة أو إعادة تحميلها.</p>
       ) : null}
       {cart.storageStatus === "corrupt" ? (
         <p className={styles.storageWarning} role="alert">تعذر قراءة السلة المحفوظة. تركنا البيانات الأصلية دون تغيير، وتعمل السلة الحالية مؤقتاً فقط.</p>
       ) : null}
-      {availabilityMessage ? <p className={`cart-status ${styles.status} ${availabilityMessage.startsWith("تعذر") ? styles.errorStatus : ""}`} role="status">{availabilityMessage}</p> : null}
+      {cart.items.length > 0 || availabilityMessage ? <div key="availability" className={styles.statusSlot}>
+        <p className={`cart-status ${styles.status} ${availabilityMessage.startsWith("تعذر") ? styles.errorStatus : ""}`} role="status">{availabilityMessage || (checking ? "لحظات... نراجع بيانات المنتجات والأسعار." : "راجع بيانات المنتجات والأسعار قبل المتابعة.")}</p>
+      </div> : null}
       {cart.items.length === 0 ? (
         <div className={`empty-state ${styles.empty}`}>
-          <h2>السلة فارغة</h2>
+          <p className={styles.emptyMark} aria-hidden="true">BRAVOS</p>
+          <h2>اختياراتك تبدأ من هنا</h2>
           <p>اختر منتجاً ومقاساً ولوناً لإضافته هنا. إضافة المنتجات إلى السلة لا تحجز المخزون.</p>
           <Link className="button-link" href="/">تصفّح المنتجات</Link>
         </div>

@@ -9,6 +9,7 @@ import type {
   WorkspaceDto,
 } from "@bravos/contracts";
 import { EmptyState } from "../ui/EmptyState.tsx";
+import { useRevealFeedback } from "../ui/useRevealFeedback.ts";
 import {
   ApiError,
   createAutomaticOffer,
@@ -89,6 +90,7 @@ export default function OffersPage({
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const editFeedback = useRevealFeedback<HTMLFormElement>();
 
   const productByCategory = useMemo(() => {
     const groups = new Map<string, ManagerProductDto[]>();
@@ -159,7 +161,7 @@ export default function OffersPage({
     });
     setError("");
     setNotice("");
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    editFeedback.reveal();
   }
 
   function payload(): AutomaticOfferWriteDto | null {
@@ -237,6 +239,7 @@ export default function OffersPage({
         setNotice("تم إنشاء العرض.");
       }
       setEditingId(null);
+      editFeedback.clearHighlight();
       setForm(emptyForm());
       setOffers(await listAutomaticOffers());
     } catch (caught) {
@@ -288,8 +291,8 @@ export default function OffersPage({
       {error ? <div className="error" role="alert">{error}</div> : null}
       {notice ? <div className="notice" role="status">{notice}</div> : null}
 
-      <form className="card" aria-label={editingId ? "تعديل العرض التلقائي" : "إنشاء عرض تلقائي"} onSubmit={(event) => void submit(event)}>
-        <h2>{editingId ? "تعديل العرض" : "عرض جديد"}</h2>
+      <form ref={editFeedback.regionRef} className={`card reveal-feedback${editFeedback.highlighted ? " is-highlighted" : ""}`} aria-label={editingId ? "تعديل العرض التلقائي" : "إنشاء عرض تلقائي"} onSubmit={(event) => void submit(event)}>
+        <h2 ref={editFeedback.headingRef} tabIndex={-1}>{editingId ? `تعديل العرض: ${form.nameAr}` : "عرض جديد"}</h2>
         <div className="field"><label htmlFor="offerName">اسم العرض</label><input id="offerName" value={form.nameAr} onChange={(event) => setForm({ ...form, nameAr: event.target.value })} /></div>
         <div className="grid two">
           <div className="field"><label htmlFor="offerType">نوع الخصم</label><select id="offerType" value={form.discountType} onChange={(event) => setForm({ ...form, discountType: event.target.value as AutomaticOfferDiscountType })}><option value="percentage">نسبة مئوية</option><option value="fixed">قيمة ثابتة</option><option value="fixed_bundle">حزمة بسعر محدد</option><option value="buy_x_get_y">اشترِ وخذ مكافأة</option></select></div>
@@ -335,7 +338,7 @@ export default function OffersPage({
         </div>
         <div className="actions">
           <button type="submit" disabled={pending}>{pending ? "جارٍ الحفظ…" : "حفظ العرض"}</button>
-          {editingId ? <button className="secondary" type="button" onClick={() => { setEditingId(null); setForm(emptyForm()); }}>إلغاء التعديل</button> : null}
+          {editingId ? <button className="secondary" type="button" onClick={() => { setEditingId(null); setForm(emptyForm()); editFeedback.clearHighlight(); }}>إلغاء التعديل</button> : null}
         </div>
       </form>
 

@@ -45,6 +45,7 @@ export type RestoreInventoryFeaturePort = RestoreFeaturePort & {
 };
 
 export type RestoreSalesFeaturePort = RestoreFeaturePort & {
+  restoreReferenceSequence(sequence: { lastValue: string; isCalled: boolean }): Promise<void>;
   listRestoreCustodyProofs(operationIds: string[]): Promise<Array<{
     operationId: string;
     saleId: string;
@@ -54,6 +55,10 @@ export type RestoreSalesFeaturePort = RestoreFeaturePort & {
 };
 
 export type RestoreOnlineOrdersFeaturePort = RestoreFeaturePort & {
+  restoreReferenceSequence(sequence: { lastValue: string; isCalled: boolean }): Promise<void>;
+};
+
+export type RestoreReturnsFeaturePort = RestoreFeaturePort & {
   restoreReferenceSequence(sequence: { lastValue: string; isCalled: boolean }): Promise<void>;
 };
 
@@ -67,7 +72,7 @@ export type RestoreFeatureSet = {
   expenses: RestoreFeaturePort;
   onlineOrders: RestoreOnlineOrdersFeaturePort;
   storefrontConfiguration: RestoreFeaturePort;
-  returns: RestoreFeaturePort;
+  returns: RestoreReturnsFeaturePort;
   corrections: RestoreFeaturePort;
   openingImport: RestoreFeaturePort;
   analytics: RestoreFeaturePort;

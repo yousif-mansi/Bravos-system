@@ -91,6 +91,7 @@ export function createInventoryServices(ports: {
     if (!variant) throw new InventoryValidationError("المتغير المحدد غير موجود.");
     return {
       id: record.id,
+      branchId: record.branchId,
       operationId: record.operationId,
       coordinationId: record.coordinationId,
       variantId: record.variantId,
@@ -111,8 +112,12 @@ export function createInventoryServices(ports: {
   }
 
   return {
-    quantitiesFor(variantIds) {
-      return ports.store.quantitiesFor(variantIds);
+    quantitiesFor(branchId, variantIds) {
+      return ports.store.quantitiesFor(branchId, variantIds);
+    },
+
+    quantitiesByBranchFor(variantIds) {
+      return ports.store.quantitiesByBranchFor(variantIds);
     },
 
     referencedVariantIds(variantIds) {
@@ -128,21 +133,23 @@ export function createInventoryServices(ports: {
 
     async listLowStock(auth) {
       await requireManager(auth);
-      const [ids, settings, overrides] = await Promise.all([
+      const [ids, branchIds, settings, overrides] = await Promise.all([
         ports.variants.listIds(),
+        ports.store.listBranchIds(),
         ports.store.getSettings(),
         ports.store.listVariantThresholds(),
       ]);
-      const quantities = await ports.store.quantitiesFor(ids);
+      const quantities = await ports.store.quantitiesByBranchFor(ids);
       const low: Array<Omit<LowStockVariantDto, "variant">> = [];
-      for (const variantId of ids) {
-        const availableQuantity = quantities.get(variantId) ?? 0;
+      for (const branchId of branchIds) for (const variantId of ids) {
+        const availableQuantity = quantities.get(branchId)?.get(variantId) ?? 0;
         const override = overrides.get(variantId);
         const threshold = override ?? settings.lowStockThreshold;
         if (availableQuantity > threshold) {
           continue;
         }
         low.push({
+          branchId,
           variantId,
           availableQuantity,
           threshold,
@@ -256,11 +263,12 @@ export function createInventoryServices(ports: {
       const body = expectObject(input, "بيانات تصحيح الكمية غير صالحة.");
       assertAllowedKeys(
         body,
-        new Set(["operationId", "coordinationId", "variantId", "previousAvailableQuantity", "correctedAvailableQuantity", "reason", "positiveSourceBatchId"]),
+        new Set(["operationId", "coordinationId", "branchId", "variantId", "previousAvailableQuantity", "correctedAvailableQuantity", "reason", "positiveSourceBatchId"]),
         "بيانات تصحيح الكمية غير صالحة.",
       );
       const operationId = assertUuid(body.operationId, "معرّف العملية غير صالح.");
       const coordinationId = assertUuid(body.coordinationId, "تنسيق العد غير موجود.");
+      const branchId = assertUuid(body.branchId, "فرع التصحيح غير صالح.");
       const variantId = assertUuid(body.variantId, "المتغير المحدد غير موجود.");
       const previousAvailableQuantity = assertThreshold(body.previousAvailableQuantity, "الكمية السابقة غير صالحة.");
       const correctedAvailableQuantity = assertThreshold(body.correctedAvailableQuantity, "الكمية المصححة غير صالحة.");
@@ -273,6 +281,7 @@ export function createInventoryServices(ports: {
         target: "stock-correction",
         operationId,
         coordinationId,
+        branchId,
         variantId,
         previousAvailableQuantity,
         correctedAvailableQuantity,
@@ -285,6 +294,7 @@ export function createInventoryServices(ports: {
         operationId,
         payloadFingerprint,
         coordinationId,
+        branchId,
         variantId,
         previousAvailableQuantity,
         correctedAvailableQuantity,
@@ -319,12 +329,13 @@ export function createInventoryServices(ports: {
       const body = expectObject(input, "بيانات مصالحة البيع المتأخر غير صالحة.");
       assertAllowedKeys(
         body,
-        new Set(["operationId", "correctionId", "saleId", "variantId", "resolution", "quantity"]),
+        new Set(["operationId", "correctionId", "saleId", "branchId", "variantId", "resolution", "quantity"]),
         "بيانات مصالحة البيع المتأخر غير صالحة.",
       );
       const operationId = assertUuid(body.operationId, "معرّف العملية غير صالح.");
       const correctionId = assertUuid(body.correctionId, "تصحيح الكمية المحدد غير موجود.");
       const saleId = assertUuid(body.saleId, "البيع المحدد غير موجود.");
+      const branchId = assertUuid(body.branchId, "فرع المصالحة غير صالح.");
       const variantId = assertUuid(body.variantId, "المتغير المحدد غير موجود.");
       const resolution = assertReconciliationResolution(body.resolution);
       const quantity = assertQuantity(body.quantity, "كمية المصالحة غير صالحة.");
@@ -333,6 +344,7 @@ export function createInventoryServices(ports: {
         operationId,
         correctionId,
         saleId,
+        branchId,
         variantId,
         resolution,
         quantity,
@@ -344,6 +356,7 @@ export function createInventoryServices(ports: {
         payloadFingerprint,
         correctionId,
         saleId,
+        branchId,
         variantId,
         resolution,
         quantity,
@@ -361,10 +374,13 @@ export function createInventoryServices(ports: {
   };
 }
 
-export function createInventoryAvailabilityReader(store: Pick<InventoryReadStore, "quantitiesFor">) {
+export function createInventoryAvailabilityReader(store: Pick<InventoryReadStore, "quantitiesFor" | "quantitiesByBranchFor">) {
   return {
-    quantitiesFor(variantIds: string[]) {
-      return store.quantitiesFor(variantIds);
+    quantitiesFor(branchId: string, variantIds: string[]) {
+      return store.quantitiesFor(branchId, variantIds);
+    },
+    quantitiesByBranchFor(variantIds: string[]) {
+      return store.quantitiesByBranchFor(variantIds);
     },
   };
 }
@@ -381,6 +397,7 @@ function toBatchDto(
   row: {
     id: string;
     variantId: string;
+    branchBalances: Array<{ branchId: string; availableQuantity: number }>;
     receivedQuantity: number;
     effectiveReceivedQuantity: number;
     remainingQuantity: number;
@@ -398,6 +415,7 @@ function toBatchDto(
   return {
     id: row.id,
     variantId: row.variantId,
+    branchBalances: row.branchBalances,
     receivedQuantity: row.receivedQuantity,
     effectiveReceivedQuantity: row.effectiveReceivedQuantity,
     remainingQuantity: row.remainingQuantity,

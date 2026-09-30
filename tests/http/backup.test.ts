@@ -83,8 +83,8 @@ test("manager downloads one authenticated business snapshot with privacy and uns
     [productId, categoryId],
   );
   await built.pool.query(
-    `INSERT INTO catalog_product_variant (id,product_id,size_id,color_id,selling_price_piasters_override,created_at,updated_at)
-     VALUES ($1,$2,$3,$4,NULL,now(),now())`,
+    `INSERT INTO catalog_product_variant (id,product_id,size_id,color_id,selling_price_piasters_override,online_visible,created_at,updated_at)
+     VALUES ($1,$2,$3,$4,NULL,FALSE,now(),now())`,
     [variantId, productId, sizeId, colorId],
   );
   await built.pool.query(
@@ -149,13 +149,17 @@ test("manager downloads one authenticated business snapshot with privacy and uns
     includesUnsentBrowserRecords: false,
     imageBinariesIncluded: false,
     imageReferencesPreserved: true,
-    schemaVersion: "029_restore.sql",
+    schemaVersion: "034_order_recognition_branch.sql",
     sourceGeneration: 0,
+    salesSaleReferenceSequence: { lastValue: expect.stringMatching(/^\d+$/), isCalled: expect.any(Boolean) },
+    returnsReturnReferenceSequence: { lastValue: expect.stringMatching(/^\d+$/), isCalled: expect.any(Boolean) },
     knownUnsynchronizedTills: [{ deviceId, pendingOperationIds: [pendingOperationId] }],
     identityPolicy: { preservesStableIds: true, preservesForeignKeys: true, regeneratesIds: false },
     idProvenance: { source: "database_primary_and_foreign_keys", stableIdsPreserved: true, foreignKeysPreserved: true, idsRegenerated: false },
   });
   expect(decoded.data.inventory.inventory_known_till).toEqual([expect.not.objectContaining({ restore_generation: expect.anything() })]);
+  expect(decoded.data.inventory.inventory_batch_balance).toEqual([]);
+  expect(decoded.data.catalog.catalog_product_variant).toEqual([expect.objectContaining({ id: variantId, online_visible: false })]);
   expect(decoded.data.sales.sales_restore_deferred_completion).toEqual([]);
   const actors = decoded.data.identity.identity_actor ?? [];
   expect(actors).toEqual(expect.arrayContaining([
@@ -217,6 +221,7 @@ test("business flows created through the application are archived table by table
   const variantId = product.body.variants[0].id as string;
   const receipt = await jsonApi(manager, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
+    branchId,
     receiptDate: today,
     lines: [{ variantId, quantity: 4, unitCostPiasters: 10000 }],
   });
@@ -279,6 +284,7 @@ test("business flows created through the application are archived table by table
     expectedRevision: agreed.body.revision,
     agreedRevision: agreed.body.revision,
     itemsLocatedAndSetAside: true,
+    fulfillmentBranchId: branchId,
   });
   expect(confirmed.status, JSON.stringify(confirmed.body)).toBe(201);
 
@@ -323,6 +329,15 @@ test("business flows created through the application are archived table by table
     lastValue: sequence.rows[0]!.last_value,
     isCalled: sequence.rows[0]!.is_called,
   });
+  for (const [sequenceName, manifestSequence] of [
+    ["sales_sale_reference_number_seq", decoded.manifest.salesSaleReferenceSequence],
+    ["returns_return_reference_number_seq", decoded.manifest.returnsReturnReferenceSequence],
+  ] as const) {
+    const current = await built.pool.query<{ last_value: string; is_called: boolean }>(
+      `SELECT last_value::text, is_called FROM ${sequenceName}`,
+    );
+    expect(manifestSequence).toEqual({ lastValue: current.rows[0]!.last_value, isCalled: current.rows[0]!.is_called });
+  }
 });
 
 test("backup creation is manager-only and validates the download password", async () => {

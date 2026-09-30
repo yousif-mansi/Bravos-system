@@ -1,1 +1,1 @@
-batch_key,variant_key,quantity,unit_cost_egp,receipt_date,batch_order
+batch_key,branch_code,variant_key,quantity,unit_cost_egp,receipt_date,batch_order

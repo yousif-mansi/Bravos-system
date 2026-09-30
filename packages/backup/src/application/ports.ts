@@ -26,6 +26,10 @@ export type BackupOnlineOrdersReader = BackupTableReader & {
   readReferenceSequence(): Promise<{ lastValue: string; isCalled: boolean }>;
 };
 
+export type BackupReferenceReader = BackupTableReader & {
+  readReferenceSequence(): Promise<{ lastValue: string; isCalled: boolean }>;
+};
+
 export type BackupRestoreGenerationReader = {
   readRestoreGeneration(): Promise<number>;
 };
@@ -35,10 +39,10 @@ export type BackupReaderSet = {
   catalog: BackupTableReader;
   inventory: BackupInventoryReader;
   receiving: BackupTableReader;
-  sales: BackupTableReader;
+  sales: BackupReferenceReader;
   expenses: BackupTableReader;
   pricing: BackupTableReader;
-  returns: BackupTableReader;
+  returns: BackupReferenceReader;
   corrections: BackupTableReader;
   onlineOrders: BackupOnlineOrdersReader;
   storefrontConfiguration: BackupTableReader;
@@ -52,6 +56,8 @@ export type BackupSnapshotMetadata = {
   schemaVersion: string;
   stockVersion: string;
   onlineOrderReferenceSequence: { lastValue: string; isCalled: boolean };
+  salesSaleReferenceSequence: { lastValue: string; isCalled: boolean };
+  returnsReturnReferenceSequence: { lastValue: string; isCalled: boolean };
   sourceGeneration: number;
 };
 
@@ -81,6 +87,8 @@ export type BackupManifest = {
   createdByStaffId: string;
   stockVersion: string;
   onlineOrderReferenceSequence: { lastValue: string; isCalled: boolean };
+  salesSaleReferenceSequence?: { lastValue: string; isCalled: boolean };
+  returnsReturnReferenceSequence?: { lastValue: string; isCalled: boolean };
   identityPolicy: { preservesStableIds: true; preservesForeignKeys: true; regeneratesIds: false };
   idProvenance: {
     source: "database_primary_and_foreign_keys";

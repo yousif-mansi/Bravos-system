@@ -10,6 +10,7 @@ const TABLE_NAMES = [
   "inventory_stock_clock",
   "inventory_operation",
   "inventory_batch",
+  "inventory_batch_balance",
   "inventory_movement",
   "inventory_allocation",
   "inventory_discrepancy",

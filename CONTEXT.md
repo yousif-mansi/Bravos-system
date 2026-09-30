@@ -4,9 +4,9 @@ BRAVOS is a men's clothing business with physical branches in Abshway and Fayoum
 
 ## Language
 
-**Central inventory**:
-The single shared inventory used by both physical branches and the online store, with quantities tracked for individual product variants.
-_Avoid_: Branch inventory, separate website stock
+**Branch inventory**:
+The available quantities of individual product variants held by one BRAVOS branch, independent of quantities held at the other branch. Online orders use an identified fulfillment branch rather than a separate website stock balance.
+_Avoid_: Shared central quantity, separate website stock
 
 **Available stock**:
 The quantity of a product variant still available for new sales or orders. It excludes quantities already deducted for completed physical sales or confirmed online orders, including confirmed items still awaiting shipment.
@@ -17,16 +17,24 @@ A reduction in available stock for a completed physical sale or a confirmed onli
 _Avoid_: Shipment when referring to the online order's deduction point
 
 **Branch**:
-One of BRAVOS's two physical retail outlets: Abshway or Fayoum. A branch identifies operational activity, including its sales, employees, and expenses.
-_Avoid_: Inventory location when referring to branch reporting
+One of BRAVOS's two physical retail outlets: Abshway or Fayoum. Each branch holds its own stock and identifies its sales, employees, and expenses.
+_Avoid_: Separate business
 
 **Authorized branch**:
 A branch the manager has permitted an employee to work in using that employee's personal account.
 _Avoid_: Separate employee account per branch
 
 **Active branch**:
-The authorized branch selected for an employee's current work, to which their physical sales and newly recorded branch expenses are attributed.
-_Avoid_: Inventory source
+The authorized branch selected for an employee's current work, supplying stock for their new physical sales and identifying their newly recorded branch expenses.
+_Avoid_: Automatically changing the branch of an earlier completed sale
+
+**Fulfillment branch**:
+The branch selected by staff to supply every item in a confirmed online order.
+_Avoid_: Combining stock from multiple branches for one order
+
+**Receiving branch for a return**:
+The branch that physically receives and inspects returned merchandise. Sellable returned units join its inventory while retaining their original purchase-cost provenance and sale attribution.
+_Avoid_: Automatically restoring stock to the original selling branch
 
 **Manager**:
 The owner or authorized manager with access to the whole business, including private cost/profit information and all employees' branch sales and expenses.
@@ -41,7 +49,7 @@ A clothing item offered by BRAVOS that may have multiple size and color combinat
 _Avoid_: Variant when referring to the product as a whole
 
 **Product variant**:
-A specific size and color combination of a product with its own quantity in central inventory.
+A specific size and color combination of a product with separately tracked quantities at each branch.
 _Avoid_: Separate product when referring only to a size or color combination
 
 **Product code**:
@@ -49,8 +57,12 @@ The unique searchable code identifying a product as a whole. The employee select
 _Avoid_: Barcode, variant code when referring to the product-level search code
 
 **Physical sale**:
-A completed cash sale in which a customer has received the merchandise and paid at a BRAVOS branch. It is attributed to that branch and the employee who performed it.
+A completed sale in which a customer has received the merchandise and paid at a BRAVOS branch, using cash, a manually received wallet/InstaPay payment, or both. It is attributed to that branch and the employee who performed it.
 _Avoid_: Online order
+
+**Split payment**:
+A physical sale paid partly in cash and partly through a manually received online transfer, with both amounts together covering the amount due.
+_Avoid_: Partial payment, payment-provider settlement
 
 **Sale correction**:
 A manager's recorded correction or cancellation of an erroneous completed sale, linked to the original sale with a reason. It preserves the original history and reflects the merchandise and money that actually changed hands.
@@ -93,7 +105,7 @@ The number of units of a variant the customer asks for in an order. A pending re
 _Avoid_: Available quantity, reserved quantity
 
 **Confirmed online order**:
-An online order accepted through the representative's WhatsApp confirmation after its actual items have been located and set aside for the customer. Its quantities are deducted from available stock at confirmation and protected from further physical or online sales.
+An online order accepted through the representative's WhatsApp confirmation after its actual items have been located and set aside at the fulfillment branch. Confirmation recognizes its sales value and deducts that branch's available stock once.
 _Avoid_: Pending request, completed delivery
 
 **Reserved stock**:
@@ -105,8 +117,12 @@ An online order whose merchandise has been handed to the delivery provider. Its 
 _Avoid_: Delivered order
 
 **Delivery failed / Awaiting return**:
-An unsuccessful delivery whose merchandise has not yet been physically received and inspected by BRAVOS. Its quantities remain unavailable for another sale.
+An unsuccessful delivery whose sales value has been reversed but whose merchandise has not yet been physically received and inspected by BRAVOS. Its quantities remain unavailable for another sale.
 _Avoid_: Customer return after a completed delivery, restored stock
+
+**Cancelled order awaiting inspection**:
+A cancelled confirmed order whose sales value has been reversed while its merchandise remains unavailable until staff inspect it.
+_Avoid_: Automatically restored stock
 
 **Out-of-stock variant**:
 A size/color combination with no available quantity for customers to order. Other stocked variants of the product may remain available.
@@ -137,15 +153,15 @@ The assigned employee responsible for checking online orders and confirming them
 _Avoid_: Automated confirmation when referring to the representative's decision
 
 **Stock receiving**:
-The receipt of purchased merchandise into BRAVOS's central inventory.
+The receipt of purchased merchandise into the selected BRAVOS branch's inventory.
 _Avoid_: Branch transfer
 
 **Stock batch**:
-A group of received units of one product variant with its own purchase cost and remaining quantity. New-cost units remain separate from old-cost units, while available quantities across batches contribute to the same central inventory.
-_Avoid_: Average cost, branch inventory, separate public product
+A group of received units of one product variant with its own purchase cost and separately tracked remaining quantities at each branch. A return to another branch retains its original batch provenance.
+_Avoid_: Average cost, separate public product
 
 **First in, first out (FIFO)**:
-The allocation of sold or confirmed-order units from the oldest available stock batch before newer batches. Sellable returned units go back to the batches originally allocated to the purchase, retaining those costs.
+The allocation of sold or confirmed-order units from the oldest available stock batch at the supplying branch before newer batches. Sellable returns retain the original allocated batch costs at the branch receiving them.
 _Avoid_: Average cost, newest batch first
 
 **Cost price**:

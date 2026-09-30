@@ -19,6 +19,7 @@ import {
 import { egpInputToPiasters, formatEgpFromPiasters, piastersToEgpInput } from "../money.ts";
 import { calculateReturnRefundSuggestion, type ReturnLineSelection } from "../return-refund.ts";
 import { EmptyState } from "../ui/EmptyState.tsx";
+import { useRevealFeedback } from "../ui/useRevealFeedback.ts";
 import { accountGeneration } from "../account-session.ts";
 import {
   assignPendingReturnAttempt,
@@ -40,9 +41,9 @@ export default function ReturnsPage({ workspace }: { workspace: WorkspaceDto; on
   const [editingReturn, setEditingReturn] = useState<ReturnDto | null>(null);
   const [selection, setSelection] = useState<ReturnLineSelection>({});
   const [reference, setReference] = useState("");
+  const [phone, setPhone] = useState("");
   const [date, setDate] = useState("");
   const [branchId, setBranchId] = useState("");
-  const [item, setItem] = useState("");
   const [amount, setAmount] = useState("");
   const [authorizedMerchandise, setAuthorizedMerchandise] = useState("0");
   const [authorizedCheckoutCharge, setAuthorizedCheckoutCharge] = useState("0");
@@ -55,6 +56,9 @@ export default function ReturnsPage({ workspace }: { workspace: WorkspaceDto; on
   const [exchangeQuote, setExchangeQuote] = useState<ReturnExchangeQuoteDto | null>(null);
   const [cashRefundStatus, setCashRefundStatus] = useState<"owed" | "paid">("owed");
   const [busy, setBusy] = useState(false);
+  const [loadingReturnId, setLoadingReturnId] = useState<string | null>(null);
+  const sourceFeedback = useRevealFeedback<HTMLElement>();
+  const detailsFeedback = useRevealFeedback<HTMLElement>();
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [uncertainAttempt, setUncertainAttempt] = useState<PendingReturnAttempt | null>(() => readPendingReturnAttempt(workspace.staff.id));
@@ -100,6 +104,7 @@ export default function ReturnsPage({ workspace }: { workspace: WorkspaceDto; on
       setSelectedReturn(value);
       setSelectedSource(null);
       setEditingReturn(null);
+      detailsFeedback.reveal();
     }).catch((caught: unknown) => {
       if (stillCurrent()) showError(caught);
     }).finally(() => {
@@ -164,6 +169,7 @@ export default function ReturnsPage({ workspace }: { workspace: WorkspaceDto; on
     setAuthorizedEdited(false);
     setError("");
     setNotice("");
+    sourceFeedback.reveal();
   }
 
   async function search(event: FormEvent) {
@@ -175,9 +181,9 @@ export default function ReturnsPage({ workspace }: { workspace: WorkspaceDto; on
       if (amount.trim() && amountPiasters === null) throw new Error("قيمة البحث غير صالحة.");
       const next = await listReturnSources({
         ...(reference.trim() ? { reference: reference.trim() } : {}),
+        ...(phone.trim() ? { phone: phone.trim() } : {}),
         ...(date ? { date } : {}),
         ...(branchId ? { branchId } : {}),
-        ...(item.trim() ? { item: item.trim() } : {}),
         ...(amountPiasters !== undefined && amountPiasters !== null ? { amountPiasters } : {}),
       });
       setSources(next);
@@ -446,6 +452,7 @@ export default function ReturnsPage({ workspace }: { workspace: WorkspaceDto; on
 
   async function openReturn(id: string) {
     setBusy(true);
+    setLoadingReturnId(id);
     setError("");
     try {
       const value = await getReturn(id);
@@ -456,10 +463,12 @@ export default function ReturnsPage({ workspace }: { workspace: WorkspaceDto; on
       setSelectedReturn(value);
       setSelectedSource(null);
       setEditingReturn(null);
+      detailsFeedback.reveal();
     } catch (caught) {
       showError(caught);
     } finally {
       setBusy(false);
+      setLoadingReturnId(null);
     }
   }
 
@@ -481,6 +490,7 @@ export default function ReturnsPage({ workspace }: { workspace: WorkspaceDto; on
     setSelectedReturn(null);
     setError("");
     setNotice("");
+    sourceFeedback.reveal();
   }
 
   async function loadMoreReturns() {
@@ -514,29 +524,31 @@ export default function ReturnsPage({ workspace }: { workspace: WorkspaceDto; on
       <section className="card">
         <h2>اختيار المعاملة الأصلية</h2>
         <form aria-label="البحث عن المعاملة الأصلية — البحث عن البيع الأصلي" className="return-search" onSubmit={(event) => void search(event)}>
-          <div className="field"><label htmlFor="return-reference">المرجع</label><input id="return-reference" value={reference} onChange={(event) => setReference(event.target.value)} /></div>
+          <div className="field"><label htmlFor="return-reference">رقم الطلب</label><input id="return-reference" value={reference} onChange={(event) => setReference(event.target.value)} /></div>
+          <div className="field"><label htmlFor="return-phone">رقم هاتف العميل</label><input id="return-phone" inputMode="tel" value={phone} onChange={(event) => setPhone(event.target.value)} /></div>
           <div className="field"><label htmlFor="return-date">تاريخ الاستلام</label><input id="return-date" type="date" value={date} onChange={(event) => setDate(event.target.value)} /></div>
-          <div className="field"><label htmlFor="return-branch">الفرع الأصلي للمبيعات النقدية</label><select id="return-branch" value={branchId} onChange={(event) => setBranchId(event.target.value)}><option value="">كل الفروع والطلبات الأونلاين</option>{workspace.authorizedBranches.map((branch) => <option key={branch.id} value={branch.id}>{branch.nameAr}</option>)}</select></div>
-          <div className="field"><label htmlFor="return-item">الصنف</label><input id="return-item" value={item} onChange={(event) => setItem(event.target.value)} /></div>
+          <div className="field"><label htmlFor="return-branch">فرع البيع الأصلي</label><select id="return-branch" value={branchId} onChange={(event) => setBranchId(event.target.value)}><option value="">كل الفروع والطلبات الأونلاين</option>{workspace.authorizedBranches.map((branch) => <option key={branch.id} value={branch.id}>{branch.nameAr}</option>)}</select></div>
           <div className="field"><label htmlFor="return-amount">إجمالي المعاملة بالجنيه</label><input id="return-amount" inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value)} /></div>
-          <button type="submit" disabled={busy}>بحث</button>
+          <button type="submit" disabled={busy}>{busy ? "جارٍ البحث…" : "بحث"}</button>
         </form>
         <div className="return-source-list" data-testid="return-source-list">
           {sources.map((source) => (
             <button className="return-source" type="button" key={`${source.source.kind}:${source.source.id}`} onClick={() => selectSource(source)}>
-              <strong>{source.reference}</strong><span>{sourceOrigin(source)} · {formatCairoDate(source.receivedAt)}</span><span>{formatEgpFromPiasters(source.originalPayment.totalPiasters)} · {source.lines.map((line) => line.variant.product.nameAr).join("، ")}</span>
+              <strong>طلب {source.reference}</strong><span>{source.customerName ?? "عميل غير مسجل"} · {formatCairoDate(source.receivedAt)}</span><span>{formatEgpFromPiasters(source.originalPayment.totalPiasters)} · {source.lines.map((line) => line.variant.product.nameAr).join("، ")}</span>
             </button>
           ))}
-          {sources.length === 0 ? <EmptyState title="مفيش عملية ترجع" message="ابحث برقم العملية أو التاريخ." /> : null}
+          {sources.length === 0 ? <EmptyState title="مفيش عملية ترجع" message="ابحث برقم الهاتف أو الطلب أو التاريخ." /> : null}
         </div>
       </section>
 
       {selectedSource && !selectedReturn ? (
-        <section className="card return-editor">
-          <h2>{editingReturn ? "تعديل مسودة الإرجاع" : "مسودة إرجاع"}</h2>
-          <p>{sourceOrigin(selectedSource)}. فرع المعالجة المختار: {workspace.authorizedBranches.find((branch) => branch.id === handlingBranchId)?.nameAr ?? "—"}.</p>
-          {selectedSource.channel === "online" ? <p>العميل: {selectedSource.customerName ?? "—"} · الهاتف: {selectedSource.customerPhone ?? "—"}</p> : null}
-          {selectedSource.channel === "online" ? <p className="muted">استلم العميل الطلب في {formatCairoDate(selectedSource.receivedAt)}. الطلب الأونلاين يحتفظ بقناته الأصلية ولا يُنسب إلى بائع أو فرع بيع فعلي.</p> : <p className="muted">لا يشترط وجود هاتف للعميل في البيع النقدي.</p>}
+        <section ref={sourceFeedback.regionRef} className={`card return-editor reveal-feedback${sourceFeedback.highlighted ? " is-highlighted" : ""}`}>
+          <h2 ref={sourceFeedback.headingRef} tabIndex={-1}>{editingReturn ? "تعديل مسودة الإرجاع" : `طلب ${selectedSource.reference}`}</h2>
+          <p>التاريخ: {formatCairoDate(selectedSource.receivedAt)} · المبلغ: {formatEgpFromPiasters(selectedSource.originalPayment.totalPiasters)}</p>
+          <p>العميل: {selectedSource.customerName ?? "غير مسجل"} · الهاتف: {selectedSource.customerPhone ?? "غير مسجل"}</p>
+          <ul>{selectedSource.lines.map((line) => <li key={line.sourceLineId}>{line.variant.product.nameAr} — {line.variant.size.nameAr} / {line.variant.color.nameAr} × {line.purchasedQuantity} · {formatEgpFromPiasters(line.paidPiasters)}</li>)}</ul>
+          <p>الفرع: {workspace.authorizedBranches.find((branch) => branch.id === handlingBranchId)?.nameAr ?? "—"}</p>
+          {selectedSource.channel === "online" ? <p className="muted">فرع تجهيز الطلب: {selectedSource.originalBranch?.nameAr ?? "غير مسجل"}</p> : null}
           <form aria-label={editingReturn ? "تعديل مسودة إرجاع" : "إنشاء مسودة إرجاع"} onSubmit={(event) => void saveDraft(event)}>
             <div className="field"><label htmlFor="return-handling-branch-select">فرع معالجة الإرجاع</label><select id="return-handling-branch-select" value={handlingBranchId} onChange={(event) => setHandlingBranchId(event.target.value)} required>{workspace.authorizedBranches.map((branch) => <option key={branch.id} value={branch.id}>{branch.nameAr}</option>)}</select></div>
             {selectedSource.lines.map((line) => {
@@ -552,16 +564,16 @@ export default function ReturnsPage({ workspace }: { workspace: WorkspaceDto; on
 
       <section className="card">
         <h2>سجل المرتجعات</h2>
-        <div className="return-history">{returns.map((row) => <button className="return-source" type="button" key={row.id} onClick={() => void openReturn(row.id)}><strong>{row.sourceReference}</strong><span>{row.status === "draft" ? "مسودة" : row.effectiveStatus === "cancelled" ? "ملغى مع حفظ الأصل" : "مرحّل"} · {row.source.kind === "delivered_online_order" ? "طلب أونلاين مُسلّم" : row.originalBranch?.nameAr ?? "بيع نقدي"} ← {row.handlingBranch.nameAr}</span><span>{formatEgpFromPiasters(row.authorizedRefund.totalPiasters)} · {row.refundStatus === "paid" ? "مدفوع" : row.refundStatus === "owed" ? "مستحق" : row.refundStatus === "overpaid" ? "مدفوع أكثر من المعتمد حالياً" : row.refundStatus === "cancelled" ? "ملغى" : "بلا التزام نقدي"}</span></button>)}</div>
+        <div className="return-history">{returns.map((row) => <button className="return-source" type="button" key={row.id} disabled={busy} onClick={() => void openReturn(row.id)}><strong>مرتجع {row.reference}</strong><span>{row.customerName ?? "عميل غير مسجل"} · {formatCairoDate(row.postedAt ?? row.createdAt)}</span><span>{formatEgpFromPiasters(row.authorizedRefund.totalPiasters)} · {loadingReturnId === row.id ? "جارٍ فتح التفاصيل…" : row.status === "draft" ? "مسودة" : row.effectiveStatus === "cancelled" ? "ملغى" : "مرحّل"}</span></button>)}</div>
         {nextCursor ? <button type="button" className="secondary" disabled={busy} onClick={() => void loadMoreReturns()}>تحميل مرتجعات أقدم</button> : null}
       </section>
 
       {selectedReturn ? (
-        <section className="card" data-testid="return-details">
-          <h2>تفاصيل الإرجاع</h2>
-          <p>الأصل: {sourceOrigin(selectedReturn.source)} · {selectedReturn.source.reference}</p>
-          {selectedReturn.source.channel === "online" ? <p>العميل: {selectedReturn.source.customerName ?? "—"} · الهاتف: {selectedReturn.source.customerPhone ?? "—"}</p> : null}
-          <p>المعالجة: {selectedReturn.handlingBranch.nameAr} · الحالة: {selectedReturn.status === "draft" ? "مسودة بلا آثار" : "مرحّل بعد الاستلام والفحص"}</p>
+        <section ref={detailsFeedback.regionRef} className={`card reveal-feedback${detailsFeedback.highlighted ? " is-highlighted" : ""}`} data-testid="return-details">
+          <h2 ref={detailsFeedback.headingRef} tabIndex={-1}>مرتجع {selectedReturn.reference}</h2>
+          <p>الطلب: {selectedReturn.source.reference} · التاريخ: {formatCairoDate(selectedReturn.postedAt ?? selectedReturn.createdAt)}</p>
+          <p>العميل: {selectedReturn.source.customerName ?? "غير مسجل"} · الهاتف: {selectedReturn.source.customerPhone ?? "غير مسجل"}</p>
+          <p>الفرع: {selectedReturn.handlingBranch.nameAr} · الحالة: {selectedReturn.status === "draft" ? "مسودة" : "مرحّل"}</p>
           {selectedReturn.source.channel === "online" ? <><p>المقترح: البضاعة {formatEgpFromPiasters(selectedReturn.suggestedRefund.merchandisePiasters)} · رسوم التوصيل {formatEgpFromPiasters(selectedReturn.suggestedRefund.checkoutChargePiasters)} · الإجمالي {formatEgpFromPiasters(selectedReturn.suggestedRefund.totalPiasters)}</p><p>المعتمد حالياً: البضاعة {formatEgpFromPiasters(selectedReturn.authorizedRefund.merchandisePiasters)} · رسوم التوصيل {formatEgpFromPiasters(selectedReturn.authorizedRefund.checkoutChargePiasters)} · الإجمالي {formatEgpFromPiasters(selectedReturn.authorizedRefund.totalPiasters)}</p></> : <p>المقترح: {formatEgpFromPiasters(selectedReturn.suggestedRefundPiasters)} · المعتمد حالياً: {formatEgpFromPiasters(selectedReturn.authorizedRefundPiasters)}</p>}
           {selectedReturn.correctionRevision > 0 ? selectedReturn.source.channel === "online" ? <p className="muted">المعتمد الأصلي المحفوظ: بضاعة {formatEgpFromPiasters(selectedReturn.originalAuthorizedRefund.merchandisePiasters)} · رسوم توصيل {formatEgpFromPiasters(selectedReturn.originalAuthorizedRefund.checkoutChargePiasters)} · إجمالي {formatEgpFromPiasters(selectedReturn.originalAuthorizedRefund.totalPiasters)}. توجد تصحيحات إدارية مرتبطة بهذا الأصل.</p> : <p className="muted">المعتمد الأصلي المحفوظ: {formatEgpFromPiasters(selectedReturn.originalAuthorizedRefundPiasters)} · توجد تصحيحات إدارية مرتبطة بهذا الأصل.</p> : null}
           <ul>{selectedReturn.lines.map((line) => <li key={line.id}>{line.variant.product.nameAr}: {line.quantity} مستلم، {line.sellableQuantity} قابل للبيع، {line.unsellableQuantity} غير قابل للبيع</li>)}</ul>
@@ -612,7 +624,7 @@ export default function ReturnsPage({ workspace }: { workspace: WorkspaceDto; on
           ) : null}
           {selectedReturn.exchange ? (
             <div className="notice" data-testid="exchange-details">
-              <p>بيع الاستبدال: {selectedReturn.exchange.replacementSaleId}</p>
+              <p>بيع الاستبدال مسجل</p>
               <p>قيمة البضاعة: {formatEgpFromPiasters(selectedReturn.exchange.replacementMerchandisePiasters)} · الرصيد المستخدم: {formatEgpFromPiasters(selectedReturn.exchange.creditAppliedPiasters)}</p>
               <p>النقد المحصل: {formatEgpFromPiasters(selectedReturn.exchange.cashCollectedPiasters)}</p>
               <p>فرق الاسترداد المقبول: {formatEgpFromPiasters(selectedReturn.exchange.cashRefund.acceptedAmountPiasters)} · الحالة الحالية: {selectedReturn.exchange.cashRefund.status === "paid" ? "مدفوع" : selectedReturn.exchange.cashRefund.status === "owed" ? "مستحق" : selectedReturn.exchange.cashRefund.status === "cancelled" ? "ملغى بتصحيح إداري" : "لا يوجد"} · المدفوع نقداً فعلياً: {formatEgpFromPiasters(selectedReturn.exchange.cashRefund.paidPiasters)} · المتبقي: {formatEgpFromPiasters(selectedReturn.exchange.cashRefund.owedPiasters)}</p>
@@ -626,13 +638,6 @@ export default function ReturnsPage({ workspace }: { workspace: WorkspaceDto; on
       ) : null}
     </main>
   );
-}
-
-function sourceOrigin(source: ReturnSourceDto) {
-  if (source.source.kind === "delivered_online_order") return "طلب أونلاين مُسلّم";
-  const branch = source.originalBranch?.nameAr ?? "فرع غير متاح";
-  const seller = source.seller?.displayName ?? "موظف غير متاح";
-  return `بيع نقدي من ${branch} بواسطة ${seller}`;
 }
 
 function formatCairoDate(value: string) {

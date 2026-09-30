@@ -32,6 +32,7 @@ export type CheckoutCatalogLine = {
   colorNameAr: string;
   listedUnitPricePiasters: number;
   publication: "available" | "coming_soon" | "hidden";
+  onlineVisible: boolean;
 };
 
 export type CheckoutPricingLine = {
@@ -76,8 +77,10 @@ export type CheckoutDependencies = {
   catalog: { getLines(variantIds: string[]): Promise<CheckoutCatalogLine[]> };
   inventory: {
     lockStockClock(mode: "share" | "update"): Promise<void>;
-    quantitiesFor(variantIds: string[]): Promise<Map<string, number>>;
+    quantitiesFor(branchId: string, variantIds: string[]): Promise<Map<string, number>>;
+    quantitiesByBranchFor(variantIds: string[]): Promise<Map<string, Map<string, number>>>;
     protectOnlineOrder(input: {
+      branchId: string;
       orderId: string;
       operationId: string;
       payloadFingerprint: string;
@@ -85,6 +88,7 @@ export type CheckoutDependencies = {
       lines: Array<{ lineId: string; variantId: string; quantity: number }>;
     }): Promise<ProtectOnlineOrderResult>;
     disposeProtectedOnlineOrder(input: {
+      branchId: string;
       orderId: string;
       operationId: string;
       payloadFingerprint: string;
@@ -184,6 +188,7 @@ export type AcceptedOrderWrite = {
 export type DeliveredOnlineOrderSource = {
   orderId: string;
   reference: string;
+  fulfillmentBranchId: string | null;
   customerName: string;
   primaryPhone: string;
   customerReceivedAt: Date;
@@ -193,6 +198,7 @@ export type DeliveredOnlineOrderSource = {
 
 export type DeliveredOnlineOrderSourceSearch = {
   reference?: string;
+  phone?: string;
   date?: string;
   item?: string;
   amountPiasters?: number;
@@ -205,11 +211,23 @@ export type DeliveredOnlineOrderSourceReader = {
 };
 
 export type OnlineOrderReportingReader = {
+  countConfirmedFacts(input: { from: Date; to: Date; branchId?: string | null }): Promise<number>;
   countDeliveredFacts(input: { from: Date; to: Date }): Promise<number>;
   countAcceptedSubmissions(input: { from: Date; to: Date }): Promise<number>;
-  listDeliveredFactsPage(input: {
-    from: Date; to: Date; limit: number; after?: { deliveredAt: Date; id: string } | null;
-  }): Promise<CompletedOnlineOrderDto[]>;
+  listConfirmedFactsPage(input: {
+    from: Date; to: Date; branchId?: string | null; limit: number; after?: { occurredAt: Date; id: string } | null;
+  }): Promise<Array<{ orderId: string; reference: string; occurredAt: Date; fulfillmentBranchId: string | null;
+    confirmedQuote: OnlineOrderAgreementQuoteDto }>>;
+  listRevenueReversalsPage(input: {
+    from: Date; to: Date; branchId?: string | null; limit: number; after?: { occurredAt: Date; id: string } | null;
+  }): Promise<Array<{ eventId: string; operationId: string; eventType: "cancelled_before_shipment" | "delivery_failed";
+    orderId: string; occurredAt: Date; fulfillmentBranchId: string | null;
+    confirmedQuote: OnlineOrderAgreementQuoteDto }>>;
+  listRestorationFactsPage(input: {
+    from: Date; to: Date; branchId?: string | null; limit: number; after?: { occurredAt: Date; id: string } | null;
+  }): Promise<Array<{ eventId: string; operationId: string; orderId: string; occurredAt: Date;
+    fulfillmentBranchId: string | null }>>;
+  getFulfillmentBranchesByOrderIds(orderIds: string[]): Promise<Map<string, string>>;
   currentStatusCounts(): Promise<{
     pendingCount: number;
     confirmedCount: number;
@@ -257,6 +275,7 @@ export type OnlineOrderStore = DeliveredOnlineOrderSourceReader & {
   }): Promise<OnlineOrderDto>;
   confirm(input: {
     orderId: string;
+    fulfillmentBranchId: string;
     operationId: string;
     payloadFingerprint: string;
     actorStaffId: string;
@@ -286,6 +305,7 @@ export type OnlineOrderStore = DeliveredOnlineOrderSourceReader & {
     actorStaffId: string;
     fromStatus: OnlineOrderDto["status"];
     toStatus: OnlineOrderDto["status"];
+    preShipmentStockDisposition?: "awaiting_inspection" | "released";
     occurredAt: Date;
     recordedAt: Date;
     reason: string | null;
@@ -299,6 +319,7 @@ export type OnlineOrderStore = DeliveredOnlineOrderSourceReader & {
     actorStaffId: string;
     recordedAt: Date;
     nextRevision: number;
+    sourceStatus: "delivery_failed" | "cancelled_before_shipment";
     lines: Array<{
       confirmedLineId: string;
       variantId: string;
@@ -309,6 +330,9 @@ export type OnlineOrderStore = DeliveredOnlineOrderSourceReader & {
   postFailedReturnInspection(input: {
     inspectionId: string;
     orderId: string;
+    receivingBranchId: string;
+    allClassified: boolean;
+    sourceStatus: "delivery_failed" | "cancelled_before_shipment";
     operationId: string;
     payloadFingerprint: string;
     actorStaffId: string;
@@ -324,6 +348,7 @@ export type OnlineOrderStore = DeliveredOnlineOrderSourceReader & {
     reason: string;
     abandonedAt: Date;
     nextRevision: number;
+    sourceStatus: "delivery_failed" | "cancelled_before_shipment";
   }): Promise<OnlineOrderDto>;
   getFailedReturnInspection(id: string, lock?: boolean): Promise<OnlineOrderFailedReturnInspectionDto | null>;
   getSettings(): Promise<OnlineOrderSettingsDto>;

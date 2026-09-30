@@ -71,7 +71,7 @@ test("stages, pauses and activates twice, keeps a paid old-generation sale for o
   expect(oldSnapshot).toMatchObject({ status: 201, body: { restoreGeneration: 0, restorePause: null } });
   const firstArchive = await downloadBackup(manager);
   expect((await decodeBackupArchive(firstArchive, ARCHIVE_PASSWORD)).manifest).toMatchObject({
-    schemaVersion: "029_restore.sql",
+    schemaVersion: "034_order_recognition_branch.sql",
     sourceGeneration: 0,
   });
 
@@ -175,7 +175,7 @@ test("stages, pauses and activates twice, keeps a paid old-generation sale for o
   const recovered = await api(manager, "POST", "/api/internal/sales/recover", retainedSale.recoveryPayload);
   expect(recovered, JSON.stringify(recovered.body)).toMatchObject({ status: 201, body: { id: saleId, operationId: saleOperationId, physicallyCompleted: true } });
   expect(await api(manager, "POST", "/api/internal/sales/recover", retainedSale.recoveryPayload)).toMatchObject({ status: 200, body: { id: saleId } });
-  expect((await built.pool.query<{ remaining_quantity: number }>("SELECT remaining_quantity FROM inventory_batch")).rows[0]!.remaining_quantity).toBe(1);
+  expect((await built.pool.query<{ remaining_quantity: number }>("SELECT remaining_quantity FROM inventory_batch_balance")).rows[0]!.remaining_quantity).toBe(1);
   expect((await api(manager, "GET", "/api/internal/sales/restore-deferred")).body).toEqual([
     expect.objectContaining({ operationId: saleOperationId, status: "reconciled" }),
   ]);
@@ -219,8 +219,26 @@ test("stages, pauses and activates twice, keeps a paid old-generation sale for o
   // Real independent-database restore drill.
   const sourceOwnerId = (await built.pool.query<{ id: string }>(`SELECT id FROM "user" WHERE username = 'owner'`)).rows[0]!.id;
   await built.pool.query("SELECT setval('online_order_reference_number_seq', 50, TRUE)");
+  expect((await receive(manager, variantId, 3)).status).toBe(201);
+  // A restored reference at the six-digit boundary must outrank even a stale archived sequence.
+  await built.pool.query("SELECT setval('sales_sale_reference_number_seq', 999998, TRUE)");
+  const boundarySourceSale = await api(manager, "POST", "/api/internal/sales", {
+    saleId: crypto.randomUUID(), operationId: crypto.randomUUID(), physicallyCompleted: true,
+    occurredAt: new Date().toISOString(), employeeDiscountPiasters: 0,
+    lines: [{ variantId, quantity: 1 }],
+  });
+  expect(boundarySourceSale, JSON.stringify(boundarySourceSale.body)).toMatchObject({
+    status: 201, body: { reference: "POS-999999" },
+  });
+  await built.pool.query("SELECT setval('returns_return_reference_number_seq', 999999, TRUE)");
   const sourceCounts = await businessCounts(built.pool);
-  const generationTwoArchive = await downloadBackup(manager);
+  const sourceMaxSaleReference = (await built.pool.query<{ max_number: string }>(
+    "SELECT MAX(substring(reference FROM '^POS-([0-9]+)$')::bigint)::text AS max_number FROM sales_sale",
+  )).rows[0]!.max_number;
+  expect(Number(sourceMaxSaleReference)).toBeGreaterThan(0);
+  const archiveWithStaleSaleSequence = await decodeBackupArchive(await downloadBackup(manager), ARCHIVE_PASSWORD);
+  archiveWithStaleSaleSequence.manifest.salesSaleReferenceSequence = { lastValue: "0", isCalled: false };
+  const generationTwoArchive = Buffer.from(await createNodeBackupCrypto().protect(archiveWithStaleSaleSequence, ARCHIVE_PASSWORD));
   await built.close();
   await startApp(`bravos_restore_fresh_${crypto.randomUUID().replaceAll("-", "")}`, "مالك جهاز الاستعادة", "fresh-owner-pass-1");
   const bootstrapOwnerId = (await built.pool.query<{ id: string }>(`SELECT id FROM "user" WHERE username = 'owner'`)).rows[0]!.id;
@@ -238,10 +256,30 @@ test("stages, pauses and activates twice, keeps a paid old-generation sale for o
     previewFingerprint: disasterReady.body.previewFingerprint,
   })).status).toBe(201);
   expect((await built.pool.query<{ generation: string }>("SELECT current_generation::text AS generation FROM restore_runtime")).rows[0]!.generation).toBe("3");
+  expect(sourceMaxSaleReference).toBe("999999");
   expect((await built.pool.query<{ id: string }>(`SELECT id FROM "user" WHERE username = 'owner'`)).rows[0]!.id).toBe(sourceOwnerId);
   expect(await businessCounts(built.pool)).toEqual(sourceCounts);
   expect((await built.pool.query<{ count: string }>("SELECT count(*)::text FROM account")).rows[0]!.count).toBe("0");
-  await recoverOwner("fresh-owner-pass-2");
+  const restoredManager = await recoverOwner("fresh-owner-pass-2");
+  expect((await api(restoredManager, "POST", "/api/internal/active-branch", { branchId })).status).toBe(200);
+  const continuedSale = await api(restoredManager, "POST", "/api/internal/sales", {
+    saleId: crypto.randomUUID(), operationId: crypto.randomUUID(), physicallyCompleted: true,
+    occurredAt: new Date().toISOString(), employeeDiscountPiasters: 0,
+    lines: [{ variantId, quantity: 1 }],
+  });
+  expect(continuedSale, JSON.stringify(continuedSale.body)).toMatchObject({
+    status: 201, body: { reference: "POS-1000000" },
+  });
+  const returnSources = await api(restoredManager, "GET", `/api/internal/returns/sources?reference=${continuedSale.body.reference}`);
+  expect(returnSources.status, JSON.stringify(returnSources.body)).toBe(200);
+  const returnDraft = await api(restoredManager, "POST", "/api/internal/returns", {
+    returnId: crypto.randomUUID(), operationId: crypto.randomUUID(), sourceSaleId: continuedSale.body.id,
+    handlingBranchId: branchId, authorizedRefundPiasters: 25000,
+    lines: [{ sourceSaleLineId: returnSources.body[0].lines[0].saleLineId, quantity: 1, sellableQuantity: 0 }],
+  });
+  expect(returnDraft, JSON.stringify(returnDraft.body)).toMatchObject({
+    status: 201, body: { reference: "RET-1000000" },
+  });
   const quote = await publicApi("POST", "/api/public/checkout/quote", {
     deliveryAreaId: deliveryArea.body.id,
     lines: [{ variantId, quantity: 1 }],
@@ -297,25 +335,19 @@ test("wrong passwords, damaged files, invalid links, unsupported schemas and una
   expect((await receive(manager, variantId, 1)).status).toBe(201);
 
   const fromFuture = await decodeBackupArchive(archive, ARCHIVE_PASSWORD);
-  fromFuture.manifest.schemaVersion = "030_future.sql";
+  fromFuture.manifest.schemaVersion = "035_future.sql";
   expect(await createPreview(manager, Buffer.from(await createNodeBackupCrypto().protect(fromFuture, ARCHIVE_PASSWORD))))
     .toMatchObject({ status: 400, body: { error: { code: "VALIDATION" } } });
   await expectUnpaused();
 
-  // A version 1 archive made before restore generations existed is upgraded and staged.
+  // Authenticated data from an older schema must fail with a compatibility error before staging.
   const legacy = await decodeBackupArchive(archive, ARCHIVE_PASSWORD);
-  legacy.manifest.schemaVersion = "028_aggregate_analytics.sql";
-  (legacy.manifest as { sourceGeneration: number | null }).sourceGeneration = null;
-  delete legacy.data.sales.sales_restore_deferred_completion;
-  legacy.data.sales.sales_pos_snapshot = legacy.data.sales.sales_pos_snapshot!.map(({ restore_generation: _, ...row }) => row);
-  legacy.data.sales.sales_sale = legacy.data.sales.sales_sale!.map(({ source_restore_generation: _, ...row }) => row);
-  resealSection(legacy, "sales");
+  legacy.manifest.schemaVersion = "033_human_references.sql";
   const legacyPreview = await createPreview(manager, Buffer.from(await createNodeBackupCrypto().protect(legacy, ARCHIVE_PASSWORD)));
   expect(legacyPreview, JSON.stringify(legacyPreview.body)).toMatchObject({
-    status: 201,
-    body: { status: "paused", archiveSchemaVersion: "028_aggregate_analytics.sql", sourceGeneration: null, blockingReasons: [] },
+    status: 400,
+    body: { error: { code: "VALIDATION", messageAr: expect.stringContaining("إصدار مخطط النسخة") } },
   });
-  expect((await api(manager, "POST", `/api/internal/restore/previews/${legacyPreview.body.id}/cancel`)).status).toBe(200);
   await expectUnpaused();
 
   const employee = await api(manager, "POST", "/api/internal/staff", {
@@ -412,7 +444,7 @@ test("newer additions survive activation while a changed record blocks the previ
   });
   expect(activated.status, JSON.stringify(activated.body)).toBe(201);
   expect((await built.pool.query<{ receipts: string; remaining: string }>(
-    "SELECT (SELECT count(*) FROM receiving_receipt)::text AS receipts, (SELECT sum(remaining_quantity) FROM inventory_batch)::text AS remaining",
+    "SELECT (SELECT count(*) FROM receiving_receipt)::text AS receipts, (SELECT sum(remaining_quantity) FROM inventory_batch_balance)::text AS remaining",
   )).rows[0]).toEqual({ receipts: "2", remaining: "5" });
 
   const again = await signIn("owner", "owner-pass-1");
@@ -465,7 +497,7 @@ async function businessCounts(pool: Pool) {
             (SELECT count(*) FROM catalog_product_variant)::text AS variants,
             (SELECT count(*) FROM receiving_receipt)::text AS receipts,
             (SELECT count(*) FROM inventory_batch)::text AS batches,
-            (SELECT COALESCE(sum(remaining_quantity), 0) FROM inventory_batch)::text AS remaining,
+            (SELECT COALESCE(sum(remaining_quantity), 0) FROM inventory_batch_balance)::text AS remaining,
             (SELECT count(*) FROM sales_sale)::text AS sales,
             (SELECT COALESCE(sum(final_total_piasters), 0) FROM sales_sale WHERE physically_completed)::text AS sales_total,
             (SELECT COALESCE(sum(quantity), 0) FROM inventory_allocation)::text AS allocated,
@@ -517,7 +549,7 @@ async function acknowledgeCheckpoint(manager: CookieSession, previewId: string) 
   expect(response.statusCode, response.body).toBe(200);
   const archiveSha256 = String(response.headers["x-bravos-backup-sha256"]);
   expect(createHash("sha256").update(response.rawPayload).digest("hex")).toBe(archiveSha256);
-  expect((await decodeBackupArchive(response.rawPayload, CHECKPOINT_PASSWORD)).manifest.schemaVersion).toBe("029_restore.sql");
+  expect((await decodeBackupArchive(response.rawPayload, CHECKPOINT_PASSWORD)).manifest.schemaVersion).toBe("034_order_recognition_branch.sql");
   return api(manager, "POST", `/api/internal/restore/previews/${previewId}/pre-restore-backup/acknowledgement`, { archiveSha256 });
 }
 
@@ -561,6 +593,7 @@ async function seedVariant(manager: CookieSession): Promise<string> {
 function receive(manager: CookieSession, variantId: string, quantity: number) {
   return api(manager, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
+    branchId,
     receiptDate: new Intl.DateTimeFormat("en-CA", { timeZone: "Africa/Cairo", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date()),
     lines: [{ variantId, quantity, unitCostPiasters: 10000 }],
   });

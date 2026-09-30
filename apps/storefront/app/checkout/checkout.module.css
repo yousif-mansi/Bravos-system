@@ -1,7 +1,11 @@
 .page {
+  width: 100%;
+  min-height: 100vh;
+  min-height: 100svh;
   max-width: 1120px;
   margin-inline: auto;
   padding-block: var(--space-8) var(--space-16);
+  color: var(--store-ink);
 }
 
 .intro {
@@ -11,6 +15,7 @@
 
 .intro h1 {
   margin-block: var(--space-2) var(--space-3);
+  font: 400 clamp(2.4rem, 5vw, 3.7rem)/1.45 var(--font-editorial);
 }
 
 .intro > p:last-child {
@@ -20,6 +25,7 @@
 
 .layout {
   gap: var(--space-8);
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 350px);
 }
 
 .form {
@@ -30,13 +36,14 @@
 .form fieldset {
   min-width: 0;
   padding: var(--space-6);
-  background: var(--store-canvas);
+  background: var(--store-surface);
   border-color: var(--store-border);
 }
 
 .form legend {
   padding-inline: var(--space-2);
   font-size: 1.15rem;
+  color: var(--store-accent);
 }
 
 .sectionHint,
@@ -79,9 +86,18 @@
 .page .field select,
 .page .field textarea {
   background: var(--store-surface);
-  border-color: #817b72;
+  border-color: var(--store-border);
   border-radius: 0;
   min-height: 48px;
+  color: var(--store-ink);
+  background: var(--store-canvas);
+  caret-color: var(--store-accent);
+}
+
+.field input::placeholder,
+.field textarea::placeholder {
+  color: var(--store-muted);
+  opacity: 1;
 }
 
 .page .field input[aria-invalid="true"],
@@ -112,14 +128,47 @@
   min-height: 48px;
 }
 
+.page .form :global(.submit-order),
+.page :global(.button-link) {
+  background: var(--store-accent);
+  color: var(--store-canvas);
+}
+
+.page .form :global(.submit-order):hover:not(:disabled),
+.page :global(.button-link):hover {
+  background: var(--store-ink);
+  color: var(--store-canvas);
+}
+
+.page .form button:disabled {
+  background: var(--store-disabled);
+  color: var(--store-muted);
+  border-color: var(--store-border);
+}
+
 .page .form button:focus-visible {
   outline: 3px solid var(--store-focus);
   outline-offset: 3px;
 }
 
 .priceReview {
-  background: #f4f1eb;
-  border-color: var(--store-ink);
+  background: var(--store-surface);
+  border-color: var(--store-accent);
+  padding: var(--space-6);
+}
+
+.priceReview h2 {
+  font: 400 1.65rem/1.5 var(--font-editorial);
+}
+
+.priceReview :global(.final-total) {
+  border-color: var(--store-accent);
+  flex-wrap: wrap;
+  color: var(--store-accent);
+}
+
+.priceReview :global(.final-total) strong {
+  font-size: 1.5rem;
 }
 
 .priceReview > p:not(.authoritativeHint) {
@@ -142,7 +191,7 @@
 .pendingNotice {
   padding: var(--space-4);
   border-inline-start: 3px solid var(--store-ink);
-  background: #f4f1eb;
+  background: var(--store-surface);
 }
 
 .processNotice,
@@ -163,14 +212,76 @@
 }
 
 .page .summary {
-  position: static;
+  position: sticky;
+  top: 112px;
   min-width: 0;
   padding: var(--space-6);
-  background: var(--store-canvas);
+  background: var(--store-surface);
+  border-color: var(--store-border);
+  border-block-start: 2px solid var(--store-accent);
+}
+
+.summary :global(.checkout-cart-heading) {
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+}
+
+.summary h2 {
+  font: 400 1.65rem/1.5 var(--font-editorial);
+}
+
+.summary article {
+  gap: var(--space-2);
+  font-size: .94rem;
+}
+
+.summary > p:not(:global(.muted)) {
+  flex-wrap: wrap;
+  color: var(--store-accent);
+}
+
+.summary > p strong {
+  font-size: 1.3rem;
+}
+
+.summary > :global(.muted) {
+  font-size: .875rem;
+}
+
+.page :global(.recovery-help) {
+  background: var(--store-surface);
+  border-color: var(--store-error);
+  color: var(--store-error);
+}
+
+.page :global(.empty-state) {
+  max-width: 760px;
+  margin-inline: auto;
+}
+
+.page :global(.checkout-actions) {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-3);
+}
+
+.page :global(.checkout-actions) > a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding-inline: var(--space-3);
 }
 
 .summary article > span {
   white-space: nowrap;
+}
+
+.editCartLink {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
 }
 
 .summary article strong,
@@ -180,21 +291,50 @@
 
 .success {
   gap: var(--space-4);
+  padding: clamp(24px, 6vw, 64px);
+  background: var(--store-surface);
+  border: 1px solid var(--store-border);
+  border-block-start: 2px solid var(--store-success);
+  margin-block: var(--space-8);
+  max-width: 760px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.success h1 {
+  font-family: var(--font-editorial);
+  font-weight: 400;
+}
+
+.success > p {
+  max-width: 100%;
+}
+
+.success :global(.success-total) strong {
+  display: block;
+  font-size: 1.5rem;
+  color: var(--store-accent);
 }
 
 .loading {
   max-width: 34rem;
   margin-block: var(--space-12);
   color: var(--store-muted);
+  padding: var(--space-8);
+  background: var(--store-surface);
+  border: 1px solid var(--store-border);
+  text-align: center;
 }
 
 @media (max-width: 900px) {
   .layout {
     gap: var(--space-6);
+    grid-template-columns: minmax(0, 1fr);
   }
 
-  .summary {
+  .page .summary {
     grid-row: auto;
+    position: static;
   }
 }
 
@@ -205,10 +345,11 @@
 
   .intro {
     margin-block-end: var(--space-6);
+    text-align: center;
   }
 
   .form fieldset,
-  .summary {
+  .page .summary {
     padding: var(--space-4);
   }
 
@@ -218,5 +359,10 @@
 
   .priceReview > p:not(.authoritativeHint) {
     flex-wrap: wrap;
+  }
+
+  .success {
+    align-items: stretch;
+    text-align: center;
   }
 }

@@ -5,6 +5,7 @@ import type {
   SaleAcknowledgementDto,
   SaleDto,
   SaleLineDto,
+  SalePaymentDto,
 } from "@bravos/contracts";
 import {
   ForbiddenError,
@@ -25,6 +26,7 @@ import { evaluateAutomaticOffers, evaluateCoupon } from "@bravos/pricing";
 import { assertMergedSaleQuantities, mergeVariantQuantities, priceSaleLines } from "../domain/discount.ts";
 import { SaleRestoreGenerationChangedError, SaleRetainedForRestoreError, SalesValidationError } from "../domain/errors.ts";
 import { addMoney, assertSafeMoney, subtractMoney } from "../domain/money.ts";
+import { cashPayment, parsePaymentInput, paymentMatches, validatePayment } from "../domain/payment.ts";
 import {
   fingerprintAcceptedSalePayload,
   fingerprintSalePayload,
@@ -57,6 +59,7 @@ const PREPARE_KEYS = new Set([
   "couponCode",
   "employeeDiscountPiasters",
   "discountReason",
+  "payment",
   "occurredAt",
   "lines",
 ]);
@@ -92,7 +95,7 @@ async function attachAck(
 ): Promise<{ record: SaleRecord; created: boolean; acknowledgement: SaleAcknowledgementDto }> {
   const variantIds = [...new Set([...coverageVariantIds, ...record.lines.map((line) => line.variantId)])];
   const stockVersion = created ? await tx.inventory.bumpStockVersion() : await tx.inventory.currentStockVersion();
-  const quantities = await tx.inventory.quantitiesFor(variantIds);
+  const quantities = await tx.inventory.quantitiesFor(record.branchId, variantIds);
   const includedOperations = await tx.sales.listCompletedOperationProofs([
     ...pendingOperationIds,
     record.operationId,
@@ -101,6 +104,7 @@ async function attachAck(
     record,
     created,
     acknowledgement: {
+      branchId: record.branchId,
       acknowledgedOperationIds: [record.operationId],
       stockVersion,
       includedOperationIds: includedOperations.map((proof) => proof.operationId),
@@ -115,6 +119,7 @@ async function attachAck(
 
 async function allocateSaleLines(
   inventory: InventoryTransaction,
+  branchId: string,
   operationId: string,
   recordedAt: Date,
   sourceLines: Array<{ id: string; variantId: string; quantity: number }>,
@@ -132,6 +137,7 @@ async function allocateSaleLines(
   let costsIncomplete = false;
   for (const item of order) {
     const allocated = await inventory.allocateFromOldestAvailable({
+      branchId,
       operationId,
       variantId: item.line.variantId,
       quantity: item.line.quantity,
@@ -141,6 +147,7 @@ async function allocateSaleLines(
     if (allocated.unallocatedQuantity > 0) {
       costsIncomplete = true;
       await inventory.recordDiscrepancy({
+        branchId,
         operationId,
         variantId: item.line.variantId,
         requestedQuantity: item.line.quantity,
@@ -216,6 +223,7 @@ export function createSalesServices(ports: {
     const unallocatedQuantity = record.lines.reduce((sum, line) => sum + line.unallocatedQuantity, 0);
     const sale: SaleDto = {
       id: record.id,
+      reference: record.reference,
       operationId: record.operationId,
       branch,
       soldByStaffId: record.soldByStaffId,
@@ -235,6 +243,7 @@ export function createSalesServices(ports: {
       finalTotalPiasters: record.finalTotalPiasters,
       exchangeCreditAppliedPiasters: record.exchangeCreditAppliedPiasters,
       cashReceivedPiasters: record.cashReceivedPiasters,
+      payment: record.payment,
       physicallyCompleted: record.physicallyCompleted,
       discrepancy:
         unallocatedQuantity > 0 || record.couponUsageDiscrepancy
@@ -300,8 +309,12 @@ export function createSalesServices(ports: {
     }
   }
 
-  function replayOrConflict(record: SaleRecord, fingerprint: string, operationId: string) {
+  function replayOrConflict(record: SaleRecord, fingerprint: string, operationId: string, payment?: SalePaymentDto | null) {
     if (record.payloadFingerprint !== fingerprint || record.operationId !== operationId) {
+      throw new OperationConflictError();
+    }
+    if (record.physicallyCompleted && payment !== undefined &&
+      !paymentMatches(record.payment, validatePayment(payment, record.finalTotalPiasters - record.exchangeCreditAppliedPiasters))) {
       throw new OperationConflictError();
     }
   }
@@ -341,14 +354,14 @@ export function createSalesServices(ports: {
         attachAck(tx, record, created, input.coverageVariantIds, input.command.pendingOperationIds);
       const existing = await loadLockedIdentity(tx.sales, input.command.saleId, input.command.operationId);
       if (existing?.physicallyCompleted) {
-        replayOrConflict(existing, input.fingerprint, input.command.operationId);
+        replayOrConflict(existing, input.fingerprint, input.command.operationId, input.command.payment);
         if (input.requireViewerRead) {
           assertCanRead(input.viewer, existing);
         }
         return finish(existing, false);
       }
       if (existing) {
-        replayOrConflict(existing, input.fingerprint, input.command.operationId);
+        replayOrConflict(existing, input.fingerprint, input.command.operationId, input.command.payment);
         throw new OperationConflictError();
       }
       if (input.expectedRestoreGeneration !== null
@@ -368,7 +381,7 @@ export function createSalesServices(ports: {
         if (!replayed) {
           throw new SalesValidationError("تعذر العثور على البيع الأصلي.");
         }
-        replayOrConflict(replayed, input.fingerprint, input.command.operationId);
+        replayOrConflict(replayed, input.fingerprint, input.command.operationId, input.command.payment);
         if (input.requireViewerRead) {
           assertCanRead(input.viewer, replayed);
         }
@@ -415,6 +428,7 @@ export function createSalesServices(ports: {
         automatic.appliedAutomaticOffer ? automatic.unitRanges : undefined,
         coupon.appliedCoupon ? coupon.unitRanges : undefined,
       );
+      const payment = validatePayment(input.command.payment, priced.finalTotalPiasters);
       const acceptedPricing = {
         ...priced,
         appliedAutomaticOffer: automatic.appliedAutomaticOffer,
@@ -446,6 +460,7 @@ export function createSalesServices(ports: {
       }));
       const allocated = await allocateSaleLines(
         tx.inventory,
+        input.branch.id,
         input.command.operationId,
         claimed.recordedAt,
         sourceLines,
@@ -481,6 +496,7 @@ export function createSalesServices(ports: {
             couponCode: input.command.couponCode,
             employeeDiscountPiasters: input.command.employeeDiscountPiasters,
             discountReason: input.command.discountReason,
+            payment: input.command.payment,
             occurredAt: input.command.occurredAt,
             lines: input.command.lines,
             pendingOperationIds: [],
@@ -502,11 +518,12 @@ export function createSalesServices(ports: {
               sourceSnapshotId: input.command.snapshotId,
               sourceRestoreGeneration: input.snapshot.restoreGeneration,
               couponUsageDiscrepancy,
+              payment,
           },
         ),
       );
       if (inserted.kind === "existing") {
-        replayOrConflict(inserted.record, input.fingerprint, input.command.operationId);
+        replayOrConflict(inserted.record, input.fingerprint, input.command.operationId, input.command.payment);
         if (input.requireViewerRead) {
           assertCanRead(input.viewer, inserted.record);
         }
@@ -533,12 +550,12 @@ export function createSalesServices(ports: {
         await tx.inventory.lockStockClock("share");
         const existing = await loadLockedIdentity(tx.sales, command.saleId, command.operationId);
         if (existing) {
-          replayOrConflict(existing, fingerprint, command.operationId);
+          replayOrConflict(existing, fingerprint, command.operationId, command.payment);
           assertCanRead(current.staff, existing);
           return { record: existing, created: false };
         }
         await tx.inventory.assertStockMutationAllowed();
-        const available = await tx.inventory.quantitiesFor(quantities.map((item) => item.variantId));
+        const available = await tx.inventory.quantitiesFor(current.branch.id, quantities.map((item) => item.variantId));
         for (const item of quantities) {
           if ((available.get(item.variantId) ?? 0) < item.quantity) {
             throw new SalesValidationError("الكمية المتاحة غير كافية.");
@@ -606,7 +623,7 @@ export function createSalesServices(ports: {
           attachAck(tx, record, created, coverageVariantIds, command.pendingOperationIds);
         const existing = await loadLockedIdentity(tx.sales, command.saleId, command.operationId);
         if (existing?.physicallyCompleted) {
-          replayOrConflict(existing, fingerprint, command.operationId);
+          replayOrConflict(existing, fingerprint, command.operationId, command.payment);
           assertCanRead(actor, existing);
           return finish(existing, false);
         }
@@ -616,7 +633,7 @@ export function createSalesServices(ports: {
         }
         const saleGeneration = restore.generation;
         if (existing) {
-          replayOrConflict(existing, fingerprint, command.operationId);
+          replayOrConflict(existing, fingerprintSalePayload(toPayload({ ...command, physicallyCompleted: false })), command.operationId);
           assertCanRead(actor, existing);
           if (!canCashierOn(actor, existing.branchId)) {
             throw new ForbiddenError();
@@ -646,7 +663,7 @@ export function createSalesServices(ports: {
           if (!replayed) {
             throw new SalesValidationError("تعذر العثور على البيع الأصلي.");
           }
-          replayOrConflict(replayed, fingerprint, command.operationId);
+          replayOrConflict(replayed, fingerprint, command.operationId, command.payment);
           assertCanRead(actor, replayed);
           return finish(replayed, false);
         }
@@ -692,6 +709,7 @@ export function createSalesServices(ports: {
         const occurredAt = command.occurredAt ?? claimed.recordedAt;
         const allocated = await allocateSaleLines(
           tx.inventory,
+          currentBranch.id,
           command.operationId,
           claimed.recordedAt,
           sourceLines,
@@ -731,6 +749,7 @@ export function createSalesServices(ports: {
         if (!priced) {
           throw new SalesValidationError("تعذر تسعير البيع.");
         }
+        const payment = validatePayment(command.payment, priced.finalTotalPiasters);
         const completedLines: SaleLineWrite[] = priced.lines.map((line, index) => {
           const allocated = allocations[index];
           return {
@@ -759,6 +778,8 @@ export function createSalesServices(ports: {
             costsIncomplete,
             lines: completedLines,
             couponUsageDiscrepancy,
+            payment,
+            payloadFingerprint: fingerprint,
             sourceRestoreGeneration: saleGeneration,
           });
           return finish(record, true);
@@ -774,13 +795,14 @@ export function createSalesServices(ports: {
               recordedAt: claimed.recordedAt,
               costsIncomplete,
               completedLines,
+              payment,
               occurredAt,
               sourceRestoreGeneration: saleGeneration,
             },
           ),
         );
         if (inserted.kind === "existing") {
-          replayOrConflict(inserted.record, fingerprint, command.operationId);
+          replayOrConflict(inserted.record, fingerprint, command.operationId, command.payment);
           assertCanRead(actor, inserted.record);
           return finish(inserted.record, false);
         }
@@ -828,7 +850,7 @@ export function createSalesServices(ports: {
         await tx.inventory.lockStockClock("share");
         const stockVersion = await tx.inventory.currentStockVersion();
         const restore = await tx.restore.current();
-        const quantities = await tx.inventory.quantitiesFor(ids);
+        const quantities = await tx.inventory.quantitiesFor(current.branch.id, ids);
         const includedOperations = await tx.sales.listCompletedOperationProofs(request.pendingOperationIds);
         const deferredCompletionProofs = await tx.sales.listDeferredCompletionProofs(request.pendingOperationIds);
         const record = await tx.snapshots.insert({
@@ -931,6 +953,7 @@ export function createSalesServices(ports: {
         couponCode: command.couponCode,
         employeeDiscountPiasters: command.employeeDiscountPiasters,
         discountReason: command.discountReason,
+        ...(command.payment ? { payment: command.payment } : {}),
         lines: command.lines.map((line) => ({
           variantId: line.variantId,
           quantity: line.quantity,
@@ -991,11 +1014,26 @@ export function createSalesServices(ports: {
           const finish = (record: SaleRecord, created: boolean) =>
             attachAck(tx, record, created, coverageVariantIds, recovered.pendingOperationIds);
           if (existing.physicallyCompleted) {
+            if (!paymentMatches(existing.payment, validatePayment(recovered.payment, existing.finalTotalPiasters - existing.exchangeCreditAppliedPiasters))) {
+              throw new OperationConflictError();
+            }
             return finish(existing, false);
           }
+          const recoveredFingerprint = recovered.payment
+            ? fingerprintSalePayload({
+                saleId: existing.id,
+                customerName: existing.customerName,
+                customerPhone: existing.customerPhone,
+                couponCode: existing.appliedCoupon?.code ?? null,
+                employeeDiscountPiasters: existing.employeeDiscountPiasters,
+                discountReason: existing.discountReason,
+                payment: recovered.payment,
+                lines: existing.lines.map((line) => ({ variantId: line.variantId, quantity: line.quantity })),
+              })
+            : existing.payloadFingerprint;
           const claimed = await tx.inventory.claimSaleOperation({
             operationId: existing.operationId,
-            payloadFingerprint: existing.payloadFingerprint,
+            payloadFingerprint: recoveredFingerprint,
             actorStaffId: existing.soldByStaffId,
           });
           if (claimed.kind === "replay") {
@@ -1012,7 +1050,7 @@ export function createSalesServices(ports: {
               sourceType: "physical_sale",
               sourceId: existing.id,
               operationId: existing.operationId,
-              payloadFingerprint: existing.payloadFingerprint,
+              payloadFingerprint: recoveredFingerprint,
               claimedAt: claimed.recordedAt,
             });
             if (usage.overLimit) {
@@ -1031,6 +1069,7 @@ export function createSalesServices(ports: {
           }));
           const allocated = await allocateSaleLines(
             tx.inventory,
+            existing.branchId,
             existing.operationId,
             claimed.recordedAt,
             sourceLines,
@@ -1049,6 +1088,8 @@ export function createSalesServices(ports: {
             occurredAt: recovered.occurredAt ?? existing.occurredAt,
             recordedAt: claimed.recordedAt,
             costsIncomplete: allocated.costsIncomplete,
+            payment: validatePayment(recovered.payment, existing.finalTotalPiasters - existing.exchangeCreditAppliedPiasters),
+            payloadFingerprint: recoveredFingerprint,
             lines: completedLines,
             recoveredByStaffId: manager.id,
             recoveredAt: new Date(),
@@ -1095,6 +1136,7 @@ export function createSalesServices(ports: {
         couponCode: recovered.command.couponCode,
         employeeDiscountPiasters: recovered.command.employeeDiscountPiasters,
         discountReason: recovered.command.discountReason,
+        ...(recovered.command.payment ? { payment: recovered.command.payment } : {}),
         lines: recovered.command.lines.map((line) => ({
           variantId: line.variantId,
           quantity: line.quantity,
@@ -1239,6 +1281,7 @@ function toInsert(
     recoveredByStaffId?: string | null;
     recoveredAt?: Date | null;
     couponUsageDiscrepancy?: SaleRecord["couponUsageDiscrepancy"];
+    payment?: SalePaymentDto | null;
     sourceDeviceId?: string | null;
     sourceSnapshotId?: string | null;
     sourceRestoreGeneration: number;
@@ -1269,6 +1312,11 @@ function toInsert(
       lineIndex: index,
       units: toUnitWrites(line.units),
     }));
+  const finalTotalPiasters = subtractMoney(
+    subtractMoney(originalTotalPiasters, automaticOfferDiscountPiasters),
+    addMoney(couponDiscountPiasters, command.employeeDiscountPiasters),
+  );
+  const payment = validatePayment(options.payment, finalTotalPiasters);
   return {
     id: command.saleId,
     operationId: command.operationId,
@@ -1288,10 +1336,9 @@ function toInsert(
     couponUsageDiscrepancy: options.couponUsageDiscrepancy ?? null,
     employeeDiscountPiasters: command.employeeDiscountPiasters,
     discountReason: command.discountReason,
-    finalTotalPiasters: subtractMoney(
-      subtractMoney(originalTotalPiasters, automaticOfferDiscountPiasters),
-      addMoney(couponDiscountPiasters, command.employeeDiscountPiasters),
-    ),
+    finalTotalPiasters,
+    payment,
+    cashReceivedPiasters: payment.cashPiasters,
     payloadFingerprint: fingerprint,
     physicallyCompleted: options.physicallyCompleted,
     costsIncomplete: options.costsIncomplete,
@@ -1312,6 +1359,7 @@ function toPayload(command: ParsedSale): SalePayload {
     couponCode: command.couponCode,
     employeeDiscountPiasters: command.employeeDiscountPiasters,
     discountReason: command.discountReason,
+    ...(command.physicallyCompleted && command.payment ? { payment: command.payment } : {}),
     lines: command.lines,
   };
 }
@@ -1365,6 +1413,7 @@ type ParsedSale = {
   couponCode: string | null;
   employeeDiscountPiasters: number;
   discountReason: string | null;
+  payment: SalePaymentDto | null;
   occurredAt: Date | null;
   pendingOperationIds: string[];
   restoreGeneration: number | null;
@@ -1384,6 +1433,7 @@ type ParsedAcceptedSale = {
   couponCode: string | null;
   employeeDiscountPiasters: number;
   discountReason: string | null;
+  payment: SalePaymentDto | null;
   occurredAt: Date;
   pendingOperationIds: string[];
   restoreGeneration: number | null;
@@ -1463,6 +1513,7 @@ function parseAcceptedSale(input: unknown): ParsedAcceptedSale {
     couponCode: parseCouponCode(body.couponCode),
     employeeDiscountPiasters: assertDiscountPiasters(body.employeeDiscountPiasters),
     discountReason: parseOptionalText(body.discountReason, 200, "سبب الخصم غير صالح."),
+    payment: parsePaymentInput(body.payment),
     occurredAt,
     pendingOperationIds: parsePendingOperationIds(body.pendingOperationIds),
     restoreGeneration: parseRestoreGeneration(body.restoreGeneration, null),
@@ -1490,7 +1541,7 @@ function parseRecoverCommand(
 ):
   | { kind: "snapshot"; command: ParsedAcceptedSale }
   | { kind: "prepared"; saleId: string; operationId: string; pendingOperationIds: string[]; occurredAt: Date | null;
-      sourceRestoreGeneration: number | null } {
+      sourceRestoreGeneration: number | null; payment: SalePaymentDto | null } {
   const body = expectObject(input, "بيانات البيع غير صالحة.");
   assertAllowedKeys(body, RECOVER_KEYS, "بيانات البيع غير صالحة.");
   if (body.physicallyCompleted !== true) {
@@ -1504,6 +1555,7 @@ function parseRecoverCommand(
       pendingOperationIds: parsePendingOperationIds(body.pendingOperationIds),
       occurredAt: parseOptionalTime(body.occurredAt),
       sourceRestoreGeneration: parseRestoreGeneration(body.restoreGeneration, null),
+      payment: parsePaymentInput(body.payment),
     };
   }
   return { kind: "snapshot", command: parseAcceptedSale(input) };
@@ -1527,6 +1579,7 @@ function parseSaleWrite(input: unknown, complete: boolean): ParsedSale {
     couponCode: parseCouponCode(body.couponCode),
     employeeDiscountPiasters: assertDiscountPiasters(body.employeeDiscountPiasters),
     discountReason: parseOptionalText(body.discountReason, 200, "سبب الخصم غير صالح."),
+    payment: parsePaymentInput(body.payment),
     occurredAt: parseOptionalTime(body.occurredAt),
     pendingOperationIds: complete ? parsePendingOperationIds(body.pendingOperationIds) : [],
     restoreGeneration: complete ? parseRestoreGeneration(body.restoreGeneration, null) : null,
@@ -1575,6 +1628,7 @@ function deferredPayload(kind: "connected" | "accepted", command: ParsedSale | P
     couponCode: command.couponCode,
     employeeDiscountPiasters: command.employeeDiscountPiasters,
     discountReason: command.discountReason,
+    ...(command.payment ? { payment: command.payment } : {}),
     pendingOperationIds: command.pendingOperationIds,
     lines: command.lines,
     ...(kind === "accepted" ? {

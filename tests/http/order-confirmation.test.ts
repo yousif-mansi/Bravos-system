@@ -12,6 +12,7 @@ let now = new Date("2026-09-15T09:00:00.000Z");
 let cluster: PostgresCluster;
 let built: BuiltApp;
 let branchId = "";
+let otherBranchId = "";
 
 beforeAll(async () => {
   cluster = await startPostgresCluster({ port: Number(process.env.BRAVOS_ORDER_CONFIRMATION_TEST_PORT ?? 55466) });
@@ -32,6 +33,7 @@ beforeAll(async () => {
   });
   await ensureOwner(built.services, { loginName: "owner", displayName: "مالك برافوس", password: "owner-pass-1" });
   branchId = (await built.pool.query<{ id: string }>("SELECT id FROM branch WHERE code='fayoum'")).rows[0]?.id ?? "";
+  otherBranchId = (await built.pool.query<{ id: string }>("SELECT id FROM branch WHERE code='abshway'")).rows[0]?.id ?? "";
 }, 120_000);
 
 afterAll(async () => {
@@ -74,18 +76,19 @@ test("a representative confirms only the exact customer-agreed review after atte
   expect(agreed.body.lines[0]).toMatchObject({ requestedQuantity: 1, requestedListedUnitPricePiasters: 30_000 });
 
   const missingSetAside = await api(representative, "POST", `/api/internal/online-orders/${order.orderId}/confirm`, {
-    operationId: crypto.randomUUID(), expectedRevision: 2, agreedRevision: 2, itemsLocatedAndSetAside: false,
+    operationId: crypto.randomUUID(), expectedRevision: 2, agreedRevision: 2, itemsLocatedAndSetAside: false, fulfillmentBranchId: branchId,
   });
   expect(missingSetAside.status).toBe(400);
   expect(missingSetAside.body.error.code).toBe("VALIDATION");
 
   const confirmationPayload = {
-    operationId: crypto.randomUUID(), expectedRevision: 2, agreedRevision: 2, itemsLocatedAndSetAside: true,
+    operationId: crypto.randomUUID(), expectedRevision: 2, agreedRevision: 2, itemsLocatedAndSetAside: true, fulfillmentBranchId: branchId,
   };
   const confirmed = await api(representative, "POST", `/api/internal/online-orders/${order.orderId}/confirm`, confirmationPayload);
   expect(confirmed.status, JSON.stringify(confirmed.body)).toBe(201);
   expect(confirmed.body).toMatchObject({
     status: "confirmed",
+    fulfillmentBranchId: branchId,
     revision: 3,
     confirmedByStaffId: expect.any(String),
     confirmedAt: now.toISOString(),
@@ -102,6 +105,97 @@ test("a representative confirms only the exact customer-agreed review after atte
   expect(publicReplay.status).toBe(200);
   expect(publicReplay.body).toEqual(order.acknowledgement);
   expect(publicReplay.body.status).toBe("pending");
+});
+
+test("one selected branch supplies the whole basket and a confirmation replay cannot deduct twice", async () => {
+  const manager = await signIn("owner", "owner-pass-1");
+  const stocked = await seedOrder(manager, "BRANCH-CONFIRM", 2, 24_000);
+  const split = await seedOrder(manager, "BRANCH-SPLIT", 1, 16_000, otherBranchId);
+  const area = await createArea(manager, "فرع تجهيز الطلب BRANCH", 2_000);
+  const impossibleBasket = await publicApi("POST", "/api/public/checkout/quote", {
+    deliveryAreaId: area.id,
+    lines: [{ variantId: stocked.variantId, quantity: 1 }, { variantId: split.variantId, quantity: 1 }],
+  });
+  expect(impossibleBasket.status).toBe(409);
+  expect(impossibleBasket.body.error.code).toBe("INSUFFICIENT_STOCK");
+  const repeatedVariant = await publicApi("POST", "/api/public/checkout/quote", {
+    deliveryAreaId: area.id,
+    lines: [{ variantId: stocked.variantId, quantity: 2 }, { variantId: stocked.variantId, quantity: 1 }],
+  });
+  expect(repeatedVariant.status).toBe(409);
+  expect(repeatedVariant.body.error.code).toBe("INSUFFICIENT_STOCK");
+
+  const otherReceipt = await api(manager, "POST", "/api/internal/receiving/receipts", {
+    operationId: crypto.randomUUID(), branchId: otherBranchId, receiptDate: cairoDate(),
+    lines: [{ variantId: stocked.variantId, quantity: 1, unitCostPiasters: 5_000 }],
+  });
+  expect(otherReceipt.status, JSON.stringify(otherReceipt.body)).toBe(201);
+  const order = await submitOrder(area.id, stocked.variantId, undefined, 2);
+  const quote = await agreementQuote(manager, order.orderId, 1, [{ variantId: stocked.variantId, quantity: 2 }]);
+  const agreed = await agreeReviewed(manager, order.orderId, 1, quote);
+  const confirmationPayload = {
+    operationId: crypto.randomUUID(), expectedRevision: agreed.body.revision,
+    agreedRevision: agreed.body.agreedRevision.version, itemsLocatedAndSetAside: true,
+    fulfillmentBranchId: otherBranchId,
+  };
+  const insufficient = await api(manager, "POST", `/api/internal/online-orders/${order.orderId}/confirm`, confirmationPayload);
+  expect(insufficient.status).toBe(409);
+  expect(insufficient.body.error.code).toBe("INSUFFICIENT_STOCK");
+  expect(await branchAvailable(stocked.variantId, branchId)).toBe(2);
+  expect(await branchAvailable(stocked.variantId, otherBranchId)).toBe(1);
+
+  const acceptedPayload = { ...confirmationPayload, operationId: crypto.randomUUID(), fulfillmentBranchId: branchId };
+  const confirmed = await api(manager, "POST", `/api/internal/online-orders/${order.orderId}/confirm`, acceptedPayload);
+  expect(confirmed.status, JSON.stringify(confirmed.body)).toBe(201);
+  expect(confirmed.body.fulfillmentBranchId).toBe(branchId);
+  expect(await branchAvailable(stocked.variantId, branchId)).toBe(0);
+  expect(await branchAvailable(stocked.variantId, otherBranchId)).toBe(1);
+  const replay = await api(manager, "POST", `/api/internal/online-orders/${order.orderId}/confirm`, acceptedPayload);
+  expect(replay.status).toBe(200);
+  expect(replay.body).toEqual(confirmed.body);
+  expect(await branchAvailable(stocked.variantId, branchId)).toBe(0);
+  expect(await branchAvailable(stocked.variantId, otherBranchId)).toBe(1);
+});
+
+test("a variant hidden from the online store is rejected by direct quote, submission, and confirmation", async () => {
+  now = new Date("2026-09-15T09:00:00.000Z");
+  const manager = await signIn("owner", "owner-pass-1");
+  const seeded = await seedOrder(manager, "ONLINE-VISIBILITY", 2, 21_000);
+  const area = await createArea(manager, "فرع الظهور أونلاين", 3_000);
+  const quotedBeforeHiding = await publicApi("POST", "/api/public/checkout/quote", {
+    deliveryAreaId: area.id, lines: [{ variantId: seeded.variantId, quantity: 1 }],
+  });
+  expect(quotedBeforeHiding.status).toBe(200);
+  const existingOrder = await submitOrder(area.id, seeded.variantId);
+  const review = await agreementQuote(manager, existingOrder.orderId, 1, [{ variantId: seeded.variantId, quantity: 1 }]);
+  const agreed = await agreeReviewed(manager, existingOrder.orderId, 1, review);
+  await setOnlineVisibility(manager, seeded.productId, false);
+
+  const publicProduct = await publicApi("GET", `/api/public/catalog/products/${seeded.productId}`);
+  expect(publicProduct.status).toBe(200);
+  expect(publicProduct.body.variants).toEqual([]);
+  const directQuote = await publicApi("POST", "/api/public/checkout/quote", {
+    deliveryAreaId: area.id, lines: [{ variantId: seeded.variantId, quantity: 1 }],
+  });
+  expect(directQuote.status).toBe(409);
+  expect(directQuote.body.error.code).toBe("VARIANT_NOT_ORDERABLE");
+  const directSubmission = await publicApi("POST", "/api/public/checkout/orders", {
+    operationId: crypto.randomUUID(), quoteId: quotedBeforeHiding.body.quoteId,
+    deliveryAreaId: area.id, lines: [{ variantId: seeded.variantId, quantity: 1 }],
+    customerName: "عميل صنف مخفي", primaryPhone: "01012345678", detailedAddress: "عنوان الاختبار",
+  });
+  expect(directSubmission.status).toBe(409);
+  expect(directSubmission.body.error.code).toBe("VARIANT_NOT_ORDERABLE");
+  const confirmation = await api(manager, "POST", `/api/internal/online-orders/${existingOrder.orderId}/confirm`, {
+    operationId: crypto.randomUUID(), expectedRevision: agreed.body.revision,
+    agreedRevision: agreed.body.agreedRevision.version, itemsLocatedAndSetAside: true,
+    fulfillmentBranchId: branchId,
+  });
+  expect(confirmation.status).toBe(409);
+  expect(confirmation.body.error.code).toBe("VARIANT_NOT_ORDERABLE");
+  expect(await branchAvailable(seeded.variantId, branchId)).toBe(2);
+  const unchanged = await api(manager, "GET", `/api/internal/online-orders/${existingOrder.orderId}`);
+  expect(unchanged.body.status).toBe("pending");
 });
 
 test("cashiers are denied while real attempts and controlled time govern manual unreachable cancellation", async () => {
@@ -188,7 +282,7 @@ test("stale order versions and changed prices require a fresh customer-reviewed 
   await updateProductPrice(manager, seeded.productId, 35_000);
 
   const rejected = await api(representative, "POST", `/api/internal/online-orders/${order.orderId}/confirm`, {
-    operationId: crypto.randomUUID(), expectedRevision: 3, agreedRevision: 3, itemsLocatedAndSetAside: true,
+    operationId: crypto.randomUUID(), expectedRevision: 3, agreedRevision: 3, itemsLocatedAndSetAside: true, fulfillmentBranchId: branchId,
   });
   expect(rejected.status).toBe(409);
   expect(rejected.body.error.code).toBe("QUOTE_STALE");
@@ -227,7 +321,7 @@ test("manager backup can confirm an explicitly agreed replacement while the orig
   const agreed = await agreeReviewed(manager, order.orderId, 1, review);
   const confirmationPayload = {
     operationId: crypto.randomUUID(), expectedRevision: agreed.body.revision,
-    agreedRevision: agreed.body.agreedRevision.version, itemsLocatedAndSetAside: true,
+    agreedRevision: agreed.body.agreedRevision.version, itemsLocatedAndSetAside: true, fulfillmentBranchId: branchId,
   };
   const confirmed = await api(manager, "POST", `/api/internal/online-orders/${order.orderId}/confirm`, confirmationPayload);
   expect(confirmed.status, JSON.stringify(confirmed.body)).toBe(201);
@@ -261,7 +355,7 @@ test("two confirmations competing for one unit serialize so only one customer pr
   const secondAgreed = await reviewAndAgree(manager, secondOrder.orderId, seeded.variantId);
   const commands = [firstAgreed, secondAgreed].map((entry) => ({
     orderId: entry.orderId,
-    payload: { operationId: crypto.randomUUID(), expectedRevision: 2, agreedRevision: 2, itemsLocatedAndSetAside: true },
+    payload: { operationId: crypto.randomUUID(), expectedRevision: 2, agreedRevision: 2, itemsLocatedAndSetAside: true, fulfillmentBranchId: branchId },
   }));
   const results = await Promise.all(commands.map((entry) =>
     api(manager, "POST", `/api/internal/online-orders/${entry.orderId}/confirm`, entry.payload)));
@@ -282,7 +376,7 @@ test("a confirmation racing a physically completed cash sale preserves the paid 
   const order = await submitOrder(area.id, seeded.variantId);
   await reviewAndAgree(manager, order.orderId, seeded.variantId);
   const confirmationPayload = {
-    operationId: crypto.randomUUID(), expectedRevision: 2, agreedRevision: 2, itemsLocatedAndSetAside: true,
+    operationId: crypto.randomUUID(), expectedRevision: 2, agreedRevision: 2, itemsLocatedAndSetAside: true, fulfillmentBranchId: branchId,
   };
   const salePayload = {
     saleId: crypto.randomUUID(), operationId: crypto.randomUUID(),
@@ -325,7 +419,7 @@ test("a final coupon use and protected allocation commit together and retain uni
   const second = await reviewAndAgree(manager, secondOrder.orderId, seeded.variantId, "ORDER-LAST-USE");
   const commands = [first, second].map((entry) => ({
     orderId: entry.orderId,
-    payload: { operationId: crypto.randomUUID(), expectedRevision: 2, agreedRevision: 2, itemsLocatedAndSetAside: true },
+    payload: { operationId: crypto.randomUUID(), expectedRevision: 2, agreedRevision: 2, itemsLocatedAndSetAside: true, fulfillmentBranchId: branchId },
   }));
   const results = await Promise.all(commands.map((entry) =>
     api(manager, "POST", `/api/internal/online-orders/${entry.orderId}/confirm`, entry.payload)));
@@ -446,7 +540,7 @@ async function createArea(manager: Session, nameAr: string, feePiasters: number)
   return response.body;
 }
 
-async function seedOrder(manager: Session, prefix: string, quantity: number, price: number) {
+async function seedOrder(manager: Session, prefix: string, quantity: number, price: number, receivingBranchId = branchId) {
   const category = await api(manager, "POST", "/api/internal/catalog/categories", { nameAr: `تصنيف ${prefix}` });
   const size = await api(manager, "POST", "/api/internal/catalog/sizes", { nameAr: `مقاس ${prefix}` });
   const color = await api(manager, "POST", "/api/internal/catalog/colors", { nameAr: `لون ${prefix}` });
@@ -464,22 +558,22 @@ async function seedOrder(manager: Session, prefix: string, quantity: number, pri
   expect(product.status, JSON.stringify(product.body)).toBe(201);
   const variantId = product.body.variants[0].id;
   const receipt = await api(manager, "POST", "/api/internal/receiving/receipts", {
-    operationId: crypto.randomUUID(), receiptDate: cairoDate(), lines: [{ variantId, quantity, unitCostPiasters: 5_000 }],
+    operationId: crypto.randomUUID(), branchId: receivingBranchId, receiptDate: cairoDate(), lines: [{ variantId, quantity, unitCostPiasters: 5_000 }],
   });
   expect(receipt.status, JSON.stringify(receipt.body)).toBe(201);
   return { productId: product.body.id, variantId };
 }
 
-async function submitOrder(deliveryAreaId: string, variantId: string, couponCode?: string) {
+async function submitOrder(deliveryAreaId: string, variantId: string, couponCode?: string, quantity = 1) {
   const quote = await publicApi("POST", "/api/public/checkout/quote", {
-    deliveryAreaId, lines: [{ variantId, quantity: 1 }], ...(couponCode ? { couponCode } : {}),
+    deliveryAreaId, lines: [{ variantId, quantity }], ...(couponCode ? { couponCode } : {}),
   });
   expect(quote.status, JSON.stringify(quote.body)).toBe(200);
   const submissionPayload = {
     operationId: crypto.randomUUID(),
     quoteId: quote.body.quoteId,
     deliveryAreaId,
-    lines: [{ variantId, quantity: 1 }],
+    lines: [{ variantId, quantity }],
     ...(couponCode ? { couponCode } : {}),
     customerName: "عميل تأكيد",
     primaryPhone: "01012345678",
@@ -539,6 +633,38 @@ async function updateProductPrice(manager: Session, productId: string, price: nu
   expect(updated.status, JSON.stringify(updated.body)).toBe(200);
 }
 
+async function setOnlineVisibility(manager: Session, productId: string, onlineVisible: boolean) {
+  const current = await api(manager, "GET", `/api/internal/catalog/products/${productId}`);
+  const updated = await api(manager, "PATCH", `/api/internal/catalog/products/${productId}`, {
+    code: current.body.code,
+    nameAr: current.body.nameAr,
+    descriptionAr: current.body.descriptionAr,
+    categoryId: current.body.category.id,
+    defaultSellingPricePiasters: current.body.defaultSellingPricePiasters,
+    publication: current.body.publication,
+    imageRefs: current.body.imageRefs,
+    sizeGuideAr: current.body.sizeGuideAr,
+    variants: current.body.variants.map((variant: { size: { id: string }; color: { id: string }; sellingPricePiastersOverride: number | null }) => ({
+      sizeId: variant.size.id,
+      colorId: variant.color.id,
+      onlineVisible,
+      sellingPricePiastersOverride: variant.sellingPricePiastersOverride,
+    })),
+  });
+  expect(updated.status, JSON.stringify(updated.body)).toBe(200);
+}
+
 function cairoDate() {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "Africa/Cairo", year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
+}
+
+async function branchAvailable(variantId: string, selectedBranchId: string): Promise<number> {
+  const result = await built.pool.query<{ quantity: string }>(
+    `SELECT COALESCE(SUM(balance.remaining_quantity), 0)::text AS quantity
+       FROM inventory_batch_balance balance
+       JOIN inventory_batch batch ON batch.id = balance.batch_id
+      WHERE batch.variant_id = $1 AND balance.branch_id = $2`,
+    [variantId, selectedBranchId],
+  );
+  return Number(result.rows[0]?.quantity ?? 0);
 }

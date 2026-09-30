@@ -4,7 +4,7 @@ export function StoreFooter({ contactLinks }: { contactLinks: ContactLink[] }) {
   return (
     <footer className="store-footer">
       <div>
-        <img className="footer-brand" src="/brand/02_Logo_Horizontal_Black.svg" alt="برافوس" width={140} height={59} />
+        <img className="footer-brand" src="/brand/02_Logo_Horizontal_Ivory.svg" alt="برافوس" width={140} height={59} />
         <p>ملابس رجالي مختارة بعناية في الفيوم.</p>
       </div>
       {contactLinks.length > 0 ? (

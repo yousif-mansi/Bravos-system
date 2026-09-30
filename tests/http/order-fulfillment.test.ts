@@ -11,6 +11,7 @@ const PUBLIC_ORIGIN = "http://127.0.0.1:3000";
 let cluster: PostgresCluster;
 let built: BuiltApp;
 let branchId = "";
+let receivingBranchId = "";
 
 beforeAll(async () => {
   cluster = await startPostgresCluster({ port: Number(process.env.BRAVOS_FULFILLMENT_TEST_PORT ?? 55463) });
@@ -34,6 +35,7 @@ beforeAll(async () => {
     password: "owner-pass-1",
   });
   branchId = (await built.pool.query<{ id: string }>("SELECT id FROM branch WHERE code='fayoum'")).rows[0]?.id ?? "";
+  receivingBranchId = (await built.pool.query<{ id: string }>("SELECT id FROM branch WHERE code='abshway'")).rows[0]?.id ?? "";
 }, 120_000);
 
 afterAll(async () => {
@@ -109,7 +111,7 @@ test("shipment then customer receipt completes only the delivered order and reje
   }));
 });
 
-test("pending cancellation restores nothing while confirmed cancellation restores stock and releases its coupon once", async () => {
+test("pending cancellation restores nothing; confirmed cancellation can release inspected stock immediately or after later inspection", async () => {
   const manager = await signIn("owner", "owner-pass-1");
   const pending = await seedOrder(manager, "CANCEL-PENDING", 1);
   const pendingPayload = {
@@ -134,6 +136,7 @@ test("pending cancellation restores nothing while confirmed cancellation restore
     operationId: crypto.randomUUID(),
     expectedRevision: confirmed.body.revision,
     reason: "إلغاء مؤكد قبل تسليم الشحنة",
+    itemsReturnedAndInspected: true,
   };
   const cancelled = await api(manager, "POST", `/api/internal/online-orders/${confirmedSeed.orderId}/cancel-before-shipment`, payload);
   expect(cancelled.status, JSON.stringify(cancelled.body)).toBe(201);
@@ -143,6 +146,41 @@ test("pending cancellation restores nothing while confirmed cancellation restore
   expect(replay.status).toBe(200);
   expect(await available(confirmedSeed.productId)).toBe(1);
   expect(await couponUse(manager, couponCode)).toBe(0);
+
+  const deferredSeed = await seedOrder(manager, "CANCEL-DEFERRED", 2, 2);
+  const deferredConfirmed = await confirmOrder(manager, deferredSeed.orderId, deferredSeed.variantId, 2);
+  expect(deferredConfirmed.status).toBe(201);
+  const deferredPayload = {
+    operationId: crypto.randomUUID(), expectedRevision: deferredConfirmed.body.revision,
+    reason: "أُلغي الطلب قبل وصول الأصناف المعزولة إلى المحل",
+  };
+  const deferred = await api(manager, "POST", `/api/internal/online-orders/${deferredSeed.orderId}/cancel-before-shipment`, deferredPayload);
+  expect(deferred.status, JSON.stringify(deferred.body)).toBe(201);
+  expect(deferred.body.result).toMatchObject({ status: "cancelled_before_shipment", preShipmentStockDisposition: "awaiting_inspection" });
+  expect(await branchAvailable(deferredSeed.variantId, branchId)).toBe(0);
+  expect(await branchAvailable(deferredSeed.variantId, receivingBranchId)).toBe(0);
+  const deferredReplay = await api(manager, "POST", `/api/internal/online-orders/${deferredSeed.orderId}/cancel-before-shipment`, deferredPayload);
+  expect(deferredReplay.status).toBe(200);
+  expect(await available(deferredSeed.productId)).toBe(0);
+
+  const inspected = await api(manager, "POST", `/api/internal/online-orders/${deferredSeed.orderId}/failed-return-inspections`, {
+    operationId: crypto.randomUUID(), expectedRevision: deferred.body.result.revision,
+    lines: [{ variantId: deferredSeed.variantId, receivedQuantity: 2, sellableQuantity: 1 }],
+  });
+  expect(inspected.status, JSON.stringify(inspected.body)).toBe(201);
+  expect(await available(deferredSeed.productId)).toBe(0);
+  const inspection = inspected.body.result.failedReturnInspections.find((item: { status: string }) => item.status === "draft");
+  const postPayload = {
+    operationId: crypto.randomUUID(), expectedRevision: inspected.body.result.revision, receivingBranchId,
+  };
+  const posted = await api(manager, "POST", `/api/internal/online-orders/${deferredSeed.orderId}/failed-return-inspections/${inspection.id}/post`, postPayload);
+  expect(posted.status, JSON.stringify(posted.body)).toBe(201);
+  expect(posted.body.result).toMatchObject({ status: "cancelled_before_shipment", preShipmentStockDisposition: "released" });
+  expect(await branchAvailable(deferredSeed.variantId, branchId)).toBe(0);
+  expect(await branchAvailable(deferredSeed.variantId, receivingBranchId)).toBe(1);
+  const postReplay = await api(manager, "POST", `/api/internal/online-orders/${deferredSeed.orderId}/failed-return-inspections/${inspection.id}/post`, postPayload);
+  expect(postReplay.status).toBe(200);
+  expect(await branchAvailable(deferredSeed.variantId, receivingBranchId)).toBe(1);
 });
 
 test("failed parcel stays protected until manager posts partial inspections and closes only after every unit is classified", async () => {
@@ -184,7 +222,7 @@ test("failed parcel stays protected until manager posts partial inspections and 
   expect(await available(seeded.productId)).toBe(0);
   expect(await couponUse(manager, couponCode)).toBe(1);
   const postAbandoned = await api(manager, "POST", `/api/internal/online-orders/${seeded.orderId}/failed-return-inspections/${wrongInspection.id}/post`, {
-    operationId: crypto.randomUUID(), expectedRevision: abandoned.body.result.revision,
+    operationId: crypto.randomUUID(), expectedRevision: abandoned.body.result.revision, receivingBranchId: branchId,
   });
   expect(postAbandoned.status).toBe(404);
 
@@ -197,7 +235,7 @@ test("failed parcel stays protected until manager posts partial inspections and 
   const firstInspection = firstDraft.body.result.failedReturnInspections.find((item: { status: string }) => item.status === "draft");
 
   const employeePost = await api(representative, "POST", `/api/internal/online-orders/${seeded.orderId}/failed-return-inspections/${firstInspection.id}/post`, {
-    operationId: crypto.randomUUID(), expectedRevision: firstDraft.body.result.revision,
+    operationId: crypto.randomUUID(), expectedRevision: firstDraft.body.result.revision, receivingBranchId: branchId,
   });
   expect(employeePost.status).toBe(403);
   const cashierDraft = await api(cashier, "POST", `/api/internal/online-orders/${seeded.orderId}/failed-return-inspections`, {
@@ -206,13 +244,17 @@ test("failed parcel stays protected until manager posts partial inspections and 
   });
   expect(cashierDraft.status).toBe(403);
 
-  const firstPostPayload = { operationId: crypto.randomUUID(), expectedRevision: firstDraft.body.result.revision };
+  const firstPostPayload = { operationId: crypto.randomUUID(), expectedRevision: firstDraft.body.result.revision, receivingBranchId };
   const firstPost = await api(manager, "POST", `/api/internal/online-orders/${seeded.orderId}/failed-return-inspections/${firstInspection.id}/post`, firstPostPayload);
   expect(firstPost.status, JSON.stringify(firstPost.body)).toBe(201);
+  expect(firstPost.body.result.failedReturnInspections.find((item: { id: string }) => item.id === firstInspection.id).receivingBranchId).toBe(receivingBranchId);
   expect(await available(seeded.productId)).toBe(1);
+  expect(await branchAvailable(seeded.variantId, branchId)).toBe(0);
+  expect(await branchAvailable(seeded.variantId, receivingBranchId)).toBe(1);
   const postReplay = await api(manager, "POST", `/api/internal/online-orders/${seeded.orderId}/failed-return-inspections/${firstInspection.id}/post`, firstPostPayload);
   expect(postReplay.status).toBe(200);
   expect(await available(seeded.productId)).toBe(1);
+  expect(await branchAvailable(seeded.variantId, receivingBranchId)).toBe(1);
 
   const tooEarly = await api(manager, "POST", `/api/internal/online-orders/${seeded.orderId}/close-failed-delivery`, {
     operationId: crypto.randomUUID(), expectedRevision: firstPost.body.result.revision, reason: "إغلاق مبكر",
@@ -227,7 +269,7 @@ test("failed parcel stays protected until manager posts partial inspections and 
   expect(secondDraft.status, JSON.stringify(secondDraft.body)).toBe(201);
   const secondInspection = secondDraft.body.result.failedReturnInspections.find((item: { status: string }) => item.status === "draft");
   const secondPost = await api(manager, "POST", `/api/internal/online-orders/${seeded.orderId}/failed-return-inspections/${secondInspection.id}/post`, {
-    operationId: crypto.randomUUID(), expectedRevision: secondDraft.body.result.revision,
+    operationId: crypto.randomUUID(), expectedRevision: secondDraft.body.result.revision, receivingBranchId: branchId,
   });
   expect(secondPost.status, JSON.stringify(secondPost.body)).toBe(201);
   expect(await available(seeded.productId)).toBe(1);
@@ -325,6 +367,7 @@ async function seedOrder(
   }
   const received = await api(manager, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
+    branchId,
     receiptDate: cairoDate(),
     lines: [{ variantId, quantity, unitCostPiasters: 9000 }],
   });
@@ -379,6 +422,7 @@ async function confirmOrder(
     expectedRevision: agreed.body.revision,
     agreedRevision: agreed.body.revision,
     itemsLocatedAndSetAside: true,
+    fulfillmentBranchId: branchId,
   });
 }
 
@@ -406,6 +450,17 @@ async function available(productId: string): Promise<number> {
   const product = await publicApi("GET", `/api/public/catalog/products/${productId}`);
   expect(product.status, JSON.stringify(product.body)).toBe(200);
   return product.body.variants[0].availableQuantity;
+}
+
+async function branchAvailable(variantId: string, selectedBranchId: string): Promise<number> {
+  const result = await built.pool.query<{ quantity: string }>(
+    `SELECT COALESCE(SUM(balance.remaining_quantity), 0)::text AS quantity
+       FROM inventory_batch_balance balance
+       JOIN inventory_batch batch ON batch.id = balance.batch_id
+      WHERE batch.variant_id = $1 AND balance.branch_id = $2`,
+    [variantId, selectedBranchId],
+  );
+  return Number(result.rows[0]?.quantity ?? 0);
 }
 
 function cairoDate() {

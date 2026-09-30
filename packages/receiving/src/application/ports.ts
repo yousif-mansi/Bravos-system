@@ -22,6 +22,7 @@ export type ReceiptLineWrite = {
 
 export type ReceiptRecord = {
   id: string;
+  branchId: string;
   operationId: string;
   receiptDate: string;
   receivedByStaffId: string;
@@ -31,6 +32,7 @@ export type ReceiptRecord = {
 
 export type OpeningReceivingTransaction = {
   insertOpeningReceipt(input: {
+    branchId: string;
     receiptId: string;
     operationId: string;
     receiptDate: string;
@@ -89,6 +91,7 @@ export type ReceivingBatchReader = {
 export type ReceiptStore = {
   insert(input: {
     id: string;
+    branchId: string;
     operationId: string;
     receiptDate: string;
     receivedByStaffId: string;

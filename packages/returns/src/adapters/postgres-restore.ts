@@ -27,6 +27,17 @@ export function createPostgresReturnsRestorePort(queryable: Queryable) {
       await insertRestoreRows(queryable, table, rows);
       return rows.length;
     },
+    async restoreReferenceSequence(sequence: { lastValue: string; isCalled: boolean }): Promise<void> {
+      if (!/^(0|[1-9]\d*)$/.test(sequence.lastValue)) throw restoreDataError("Invalid return reference sequence.");
+      const highest = await queryable.query<{ max_number: string }>(
+        `SELECT COALESCE(MAX(substring(reference FROM '^RET-([0-9]+)$')::bigint), 0)::text AS max_number
+         FROM returns_return`,
+      );
+      const recordedNext = BigInt(sequence.lastValue) + (sequence.isCalled ? 1n : 0n);
+      const referencedNext = BigInt(highest.rows[0]?.max_number ?? "0") + 1n;
+      const next = recordedNext > referencedNext ? recordedNext : referencedNext;
+      await queryable.query("SELECT setval('returns_return_reference_number_seq', $1::bigint, false)", [next.toString()]);
+    },
   };
 }
 

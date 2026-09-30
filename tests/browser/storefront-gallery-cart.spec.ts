@@ -125,6 +125,7 @@ test("cart keeps variant details and edited quantities through reload and a late
   expect(second).toBeTruthy();
   const received = await staffApi(page, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
+    branchId: (await (await page.request.get("http://127.0.0.1:5174/api/internal/workspace")).json()).activeBranch.id,
     receiptDate: cairoDate(),
     lines: [
       { variantId: first.id, quantity: 3, unitCostPiasters: 10_000 },
@@ -157,15 +158,16 @@ test("cart keeps variant details and edited quantities through reload and a late
   await expect(lines.nth(1)).toContainText(`إجمالي الاختيار${money(30_000)}`);
   const summary = page.getByRole("complementary", { name: "ملخص السلة" });
   await expect(summary).toContainText("عدد القطع3");
-  await expect(summary).toContainText(`إجمالي المنتجات${money(80_000)}`);
-  await expect(summary).toContainText("هذا إجمالي المنتجات فقط. رسوم التوصيل والخصومات والإجمالي النهائي تظهر للمراجعة عند إتمام الطلب.");
-  await expect(summary).toContainText("إضافة المنتج إلى السلة لا تحجزه. يُراجع التوفر عند إرسال الطلب.");
+  await expect(summary).toContainText(`مجموع مبدئي${money(80_000)}`);
+  await expect(summary).toContainText("للمنتجات فقط، قبل الخصومات والتوصيل. راجع المبلغ النهائي في الخطوة التالية.");
+  await expect(summary).toContainText("نراجع توفر السلة كاملة عند مراجعة السعر");
+  await expect(summary).toContainText("السلة لا تحجز القطع.");
   const checkoutLink = page.getByRole("link", { name: "متابعة إتمام الطلب" });
   await expect(checkoutLink).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath("cart-phone-390.png"), fullPage: true });
   expect(await hasNoHorizontalOverflow(page)).toBe(true);
 
-  const note = summary.getByText("هذا إجمالي المنتجات فقط. رسوم التوصيل والخصومات والإجمالي النهائي تظهر للمراجعة عند إتمام الطلب.");
+  const note = summary.getByText("للمنتجات فقط، قبل الخصومات والتوصيل. راجع المبلغ النهائي في الخطوة التالية.");
   const noteColor = await note.evaluate((element) => getComputedStyle(element).color);
   const summaryBackground = await summary.evaluate((element) => getComputedStyle(element).backgroundColor);
   const increase = lines.first().getByRole("button", { name: "زيادة الكمية" });
@@ -194,7 +196,7 @@ test("cart keeps variant details and edited quantities through reload and a late
   await lines.first().getByRole("button", { name: "تقليل الكمية" }).focus();
   await lines.first().getByRole("button", { name: "تقليل الكمية" }).press("Enter");
   await expect(lines.first().locator("output")).toHaveText("1");
-  await expect(summary).toContainText(`إجمالي المنتجات${money(55_000)}`);
+  await expect(summary).toContainText(`مجموع مبدئي${money(55_000)}`);
   await page.reload();
   await expect(lines.first().locator("output")).toHaveText("1");
   const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("bravos-guest-cart-v1") ?? "null"));
@@ -205,7 +207,7 @@ test("cart keeps variant details and edited quantities through reload and a late
     lines: [{ variantId: second.id, quantity: 1 }], physicallyCompleted: true,
   });
   expect(sale.status).toBe(201);
-  await page.getByRole("button", { name: "تحديث المخزون" }).click();
+  await page.getByRole("button", { name: "تحديث بيانات المنتجات" }).click();
   await expect(lines).toHaveCount(2);
   await expect(lines.nth(1).getByRole("alert")).toContainText("غير متوفر");
   await expect(page.getByRole("link", { name: "متابعة إتمام الطلب" })).toHaveCount(0);

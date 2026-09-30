@@ -63,7 +63,7 @@ test("a delivered purchase supports partial then cumulative-final Returns with o
     source: { kind: "delivered_online_order", id: purchase.orderId },
     reference: purchase.reference,
     channel: "online",
-    originalBranch: null,
+    originalBranch: { id: branchId },
     seller: null,
     receivedAt: "2026-09-10T12:00:00.000Z",
     originalPayment: {
@@ -80,6 +80,9 @@ test("a delivered purchase supports partial then cumulative-final Returns with o
       availablePaidRanges: [{ quantity: 2, paidUnitPiasters: 20000 }],
     })],
   });
+  const phoneLookup = await api(manager, "GET", "/api/internal/returns/sources?phone=01012345678&channel=online");
+  expect(phoneLookup.status, JSON.stringify(phoneLookup.body)).toBe(200);
+  expect(phoneLookup.body.map((row: { reference: string }) => row.reference)).toContain(purchase.reference);
 
   const first = await createReturn(manager, source, {
     merchandisePiasters: 20000,
@@ -192,7 +195,8 @@ test("cancelling the later Return deducts its own retained batch rather than the
   });
   expect(cancelled.status, JSON.stringify(cancelled.body)).toBe(201);
   const batches = await built.pool.query<{ id: string; remaining_quantity: number }>(
-    `SELECT id,remaining_quantity FROM inventory_batch WHERE id=ANY($1::uuid[])`, [purchase.batchIds]);
+    `SELECT batch_id AS id,remaining_quantity FROM inventory_batch_balance
+     WHERE batch_id=ANY($1::uuid[]) AND branch_id=$2`, [purchase.batchIds, branchId]);
   expect(new Map(batches.rows.map((row) => [row.id, row.remaining_quantity]))).toEqual(new Map([
     [purchase.batchIds[0], 1],
     [purchase.batchIds[1], 0],
@@ -344,6 +348,7 @@ async function createDeliveredPurchase(
     const receipt = await api(manager, "POST", "/api/internal/receiving/receipts", {
       operationId: crypto.randomUUID(),
       receiptDate: "2026-09-09",
+      branchId,
       lines: [{ variantId, quantity: unitCosts.length === 1 ? quantity : 1, unitCostPiasters }],
     });
     expect(receipt.status, JSON.stringify(receipt.body)).toBe(201);
@@ -389,6 +394,7 @@ async function createDeliveredPurchase(
     operationId: crypto.randomUUID(),
     expectedRevision: agreed.body.revision,
     agreedRevision: agreed.body.revision,
+    fulfillmentBranchId: branchId,
     itemsLocatedAndSetAside: true,
   });
   expect(confirmed.status, JSON.stringify(confirmed.body)).toBe(201);

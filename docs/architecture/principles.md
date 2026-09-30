@@ -1,5 +1,7 @@
 # BRAVOS architecture principles
 
+> **2026-09-29:** Preserve the module/layer boundaries in this document, but follow [Phase 1 operational updates](../planning/phase-1-operational-updates.md) where the latest user requirements supersede central stock, cash-only POS, or delivered-only online sales recognition. The new branch inventory remains owned by the inventory feature; screen workflow changes do not authorize cross-feature table access.
+
 Recorded from the user's architecture requirements on 2026-09-07. These rules apply before feature implementation. They do not select a framework, database, hosting provider, or finalized deployment topology.
 
 Business decisions are tracked in [discovery.md](../planning/discovery.md); established business terms belong in [CONTEXT.md](../../CONTEXT.md). The [implementation blueprint](../planning/implementation-blueprint.md) proposes the concrete stack, boundaries, operating mechanics, and verification plan for final review; references below to technical details needing specification are addressed there as proposals.

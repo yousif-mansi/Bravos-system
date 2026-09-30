@@ -1,5 +1,6 @@
 import { canonicalOfflineSaleFactsJson } from "./canonical-payload.ts";
 import { sha256Hex } from "./web-digest.ts";
+import type { SalePaymentDto } from "@bravos/contracts";
 
 export async function digestAcceptedSalePayload(input: {
   saleId: string;
@@ -12,6 +13,7 @@ export async function digestAcceptedSalePayload(input: {
   couponCode?: string | null;
   employeeDiscountPiasters: number;
   discountReason: string | null;
+  payment?: SalePaymentDto;
   lines: Array<{ variantId: string; quantity: number; listedUnitPricePiasters?: number | null }>;
 }): Promise<string> {
   return sha256Hex(
@@ -31,6 +33,7 @@ export async function digestAcceptedSalePayload(input: {
       ...(input.couponCode ? { couponCode: input.couponCode } : {}),
       employeeDiscountPiasters: input.employeeDiscountPiasters,
       discountReason: input.discountReason,
+      ...(input.payment ? { payment: input.payment } : {}),
       lines: input.lines,
     }),
   );
@@ -43,6 +46,7 @@ export async function digestConnectedSalePayload(input: {
   couponCode?: string | null;
   employeeDiscountPiasters: number;
   discountReason: string | null;
+  payment?: SalePaymentDto;
   lines: Array<{ variantId: string; quantity: number; listedUnitPricePiasters?: number | null }>;
 }): Promise<string> {
   return sha256Hex(
@@ -55,6 +59,7 @@ export async function digestConnectedSalePayload(input: {
       couponCode: input.couponCode ?? null,
       employeeDiscountPiasters: input.employeeDiscountPiasters,
       discountReason: input.discountReason,
+      ...(input.payment ? { payment: input.payment } : {}),
       lines: input.lines,
     }),
   );
@@ -72,6 +77,7 @@ export async function digestOfflineSale(input: {
   couponCode?: string | null;
   employeeDiscountPiasters: number;
   discountReason: string | null;
+  payment?: SalePaymentDto;
   lines: Array<{ variantId: string; quantity: number; listedUnitPricePiasters?: number | null }>;
   payloadFingerprint?: string | null;
 }): Promise<string> {

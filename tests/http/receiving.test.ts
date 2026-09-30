@@ -32,7 +32,7 @@ beforeEach(async () => {
   await startApp();
 });
 
-test("manager receiving of 10 at 100 EGP then 10 at 140 EGP keeps two central batches", async () => {
+test("manager receiving in two branches keeps separate FIFO cost batches", async () => {
   const manager = await signIn("owner", "owner-pass-1");
   await api(manager, "POST", "/api/internal/active-branch", { branchId: abshwayId });
   const seed = await seedShirt(manager);
@@ -40,21 +40,24 @@ test("manager receiving of 10 at 100 EGP then 10 at 140 EGP keeps two central ba
 
   const first = await api(manager, "POST", "/api/internal/receiving/receipts", {
     operationId,
+    branchId: abshwayId,
     receiptDate: "2026-09-11",
     lines: [{ variantId: seed.variantId, quantity: 10, unitCostPiasters: 10000 }],
   });
   expect(first.status).toBe(201);
   expect(first.body).toMatchObject({
     operationId,
+    branchId: abshwayId,
     receiptDate: "2026-09-11",
     lines: [{ variantId: seed.variantId, quantity: 10, unitCostPiasters: 10000 }],
   });
   expect(first.body.id).toEqual(expect.any(String));
   expect(first.body.lines[0].batchId).toEqual(expect.any(String));
-  expect(JSON.stringify(first.body)).not.toMatch(/abshway|fayoum|branch/i);
+  expect(first.body.branchId).toBe(abshwayId);
 
   const second = await api(manager, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
+    branchId: fayoumId,
     receiptDate: "2026-09-11",
     lines: [{ variantId: seed.variantId, quantity: 10, unitCostPiasters: 14000 }],
   });
@@ -69,6 +72,10 @@ test("manager receiving of 10 at 100 EGP then 10 at 140 EGP keeps two central ba
     10000, 14000,
   ]);
   expect(batches.body.every((batch: { remainingQuantity: number; receivedQuantity: number }) => batch.remainingQuantity === 10 && batch.receivedQuantity === 10)).toBe(true);
+  expect(batches.body).toEqual(expect.arrayContaining([
+    expect.objectContaining({ branchBalances: [expect.objectContaining({ branchId: abshwayId, availableQuantity: 10 })] }),
+    expect.objectContaining({ branchBalances: [expect.objectContaining({ branchId: fayoumId, availableQuantity: 10 })] }),
+  ]));
   expect(batches.body[0].recordedAt <= batches.body[1].recordedAt).toBe(true);
   const average = (10000 + 14000) / 2;
   expect(batches.body.some((batch: { unitCostPiasters: number }) => batch.unitCostPiasters === average)).toBe(false);
@@ -88,6 +95,18 @@ test("manager receiving of 10 at 100 EGP then 10 at 140 EGP keeps two central ba
   expect(byOperation.status).toBe(200);
   expect(byOperation.body.id).toBe(first.body.id);
   expect(byOperation.body.operationId).toBe(operationId);
+
+  const sale = await api(manager, "POST", "/api/internal/sales", {
+    saleId: crypto.randomUUID(),
+    operationId: crypto.randomUUID(),
+    physicallyCompleted: true,
+    occurredAt: "2026-09-12T12:00:00.000Z",
+    employeeDiscountPiasters: 0,
+    lines: [{ variantId: seed.variantId, quantity: 1 }],
+  });
+  expect(sale.status).toBe(201);
+  expect((await built.inventory.quantitiesFor(abshwayId, [seed.variantId])).get(seed.variantId)).toBe(9);
+  expect((await built.inventory.quantitiesFor(fayoumId, [seed.variantId])).get(seed.variantId)).toBe(10);
 });
 
 test("manager links a 100-to-140 cost correction while a new 140 receipt stays separate", async () => {
@@ -95,6 +114,7 @@ test("manager links a 100-to-140 cost correction while a new 140 receipt stays s
   const seed = await seedShirt(manager);
   const original = await api(manager, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
+    branchId: abshwayId,
     receiptDate: "2026-09-11",
     lines: [{ variantId: seed.variantId, quantity: 2, unitCostPiasters: 10000 }],
   });
@@ -151,6 +171,7 @@ test("manager links a 100-to-140 cost correction while a new 140 receipt stays s
 
   const newReceipt = await api(manager, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
+    branchId: abshwayId,
     receiptDate: "2026-09-12",
     lines: [{ variantId: seed.variantId, quantity: 1, unitCostPiasters: 14000 }],
   });
@@ -185,6 +206,7 @@ test("accepted receipt and correction responses replay their original state afte
   const seed = await seedShirt(manager);
   const receiptCommand = {
     operationId: crypto.randomUUID(),
+    branchId: abshwayId,
     receiptDate: "2026-09-11",
     lines: [{ variantId: seed.variantId, quantity: 2, unitCostPiasters: 10000 }],
   };
@@ -256,6 +278,7 @@ test("a cost correction flows through an existing allocation and its later sella
   const seed = await seedShirt(manager);
   const original = await api(manager, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
+    branchId: abshwayId,
     receiptDate: "2026-09-10",
     lines: [{ variantId: seed.variantId, quantity: 1, unitCostPiasters: 10000 }],
   });
@@ -264,7 +287,7 @@ test("a cost correction flows through an existing allocation and its later sella
   const sale = await api(manager, "POST", "/api/internal/sales", {
     saleId: crypto.randomUUID(),
     operationId: crypto.randomUUID(),
-    occurredAt: "2026-09-10T12:00:00.000Z",
+    occurredAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(),
     physicallyCompleted: true,
     employeeDiscountPiasters: 0,
     lines: [{ variantId: seed.variantId, quantity: 1 }],
@@ -321,7 +344,7 @@ test("a cost correction flows through an existing allocation and its later sella
     receivedAndInspected: true,
     expectedRevision: draft.body.revision,
   });
-  expect(posted.status).toBe(201);
+  expect(posted.status, JSON.stringify(posted.body)).toBe(201);
   expect(posted.body.restorations).toEqual([
     expect.objectContaining({
       batchId: original.body.lines[0].batchId,
@@ -366,12 +389,58 @@ test("a cost correction flows through an existing allocation and its later sella
   });
 });
 
+test("cross-branch return keeps stock in receiving branch through cost correction and blocks source-branch quantity reduction", async () => {
+  const manager = await signIn("owner", "owner-pass-1");
+  await api(manager, "POST", "/api/internal/active-branch", { branchId: abshwayId });
+  const seed = await seedShirt(manager);
+  const receipt = await api(manager, "POST", "/api/internal/receiving/receipts", {
+    operationId: crypto.randomUUID(), branchId: abshwayId, receiptDate: "2026-09-25",
+    lines: [{ variantId: seed.variantId, quantity: 2, unitCostPiasters: 10000 }],
+  });
+  expect(receipt.status).toBe(201);
+  const sale = await api(manager, "POST", "/api/internal/sales", {
+    saleId: crypto.randomUUID(), operationId: crypto.randomUUID(), physicallyCompleted: true,
+    occurredAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(),
+    employeeDiscountPiasters: 0, lines: [{ variantId: seed.variantId, quantity: 2 }],
+  });
+  expect(sale.status).toBe(201);
+  const sources = await api(manager, "GET", `/api/internal/returns/sources?reference=${sale.body.id}`);
+  const returnId = crypto.randomUUID();
+  const draft = await api(manager, "POST", "/api/internal/returns", {
+    returnId, operationId: crypto.randomUUID(), sourceSaleId: sale.body.id,
+    handlingBranchId: fayoumId, authorizedRefundPiasters: sale.body.finalTotalPiasters / 2,
+    lines: [{ sourceSaleLineId: sources.body[0].lines[0].saleLineId, quantity: 1, sellableQuantity: 1 }],
+  });
+  expect(draft.status).toBe(201);
+  const posted = await api(manager, "POST", `/api/internal/returns/${returnId}/post`, {
+    receivedAndInspected: true, expectedRevision: draft.body.revision,
+  });
+  expect(posted.status, JSON.stringify(posted.body)).toBe(201);
+  expect((await built.inventory.quantitiesFor(abshwayId, [seed.variantId])).get(seed.variantId)).toBe(0);
+  expect((await built.inventory.quantitiesFor(fayoumId, [seed.variantId])).get(seed.variantId)).toBe(1);
+
+  const costOnly = await api(manager, "POST", `/api/internal/receiving/receipts/${receipt.body.id}/corrections`, {
+    operationId: crypto.randomUUID(), expectedRevision: 0, reason: "تصحيح تكلفة المورد",
+    lines: [{ lineId: receipt.body.lines[0].id, quantity: 2, unitCostPiasters: 14000 }],
+  });
+  expect(costOnly.status).toBe(201);
+  expect(costOnly.body.lines[0].effectiveUnitCostPiasters).toBe(14000);
+  const reduced = await api(manager, "POST", `/api/internal/receiving/receipts/${receipt.body.id}/corrections`, {
+    operationId: crypto.randomUUID(), expectedRevision: 1, reason: "تقليل كمية المورد",
+    lines: [{ lineId: receipt.body.lines[0].id, quantity: 1, unitCostPiasters: 14000 }],
+  });
+  expect(reduced.status).toBe(400);
+  expect(reduced.body.error.messageAr).toContain("فرع الاستلام");
+  expect((await built.inventory.quantitiesFor(fayoumId, [seed.variantId])).get(seed.variantId)).toBe(1);
+});
+
 test("quantity correction rolls back every line and the same identity retries after an intervening return", async () => {
   const manager = await signIn("owner", "owner-pass-1");
   await api(manager, "POST", "/api/internal/active-branch", { branchId: abshwayId });
   const seed = await seedShirt(manager, { extraColor: true });
   const receipt = await api(manager, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
+    branchId: abshwayId,
     receiptDate: "2026-09-10",
     lines: [seed.variantId, seed.secondVariantId].map((variantId) => ({
       variantId,
@@ -388,7 +457,7 @@ test("quantity correction rolls back every line and the same identity retries af
   const sale = await api(manager, "POST", "/api/internal/sales", {
     saleId: crypto.randomUUID(),
     operationId: crypto.randomUUID(),
-    occurredAt: "2026-09-10T13:00:00.000Z",
+    occurredAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(),
     physicallyCompleted: true,
     employeeDiscountPiasters: 0,
     lines: [{ variantId: consumedLine.variantId, quantity: 2 }],
@@ -439,7 +508,7 @@ test("quantity correction rolls back every line and the same identity retries af
     receivedAndInspected: true,
     expectedRevision: draft.body.revision,
   });
-  expect(returned.status).toBe(201);
+  expect(returned.status, JSON.stringify(returned.body)).toBe(201);
 
   const corrected = await api(
     manager,
@@ -484,6 +553,7 @@ test("receiving correction is manager-only and retains each effective revision w
   const seed = await seedShirt(manager);
   const receipt = await api(manager, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
+    branchId: abshwayId,
     receiptDate: "2026-09-11",
     lines: [{ variantId: seed.variantId, quantity: 2, unitCostPiasters: 10000 }],
   });
@@ -580,6 +650,7 @@ test("identical receiving operation identity returns the original result and cha
   const operationId = crypto.randomUUID();
   const payload = {
     operationId,
+    branchId: abshwayId,
     receiptDate: "2026-09-10",
     lines: [{ variantId: seed.variantId, quantity: 4, unitCostPiasters: 8000 }],
   };
@@ -591,6 +662,7 @@ test("identical receiving operation identity returns the original result and cha
   expect(replay.body).toEqual(created.body);
 
   const reordered = await api(manager, "POST", "/api/internal/receiving/receipts", {
+    branchId: abshwayId,
     receiptDate: "2026-09-10",
     operationId,
     lines: [{ unitCostPiasters: 8000, quantity: 4, variantId: seed.variantId }],
@@ -600,6 +672,7 @@ test("identical receiving operation identity returns the original result and cha
 
   const changed = await api(manager, "POST", "/api/internal/receiving/receipts", {
     operationId,
+    branchId: abshwayId,
     receiptDate: "2026-09-10",
     lines: [{ variantId: seed.variantId, quantity: 5, unitCostPiasters: 8000 }],
   });
@@ -619,6 +692,7 @@ test("concurrent duplicate receiving identities keep one stock effect", async ()
   const operationId = crypto.randomUUID();
   const payload = {
     operationId,
+    branchId: abshwayId,
     receiptDate: "2026-09-09",
     lines: [{ variantId: seed.variantId, quantity: 6, unitCostPiasters: 9000 }],
   };
@@ -643,6 +717,7 @@ test("a failing multi-line receiving operation rolls back receipt and stock", as
   const operationId = crypto.randomUUID();
   const failed = await api(manager, "POST", "/api/internal/receiving/receipts", {
     operationId,
+    branchId: abshwayId,
     receiptDate: "2026-09-11",
     lines: [
       { variantId: seed.variantId, quantity: 8, unitCostPiasters: 7000 },
@@ -666,6 +741,7 @@ test("a failing multi-line receiving operation rolls back receipt and stock", as
 
   const retried = await api(manager, "POST", "/api/internal/receiving/receipts", {
     operationId,
+    branchId: abshwayId,
     receiptDate: "2026-09-11",
     lines: [{ variantId: seed.variantId, quantity: 8, unitCostPiasters: 7000 }],
   });
@@ -677,7 +753,7 @@ test("a failing multi-line receiving operation rolls back receipt and stock", as
   expect(afterRetry.body[0].remainingQuantity).toBe(8);
 });
 
-test("low-stock uses persisted global default 3 and per-variant override", async () => {
+test("low-stock evaluates each branch using persisted default 3 and per-variant override", async () => {
   const manager = await signIn("owner", "owner-pass-1");
   const seed = await seedShirt(manager, { extraColor: true });
   const settings = await api(manager, "GET", "/api/internal/inventory/settings");
@@ -694,6 +770,7 @@ test("low-stock uses persisted global default 3 and per-variant override", async
 
   await api(manager, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
+    branchId: abshwayId,
     receiptDate: "2026-09-11",
     lines: [
       { variantId: seed.variantId, quantity: 3, unitCostPiasters: 5000 },
@@ -702,8 +779,9 @@ test("low-stock uses persisted global default 3 and per-variant override", async
   });
   const initial = await api(manager, "GET", "/api/internal/inventory/low-stock");
   expect(initial.status).toBe(200);
-  expect(initial.body.map((item: { variantId: string }) => item.variantId)).toEqual([seed.variantId]);
-  expect(initial.body[0]).toMatchObject({
+  const initialAbshway = initial.body.filter((item: { branchId: string }) => item.branchId === abshwayId);
+  expect(initialAbshway.map((item: { variantId: string }) => item.variantId)).toEqual([seed.variantId]);
+  expect(initialAbshway[0]).toMatchObject({
     availableQuantity: 3,
     threshold: 3,
     thresholdSource: "global",
@@ -713,7 +791,7 @@ test("low-stock uses persisted global default 3 and per-variant override", async
   expect(raised.status).toBe(200);
   expect(raised.body).toEqual({ lowStockThreshold: 4 });
   const afterGlobal = await api(manager, "GET", "/api/internal/inventory/low-stock");
-  expect(afterGlobal.body.map((item: { variantId: string }) => item.variantId).sort()).toEqual(
+  expect(afterGlobal.body.filter((item: { branchId: string }) => item.branchId === abshwayId).map((item: { variantId: string }) => item.variantId).sort()).toEqual(
     [seed.secondVariantId, seed.variantId].sort(),
   );
 
@@ -726,8 +804,9 @@ test("low-stock uses persisted global default 3 and per-variant override", async
   expect(override.status).toBe(200);
   expect(override.body).toMatchObject({ variantId: seed.variantId, lowStockThreshold: 2 });
   const afterOverride = await api(manager, "GET", "/api/internal/inventory/low-stock");
-  expect(afterOverride.body).toHaveLength(1);
-  expect(afterOverride.body[0]).toMatchObject({
+  const afterOverrideAbshway = afterOverride.body.filter((item: { branchId: string }) => item.branchId === abshwayId);
+  expect(afterOverrideAbshway).toHaveLength(1);
+  expect(afterOverrideAbshway[0]).toMatchObject({
     variantId: seed.secondVariantId,
     availableQuantity: 4,
     threshold: 4,
@@ -751,7 +830,7 @@ test("low-stock uses persisted global default 3 and per-variant override", async
   expect(cleared.body.updatedByStaffId).toEqual(expect.any(String));
   expect(cleared.body.updatedAt).toEqual(expect.any(String));
   const afterClear = await api(manager, "GET", "/api/internal/inventory/low-stock");
-  expect(afterClear.body.map((item: { variantId: string }) => item.variantId).sort()).toEqual(
+  expect(afterClear.body.filter((item: { branchId: string }) => item.branchId === abshwayId).map((item: { variantId: string }) => item.variantId).sort()).toEqual(
     [seed.secondVariantId, seed.variantId].sort(),
   );
 
@@ -759,15 +838,17 @@ test("low-stock uses persisted global default 3 and per-variant override", async
   expect(zero.status).toBe(200);
   expect(zero.body).toEqual({ lowStockThreshold: 0 });
   const afterZero = await api(manager, "GET", "/api/internal/inventory/low-stock");
-  expect(afterZero.body).toEqual([]);
+  expect(afterZero.body.filter((item: { branchId: string }) => item.branchId === abshwayId)).toEqual([]);
+  expect(afterZero.body.filter((item: { branchId: string }) => item.branchId === fayoumId)).toHaveLength(2);
 });
 
-test("cashier lookup uses central availability and selling prices without cost data", async () => {
+test("cashier lookup uses active branch availability and selling prices without cost data", async () => {
   const manager = await signIn("owner", "owner-pass-1");
   await api(manager, "POST", "/api/internal/active-branch", { branchId: abshwayId });
   const seed = await seedShirt(manager);
   await api(manager, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
+    branchId: abshwayId,
     receiptDate: "2026-09-11",
     lines: [{ variantId: seed.variantId, quantity: 12, unitCostPiasters: 6500 }],
   });
@@ -789,8 +870,11 @@ test("cashier lookup uses central availability and selling prices without cost d
     size: { id: seed.sizeId, nameAr: "L" },
     color: { id: seed.colorId, nameAr: "أسود" },
     sellingPricePiasters: 25000,
-    availableQuantity: 12,
+    availableQuantity: 0,
   });
+  await api(cashier, "POST", "/api/internal/active-branch", { branchId: abshwayId });
+  const stocked = await api(cashier, "GET", `/api/internal/catalog/lookup?code=${encodeURIComponent("TS-001")}`);
+  expect(stocked.body.variants[0].availableQuantity).toBe(12);
   expect(JSON.stringify(found.body)).not.toMatch(/cost|profit|purchase|batch|inventoryValue|6500/i);
   expect(Object.keys(found.body).sort()).toEqual(["categoryId", "code", "descriptionAr", "id", "nameAr", "variants"]);
   expect(found.body.categoryId).toBe(seed.categoryId);
@@ -806,6 +890,7 @@ test("cashier lookup uses central availability and selling prices without cost d
   expect(settings.status).toBe(403);
   const receive = await api(cashier, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
+    branchId: abshwayId,
     receiptDate: "2026-09-11",
     lines: [{ variantId: seed.variantId, quantity: 1, unitCostPiasters: 1000 }],
   });
@@ -835,6 +920,7 @@ test("catalog price edits keep received variant and batch identity, and referenc
   const seed = await seedShirt(manager);
   const received = await api(manager, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
+    branchId: abshwayId,
     receiptDate: "2026-09-08",
     lines: [{ variantId: seed.variantId, quantity: 7, unitCostPiasters: 11000 }],
   });

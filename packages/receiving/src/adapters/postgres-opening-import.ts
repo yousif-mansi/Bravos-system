@@ -5,9 +5,9 @@ export function createPostgresOpeningReceivingTransaction(client: PoolClient): O
   return {
     async insertOpeningReceipt(input) {
       await client.query(
-        `INSERT INTO receiving_receipt (id,operation_id,receipt_date,received_by_staff_id,recorded_at)
-         VALUES ($1,$2,$3::date,$4,$5)`,
-        [input.receiptId,input.operationId,input.receiptDate,input.actorStaffId,input.recordedAt],
+        `INSERT INTO receiving_receipt (id,branch_id,operation_id,receipt_date,received_by_staff_id,recorded_at)
+         VALUES ($1,$2,$3,$4::date,$5,$6)`,
+        [input.receiptId,input.branchId,input.operationId,input.receiptDate,input.actorStaffId,input.recordedAt],
       );
       for (const line of input.lines) {
         await client.query(

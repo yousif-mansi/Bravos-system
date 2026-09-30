@@ -29,6 +29,17 @@ export function createPostgresSalesRestorePort(queryable: Queryable) {
       if (table === "sales_sale_unit") await assertSaleUnitTotals(queryable);
       return rows.length;
     },
+    async restoreReferenceSequence(sequence: { lastValue: string; isCalled: boolean }): Promise<void> {
+      if (!/^(0|[1-9]\d*)$/.test(sequence.lastValue)) throw restoreDataError("Invalid physical-sale reference sequence.");
+      const highest = await queryable.query<{ max_number: string }>(
+        `SELECT COALESCE(MAX(substring(reference FROM '^POS-([0-9]+)$')::bigint), 0)::text AS max_number
+         FROM sales_sale`,
+      );
+      const recordedNext = BigInt(sequence.lastValue) + (sequence.isCalled ? 1n : 0n);
+      const referencedNext = BigInt(highest.rows[0]?.max_number ?? "0") + 1n;
+      const next = recordedNext > referencedNext ? recordedNext : referencedNext;
+      await queryable.query("SELECT setval('sales_sale_reference_number_seq', $1::bigint, false)", [next.toString()]);
+    },
     // A pending till operation is safe for restore when the server holds it as an applied sale
     // or as a retained completed sale awaiting manager recovery.
     async listRestoreCustodyProofs(operationIds: string[]) {

@@ -18,6 +18,10 @@ const outboxDir = path.join(setupRoot, "owner-recovery-outbox");
 const productMediaDir = path.join(setupRoot, "product-media");
 const credentialsPath = path.join(setupRoot, "demo-credentials.txt");
 const envPath = path.join(setupRoot, "dev.env");
+const databaseName = process.env.BRAVOS_SETUP_DATABASE_NAME ?? "bravos";
+if (!/^[a-z][a-z0-9_]{0,62}$/.test(databaseName)) {
+  throw new Error("BRAVOS_SETUP_DATABASE_NAME must be 1–63 lowercase letters, digits, or underscores, starting with a letter.");
+}
 
 let cluster: PostgresCluster | undefined;
 let built: BuiltApp | undefined;
@@ -28,7 +32,7 @@ try {
     persistentDir: dataDir,
   });
   try {
-    await cluster.createDatabase("bravos");
+    await cluster.createDatabase(databaseName);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (!/already exists/i.test(message)) {
@@ -36,7 +40,7 @@ try {
     }
   }
 
-  const databaseUrl = cluster.connectionString("bravos");
+  const databaseUrl = cluster.connectionString(databaseName);
   const config = {
     nodeEnv: "development",
     databaseUrl,

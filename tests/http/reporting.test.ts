@@ -53,6 +53,7 @@ test("manager report composes effective revenue, retained batch costs, returns a
 
   const receipt = await api(manager, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
+    branchId,
     receiptDate: "2026-09-16",
     lines: [
       { variantId: variants.first, quantity: 1, unitCostPiasters: 14000 },
@@ -156,11 +157,11 @@ test("manager report composes effective revenue, retained batch costs, returns a
   const report = await api(
     manager,
     "GET",
-    `/api/internal/reports/management?period=today&branchId=${branchId}&employeeId=${employee.id}&detailPage=1&detailPageSize=10`,
+    `/api/internal/reports/management?period=month&month=2026-09&branchId=${branchId}&employeeId=${employee.id}&detailPage=1&detailPageSize=10`,
   );
   expect(report.status, JSON.stringify(report.body)).toBe(200);
   expect(report.body).toMatchObject({
-    period: { kind: "today", fromCairoDate: "2026-09-16", toCairoDateInclusive: "2026-09-16" },
+    period: { kind: "month", fromCairoDate: "2026-09-01", toCairoDateInclusive: "2026-09-30" },
     filters: { branchId, channel: "all", employeeId: employee.id },
     pageInfo: {
       page: 1,
@@ -257,6 +258,7 @@ test("Cairo day boundaries use occurred time and invalid or unauthenticated repo
   const { first } = await seedProduct(manager);
   const received = await api(manager, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
+    branchId,
     receiptDate: "2026-09-15",
     lines: [{ variantId: first, quantity: 3, unitCostPiasters: 10000 }],
   });
@@ -389,8 +391,9 @@ test("export rejects a real matching oversized detail set through the public rep
     { period: "day", date: "2026-09-16" })).rejects.toBeInstanceOf(ReportingExportLimitError);
 });
 
-test("delivered online orders contribute merchandise and delivery separately while pending operations stay outside revenue", async () => {
+test("confirmed online orders contribute merchandise and delivery once while pending operations stay outside revenue", async () => {
   const manager = await signIn("owner", "owner-pass-1");
+  await selectManagerBranch(manager);
   const suffix = crypto.randomUUID().slice(0, 6);
   const category = await api(manager, "POST", "/api/internal/catalog/categories", { nameAr: `متجر ${suffix}` });
   const size = await api(manager, "POST", "/api/internal/catalog/sizes", { nameAr: `مقاس متجر ${suffix}` });
@@ -409,6 +412,7 @@ test("delivered online orders contribute merchandise and delivery separately whi
   const variantId = product.body.variants[0].id as string;
   const receipt = await api(manager, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
+    branchId,
     receiptDate: "2026-09-16",
     lines: [{ variantId, quantity: 2, unitCostPiasters: 10000 }],
   });
@@ -438,9 +442,16 @@ test("delivered online orders contribute merchandise and delivery separately whi
     operationId: crypto.randomUUID(),
     expectedRevision: agreed.body.revision,
     agreedRevision: agreed.body.revision,
+    fulfillmentBranchId: branchId,
     itemsLocatedAndSetAside: true,
   });
   expect(confirmed.status, JSON.stringify(confirmed.body)).toBe(201);
+  const confirmedReport = await api(manager, "GET", "/api/internal/reports/management?period=today&channel=online");
+  expect(confirmedReport.status, JSON.stringify(confirmedReport.body)).toBe(200);
+  expect(confirmedReport.body.summary).toMatchObject({
+    completedCount: 1, grossFinalSalesPiasters: 50000, grossMerchandiseSalesPiasters: 45000,
+    knownNetMerchandiseCostPiasters: 10000,
+  });
   const shipped = await api(manager, "POST", `/api/internal/online-orders/${deliveredOrder.orderId}/ship`, {
     operationId: crypto.randomUUID(),
     expectedRevision: confirmed.body.revision,
@@ -468,7 +479,7 @@ test("delivered online orders contribute merchandise and delivery separately whi
     expect.objectContaining({
       source: { kind: "delivered_online_order", id: deliveredOrder.orderId, reference: deliveredOrder.reference },
       channel: "online",
-      branch: null,
+      branch: expect.objectContaining({ id: branchId }),
       employee: null,
       effectiveMerchandisePiasters: 45000,
       deliveryChargePiasters: 5000,
@@ -483,6 +494,11 @@ test("delivered online orders contribute merchandise and delivery separately whi
     deliveryFailedCount: 0,
   });
   expect(report.body.inventory).toMatchObject({ availableQuantity: 1, availableValuePiasters: 10000, protectedQuantity: 0 });
+  const branchReport = await api(manager, "GET", `/api/internal/reports/management?period=today&channel=online&branchId=${branchId}`);
+  expect(branchReport.status, JSON.stringify(branchReport.body)).toBe(200);
+  expect(branchReport.body.summary).toMatchObject({ completedCount: 1, grossFinalSalesPiasters: 50000 });
+  expect(branchReport.body.byBranch.find((row: { branch: { id: string } }) => row.branch.id === branchId))
+    .toMatchObject({ completedCount: 1, grossFinalSalesPiasters: 50000 });
 });
 
 test("protected confirmed and in-transit stock stays out of available value while a delivered online return reports its charge refund", async () => {
@@ -506,6 +522,7 @@ test("protected confirmed and in-transit stock stays out of available value whil
   const variantId = product.body.variants[0].id as string;
   const receipt = await api(manager, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
+    branchId,
     receiptDate: "2026-09-16",
     lines: [{ variantId, quantity: 3, unitCostPiasters: 10000 }],
   });
@@ -540,26 +557,26 @@ test("protected confirmed and in-transit stock stays out of available value whil
   });
   expect(posted.status, JSON.stringify(posted.body)).toBe(201);
 
-  const report = await api(manager, "GET", "/api/internal/reports/management?period=today&channel=online");
+  const report = await api(manager, "GET", "/api/internal/reports/management?period=month&month=2026-09&channel=online");
   expect(report.status, JSON.stringify(report.body)).toBe(200);
   expect(report.body.summary).toMatchObject({
-    completedCount: 1,
-    grossFinalSalesPiasters: 50000,
-    grossMerchandiseSalesPiasters: 45000,
-    deliveryChargesPiasters: 5000,
+    completedCount: 3,
+    grossFinalSalesPiasters: 150000,
+    grossMerchandiseSalesPiasters: 135000,
+    deliveryChargesPiasters: 15000,
     merchandiseRefundPiasters: 45000,
     checkoutChargeRefundPiasters: 5000,
-    netFinalSalesPiasters: 0,
-    netMerchandiseSalesPiasters: 0,
-    knownNetMerchandiseCostPiasters: 0,
-    merchandiseGrossProfitPiasters: 0,
+    netFinalSalesPiasters: 100000,
+    netMerchandiseSalesPiasters: 90000,
+    knownNetMerchandiseCostPiasters: 20000,
+    merchandiseGrossProfitPiasters: 70000,
     costsIncomplete: false,
   });
   expect(report.body.refunds).toEqual([
     expect.objectContaining({
       returnId: draft.body.id,
       channel: "online",
-      originalBranchId: null,
+      originalBranchId: branchId,
       handlingBranchId: branchId,
       source: { kind: "delivered_online_order", id: delivered.orderId },
       authorizedRefund: { merchandisePiasters: 45000, checkoutChargePiasters: 5000, totalPiasters: 50000 },
@@ -605,6 +622,7 @@ async function advanceOnlineOrder(
     operationId: crypto.randomUUID(),
     expectedRevision: agreed.body.revision,
     agreedRevision: agreed.body.revision,
+    fulfillmentBranchId: branchId,
     itemsLocatedAndSetAside: true,
   });
   expect(confirmed.status, JSON.stringify(confirmed.body)).toBe(201);

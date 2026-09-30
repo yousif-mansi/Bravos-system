@@ -1,25 +1,30 @@
 .wall {
-  margin-inline: calc(clamp(var(--space-4), 4vw, var(--space-12)) * -1);
+  padding-block: var(--space-6) var(--space-8);
 }
 
 .grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  column-gap: 2px;
-  row-gap: 24px;
+  align-items: start;
+  column-gap: clamp(16px, 2.2vw, 32px);
+  row-gap: clamp(40px, 5vw, 72px);
 }
 
 .card.card {
   display: block;
   min-width: 0;
-  color: var(--ink);
+  color: var(--store-ink);
   font-family: var(--font-commerce);
   text-decoration: none;
 }
 
+.card:nth-child(7n + 1) {
+  grid-column: span 2;
+}
+
 .card:focus-visible {
   outline: 3px solid var(--store-focus);
-  outline-offset: -3px;
+  outline-offset: 5px;
 }
 
 .media {
@@ -29,86 +34,125 @@
   width: 100%;
   aspect-ratio: 4 / 5;
   overflow: hidden;
-  background: #ded8cf;
+  background: var(--store-surface);
+  border: 1px solid var(--store-border);
+}
+
+.card:nth-child(7n + 1) .media {
+  aspect-ratio: 8 / 5;
 }
 
 .media img {
   object-fit: contain;
+  padding: clamp(12px, 2vw, 28px);
+  transition: transform .5s ease;
 }
 
 .mediaFallback {
-  padding: 12px;
-  color: var(--muted);
-  font: 400 14px/20px var(--font-commerce);
+  display: grid;
+  justify-items: center;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  color: var(--store-muted);
+  font: 400 13px/1.7 var(--font-commerce);
   text-align: center;
 }
 
+.fallbackWordmark {
+  max-width: 100%;
+  color: var(--store-muted);
+  font: 400 clamp(16px, 2vw, 26px)/1 var(--font-display, var(--font-commerce));
+  letter-spacing: .2em;
+  direction: ltr;
+  padding-inline-start: .2em;
+}
+
 .caption {
-  padding: 12px;
+  padding-block: 18px 0;
   overflow-wrap: anywhere;
 }
 
 .name {
   margin: 0;
-  font: 600 16px/24px var(--font-commerce);
+  font: 500 clamp(16px, 1.4vw, 19px)/1.7 var(--font-commerce);
 }
 
 .price {
-  margin: 2px 0 0;
-  font: 500 15px/24px var(--font-commerce);
+  margin: 6px 0 0;
+  color: var(--store-ink);
+  font: 500 15px/1.8 var(--font-commerce);
 }
 
 .pricePrefix {
-  font-size: 14px;
+  color: var(--store-muted);
+  font-size: 13px;
+  font-weight: 400;
 }
 
 .available,
 .unavailable {
-  margin: 2px 0 0;
-  font: 400 14px/20px var(--font-commerce);
+  margin: 6px 0 0;
+  font: 400 13px/1.8 var(--font-commerce);
 }
 
 .available {
-  color: var(--muted);
+  color: var(--store-muted);
 }
 
 .unavailable {
-  color: var(--ink);
+  color: var(--store-accent, var(--store-ink));
 }
 
 .note {
-  margin: 20px 0 0;
-  padding-inline: 12px;
-  color: var(--muted);
-  font: 400 14px/20px var(--font-commerce);
+  margin: clamp(32px, 5vw, 64px) 0 0;
+  padding-block-start: var(--space-6);
+  border-block-start: 1px solid var(--store-border);
+  color: var(--store-muted);
+  font: 400 13px/1.9 var(--font-commerce);
 }
 
 @media (hover: hover) and (pointer: fine) {
   .card:hover .name {
     text-decoration: underline;
-    text-underline-offset: 3px;
+    text-decoration-color: var(--store-accent, var(--store-ink));
+    text-underline-offset: 6px;
+  }
+
+  .card:hover .media img {
+    transform: scale(1.025);
   }
 }
 
-@media (max-width: 1199px) {
-  .grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-}
-
-@media (max-width: 767px) {
+@media (max-width: 899px) {
   .grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 36px 16px;
   }
 
-  .caption,
-  .note {
-    padding-inline: 8px;
+  .card:nth-child(7n + 1) {
+    grid-column: auto;
   }
+
+  .card:nth-child(7n + 1) .media {
+    aspect-ratio: 4 / 5;
+  }
+}
+
+@media (max-width: 580px) {
+  .wall { padding-block-start: var(--space-4); }
+  .caption { padding-block-start: 12px; }
+  .name { font-size: 16px; }
+  .price { font-size: 14px; }
+  .media img { padding: 8px; }
+  .fallbackWordmark { font-size: 16px; letter-spacing: .12em; }
 }
 
 @media (max-width: 359px) {
-  .grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
+  .grid { grid-template-columns: minmax(0, 1fr); }
+  .fallbackWordmark { font-size: 24px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .media img { transition: none; }
+  .card:hover .media img { transform: none; }
 }

@@ -97,6 +97,7 @@ export function createExchangeReplacementSaleWriter(ports: {
       const completedLines: SaleLineWrite[] = [];
       for (const [lineIndex, line] of priced.lines.entries()) {
         const allocated = await ports.inventory.allocateFromOldestAvailable({
+          branchId: input.branchId,
           operationId: input.operationId,
           variantId: line.variantId,
           quantity: line.quantity,

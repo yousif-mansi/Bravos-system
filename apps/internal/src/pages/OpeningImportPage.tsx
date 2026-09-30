@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import type {
+  BranchDto,
   OpeningImportFilesDto,
   OpeningImportLineErrorDto,
   OpeningImportPreviewDto,
@@ -329,6 +330,9 @@ export default function OpeningImportPage({ workspace }: { workspace: WorkspaceD
       <section className="card opening-import-templates">
         <h2>القوالب المعتمدة</h2>
         <p className="muted">نزّل القوالب كما هي. يمكن ترك ملف بقائمة العناوين فقط إذا لم تكن له بيانات.</p>
+        <p>ملف المخزون الافتتاحي يسجل كل دفعة لفرع محدد. املأ عمود <code>branch_code</code> برمز الفرع، ويمكن تكرار المتغير في فرعين بكميتين منفصلتين.</p>
+        <p className="muted">رموز الفروع: {workspace.authorizedBranches.map((branch) => `${branch.code} (${branch.nameAr})`).join("، ")}.</p>
+        <p className="muted">أعمدة الملف: <code>batch_key,branch_code,variant_key,quantity,unit_cost_egp,receipt_date,batch_order</code></p>
         <div className="actions">
           <a className="button secondary" href="/api/internal/opening-import/templates/catalog.csv" download>
             تنزيل قالب الكتالوج
@@ -394,6 +398,7 @@ export default function OpeningImportPage({ workspace }: { workspace: WorkspaceD
       ) : (
         <OpeningImportPreview
           preview={preview}
+          branches={workspace.authorizedBranches}
           canAccept={Boolean(
             preview.status === "ready"
             && pendingMarker?.previewId === preview.id
@@ -411,12 +416,14 @@ export default function OpeningImportPage({ workspace }: { workspace: WorkspaceD
 
 function OpeningImportPreview({
   preview,
+  branches,
   canAccept,
   busy,
   onAccept,
   onNewUpload,
 }: {
   preview: OpeningImportPreviewDto;
+  branches: BranchDto[];
   canAccept: boolean;
   busy: boolean;
   onAccept: () => void;
@@ -444,6 +451,7 @@ function OpeningImportPreview({
         <Count label="المتغيرات" value={preview.counts.variants} />
         <Count label="دفعات التكلفة" value={preview.counts.batches} />
         <Count label="إجمالي الكمية الافتتاحية" value={preview.counts.openingQuantity} />
+        {branches.map((branch) => <Count key={branch.id} label={`كمية ${branch.nameAr}`} value={preview.batches.filter((batch) => batch.branchCode === branch.code).reduce((total, batch) => total + batch.quantity, 0)} />)}
         <Count label="فئات المصروفات" value={preview.counts.expenseCategories} />
         <Count label="مناطق التوصيل" value={preview.counts.deliveryAreas} />
         <Count label="العروض التلقائية" value={preview.counts.automaticOffers} />
@@ -475,6 +483,7 @@ function OpeningImportPreview({
               <article className="summary-card opening-import-row" data-testid="opening-import-batch" key={batch.key}>
                 <div>
                   <strong>{batch.key}</strong>
+                  <p>الفرع: {branches.find((branch) => branch.code === batch.branchCode)?.nameAr ?? batch.branchCode}</p>
                   <p className="muted">المتغير: {batch.variantKey}</p>
                 </div>
                 <div>

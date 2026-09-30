@@ -45,7 +45,9 @@ test("Arabic storefront browses, persists an aggregated guest cart and handles c
   const emptyVariant = shirt.body.variants.find((variant: { size: { nameAr: string } }) => variant.size.nameAr === "L18");
   if (!stockedVariant || !emptyVariant) throw new Error("Expected storefront variants.");
   expect((await staffApi(page, "POST", "/api/internal/receiving/receipts", {
-    operationId: crypto.randomUUID(), receiptDate: "2026-09-15",
+    operationId: crypto.randomUUID(),
+    branchId: (await staffApi(page, "GET", "/api/internal/workspace")).body.activeBranch.id,
+    receiptDate: "2026-09-15",
     lines: [{ variantId: stockedVariant.id, quantity: 2, unitCostPiasters: 21000 }],
   })).status).toBe(201);
 
@@ -90,15 +92,16 @@ test("Arabic storefront browses, persists an aggregated guest cart and handles c
     lines: [{ variantId: stockedVariant.id, quantity: 1 }], physicallyCompleted: true,
   });
   expect(sale.status).toBe(201);
-  await page.getByRole("button", { name: "تحديث المخزون" }).click();
+  await page.getByRole("button", { name: "تحديث بيانات المنتجات" }).click();
   await expect(page.getByText("المتاح الآن 1 فقط.", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "ضبط للمتاح" }).click();
   await expect(page.locator(".cart-line output")).toHaveText("1");
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("http://127.0.0.1:3001");
-  await expect(page.getByRole("link", { name: "جاكيتات متجر 18", exact: true })).toBeVisible();
-  await page.getByRole("link", { name: "جاكيتات متجر 18", exact: true }).click();
+  const categoryFilter = page.getByRole("navigation", { name: "تصفية حسب التصنيف" }).getByRole("link", { name: "جاكيتات متجر 18", exact: true });
+  await expect(categoryFilter).toBeVisible();
+  await categoryFilter.click();
   await expect(page.getByRole("link", { name: /جاكيت الموسم القادم/ })).toContainText("قريباً");
   await page.goto(`http://127.0.0.1:3001/products/${comingSoon.body.id}`);
   await expect(page.getByText("هذا المنتج للعرض المسبق وسيكون متاحاً للطلب لاحقاً.")).toBeVisible();

@@ -1,3 +1,5 @@
+import type { SalePaymentDto } from "@bravos/contracts";
+
 export type SalePayload = {
   saleId: string;
   customerName: string | null;
@@ -5,6 +7,7 @@ export type SalePayload = {
   couponCode?: string | null;
   employeeDiscountPiasters: number;
   discountReason: string | null;
+  payment?: SalePaymentDto;
   lines: Array<{ variantId: string; quantity: number }>;
 };
 
@@ -19,6 +22,7 @@ export type AcceptedSalePayload = {
   couponCode?: string | null;
   employeeDiscountPiasters: number;
   discountReason: string | null;
+  payment?: SalePaymentDto;
   lines: Array<{ variantId: string; quantity: number; listedUnitPricePiasters?: number | null }>;
 };
 
@@ -62,6 +66,7 @@ export function normalizeSalePayload(input: SalePayload): SalePayload {
     ...(couponCode ? { couponCode } : {}),
     employeeDiscountPiasters: input.employeeDiscountPiasters,
     discountReason: input.discountReason,
+    ...(input.payment ? { payment: input.payment } : {}),
     lines: sortedLines(input.lines),
   };
 }
@@ -82,6 +87,7 @@ export function normalizeAcceptedSalePayload(input: AcceptedSalePayload): Accept
     ...(couponCode ? { couponCode } : {}),
     employeeDiscountPiasters: input.employeeDiscountPiasters,
     discountReason: input.discountReason,
+    ...(input.payment ? { payment: input.payment } : {}),
     lines: versionedPricing ? sortedAcceptedLines(input.lines) : sortedLines(input.lines),
   };
 }
@@ -106,6 +112,7 @@ export function canonicalOfflineSaleFactsJson(input: {
   couponCode?: string | null;
   employeeDiscountPiasters: number;
   discountReason: string | null;
+  payment?: SalePaymentDto;
   lines: Array<{ variantId: string; quantity: number; listedUnitPricePiasters?: number | null }>;
 }): string {
   if (input.kind === "accepted" && input.snapshotId) {
@@ -124,6 +131,7 @@ export function canonicalOfflineSaleFactsJson(input: {
       ...(input.couponCode ? { couponCode: input.couponCode } : {}),
       employeeDiscountPiasters: input.employeeDiscountPiasters,
       discountReason: input.discountReason,
+      ...(input.payment ? { payment: input.payment } : {}),
       lines: input.lines,
     });
   }
@@ -134,6 +142,7 @@ export function canonicalOfflineSaleFactsJson(input: {
     ...(input.couponCode ? { couponCode: input.couponCode } : {}),
     employeeDiscountPiasters: input.employeeDiscountPiasters,
     discountReason: input.discountReason,
+    ...(input.payment ? { payment: input.payment } : {}),
     lines: input.lines,
   });
 }

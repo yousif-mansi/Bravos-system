@@ -27,7 +27,7 @@ test("manager creates a coupon and cashier can apply, remove, reapply, and compl
   await expect(page.getByRole("link", { name: "العروض" })).toHaveCount(0);
   await addProduct(page, catalog.code, catalog.sizeName, catalog.colorName);
 
-  const checkout = page.getByRole("form", { name: "إتمام البيع النقدي" });
+  const checkout = page.getByRole("form", { name: "إتمام البيع" });
   const couponInput = checkout.getByLabel("كود الكوبون", { exact: true });
   const productLookupRequests: string[] = [];
   page.on("request", (request) => {
@@ -51,9 +51,9 @@ test("manager creates a coupon and cashier can apply, remove, reapply, and compl
   await couponInput.fill("BROWSER50");
   await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
   await expect(page.getByTestId("coupon-breakdown")).toContainText("50 ج.م.");
-  await checkout.getByLabel("استلم الزبون البضاعة ودفع نقداً").check();
+  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
-  await expect(page.getByRole("status")).toContainText("تم حفظ البيع النقدي.");
+  await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   await expect(page.getByTestId("sale-coupon")).toContainText("browser50 — 50 ج.م.");
   await expect(page.getByTestId("sale-details")).toContainText("الإجمالي: 250 ج.م.");
   await expect.poll(async () => (await staffApi(page, "GET", "/api/internal/sales")).body.some((sale: {
@@ -121,7 +121,7 @@ test("cached offer and coupon prices survive offline completion while usage stay
   expect((await readLocalCouponSale(secondTab, catalog.code))).toMatchObject({ couponDiscountPiasters: 5_000 });
 
   await addProduct(page, catalog.code, catalog.sizeName, catalog.colorName);
-  const checkout = page.getByRole("form", { name: "إتمام البيع النقدي" });
+  const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByLabel("كود الكوبون", { exact: true }).fill("OFFLINE-CACHED-50");
   await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
   await expect(page.getByRole("alert")).toContainText("بلغ الكوبون الحد الأقصى للاستخدام.");
@@ -152,15 +152,15 @@ test("a Cairo-midnight handover keeps its accepted cached offer while a fresh of
   await context.setOffline(true);
 
   await addProduct(page, catalog.code, catalog.sizeName, catalog.colorName);
-  const checkout = page.getByRole("form", { name: "إتمام البيع النقدي" });
+  const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
   await expect(page.getByTestId("automatic-offer-breakdown")).toContainText("30 ج.م.");
   await expect(page.getByTestId("accepted-prices")).toContainText("الإجمالي: 270 ج.م.");
 
   await page.clock.setFixedTime(new Date("2026-09-15T21:00:01.000Z"));
-  await checkout.getByLabel("استلم الزبون البضاعة ودفع نقداً").check();
+  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
-  await expect(page.getByRole("status")).toContainText("تم حفظ البيع النقدي.");
+  await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   const accepted = await readLocalCouponSale(page, catalog.code);
   expect(accepted).toMatchObject({
     occurredAt: "2026-09-15T21:00:01.000Z",
@@ -206,7 +206,7 @@ test("a last-use race preserves the paid prepared sale and exposes the coupon di
   await page.getByRole("button", { name: "تسجيل الخروج" }).click();
   await signIn(page, "cashier", "e2e-cashier-pass", false);
   await addProduct(page, catalog.code, catalog.sizeName, catalog.colorName);
-  const checkout = page.getByRole("form", { name: "إتمام البيع النقدي" });
+  const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await page.getByLabel("كود الكوبون", { exact: true }).fill("ONLY-ONE-E2E");
   await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
   await expect(page.getByTestId("coupon-breakdown")).toContainText("ONLY-ONE-E2E — 50 ج.م.");
@@ -227,9 +227,9 @@ test("a last-use race preserves the paid prepared sale and exposes the coupon di
     await manager.context().close();
   }
 
-  await checkout.getByLabel("استلم الزبون البضاعة ودفع نقداً").check();
+  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
-  await expect(page.getByRole("status")).toContainText("تم حفظ البيع النقدي.");
+  await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   await expect(page.getByTestId("sale-coupon")).toContainText("ONLY-ONE-E2E — 50 ج.م.");
   await expect.poll(async () => (await readLocalCouponSale(page, catalog.code))?.syncStatus).toBe("acknowledged");
 
@@ -299,6 +299,7 @@ async function seedProduct(page: Page, code: string, label: string, price: numbe
   const variantId = product.body.variants[0].id as string;
   expect((await staffApi(page, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
+    branchId: (await staffApi(page, "GET", "/api/internal/workspace")).body.activeBranch.id,
     receiptDate: cairoDate(),
     lines: [{ variantId, quantity, unitCostPiasters: 5_000 }],
   })).status).toBe(201);
@@ -329,16 +330,16 @@ async function completeCachedCouponSale(
   couponCode: string,
 ) {
   await addProduct(page, catalog.code, catalog.sizeName, catalog.colorName);
-  const checkout = page.getByRole("form", { name: "إتمام البيع النقدي" });
+  const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByLabel("كود الكوبون", { exact: true }).fill(couponCode);
   await checkout.getByLabel("خصم الموظف بالجنيه").fill("20");
   await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
   await expect(page.getByTestId("automatic-offer-breakdown")).toContainText("30 ج.م.");
   await expect(page.getByTestId("coupon-breakdown")).toContainText("50 ج.م.");
   await expect(page.getByTestId("accepted-prices")).toContainText("الإجمالي: 200 ج.م.");
-  await checkout.getByLabel("استلم الزبون البضاعة ودفع نقداً").check();
+  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
-  await expect(page.getByRole("status")).toContainText("تم حفظ البيع النقدي.");
+  await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
 }
 
 async function staffApi(page: Page, method: "GET" | "POST", url: string, payload?: unknown) {

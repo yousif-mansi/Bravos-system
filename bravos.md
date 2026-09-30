@@ -1,5 +1,7 @@
 # BRAVOS — Complete Business & Product Requirements
 
+> **Latest correction — 2026-09-29:** The user explicitly replaced the central-inventory and cash-only branch-sale rules after testing. [Phase 1 operational updates](docs/planning/phase-1-operational-updates.md) records the new branch inventory, inventory-first workflow, payment allocation, online recognition, references, returns lookup, and UI requirements, plus pending follow-up decisions. It takes precedence over conflicting historical text below.
+
 > **Document purpose:** This file is the authoritative business requirements brief for the BRAVOS system and online store.  
 > It merges the original discovery questionnaire, the client's answers, and the latest client correction.  
 > It is intended to be given to Codex before architecture, technology selection, database design, or implementation begins.

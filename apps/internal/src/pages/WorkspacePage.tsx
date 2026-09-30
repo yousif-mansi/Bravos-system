@@ -15,7 +15,6 @@ import {
   listOnlineOrders,
   recoverOfflineSale,
 } from "../api.ts";
-import { getBackupReadiness } from "../backup-api.ts";
 import { formatEgpFromPiasters } from "../money.ts";
 import { posCodeIsCached } from "../offline-ready.ts";
 import { acknowledgeRestoreDevice, getRestorePause } from "../restore-api.ts";
@@ -256,6 +255,8 @@ export function WorkspacePage({
           status("stock", "error");
         }
         try {
+          const { getBackupReadiness } = await import("../backup-api.ts");
+          if (!stillCurrent()) return;
           const readiness = await getBackupReadiness();
           if (!stillCurrent()) return;
           setBackupHint(
@@ -565,8 +566,8 @@ export function WorkspacePage({
       </header>
 
       {workspace.capabilities.cashier ? (
-        <Link className="sell-now" to="/lookup" aria-label="بيع نقدي البحث عن منتج">
-          <strong>بيع نقدي</strong>
+        <Link className="sell-now" to="/lookup" aria-label="نقطة البيع البحث عن منتج">
+          <strong>نقطة البيع</strong>
           <span>ابدأ بيع من الكود</span>
         </Link>
       ) : null}
@@ -653,7 +654,7 @@ export function WorkspacePage({
           </article>
           <article className="kpi-card">
             <strong>{lowStockCount === null ? "—" : lowStockCount}</strong>
-            <span>المخزون المركزي يحتاج متابعة</span>
+            <span>مخزون الفروع يحتاج متابعة</span>
             <small>{summaryDetail("stock", "أصناف قليلة حالياً")}</small>
           </article>
           <article className={`kpi-card${unsynced > 0 ? " is-warn" : ""}`}>

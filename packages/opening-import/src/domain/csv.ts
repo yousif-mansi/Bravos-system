@@ -9,7 +9,7 @@ import { normalizeStorefrontContactUrl, type StorefrontContactPlatform } from "@
 import type { BatchPlan, CouponPlan, DeliveryAreaPlan, ExpenseCategoryPlan, NamedPlan, OfferPlan, OpeningImportPlan, ProductPlan, VariantPlan } from "./model.ts";
 
 const CATALOG_HEADERS = ["record_type","key","name_ar","parent_key","product_code","description_ar","category_key","default_price_egp","publication","image_refs","size_guide_ar","product_key","size_key","color_key","price_override_egp"];
-const STOCK_HEADERS = ["batch_key","variant_key","quantity","unit_cost_egp","receipt_date","batch_order"];
+const STOCK_HEADERS = ["batch_key","branch_code","variant_key","quantity","unit_cost_egp","receipt_date","batch_order"];
 const CONFIG_HEADERS = ["record_type","key","name_ar","value","variant_key","fee_egp","active","discount_type","percentage","amount_egp","starts_on","ends_on","allow_combination","usage_limit","product_keys","category_keys","buy_quantity","reward_quantity","reward_percentage","bundle_total_egp","offer_key","required_quantity","buy_product_keys","buy_category_keys","reward_product_keys","reward_category_keys"];
 const MAX_BYTES = 1024 * 1024;
 const MAX_ROWS = 5000;
@@ -349,6 +349,7 @@ function parseStockRows(
   const variantOrders = new Set<string>();
   for (const row of rows) {
     const rawKey = required(row, "batch_key", "opening-stock.csv", errors);
+    const branchCode = required(row, "branch_code", "opening-stock.csv", errors).toLowerCase();
     const rawVariantKey = required(row, "variant_key", "opening-stock.csv", errors);
     const key = rawKey ? localKey(rawKey, "opening-stock.csv", row.line, errors) : null;
     const variantKey = referenceKey(rawVariantKey);
@@ -357,6 +358,10 @@ function parseStockRows(
     const receiptDate = dateOnly(row, "receipt_date", "opening-stock.csv", errors);
     const batchOrder = integer(row, "batch_order", "opening-stock.csv", errors, 1);
     if (!key || !variantKey || parsedQuantity === null || parsedCost === null || !receiptDate || batchOrder === null) continue;
+    if (branchCode !== "abshway" && branchCode !== "fayoum") {
+      errors.push(err("opening-stock.csv", row.line, "branch_code", "UNKNOWN_BRANCH", "استخدم abshway أو fayoum."));
+      continue;
+    }
     const quantity = checked(row, "quantity", "opening-stock.csv", errors,
       () => assertQuantity(parsedQuantity, "كمية الدفعة غير صالحة."));
     const unitCostPiasters = checked(row, "unit_cost_egp", "opening-stock.csv", errors,
@@ -373,12 +378,12 @@ function parseStockRows(
     }
     if (batchKeys.has(key)) errors.push(err("opening-stock.csv", row.line, "batch_key", "DUPLICATE_KEY", `مفتاح الدفعة ${key} مكرر.`));
     batchKeys.add(key);
-    const orderKey = `${variantId}:${batchOrder}`;
+    const orderKey = `${branchCode}:${variantId}:${batchOrder}`;
     if (variantOrders.has(orderKey)) errors.push(err("opening-stock.csv", row.line, "batch_order", "DUPLICATE_BATCH_ORDER", "ترتيب الدفعة مكرر للمتغير نفسه."));
     variantOrders.add(orderKey);
     const recordedAt = new Date(Date.parse(`${receiptDate}T00:00:00.000Z`) + batchOrder);
     batches.push({
-      id: randomUUID(), lineId: randomUUID(), movementId: randomUUID(), key, variantKey, variantId,
+      id: randomUUID(), lineId: randomUUID(), movementId: randomUUID(), key, branchCode, variantKey, variantId,
       quantity, unitCostPiasters, receiptDate, batchOrder, recordedAt: recordedAt.toISOString(), line: row.line,
     });
   }

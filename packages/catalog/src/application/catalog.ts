@@ -48,6 +48,8 @@ const CATEGORY_CREATE_KEYS = new Set(["nameAr", "parentId"]);
 const CATEGORY_UPDATE_KEYS = new Set(["nameAr"]);
 const NAME_ONLY_KEYS = new Set(["nameAr"]);
 const PRODUCT_KEYS = new Set([
+  "expectedRevision",
+  "expectedVariantIds",
   "code",
   "nameAr",
   "descriptionAr",
@@ -58,12 +60,15 @@ const PRODUCT_KEYS = new Set([
   "sizeGuideAr",
   "variants",
 ]);
-const VARIANT_KEYS = new Set(["sizeId", "colorId", "sellingPricePiastersOverride"]);
+const VARIANT_KEYS = new Set(["sizeId", "colorId", "onlineVisible", "sellingPricePiastersOverride"]);
 
 export function unstockedAvailability(): AvailabilityReader {
   return {
-    async quantitiesFor(variantIds) {
+    async quantitiesFor(_branchId, variantIds) {
       return new Map(variantIds.map((id) => [id, 0]));
+    },
+    async quantitiesByBranchFor() {
+      return new Map();
     },
   };
 }
@@ -108,10 +113,21 @@ export function createCatalogServices(ports: {
   async function requireCashier(auth: VerifiedAuth | null) {
     const current = await requireStaff(auth);
     const branchId = await ports.actors.getSessionBranch(current.sessionId);
-    if (!capabilitiesFor(current.staff, branchId).cashier) {
+    if (!branchId || !capabilitiesFor(current.staff, branchId).cashier) {
       throw new ForbiddenError();
     }
-    return current;
+    return { ...current, branchId };
+  }
+
+  async function publicQuantitiesFor(variantIds: string[]): Promise<Map<string, number>> {
+    const byBranch = await availability.quantitiesByBranchFor(variantIds);
+    const visible = new Map<string, number>();
+    for (const branch of byBranch.values()) {
+      for (const [variantId, quantity] of branch) {
+        visible.set(variantId, Math.max(visible.get(variantId) ?? 0, quantity));
+      }
+    }
+    return visible;
   }
 
   return {
@@ -263,28 +279,28 @@ export function createCatalogServices(ports: {
     },
 
     async lookupByCode(auth: VerifiedAuth | null, code: unknown): Promise<CashierProductLookupDto> {
-      await requireCashier(auth);
+      const { branchId } = await requireCashier(auth);
       const productCode = assertProductCode(code);
       const product = await ports.store.findProductByCodeKey(normalizedProductCodeKey(productCode));
       if (!product) {
         throw new NotFoundError("المنتج غير موجود.");
       }
-      const quantities = await availability.quantitiesFor(product.variants.map((variant) => variant.id));
+      const quantities = await availability.quantitiesFor(branchId, product.variants.map((variant) => variant.id));
       return toCashierLookup(product, quantities);
     },
 
     async listCashierCatalog(auth: VerifiedAuth | null): Promise<CashierProductLookupDto[]> {
-      await requireCashier(auth);
+      const { branchId } = await requireCashier(auth);
       const products = await ports.store.listProducts();
       const ids = products.flatMap((product) => product.variants.map((variant) => variant.id));
-      const quantities = await availability.quantitiesFor(ids);
+      const quantities = await availability.quantitiesFor(branchId, ids);
       return products.map((product) => toCashierLookup(product, quantities));
     },
 
     async listPublicProducts(): Promise<PublicProductDto[]> {
       const products = await ports.store.listPublishedProducts();
       const ids = products.flatMap((product) => product.variants.map((variant) => variant.id));
-      const quantities = await availability.quantitiesFor(ids);
+      const quantities = await publicQuantitiesFor(ids);
       return products.map((product) => toPublicProduct(product, quantities));
     },
 
@@ -293,7 +309,7 @@ export function createCatalogServices(ports: {
       const categoryId = optionalBrowseCategory(input.categoryId);
       const products = await ports.store.listPublishedProducts();
       const ids = products.flatMap((product) => product.variants.map((variant) => variant.id));
-      const quantities = await availability.quantitiesFor(ids);
+      const quantities = await publicQuantitiesFor(ids);
       const categories = [...new Map(products.map((product) => [product.category.id, {
         id: product.category.id,
         nameAr: product.category.nameAr,
@@ -330,7 +346,7 @@ export function createCatalogServices(ports: {
       if (!product) {
         throw new NotFoundError("المنتج غير موجود.");
       }
-      const quantities = await availability.quantitiesFor(product.variants.map((variant) => variant.id));
+      const quantities = await publicQuantitiesFor(product.variants.map((variant) => variant.id));
       return toPublicProduct(product, quantities);
     },
 
@@ -376,7 +392,7 @@ function toPublicProduct(
   quantities: Map<string, number>,
 ): PublicProductDto {
   const comingSoon = product.publication === "coming_soon";
-  const variants = product.variants.map((variant) => {
+  const variants = product.variants.filter((variant) => variant.onlineVisible).map((variant) => {
     const availableQuantity = Math.max(0, quantities.get(variant.id) ?? 0);
     return {
       id: variant.id,
@@ -447,7 +463,11 @@ async function parseProductWrite(
     throw new CatalogValidationError("التصنيف المحدد غير موجود.");
   }
   const variants = await parseVariants(store, body.variants);
+  const expectedRevision = body.expectedRevision === undefined ? undefined : assertExpectedRevision(body.expectedRevision);
+  const expectedVariantIds = body.expectedVariantIds === undefined ? undefined : assertExpectedVariantIds(body.expectedVariantIds);
   return {
+    ...(expectedRevision === undefined ? {} : { expectedRevision }),
+    ...(expectedVariantIds === undefined ? {} : { expectedVariantIds }),
     code: assertProductCode(body.code),
     nameAr: assertProductName(body.nameAr),
     descriptionAr: assertDescription(body.descriptionAr),
@@ -459,6 +479,24 @@ async function parseProductWrite(
     variants,
     actorStaffId,
   };
+}
+
+function assertExpectedRevision(value: unknown): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) {
+    throw new CatalogValidationError("إصدار المنتج غير صالح.");
+  }
+  return value;
+}
+
+function assertExpectedVariantIds(value: unknown): string[] {
+  if (!Array.isArray(value) || value.some((id) => typeof id !== "string")) {
+    throw new CatalogValidationError("قائمة تركيبات المنتج غير صالحة.");
+  }
+  const ids = value.map((id) => assertUuid(id, "قائمة تركيبات المنتج غير صالحة."));
+  if (new Set(ids).size !== ids.length) {
+    throw new CatalogValidationError("قائمة تركيبات المنتج غير صالحة.");
+  }
+  return ids;
 }
 
 async function parseVariants(store: CatalogStore, value: unknown): Promise<VariantWrite[]> {
@@ -492,10 +530,18 @@ async function parseVariants(store: CatalogStore, value: unknown): Promise<Varia
     parsed.push({
       sizeId,
       colorId,
+      ...(body.onlineVisible === undefined ? {} : { onlineVisible: assertOnlineVisible(body.onlineVisible) }),
       sellingPricePiastersOverride: override,
     });
   }
   return parsed;
+}
+
+function assertOnlineVisible(value: unknown): boolean {
+  if (typeof value !== "boolean") {
+    throw new CatalogValidationError("إظهار المتغير في الموقع غير صالح.");
+  }
+  return value;
 }
 
 function expectObject(value: unknown, messageAr: string): Record<string, unknown> {

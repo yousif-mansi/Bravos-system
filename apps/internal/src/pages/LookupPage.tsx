@@ -1,5 +1,5 @@
 import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import type { CashierProductLookupDto, CashierVariantDto, PosPriceSnapshotDto, SaleDto, StockPauseDto, WorkspaceDto } from "@bravos/contracts";
+import type { CashierProductLookupDto, CashierVariantDto, PosPriceSnapshotDto, SaleDto, SalePaymentDto, StockPauseDto, WorkspaceDto } from "@bravos/contracts";
 import { SaleSummary } from "./SaleSummary.tsx";
 import { ApiError, acceptOfflineSale, completeSale, getStockPause, getWorkspace, issuePosSnapshot, lookupProductByCode, lookupSaleOperation, prepareSale } from "../api.ts";
 import { egpInputToPiasters, formatEgpFromPiasters } from "../money.ts";
@@ -27,7 +27,7 @@ import {
   type SalePayload,
 } from "../sales-pending.ts";
 
-function saleWriteFromRecord(sale: SaleDto, occurredAt: string | null, restoreGeneration: number | null) {
+function saleWriteFromRecord(sale: SaleDto, occurredAt: string | null, restoreGeneration: number | null, payment?: SalePaymentDto) {
   return {
     saleId: sale.id,
     operationId: sale.operationId,
@@ -37,6 +37,7 @@ function saleWriteFromRecord(sale: SaleDto, occurredAt: string | null, restoreGe
     couponCode: sale.appliedCoupon?.code ?? null,
     employeeDiscountPiasters: sale.employeeDiscountPiasters,
     discountReason: sale.discountReason,
+    payment: payment ?? sale.payment,
     occurredAt,
     lines: sale.lines.map((line) => ({ variantId: line.variantId, quantity: line.quantity })),
   };
@@ -97,6 +98,9 @@ export default function LookupPage({
   const [couponCode, setCouponCode] = useState("");
   const [discountEgp, setDiscountEgp] = useState("0");
   const [discountReason, setDiscountReason] = useState("");
+  const [paymentMethod, setPaymentMethod] = useState<SalePaymentDto["method"]>("cash");
+  const [cashEgp, setCashEgp] = useState("");
+  const [onlineEgp, setOnlineEgp] = useState("");
   const [quote, setQuote] = useState<SaleDto | null>(null);
   const [completed, setCompleted] = useState<SaleDto | null>(null);
   const [handedOver, setHandedOver] = useState(false);
@@ -219,9 +223,12 @@ export default function LookupPage({
     let cancelled = false;
     void pos.migrateLegacyMarkers().then(async () => {
       const recoverable = await pos.listRecoverablePending(workspace.staff.id);
-      const stored = recoverable.find((row) => row.physicallyCompleted) ?? recoverable[0];
-      const extras = recoverable.filter((row) => row.saleId !== stored?.saleId);
-      if (cancelled || !stored) {
+      // An unfinished price quote may still belong to another open tab. Only a
+      // physically completed sale needs automatic recovery across tabs/reloads.
+      const completed = recoverable.filter((row) => row.physicallyCompleted);
+      const stored = completed[0];
+      const extras = completed.filter((row) => row.saleId !== stored?.saleId);
+      if (cancelled || !stored || cartRef.current.length > 0 || pendingSaleRef.current || localIdentityRef.current) {
         return;
       }
       if (extras[0]) {
@@ -261,6 +268,11 @@ export default function LookupPage({
         setCouponCode(stored.payload.couponCode ?? "");
         setDiscountEgp((stored.payload.employeeDiscountPiasters / 100).toString());
         setDiscountReason(stored.payload.discountReason ?? "");
+        if (stored.payload.payment) {
+          setPaymentMethod(stored.payload.payment.method);
+          setCashEgp((stored.payload.payment.cashPiasters / 100).toString());
+          setOnlineEgp((stored.payload.payment.onlinePiasters / 100).toString());
+        }
       }
       if (stored.quote) {
         setQuote(stored.quote);
@@ -301,12 +313,12 @@ export default function LookupPage({
           }
           if (stored.physicallyCompleted) {
             setHandedOver(true);
-            setError("تم تسليم البضاعة واستلام النقد. لا تطلب الدفع مرة أخرى. أعد المحاولة لحفظ البيع.");
+            setError("تم تسليم البضاعة واستلام المبلغ. لا تطلب الدفع مرة أخرى. أعد المحاولة لحفظ البيع.");
             if (found && !found.physicallyCompleted) {
               setQuote(found);
-              const recovered = await completeSale(saleWriteFromRecord(found, stored.occurredAt, stored.snapshot?.restoreGeneration ?? null));
+              const recovered = await completeSale(saleWriteFromRecord(found, stored.occurredAt, stored.snapshot?.restoreGeneration ?? null, stored.payload?.payment));
               if (!cancelled && recovered.physicallyCompleted) {
-                await acceptSale(recovered, "تم حفظ البيع النقدي.");
+                await acceptSale(recovered, "تم حفظ البيع.");
               }
             }
             return;
@@ -380,9 +392,10 @@ export default function LookupPage({
   }, [workspace.staff.id]);
 
   async function withLocalAvailability(found: CashierProductLookupDto): Promise<CashierProductLookupDto> {
+    if (!workspace.activeBranch) throw new SalesValidationError("اختر فرع البيع أولاً.");
     const next: Record<string, number> = {};
     for (const variant of found.variants) {
-      next[variant.id] = await pos.availableQuantity(variant.id, variant.availableQuantity);
+      next[variant.id] = await pos.availableQuantity(workspace.activeBranch.id, variant.id, variant.availableQuantity);
     }
     setEffectiveByVariant(next);
     return found;
@@ -477,12 +490,28 @@ export default function LookupPage({
       setError("قيمة الخصم غير صالحة.");
       return null;
     }
+    let payment: SalePaymentDto | undefined;
+    if (quote) {
+      const total = quote.finalTotalPiasters;
+      if (paymentMethod === "cash") payment = { method: "cash", cashPiasters: total, onlinePiasters: 0 };
+      else if (paymentMethod === "online") payment = { method: "online", cashPiasters: 0, onlinePiasters: total };
+      else {
+        const cash = egpInputToPiasters(cashEgp);
+        const online = egpInputToPiasters(onlineEgp);
+        if (cash === null || online === null || cash <= 0 || online <= 0 || cash + online !== total) {
+          setError("أدخل مبلغ النقد والدفع الإلكتروني بحيث يساوي مجموعهما إجمالي البيع.");
+          return null;
+        }
+        payment = { method: "split", cashPiasters: cash, onlinePiasters: online };
+      }
+    }
     return {
       customerName: customerName.trim() || null,
       customerPhone: customerPhone.trim() || null,
       couponCode: couponCode.trim().toLocaleUpperCase("en-US") || null,
       employeeDiscountPiasters: discountPiasters,
       discountReason: discountReason.trim() || null,
+      ...(payment ? { payment } : {}),
       lines: cart.map((line) => ({ variantId: line.variant.id, quantity: line.quantity })),
     };
   }
@@ -579,11 +608,12 @@ export default function LookupPage({
   }
 
   async function assertLocalCartStock(lines: CartLine[]) {
+    if (!workspace.activeBranch) throw new SalesValidationError("اختر فرع البيع أولاً.");
     const merged = mergeVariantQuantities(lines.map((line) => ({ variantId: line.variant.id, quantity: line.quantity })));
     for (const item of merged) {
       const source = lines.find((line) => line.variant.id === item.variantId);
       const cached = source?.variant.availableQuantity ?? 0;
-      const available = await pos.availableQuantity(item.variantId, cached);
+      const available = await pos.availableQuantity(workspace.activeBranch.id, item.variantId, cached);
       if (available < item.quantity) {
         throw new SalesValidationError("الكمية المتاحة غير كافية.");
       }
@@ -625,6 +655,7 @@ export default function LookupPage({
     quoteOriginRef.current = "snapshot";
     return {
       id: pending.saleId,
+      reference: null,
       operationId: pending.operationId,
       branch: snapshot.branch,
       soldByStaffId: workspace.staff.id,
@@ -644,6 +675,7 @@ export default function LookupPage({
       finalTotalPiasters: priced.finalTotalPiasters,
       exchangeCreditAppliedPiasters: 0,
       cashReceivedPiasters: priced.finalTotalPiasters,
+      payment: { method: "cash", cashPiasters: priced.finalTotalPiasters, onlinePiasters: 0 },
       physicallyCompleted: false,
       discrepancy: null,
       lines: priced.lines.map((line) => {
@@ -688,6 +720,7 @@ export default function LookupPage({
           staffId: workspace.staff.id,
           deviceId: await pos.deviceId(),
           quote: pinnedQuote,
+          ...(payload.payment ? { payment: payload.payment } : {}),
           occurredAt,
           kind: "connected",
           snapshotId: null,
@@ -703,6 +736,7 @@ export default function LookupPage({
           staffId: workspace.staff.id,
           deviceId: pinnedSnapshot.deviceId,
           quote: pinnedQuote,
+          ...(payload.payment ? { payment: payload.payment } : {}),
           occurredAt,
           kind: "accepted",
           snapshotId: pinnedSnapshot.snapshotId,
@@ -807,11 +841,11 @@ export default function LookupPage({
     if (physical && !handedOver && !pendingSaleRef.current?.physicallyCompleted) {
       inFlightRef.current = false;
       setPending("");
-      setError("أكد تسليم البضاعة واستلام النقد قبل إتمام البيع.");
+      setError("أكد تسليم البضاعة واستلام المبلغ قبل إتمام البيع.");
       return;
     }
     const payload =
-      physical && frozenPayloadRef.current
+      physical && pendingSaleRef.current?.physicallyCompleted && frozenPayloadRef.current
         ? frozenPayloadRef.current
         : parsePayload();
     if (!payload) {
@@ -920,7 +954,7 @@ export default function LookupPage({
         const stored = await pos.loadPending(workspace.staff.id);
         setError(
           stored?.physicallyCompleted
-            ? "تم تسليم البضاعة واستلام النقد. لا تطلب الدفع مرة أخرى. تحقق من النتيجة أو أعد المحاولة بنفس البيانات."
+            ? "تم تسليم البضاعة واستلام المبلغ. لا تطلب الدفع مرة أخرى. تحقق من النتيجة أو أعد المحاولة بنفس البيانات."
             : "توجد عملية بيع غير مؤكدة. تحقق من نتيجتها قبل بدء بيع جديد.",
         );
         submittedRef.current = local;
@@ -969,7 +1003,7 @@ export default function LookupPage({
       };
       if (kind === "complete") {
         const saved = await persistPhysicalSale(nextPending, payload);
-        await acceptSale(saved, "تم حفظ البيع النقدي.");
+        await acceptSale(saved, "تم حفظ البيع.");
         void syncPersistedSale(saved.id);
         return;
       }
@@ -1120,7 +1154,7 @@ export default function LookupPage({
       }
       setError(
         physical || current?.physicallyCompleted
-          ? "تم تسليم البضاعة واستلام النقد. لا تطلب الدفع مرة أخرى. أعد المحاولة لحفظ البيع."
+          ? "تم تسليم البضاعة واستلام المبلغ. لا تطلب الدفع مرة أخرى. أعد المحاولة لحفظ البيع."
           : caught instanceof ApiError
             ? caught.messageAr
             : "تعذر حفظ البيع.",
@@ -1140,7 +1174,7 @@ export default function LookupPage({
     if (current.physicallyCompleted) {
       if (adoptQuote) {
         setHandedOver(true);
-        setError("تم تسليم البضاعة واستلام النقد. لا تطلب الدفع مرة أخرى. أعد المحاولة لحفظ البيع.");
+        setError("تم تسليم البضاعة واستلام المبلغ. لا تطلب الدفع مرة أخرى. أعد المحاولة لحفظ البيع.");
       }
       if (found && !found.physicallyCompleted) {
         if (adoptQuote) {
@@ -1152,12 +1186,13 @@ export default function LookupPage({
           adoptQuote
             ? quoteGenerationRef.current ?? quoteSnapshotRef.current?.restoreGeneration ?? null
             : foreignRecoverySnapshotRef.current?.restoreGeneration ?? null,
+          current.payload?.payment,
         ));
         if (recovered.physicallyCompleted) {
-          await acceptSale(recovered, "تم حفظ البيع النقدي.");
+          await acceptSale(recovered, "تم حفظ البيع.");
         }
       } else if (!adoptQuote) {
-        setError("تم تسليم البضاعة واستلام النقد. لا تطلب الدفع مرة أخرى. أعد المحاولة لحفظ البيع.");
+        setError("تم تسليم البضاعة واستلام المبلغ. لا تطلب الدفع مرة أخرى. أعد المحاولة لحفظ البيع.");
       }
       return;
     }
@@ -1227,7 +1262,7 @@ export default function LookupPage({
   return (
     <main className="shell">
       <header className="page-hero">
-        <h1>بيع نقدي<span className="sr-only"> البحث عن منتج</span></h1>
+        <h1>نقطة البيع<span className="sr-only"> البحث عن منتج</span></h1>
       </header>
       {error ? <div className="error" role="alert">{error}</div> : null}
       {stockPause ? (
@@ -1298,7 +1333,7 @@ export default function LookupPage({
 
       <form
         className="card"
-        aria-label="إتمام البيع النقدي"
+        aria-label="إتمام البيع"
         onSubmit={(event) => {
           event.preventDefault();
           void submit(handedOver || pendingSale?.physicallyCompleted ? "complete" : "prepare");
@@ -1369,6 +1404,21 @@ export default function LookupPage({
             <p>الإجمالي: {formatEgpFromPiasters(quote.finalTotalPiasters)}</p>
           </section>
         ) : null}
+        {quote ? (
+          <fieldset className="field" disabled={formLocked}>
+            <legend>طريقة الدفع</legend>
+            <label><input type="radio" name="payment-method" value="cash" checked={paymentMethod === "cash"} onChange={() => setPaymentMethod("cash")} /> نقداً بالكامل</label>
+            <label><input type="radio" name="payment-method" value="online" checked={paymentMethod === "online"} onChange={() => setPaymentMethod("online")} /> إلكترونياً بالكامل (محفظة أو إنستا باي)</label>
+            <label><input type="radio" name="payment-method" value="split" checked={paymentMethod === "split"} onChange={() => setPaymentMethod("split")} /> دفع مقسّم</label>
+            {paymentMethod === "split" ? (
+              <div className="grid two">
+                <div className="field"><label htmlFor="payment-cash">المبلغ النقدي بالجنيه</label><input id="payment-cash" inputMode="decimal" value={cashEgp} onChange={(event) => setCashEgp(event.target.value)} /></div>
+                <div className="field"><label htmlFor="payment-online">المبلغ الإلكتروني بالجنيه</label><input id="payment-online" inputMode="decimal" value={onlineEgp} onChange={(event) => setOnlineEgp(event.target.value)} /></div>
+              </div>
+            ) : null}
+            <p role="status" data-testid="payment-remaining">المتبقي: {formatEgpFromPiasters(Math.max(0, quote.finalTotalPiasters - (paymentMethod === "cash" || paymentMethod === "online" ? quote.finalTotalPiasters : (egpInputToPiasters(cashEgp) ?? 0) + (egpInputToPiasters(onlineEgp) ?? 0))))}</p>
+          </fieldset>
+        ) : null}
         <div className="field">
           <label htmlFor="handedOver">
             <input
@@ -1378,7 +1428,7 @@ export default function LookupPage({
               disabled={Boolean(stockPause) || Boolean(restorePause) || (!quote && !pendingSale?.physicallyCompleted)}
               onChange={(event) => setHandedOver(event.target.checked)}
             />
-            {" "}استلم الزبون البضاعة ودفع نقداً
+            {" "}استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة
           </label>
         </div>
         <div className="actions">

@@ -62,6 +62,7 @@ type ConfirmationPayload = {
   expectedRevision: number;
   agreedRevision: number;
   itemsLocatedAndSetAside: true;
+  fulfillmentBranchId: string;
 };
 
 type CancellationPayload = {
@@ -75,6 +76,8 @@ type RevisionPayload = {
   expectedRevision: number;
 };
 
+type InspectionPostPayload = RevisionPayload & { receivingBranchId: string };
+
 type DeliveryPayload = RevisionPayload & {
   customerReceivedAt: string;
 };
@@ -86,6 +89,8 @@ type OptionalReasonPayload = RevisionPayload & {
 type ReasonPayload = RevisionPayload & {
   reason: string;
 };
+
+type BeforeShipmentCancellationPayload = ReasonPayload & { itemsReturnedAndInspected?: boolean };
 
 type FailedInspectionPayload = RevisionPayload & {
   lines: Array<{ variantId: string; receivedQuantity: number; sellableQuantity: number }>;
@@ -104,9 +109,9 @@ type PendingAttempt =
   | { action: "ship"; orderId: string; payload: RevisionPayload }
   | { action: "deliver"; orderId: string; payload: DeliveryPayload }
   | { action: "deliveryFailure"; orderId: string; payload: OptionalReasonPayload }
-  | { action: "cancelBeforeShipment"; orderId: string; payload: ReasonPayload }
+  | { action: "cancelBeforeShipment"; orderId: string; payload: BeforeShipmentCancellationPayload }
   | { action: "inspectionDraft"; orderId: string; payload: FailedInspectionPayload }
-  | { action: "inspectionPost"; orderId: string; inspectionId: string; payload: RevisionPayload }
+  | { action: "inspectionPost"; orderId: string; inspectionId: string; payload: InspectionPostPayload }
   | { action: "inspectionAbandon"; orderId: string; inspectionId: string; payload: ReasonPayload }
   | { action: "failedClose"; orderId: string; payload: ReasonPayload };
 
@@ -215,12 +220,15 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
   const [replacementVariantId, setReplacementVariantId] = useState("");
   const [replacementQuantity, setReplacementQuantity] = useState("1");
   const [itemsSetAside, setItemsSetAside] = useState(false);
+  const [fulfillmentBranchId, setFulfillmentBranchId] = useState(workspace.activeBranch?.id ?? workspace.authorizedBranches[0]?.id ?? "");
   const [confirmationNeedsReview, setConfirmationNeedsReview] = useState(false);
   const [cancellationReason, setCancellationReason] = useState("");
   const [preShipmentCancellationReason, setPreShipmentCancellationReason] = useState("");
+  const [preShipmentItemsInspected, setPreShipmentItemsInspected] = useState(false);
   const [customerReceivedAt, setCustomerReceivedAt] = useState("");
   const [deliveryFailureReason, setDeliveryFailureReason] = useState("");
   const [inspectionDraft, setInspectionDraft] = useState<Record<string, InspectionLineDraft>>({});
+  const [receivingBranchId, setReceivingBranchId] = useState(workspace.activeBranch?.id ?? workspace.authorizedBranches[0]?.id ?? "");
   const [inspectionAbandonReason, setInspectionAbandonReason] = useState("");
   const [failedCloseReason, setFailedCloseReason] = useState("");
   const [uncertainAttempt, setUncertainAttempt] = useState<PendingAttempt | null>(null);
@@ -465,7 +473,7 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
   }
 
   async function confirm() {
-    if (!selected?.agreedRevision || !itemsSetAside) return;
+    if (!selected?.agreedRevision || !itemsSetAside || !fulfillmentBranchId) return;
     await executeAttempt({
       action: "confirmation",
       orderId: selected.id,
@@ -474,6 +482,7 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
         expectedRevision: selected.revision,
         agreedRevision: selected.agreedRevision.version,
         itemsLocatedAndSetAside: true,
+        fulfillmentBranchId,
       },
     });
   }
@@ -541,6 +550,7 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
         operationId: crypto.randomUUID(),
         expectedRevision: selected.revision,
         reason: preShipmentCancellationReason.trim(),
+        ...(selected.status === "confirmed" ? { itemsReturnedAndInspected: preShipmentItemsInspected } : {}),
       },
     });
   }
@@ -564,12 +574,12 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
   }
 
   async function postFailedInspection(inspectionId: string) {
-    if (!selected) return;
+    if (!selected || !receivingBranchId) return;
     await executeAttempt({
       action: "inspectionPost",
       orderId: selected.id,
       inspectionId,
-      payload: { operationId: crypto.randomUUID(), expectedRevision: selected.revision },
+      payload: { operationId: crypto.randomUUID(), expectedRevision: selected.revision, receivingBranchId },
     });
   }
 
@@ -657,6 +667,7 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
           setDeliveryFailureReason("");
         } else if (attempt.action === "cancelBeforeShipment") {
           setPreShipmentCancellationReason("");
+          setPreShipmentItemsInspected(false);
         } else if (attempt.action === "inspectionDraft") {
           setInspectionDraft({});
         } else if (attempt.action === "inspectionAbandon") {
@@ -805,6 +816,7 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
               <h2>{selected.reference}</h2>
               <p id="order-status" data-testid="order-status">الحالة: {statusLabel(selected.status)}</p>
               {selected.confirmedAt ? <p>أكد الطلب المسؤول {selected.confirmedByStaffId} في {formatDate(selected.confirmedAt)}.</p> : null}
+              {selected.fulfillmentBranchId ? <p>فرع التجهيز: {workspace.authorizedBranches.find((branch) => branch.id === selected.fulfillmentBranchId)?.nameAr ?? selected.fulfillmentBranchId}</p> : null}
               {selected.cancelledAt ? <p>ألغاه المسؤول {selected.cancelledByStaffId} في {formatDate(selected.cancelledAt)} — {selected.cancellationReason}</p> : null}
             </div>
             <p className="muted">أُرسل {formatDate(selected.submittedAt)} — إصدار الطلب {selected.revision}</p>
@@ -911,22 +923,23 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
               <h2>إلغاء قبل الشحن</h2>
               <p>
                 {selected.status === "confirmed"
-                  ? selected.confirmedQuote?.appliedCoupon
-                    ? "يؤدي الإلغاء الآن إلى إعادة الكمية المحمية للمخزون وإتاحة استخدام الكوبون مرة واحدة."
-                    : "يؤدي الإلغاء الآن إلى إعادة الكمية المحمية للمخزون مرة واحدة."
+                  ? "يُلغى البيع الآن. تبقى الأصناف محمية من البيع حتى استلامها وفحصها، ثم تُعاد الكمية الصالحة فقط للمخزون."
                   : "هذا الطلب لم يحجز مخزوناً ولم يستهلك كوبوناً، لذلك لا توجد كمية أو استخدام لاستعادتهما."}
               </p>
               <div className="field">
                 <label htmlFor="pre-shipment-cancellation-reason">سبب الإلغاء قبل الشحن</label>
                 <textarea id="pre-shipment-cancellation-reason" value={preShipmentCancellationReason} disabled={frozen} onChange={(event) => setPreShipmentCancellationReason(event.target.value)} required />
               </div>
+              {selected.status === "confirmed" ? <label className="checkbox-row"><input type="checkbox" checked={preShipmentItemsInspected} disabled={frozen} onChange={(event) => setPreShipmentItemsInspected(event.target.checked)} />استلمت جميع الأصناف وفحصتها وهي صالحة للبيع</label> : null}
               <button className="danger" type="submit" disabled={frozen || !preShipmentCancellationReason.trim()}>
-                {selected.status === "confirmed" ? "إلغاء الطلب وإعادة الكمية المتاحة" : "إلغاء الطلب من دون تغيير المخزون"}
+                {selected.status === "confirmed" ? "إلغاء الطلب" : "إلغاء الطلب من دون تغيير المخزون"}
               </button>
             </form>
           ) : null}
 
-          {selected.status === "delivery_failed" || selected.failedReturnInspections.length > 0 ? (
+          {selected.status === "delivery_failed"
+            || (selected.status === "cancelled_before_shipment" && selected.preShipmentStockDisposition === "awaiting_inspection")
+            || selected.failedReturnInspections.length > 0 ? (
             <FailedReturnInspections
               order={selected}
               remainingLines={failedReturnLines}
@@ -935,6 +948,9 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
               onDraftChange={(variantId, value) => setInspectionDraft((current) => ({ ...current, [variantId]: value }))}
               onSaveDraft={() => void saveFailedInspection()}
               onPost={(inspectionId) => void postFailedInspection(inspectionId)}
+              receivingBranchId={receivingBranchId}
+              receivingBranches={workspace.authorizedBranches}
+              onReceivingBranchChange={setReceivingBranchId}
               abandonReason={inspectionAbandonReason}
               onAbandonReasonChange={setInspectionAbandonReason}
               onAbandon={(inspectionId) => void abandonFailedInspection(inspectionId)}
@@ -1070,11 +1086,12 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
                   <h2>تأكيد تجهيز الطلب</h2>
                   <p>طابق الأصناف الفعلية مع الاتفاق الحالي وافصلها عن المخزون المتاح قبل التأكيد.</p>
                   {confirmationNeedsReview ? <p className="error">يلزم إنشاء مراجعة سعر جديدة وحفظ موافقة العميل قبل التأكيد.</p> : null}
+                  <div className="field"><label htmlFor="online-fulfillment-branch">فرع تجهيز الطلب</label><select id="online-fulfillment-branch" value={fulfillmentBranchId} disabled={frozen || confirmationNeedsReview} onChange={(event) => { setFulfillmentBranchId(event.target.value); setItemsSetAside(false); }} required>{workspace.authorizedBranches.filter((branch) => manager || branch.id === workspace.activeBranch?.id).map((branch) => <option key={branch.id} value={branch.id}>{branch.nameAr}</option>)}</select></div>
                   <label className="checkbox-row">
                     <input type="checkbox" checked={itemsSetAside} disabled={frozen || confirmationNeedsReview} onChange={(event) => setItemsSetAside(event.target.checked)} />
                     وجدت الأصناف الفعلية وفصلتها لهذا الطلب
                   </label>
-                  <button type="submit" disabled={frozen || confirmationNeedsReview || !itemsSetAside}>تأكيد الطلب وخصم المخزون</button>
+                  <button type="submit" disabled={frozen || confirmationNeedsReview || !itemsSetAside || !fulfillmentBranchId}>تأكيد الطلب وخصم المخزون</button>
                 </form>
               ) : (
                 <p className="card muted">لا يمكن تأكيد الطلب قبل حفظ اتفاق العميل على المنتجات والأسعار.</p>
@@ -1170,6 +1187,9 @@ function FailedReturnInspections({
   onDraftChange,
   onSaveDraft,
   onPost,
+  receivingBranchId,
+  receivingBranches,
+  onReceivingBranchChange,
   abandonReason,
   onAbandonReasonChange,
   onAbandon,
@@ -1181,6 +1201,9 @@ function FailedReturnInspections({
   onDraftChange: (variantId: string, value: InspectionLineDraft) => void;
   onSaveDraft: () => void;
   onPost: (inspectionId: string) => void;
+  receivingBranchId: string;
+  receivingBranches: WorkspaceDto["authorizedBranches"];
+  onReceivingBranchChange: (branchId: string) => void;
   abandonReason: string;
   onAbandonReasonChange: (value: string) => void;
   onAbandon: (inspectionId: string) => void;
@@ -1207,10 +1230,10 @@ function FailedReturnInspections({
                 </p>
               ))}
               <p className="muted">سجله المسؤول {inspection.recordedByStaffId}</p>
-              {inspection.postedAt ? <p className="muted">رحّله المدير {inspection.postedByStaffId} في {formatDate(inspection.postedAt)}</p> : null}
+              {inspection.postedAt ? <p className="muted">رحّله المدير {inspection.postedByStaffId} في {formatDate(inspection.postedAt)} · فرع الاستلام: {receivingBranches.find((branch) => branch.id === inspection.receivingBranchId)?.nameAr ?? "—"}</p> : null}
               {inspection.abandonedAt ? <p className="muted">ألغاه المسؤول {inspection.abandonedByStaffId} في {formatDate(inspection.abandonedAt)} — {inspection.abandonmentReason}</p> : null}
               {inspection.status === "draft" && order.actionEligibility.canPostFailedReturnInspection ? (
-                <button type="button" disabled={frozen} onClick={() => onPost(inspection.id)}>ترحيل الفحص واستعادة القابل للبيع</button>
+                <div><div className="field"><label htmlFor={`inspection-receiving-branch-${inspection.id}`}>فرع استلام الشحنة</label><select id={`inspection-receiving-branch-${inspection.id}`} value={receivingBranchId} disabled={frozen} onChange={(event) => onReceivingBranchChange(event.target.value)} required>{receivingBranches.map((branch) => <option key={branch.id} value={branch.id}>{branch.nameAr}</option>)}</select></div><button type="button" disabled={frozen || !receivingBranchId} onClick={() => onPost(inspection.id)}>ترحيل الفحص واستعادة القابل للبيع</button></div>
               ) : null}
               {inspection.status === "draft" && order.actionEligibility.canAbandonFailedReturnInspection ? (
                 <form className="inspection-abandon" aria-label="إلغاء مسودة الفحص واستبدالها" onSubmit={(event) => { event.preventDefault(); onAbandon(inspection.id); }}>
@@ -1378,12 +1401,15 @@ function validAttemptPayload(attempt: PendingAttempt) {
         && typeof attempt.payload.reviewDigest === "string"
         && attempt.payload.customerAgreed === true;
     case "confirmation":
-      return typeof attempt.payload.agreedRevision === "number" && attempt.payload.itemsLocatedAndSetAside === true;
+      return typeof attempt.payload.agreedRevision === "number" && attempt.payload.itemsLocatedAndSetAside === true
+        && typeof attempt.payload.fulfillmentBranchId === "string";
     case "cancellation":
-    case "cancelBeforeShipment":
     case "inspectionAbandon":
     case "failedClose":
       return typeof attempt.payload.reason === "string";
+    case "cancelBeforeShipment":
+      return typeof attempt.payload.reason === "string"
+        && (attempt.payload.itemsReturnedAndInspected === undefined || attempt.payload.itemsReturnedAndInspected === true);
     case "ship":
       return true;
     case "deliver":
@@ -1391,7 +1417,7 @@ function validAttemptPayload(attempt: PendingAttempt) {
     case "deliveryFailure":
       return attempt.payload.reason === undefined || typeof attempt.payload.reason === "string";
     case "inspectionPost":
-      return typeof attempt.inspectionId === "string";
+      return typeof attempt.inspectionId === "string" && typeof attempt.payload.receivingBranchId === "string";
     case "inspectionDraft":
       return Array.isArray(attempt.payload.lines) && attempt.payload.lines.every((line) => (
         typeof line.variantId === "string"

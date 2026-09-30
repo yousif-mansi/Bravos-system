@@ -94,6 +94,12 @@ async function applyPlan(transaction: OpeningImportTransaction, plan: OpeningImp
 }) {
   await transaction.catalog.insert(catalogPlan(plan), input.actorStaffId, input.at);
   if (plan.batches.length > 0) {
+    const branchCodes = [...new Set(plan.batches.map((batch) => batch.branchCode))];
+    const branchIds = await transaction.resolveBranchIds(branchCodes);
+    if (branchIds.size !== branchCodes.length) {
+      throw new OpeningImportValidationError("فرع المخزون الافتتاحي غير موجود.");
+    }
+    const receiptIds = new Map(branchCodes.map((code, index) => [code, index === 0 ? plan.receiptId : randomUUID()]));
     const claimed = await transaction.inventory.claimOpeningImportOperation({
       operationId: input.operationId,
       payloadFingerprint: input.previewFingerprint,
@@ -102,11 +108,12 @@ async function applyPlan(transaction: OpeningImportTransaction, plan: OpeningImp
     if (claimed.kind !== "created") throw new OpeningImportConflictError("عملية المخزون مستخدمة بالفعل.");
     await transaction.inventory.importOpeningBatches({
       operationId: input.operationId,
-      receiptId: plan.receiptId,
       lines: plan.batches.map((batch) => ({
         lineId: batch.lineId,
         batchId: batch.id,
         movementId: batch.movementId,
+        receiptId: receiptIds.get(batch.branchCode)!,
+        branchId: branchIds.get(batch.branchCode)!,
         variantId: batch.variantId,
         quantity: batch.quantity,
         unitCostPiasters: batch.unitCostPiasters,
@@ -114,21 +121,24 @@ async function applyPlan(transaction: OpeningImportTransaction, plan: OpeningImp
         recordedAt: new Date(batch.recordedAt),
       })),
     });
-    await transaction.receiving.insertOpeningReceipt({
-      receiptId: plan.receiptId,
-      operationId: input.operationId,
-      receiptDate: cairoDateAt(input.at),
-      actorStaffId: input.actorStaffId,
-      recordedAt: input.at,
-      lines: plan.batches.map((batch, index) => ({
-        id: batch.lineId,
-        variantId: batch.variantId,
-        quantity: batch.quantity,
-        unitCostPiasters: batch.unitCostPiasters,
-        batchId: batch.id,
-        lineIndex: index,
-      })),
-    });
+    for (const branchCode of branchCodes) {
+      await transaction.receiving.insertOpeningReceipt({
+        receiptId: receiptIds.get(branchCode)!,
+        branchId: branchIds.get(branchCode)!,
+        operationId: input.operationId,
+        receiptDate: cairoDateAt(input.at),
+        actorStaffId: input.actorStaffId,
+        recordedAt: input.at,
+        lines: plan.batches.filter((batch) => batch.branchCode === branchCode).map((batch, index) => ({
+          id: batch.lineId,
+          variantId: batch.variantId,
+          quantity: batch.quantity,
+          unitCostPiasters: batch.unitCostPiasters,
+          batchId: batch.id,
+          lineIndex: index,
+        })),
+      });
+    }
     await transaction.inventory.bumpStockVersion();
   }
   await transaction.inventory.applyOpeningSettings({
@@ -232,7 +242,7 @@ function toDto(input: { id: string; operationId: string; inputFingerprint: strin
       products: input.plan.products.map((v) => ({ key: v.key, code: v.code, nameAr: v.nameAr, descriptionAr: v.descriptionAr, categoryKey: v.categoryKey, defaultSellingPricePiasters: v.defaultSellingPricePiasters, publication: v.publication, imageRefs: v.imageRefs, sizeGuideAr: v.sizeGuideAr })),
       variants: input.plan.variants.map((v) => ({ key: v.key, productKey: v.productKey, sizeKey: v.sizeKey, colorKey: v.colorKey, sellingPricePiastersOverride: v.sellingPricePiastersOverride })),
     },
-    batches: input.plan.batches.map((v) => ({ key: v.key, variantKey: v.variantKey, quantity: v.quantity, unitCostPiasters: v.unitCostPiasters, receiptDate: v.receiptDate, batchOrder: v.batchOrder })),
+    batches: input.plan.batches.map((v) => ({ key: v.key, branchCode: v.branchCode, variantKey: v.variantKey, quantity: v.quantity, unitCostPiasters: v.unitCostPiasters, receiptDate: v.receiptDate, batchOrder: v.batchOrder })),
     configuration: configPreview(input.plan, input.state),
     configurationDetails: configurationDetails(input.plan),
     errors: input.plan.errors,

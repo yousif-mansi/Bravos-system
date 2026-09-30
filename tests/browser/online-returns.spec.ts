@@ -20,14 +20,14 @@ test("manager selects a delivered online purchase and reviews refund components 
 
   await page.getByRole("link", { name: "المرتجعات" }).click();
   await expect(page.getByRole("heading", { name: "المرتجعات", exact: true })).toBeVisible();
-  const search = page.getByRole("form", { name: "البحث عن المعاملة الأصلية" });
+  const search = page.getByRole("form", { name: /البحث عن المعاملة الأصلية/ });
   await expect(search).toBeVisible();
-  await search.getByLabel("المرجع").fill(delivered.reference);
+  await search.getByLabel("رقم الطلب").fill(delivered.reference);
   await search.getByRole("button", { name: "بحث" }).click();
 
   const source = page.getByTestId("return-source-list").getByRole("button").filter({ hasText: delivered.reference });
   await expect(source).toHaveCount(1);
-  await expect(source).toContainText("طلب أونلاين مُسلّم");
+  await expect(source).toContainText(`طلب ${delivered.reference}`);
   await expect(source).toContainText("760 ج.م.");
   await source.click();
   await expect(page.getByText(/العميل: عميل مرتجع أونلاين/)).toBeVisible();
@@ -52,7 +52,7 @@ test("manager selects a delivered online purchase and reviews refund components 
   await expect(page.getByRole("status")).toContainText("حُفظت المسودة");
 
   const details = page.getByTestId("return-details");
-  await expect(details).toContainText("الأصل: طلب أونلاين مُسلّم");
+  await expect(details).toContainText(`الطلب: ${delivered.reference}`);
   await expect(details).toContainText("البضاعة 700 ج.م.");
   await expect(details).toContainText("رسوم التوصيل 30 ج.م.");
   await expect(details).toContainText("الإجمالي 730 ج.م.");
@@ -72,9 +72,9 @@ test("manager selects a delivered online purchase and reviews refund components 
   await expect(page.getByTestId("exchange-details")).toContainText("النقد المحصل: 70 ج.م.");
 
   await page.goto("http://127.0.0.1:5174/returns");
-  const refundSearch = page.getByRole("form", { name: "البحث عن المعاملة الأصلية" });
+  const refundSearch = page.getByRole("form", { name: /البحث عن المعاملة الأصلية/ });
   await expect(refundSearch).toBeVisible();
-  await refundSearch.getByLabel("المرجع").fill(deliveredForRefund.reference);
+  await refundSearch.getByLabel("رقم الطلب").fill(deliveredForRefund.reference);
   await refundSearch.getByRole("button", { name: "بحث" }).click();
   await page.getByTestId("return-source-list").getByRole("button").filter({ hasText: deliveredForRefund.reference }).click();
   const refundDraft = page.getByRole("form", { name: "إنشاء مسودة إرجاع" });
@@ -131,15 +131,18 @@ async function seedProduct(page: Page, nameAr: string, pricePiasters: number, qu
     variants: [{ sizeId: size.body.id, colorId: color.body.id, sellingPricePiastersOverride: null }],
   });
   const variantId = product.body.variants[0].id as string;
+  const branchId = await activeBranchId(page);
   expect((await staffApi(page, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
     receiptDate: cairoDate(),
+    branchId,
     lines: [{ variantId, quantity, unitCostPiasters: 10_000 }],
   })).status).toBe(201);
   return { variantId };
 }
 
 async function submitConfirmAndDeliver(page: Page, deliveryAreaId: string, variantId: string, quantity: number) {
+  const branchId = await activeBranchId(page);
   const quote = await publicApi(page, "POST", "/api/public/checkout/quote", {
     deliveryAreaId,
     lines: [{ variantId, quantity }],
@@ -170,6 +173,7 @@ async function submitConfirmAndDeliver(page: Page, deliveryAreaId: string, varia
     operationId: crypto.randomUUID(),
     expectedRevision: agreed.body.revision,
     agreedRevision: agreed.body.agreedRevision.version,
+    fulfillmentBranchId: branchId,
     itemsLocatedAndSetAside: true,
   });
   const shipped = await staffApi(page, "POST", `/api/internal/online-orders/${submitted.body.orderId}/ship`, {
@@ -184,6 +188,14 @@ async function submitConfirmAndDeliver(page: Page, deliveryAreaId: string, varia
   });
   expect(delivered.status).toBe(201);
   return { orderId: submitted.body.orderId as string, reference: submitted.body.reference as string };
+}
+
+async function activeBranchId(page: Page): Promise<string> {
+  const workspace = await staffApi(page, "GET", "/api/internal/workspace");
+  expect(workspace.status).toBe(200);
+  const branchId = workspace.body.activeBranch?.id as string | undefined;
+  expect(branchId).toBeTruthy();
+  return branchId!;
 }
 
 async function staffApi(page: Page, method: "GET" | "POST", url: string, payload?: unknown) {

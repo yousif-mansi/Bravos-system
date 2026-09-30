@@ -303,6 +303,7 @@ export type OnlineOrderFailedReturnInspectionDto = {
   recordedAt: string;
   postedByStaffId: string | null;
   postedAt: string | null;
+  receivingBranchId: string | null;
   abandonedByStaffId: string | null;
   abandonedAt: string | null;
   abandonmentReason: string | null;
@@ -323,6 +324,7 @@ export type OnlineOrderDto = {
   id: string;
   operationId: string;
   reference: string;
+  fulfillmentBranchId: string | null;
   status: OnlineOrderStatus;
   revision: number;
   customerName: string;
@@ -353,6 +355,7 @@ export type OnlineOrderDto = {
   cancelledByStaffId: string | null;
   cancelledAt: string | null;
   cancellationReason: string | null;
+  preShipmentStockDisposition: "awaiting_inspection" | "released" | null;
   lifecycle: OnlineOrderLifecycleEventDto[];
   failedReturnInspections: OnlineOrderFailedReturnInspectionDto[];
   actionEligibility: OnlineOrderActionEligibilityDto;
@@ -386,12 +389,14 @@ export type ManagerVariantDto = {
   id: string;
   size: SizeDto;
   color: ColorDto;
+  onlineVisible: boolean;
   sellingPricePiastersOverride: number | null;
   sellingPricePiasters: number;
 };
 
 export type ManagerProductDto = {
   id: string;
+  editRevision: number;
   code: string;
   nameAr: string;
   descriptionAr: string;
@@ -493,6 +498,7 @@ export type ReceiptCorrectionDto = {
 export type ReceiptDto = {
   id: string;
   operationId: string;
+  branchId: string;
   receiptDate: string;
   receivedByStaffId: string;
   recordedAt: string;
@@ -504,6 +510,7 @@ export type ReceiptDto = {
 export type InventoryBatchDto = {
   id: string;
   variantId: string;
+  branchBalances: Array<{ branchId: string; availableQuantity: number }>;
   receivedQuantity: number;
   effectiveReceivedQuantity: number;
   remainingQuantity: number;
@@ -516,6 +523,7 @@ export type InventoryBatchDto = {
 };
 
 export type LowStockVariantDto = {
+  branchId: string;
   variantId: string;
   availableQuantity: number;
   threshold: number;
@@ -582,6 +590,7 @@ export type StockCorrectionBatchEffectDto = {
 
 export type StockCorrectionDto = {
   id: string;
+  branchId: string;
   operationId: string;
   coordinationId: string;
   variantId: string;
@@ -602,6 +611,7 @@ export type StockCorrectionDto = {
 
 export type StockReconciliationDto = {
   id: string;
+  branchId: string;
   operationId: string;
   correctionId: string;
   saleId: string;
@@ -617,6 +627,7 @@ export type StockReconciliationDto = {
 
 export type StockReconciliationCaseDto = {
   correctionId: string;
+  branchId: string;
   saleId: string;
   saleOperationId: string;
   variantId: string;
@@ -726,6 +737,7 @@ export type CompletedOperationProofDto = {
 };
 
 export type SaleAcknowledgementDto = {
+  branchId?: string;
   acknowledgedOperationIds: string[];
   stockVersion: number;
   includedOperationIds: string[];
@@ -733,8 +745,15 @@ export type SaleAcknowledgementDto = {
   availability: StockAvailabilityDto[];
 };
 
+export type SalePaymentDto = {
+  method: "cash" | "online" | "split";
+  cashPiasters: number;
+  onlinePiasters: number;
+};
+
 export type SaleDto = {
   id: string;
+  reference: string | null;
   operationId: string;
   branch: BranchDto;
   soldByStaffId: string;
@@ -754,6 +773,7 @@ export type SaleDto = {
   finalTotalPiasters: number;
   exchangeCreditAppliedPiasters: number;
   cashReceivedPiasters: number;
+  payment: SalePaymentDto;
   physicallyCompleted: boolean;
   discrepancy: SaleDiscrepancyDto | null;
   couponUsageDiscrepancy?: CouponUsageDiscrepancyDto | null;
@@ -949,6 +969,7 @@ export type ReturnExchangeQuoteDto = {
 
 export type ReturnDto = {
   id: string;
+  reference: string;
   operationId: string;
   status: "draft" | "posted";
   revision: number;
@@ -985,6 +1006,8 @@ export type ReturnDto = {
 
 export type ReturnListItemDto = {
   id: string;
+  reference: string;
+  customerName: string | null;
   status: "draft" | "posted";
   revision: number;
   source: ReturnSourceKeyDto;
@@ -1155,6 +1178,7 @@ export type OpeningImportCountsDto = {
 
 export type OpeningImportBatchPreviewDto = {
   key: string;
+  branchCode: string;
   variantKey: string;
   quantity: number;
   unitCostPiasters: number;

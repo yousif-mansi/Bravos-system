@@ -1,4 +1,4 @@
-import type { PosPriceSnapshotDto, SaleDto, WorkspaceDto } from "@bravos/contracts";
+import type { PosPriceSnapshotDto, SaleDto, SalePaymentDto, WorkspaceDto } from "@bravos/contracts";
 import {
   createDexiePosStore,
   createOfflinePosServices,
@@ -21,6 +21,7 @@ export { PosStorageError };
 export function saleFromOffline(record: OfflineCompletedSale): SaleDto {
   return {
     id: record.id,
+    reference: null,
     operationId: record.operationId,
     branch: record.branch,
     soldByStaffId: record.soldByStaffId,
@@ -39,7 +40,8 @@ export function saleFromOffline(record: OfflineCompletedSale): SaleDto {
     discountedByStaffId: record.discountedByStaffId,
     finalTotalPiasters: record.finalTotalPiasters,
     exchangeCreditAppliedPiasters: 0,
-    cashReceivedPiasters: record.finalTotalPiasters,
+    cashReceivedPiasters: record.payment?.cashPiasters ?? record.finalTotalPiasters,
+    payment: record.payment ?? { method: "cash", cashPiasters: record.finalTotalPiasters, onlinePiasters: 0 },
     physicallyCompleted: true,
     discrepancy: discrepancyFromLines(record.lines),
     lines: record.lines,
@@ -64,6 +66,7 @@ export function offlineFromQuote(input: {
   pricingVersion?: 1 | null;
   restoreGeneration?: number;
   kind?: OfflineSaleKind;
+  payment?: SalePaymentDto;
 }): OfflineCompletedSale {
   return {
     id: input.quote.id,
@@ -93,6 +96,7 @@ export function offlineFromQuote(input: {
     discountReason: input.quote.discountReason,
     discountedByStaffId: input.quote.discountedByStaffId,
     finalTotalPiasters: input.quote.finalTotalPiasters,
+    ...(input.payment ? { payment: input.payment } : {}),
     physicallyCompleted: true,
     payloadFingerprint: null,
     lines: input.quote.lines.map((line) => ({
@@ -162,10 +166,14 @@ export function syncOutcomeMessage(error: unknown): string {
 }
 
 export async function applySyncedSale(local: OfflineCompletedSale, synced: SyncedSaleDto): Promise<void> {
+  const localPayment = local.payment ?? { method: "cash", cashPiasters: local.finalTotalPiasters, onlinePiasters: 0 };
   if (
     synced.id !== local.id ||
     synced.finalTotalPiasters !== local.finalTotalPiasters ||
-    synced.soldByStaffId !== local.soldByStaffId
+    synced.soldByStaffId !== local.soldByStaffId ||
+    synced.payment.method !== localPayment.method ||
+    synced.payment.cashPiasters !== localPayment.cashPiasters ||
+    synced.payment.onlinePiasters !== localPayment.onlinePiasters
   ) {
     throw new PosStorageError("تعذر مطابقة البيع المزامن مع السجل المحلي.");
   }
@@ -173,6 +181,7 @@ export async function applySyncedSale(local: OfflineCompletedSale, synced: Synce
     throw new PosStorageError("تعذر تأكيد المزامنة.");
   }
   await pos.applyAcknowledgement({
+    branchId: local.branch.id,
     acknowledgedOperationIds: synced.acknowledgement.acknowledgedOperationIds,
     stockVersion: synced.acknowledgement.stockVersion,
     includedOperationIds: synced.acknowledgement.includedOperationIds,
@@ -196,7 +205,30 @@ export async function pendingOperationIds(): Promise<string[]> {
   return pos.listPendingOperationIds();
 }
 
-export async function retryUnsyncedSales(
+const activeSaleSyncs = new Map<string, Promise<{ synced: number; remaining: number; error: string }>>();
+
+export function retryUnsyncedSales(
+  staffId: string,
+  sync: {
+    accept: (sale: OfflineCompletedSale) => Promise<SyncedSaleDto>;
+    complete: (sale: OfflineCompletedSale) => Promise<SyncedSaleDto>;
+  },
+  stillCurrent?: () => boolean,
+): Promise<{ synced: number; remaining: number; error: string }> {
+  const active = activeSaleSyncs.get(staffId);
+  if (active) return active;
+  const run = async () => {
+    const work = () => retryUnsyncedSalesUnlocked(staffId, sync, stillCurrent);
+    return navigator.locks?.request
+      ? navigator.locks.request(`bravos.sales.sync.${staffId}`, { mode: "exclusive" }, work)
+      : work();
+  };
+  const promise = run().finally(() => activeSaleSyncs.delete(staffId));
+  activeSaleSyncs.set(staffId, promise);
+  return promise;
+}
+
+async function retryUnsyncedSalesUnlocked(
   staffId: string,
   sync: {
     accept: (sale: OfflineCompletedSale) => Promise<SyncedSaleDto>;
@@ -208,6 +240,9 @@ export async function retryUnsyncedSales(
     return { synced: 0, remaining: 0, error: "" };
   }
   const rows = await pos.listUnsynced(staffId);
+  if (!(await pos.canUpgradeSafely(POS_SCHEMA_VERSION))) {
+    return { synced: 0, remaining: rows.length, error: "تحديث نقطة البيع مؤجل لحماية المبيعات المحفوظة." };
+  }
   let syncedCount = 0;
   let error = "";
   for (const local of rows) {
@@ -245,6 +280,13 @@ export async function recoverPreservedQueues(
     return { recovered: 0, remaining: 0, error: "" };
   }
   try {
+    if (!(await pos.canUpgradeSafely(POS_SCHEMA_VERSION))) {
+      return {
+        recovered: 0,
+        remaining: await pos.countOtherPending(managerStaffId),
+        error: "تحديث نقطة البيع مؤجل لحماية المبيعات المحفوظة.",
+      };
+    }
     const result = await pos.recoverPreservedQueues(managerStaffId, async (sale) => {
       if (stillCurrent && !stillCurrent()) {
         throw new Error("stale-account");
@@ -256,7 +298,10 @@ export async function recoverPreservedQueues(
       if (
         synced.id !== sale.id ||
         synced.finalTotalPiasters !== sale.finalTotalPiasters ||
-        synced.soldByStaffId !== sale.soldByStaffId
+        synced.soldByStaffId !== sale.soldByStaffId ||
+        synced.payment.method !== (sale.payment?.method ?? "cash") ||
+        synced.payment.cashPiasters !== (sale.payment?.cashPiasters ?? sale.finalTotalPiasters) ||
+        synced.payment.onlinePiasters !== (sale.payment?.onlinePiasters ?? 0)
       ) {
         throw new PosStorageError("تعذر مطابقة البيع المزامن مع السجل المحلي.");
       }
@@ -268,7 +313,7 @@ export async function recoverPreservedQueues(
         finalTotalPiasters: synced.finalTotalPiasters,
         discrepancy: synced.discrepancy,
         lines: synced.lines,
-        acknowledgement: synced.acknowledgement,
+        acknowledgement: { ...synced.acknowledgement, branchId: sale.branch.id },
       };
     }, stillCurrent);
     return { recovered: result.recovered, remaining: result.remaining, error: "" };
@@ -296,6 +341,7 @@ export async function acceptedPayload(sale: OfflineCompletedSale) {
     couponCode: sale.couponCode,
     employeeDiscountPiasters: sale.employeeDiscountPiasters,
     discountReason: sale.discountReason,
+    ...(sale.payment ? { payment: sale.payment } : {}),
     pendingOperationIds: await pendingOperationIds(),
     lines: sale.lines.map((line) => ({
       variantId: line.variantId,
@@ -317,6 +363,7 @@ export async function completedPayload(sale: OfflineCompletedSale) {
     couponCode: sale.couponCode,
     employeeDiscountPiasters: sale.employeeDiscountPiasters,
     discountReason: sale.discountReason,
+    ...(sale.payment ? { payment: sale.payment } : {}),
     pendingOperationIds: await pendingOperationIds(),
     lines: sale.lines.map((line) => ({ variantId: line.variantId, quantity: line.quantity })),
   };
@@ -333,6 +380,7 @@ export async function recoveryPayload(sale: OfflineCompletedSale) {
     occurredAt: sale.occurredAt,
     ...(sale.restoreGeneration !== undefined ? { restoreGeneration: sale.restoreGeneration } : {}),
     pendingOperationIds: await pendingOperationIds(),
+    ...(sale.payment ? { payment: sale.payment } : {}),
   };
 }
 

@@ -7,6 +7,7 @@ test("manager uses the separate Arabic Returns picker, posts inspection, and rec
   await page.getByRole("button", { name: "دخول" }).click();
   await expect(page.getByRole("heading", { name: "اختيار الفرع النشط" })).toBeVisible();
   await page.getByRole("button", { name: "أبشواي" }).click();
+  const branchId = (await staffApi(page, "GET", "/api/internal/workspace")).body.activeBranch.id as string;
 
   const category = await staffApi(page, "POST", "/api/internal/catalog/categories", { nameAr: "مرتجعات المتصفح" });
   const size = await staffApi(page, "POST", "/api/internal/catalog/sizes", { nameAr: "L إرجاع" });
@@ -22,11 +23,13 @@ test("manager uses the separate Arabic Returns picker, posts inspection, and rec
     variants: [{ sizeId: size.body.id, colorId: color.body.id, sellingPricePiastersOverride: null }],
   });
   const variantId = product.body.variants[0].id;
-  await staffApi(page, "POST", "/api/internal/receiving/receipts", {
+  const receipt = await staffApi(page, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
     receiptDate: "2026-09-01",
+    branchId,
     lines: [{ variantId, quantity: 2, unitCostPiasters: 40000 }],
   });
+  expect(receipt.status, JSON.stringify(receipt.body)).toBe(201);
   const original = await staffApi(page, "POST", "/api/internal/sales", {
     saleId: crypto.randomUUID(),
     operationId: crypto.randomUUID(),
@@ -39,10 +42,10 @@ test("manager uses the separate Arabic Returns picker, posts inspection, and rec
   await page.getByRole("link", { name: "المرتجعات" }).click();
   await expect(page.getByRole("heading", { name: "المرتجعات", exact: true })).toBeVisible();
   await expect(page.getByTestId("return-handling-branch")).toContainText("أبشواي");
-  const search = page.getByRole("form", { name: "البحث عن البيع الأصلي" });
-  await search.getByLabel("المرجع").fill(original.body.id);
+  const search = page.getByRole("form", { name: /البحث عن المعاملة الأصلية/ });
+  await search.getByLabel("رقم الطلب").fill(original.body.reference);
   await search.getByRole("button", { name: "بحث" }).click();
-  const source = page.getByTestId("return-source-list").getByRole("button").filter({ hasText: original.body.id });
+  const source = page.getByTestId("return-source-list").getByRole("button").filter({ hasText: original.body.reference });
   await expect(source).toHaveCount(1);
   await expect(source).toContainText("قميص إرجاع المتصفح");
   await source.click();
@@ -84,6 +87,7 @@ test("manager completes an exchange from Return details and sees only the actual
   await page.getByLabel("كلمة المرور").fill("e2e-owner-pass");
   await page.getByRole("button", { name: "دخول" }).click();
   await page.getByRole("button", { name: "أبشواي" }).click();
+  const branchId = (await staffApi(page, "GET", "/api/internal/workspace")).body.activeBranch.id as string;
 
   const category = await staffApi(page, "POST", "/api/internal/catalog/categories", { nameAr: "استبدال المتصفح" });
   const size = await staffApi(page, "POST", "/api/internal/catalog/sizes", { nameAr: "L استبدال" });
@@ -104,17 +108,19 @@ test("manager completes an exchange from Return details and sees only the actual
   });
   const originalVariantId = product.body.variants.find((variant: { sellingPricePiasters: number }) => variant.sellingPricePiasters === 28000).id;
   const replacementVariantId = product.body.variants.find((variant: { sellingPricePiasters: number }) => variant.sellingPricePiasters === 40000).id;
-  await staffApi(page, "POST", "/api/internal/receiving/receipts", {
-    operationId: crypto.randomUUID(), receiptDate: "2026-09-01",
+  const receipt = await staffApi(page, "POST", "/api/internal/receiving/receipts", {
+    operationId: crypto.randomUUID(), receiptDate: "2026-09-01", branchId,
     lines: [
       { variantId: originalVariantId, quantity: 1, unitCostPiasters: 10000 },
       { variantId: replacementVariantId, quantity: 1, unitCostPiasters: 15000 },
     ],
   });
+  expect(receipt.status, JSON.stringify(receipt.body)).toBe(201);
   const original = await staffApi(page, "POST", "/api/internal/sales", {
     saleId: crypto.randomUUID(), operationId: crypto.randomUUID(), physicallyCompleted: true,
     employeeDiscountPiasters: 0, lines: [{ variantId: originalVariantId, quantity: 1 }],
   });
+  expect(original.status, JSON.stringify(original.body)).toBe(201);
   await staffApi(page, "POST", "/api/internal/pricing/offers", {
     nameAr: "عرض استبدال المتصفح",
     discountType: "percentage",
@@ -130,13 +136,13 @@ test("manager completes an exchange from Return details and sees only the actual
   const source = (await staffApi(page, "GET", `/api/internal/returns/sources?reference=${original.body.id}`)).body[0];
   const drafted = await staffApi(page, "POST", "/api/internal/returns", {
     returnId: crypto.randomUUID(), operationId: crypto.randomUUID(), sourceSaleId: original.body.id,
-    handlingBranchId: original.body.branch.id, authorizedRefundPiasters: 28000,
+    handlingBranchId: branchId, authorizedRefundPiasters: 28000,
     lines: [{ sourceSaleLineId: source.lines[0].saleLineId, quantity: 1, sellableQuantity: 1 }],
   });
   expect(drafted.status).toBe(201);
 
   await page.getByRole("link", { name: "المرتجعات" }).click();
-  await page.locator(".return-history").getByRole("button", { name: new RegExp(original.body.id) }).click();
+  await page.locator(".return-history").getByRole("button", { name: new RegExp(drafted.body.reference) }).click();
   const exchangeForm = page.getByRole("form", { name: "إتمام استبدال" });
   await exchangeForm.getByLabel("صنف الاستبدال").selectOption(originalVariantId);
   await exchangeForm.getByRole("button", { name: "إضافة إلى سلة الاستبدال" }).click();
@@ -152,14 +158,17 @@ test("manager completes an exchange from Return details and sees only the actual
   await expect(quote).toContainText("320 ج.م.");
   await expect(quote).toContainText("280 ج.م.");
   await expect(quote).toContainText("40 ج.م.");
+  const exchangeResponse = page.waitForResponse((response) => response.request().method() === "POST"
+    && /\/api\/internal\/returns\/[^/]+\/exchange$/.test(new URL(response.url()).pathname));
   await exchangeForm.getByRole("button", { name: "تأكيد الاستبدال بعد مراجعة فرق النقد" }).click();
+  const exchanged = await (await exchangeResponse).json();
 
   await expect(page.getByRole("status")).toContainText("تم إتمام الاستبدال");
   const details = page.getByTestId("exchange-details");
   await expect(details).toContainText("320 ج.م.");
   await expect(details).toContainText("280 ج.م.");
   await expect(details).toContainText("40 ج.م.");
-  const replacementSaleId = (await details.getByText(/بيع الاستبدال:/).textContent())?.split(": ")[1] ?? "";
+  const replacementSaleId = exchanged.exchange.replacementSaleId as string;
   const replacementSale = await staffApi(page, "GET", `/api/internal/sales/${replacementSaleId}`);
   expect(replacementSale.body).toMatchObject({ finalTotalPiasters: 32000, exchangeCreditAppliedPiasters: 28000, cashReceivedPiasters: 4000 });
 });

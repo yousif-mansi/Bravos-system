@@ -19,7 +19,7 @@ const SECTION_LABELS: Record<BackupSectionName, string> = {
   catalog: "الكتالوج ومراجع الصور",
   inventory: "المخزون والدفعات والتخصيصات",
   receiving: "استلام المخزون",
-  sales: "المبيعات النقدية",
+  sales: "مبيعات الفروع",
   expenses: "المصروفات",
   pricing: "الأسعار والعروض والكوبونات",
   returns: "المرتجعات والاستبدالات",

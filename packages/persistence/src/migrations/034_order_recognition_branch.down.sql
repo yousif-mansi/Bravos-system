@@ -1,0 +1,5 @@
+DROP INDEX online_order_fulfillment_reversals;
+DROP INDEX online_order_confirmation_branch_confirmed;
+ALTER TABLE online_order DROP COLUMN pre_shipment_stock_disposition;
+ALTER TABLE online_order_failed_return_inspection DROP COLUMN receiving_branch_id;
+ALTER TABLE online_order_confirmation DROP COLUMN fulfillment_branch_id;

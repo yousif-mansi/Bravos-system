@@ -215,6 +215,10 @@ export function App() {
     const staffId = workspace.staff.id;
     const epoch = accountGeneration();
     const stillCurrent = () => accountGeneration() === epoch && staffIdRef.current === staffId;
+    let stopped = false;
+    let syncing = false;
+    let retryTimer: number | undefined;
+    let retryDelayMs = 2_000;
     const sync = {
       accept: async (sale: Parameters<typeof acceptedPayload>[0]) => {
         if (!stillCurrent() || sale.staffId !== staffId) {
@@ -229,12 +233,18 @@ export function App() {
         return completeSale(await completedPayload(sale));
       },
     };
-    function onOnline() {
-      void (async () => {
-        if (!stillCurrent()) {
-          return;
-        }
-        try {
+    function scheduleRetry() {
+      window.clearTimeout(retryTimer);
+      if (!stopped && stillCurrent()) retryTimer = window.setTimeout(() => void syncNow(), retryDelayMs);
+    }
+    async function syncNow() {
+      if (stopped || syncing || !stillCurrent()) return;
+      syncing = true;
+      try {
+          if ((await pos.listUnsynced(staffId)).length === 0) {
+            retryDelayMs = 30_000;
+            return;
+          }
           const value = await getWorkspace();
           if (!stillCurrent()) {
             return;
@@ -242,14 +252,16 @@ export function App() {
           if (value.staff.id !== staffId) {
             return;
           }
-          setWorkspace(value);
+          setWorkspace((current) => current && JSON.stringify(current) === JSON.stringify(value) ? current : value);
           if (!value.capabilities.cashier) {
             return;
           }
           const result = await retryUnsyncedSales(staffId, sync, stillCurrent);
           if (stillCurrent() && result.error) {
             setError(`${result.error} البيع المكتمل محفوظ محلياً وسيظل ضمن المبيعات غير المرسلة.`);
+            retryDelayMs = Math.min(Math.max(2_000, retryDelayMs * 2), 30_000);
           } else if (stillCurrent()) {
+            retryDelayMs = result.remaining > 0 ? 2_000 : 30_000;
             const snapshot = await issuePosSnapshot(await pos.deviceId(), await pos.listPendingOperationIds());
             if (stillCurrent()) {
               await cacheIssuedSnapshot(staffId, snapshot);
@@ -263,12 +275,24 @@ export function App() {
             staffIdRef.current = null;
             setWorkspace(null);
           }
+          retryDelayMs = Math.min(Math.max(2_000, retryDelayMs * 2), 30_000);
+        } finally {
+          syncing = false;
+          scheduleRetry();
         }
-      })();
+    }
+    function onOnline() {
+      retryDelayMs = 2_000;
+      void syncNow();
     }
     window.addEventListener("online", onOnline);
+    window.addEventListener("focus", onOnline);
+    scheduleRetry();
     return () => {
+      stopped = true;
+      window.clearTimeout(retryTimer);
       window.removeEventListener("online", onOnline);
+      window.removeEventListener("focus", onOnline);
     };
   }, [workspace?.staff.id, workspace?.capabilities.cashier]);
 

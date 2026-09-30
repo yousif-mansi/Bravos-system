@@ -12,7 +12,6 @@ import {
   ApiError,
   createCategory,
   createColor,
-  createProduct,
   createSize,
   listCategories,
   listColors,
@@ -26,16 +25,19 @@ import {
 } from "../api.ts";
 import { egpInputToPiasters, formatEgpFromPiasters, piastersToEgpInput } from "../money.ts";
 import { EmptyState } from "../ui/EmptyState.tsx";
+import { useRevealFeedback } from "../ui/useRevealFeedback.ts";
 
 
 type VariantDraft = {
   key: string;
   sizeId: string;
   colorId: string;
+  onlineVisible: boolean;
   overrideEgp: string;
 };
 
 type ProductDraft = {
+  editRevision: number | null;
   code: string;
   nameAr: string;
   descriptionAr: string;
@@ -47,12 +49,9 @@ type ProductDraft = {
   variants: VariantDraft[];
 };
 
-function emptyVariant(): VariantDraft {
-  return { key: crypto.randomUUID(), sizeId: "", colorId: "", overrideEgp: "" };
-}
-
 function emptyProduct(): ProductDraft {
   return {
+    editRevision: null,
     code: "",
     nameAr: "",
     descriptionAr: "",
@@ -61,7 +60,7 @@ function emptyProduct(): ProductDraft {
     publication: "hidden",
     imageRefs: [],
     sizeGuideAr: "",
-    variants: [emptyVariant()],
+    variants: [],
   };
 }
 
@@ -83,10 +82,12 @@ export default function CatalogPage({
   const [sizeName, setSizeName] = useState("");
   const [colorName, setColorName] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [skuQuery, setSkuQuery] = useState("");
   const [product, setProduct] = useState<ProductDraft>(emptyProduct);
   const [pending, setPending] = useState("");
   const [productPending, setProductPending] = useState<"" | "media" | "product">("");
   const productDraftVersion = useRef(0);
+  const productFeedback = useRevealFeedback<HTMLFormElement>();
 
   function replaceProductDraft(next: ProductDraft) {
     productDraftVersion.current += 1;
@@ -214,7 +215,12 @@ export default function CatalogPage({
 
   async function onSaveProduct(event: FormEvent) {
     event.preventDefault();
-    if (productPending) {
+    if (productPending || !editingId) {
+      return;
+    }
+    const expectedRevision = product.editRevision;
+    if (expectedRevision === null) {
+      setError("أعد اختيار المنتج قبل حفظ التعديل.");
       return;
     }
     setError("");
@@ -245,12 +251,15 @@ export default function CatalogPage({
       variants.push({
         sizeId: draft.sizeId,
         colorId: draft.colorId,
+        onlineVisible: draft.onlineVisible,
         sellingPricePiastersOverride: override,
       });
     }
     setProductPending("product");
     try {
       const payload = {
+        expectedRevision,
+        expectedVariantIds: product.variants.map((variant) => variant.key),
         code: product.code,
         nameAr: product.nameAr,
         descriptionAr: product.descriptionAr,
@@ -261,13 +270,8 @@ export default function CatalogPage({
         sizeGuideAr: product.sizeGuideAr.trim() || null,
         variants,
       };
-      if (editingId) {
-        await updateProduct(editingId, payload);
-        setNotice("تم تحديث المنتج.");
-      } else {
-        await createProduct(payload);
-        setNotice("تم إنشاء المنتج.");
-      }
+      await updateProduct(editingId, payload);
+      setNotice("تم تحديث المنتج.");
       setEditingId(null);
       replaceProductDraft(emptyProduct());
       await refresh();
@@ -282,7 +286,9 @@ export default function CatalogPage({
     setError("");
     setNotice("");
     setEditingId(item.id);
+    setSkuQuery(item.code);
     replaceProductDraft({
+      editRevision: item.editRevision,
       code: item.code,
       nameAr: item.nameAr,
       descriptionAr: item.descriptionAr,
@@ -295,24 +301,14 @@ export default function CatalogPage({
         key: variant.id,
         sizeId: variant.size.id,
         colorId: variant.color.id,
+        onlineVisible: variant.onlineVisible,
         overrideEgp:
           variant.sellingPricePiastersOverride === null
             ? ""
             : piastersToEgpInput(variant.sellingPricePiastersOverride),
       })),
     });
-  }
-
-  function removeVariant(index: number) {
-    if (product.variants.length <= 1) {
-      setError("يجب الإبقاء على متغير واحد على الأقل.");
-      return;
-    }
-    setError("");
-    setProduct({
-      ...product,
-      variants: product.variants.filter((_, itemIndex) => itemIndex !== index),
-    });
+    productFeedback.reveal();
   }
 
   async function onUploadImages(event: ChangeEvent<HTMLInputElement>) {
@@ -470,16 +466,53 @@ export default function CatalogPage({
             </div>
           ) : null}
         </section>
-        <form
-          className="card"
+        <div className="stacked-form">
+          <section className="card" aria-label="اختيار منتج من المخزون">
+            <h2>اختيار منتج من المخزون</h2>
+            <p className="muted">ابدأ بتسجيل المنتج ومقاساته وألوانه وكمياته من صفحة استلام المخزون، ثم اختر رمزه هنا لإعداد عرضه.</p>
+            <div className="field">
+              <label htmlFor="inventoryProductCode">رمز المنتج</label>
+              <input
+                id="inventoryProductCode"
+                list="inventoryProductCodes"
+                autoComplete="off"
+                value={skuQuery}
+                onChange={(event) => setSkuQuery(event.target.value)}
+                placeholder="BRV-TSH-001"
+              />
+              <datalist id="inventoryProductCodes">
+                {products
+                  .filter((item) => item.code.toLocaleLowerCase().includes(skuQuery.trim().toLocaleLowerCase()))
+                  .slice(0, 20)
+                  .map((item) => <option key={item.id} value={item.code}>{item.nameAr}</option>)}
+              </datalist>
+            </div>
+            <button
+              type="button"
+              disabled={Boolean(productPending) || !skuQuery.trim()}
+              onClick={() => {
+                const match = products.find((item) => item.code.toLocaleLowerCase() === skuQuery.trim().toLocaleLowerCase());
+                if (!match) {
+                  setError("رمز المنتج غير موجود في المخزون.");
+                  return;
+                }
+                startEdit(match);
+              }}
+            >
+              عرض المنتج
+            </button>
+          </section>
+          {editingId ? <form
+          ref={productFeedback.regionRef}
+          className={`card reveal-feedback${productFeedback.highlighted ? " is-highlighted" : ""}`}
           aria-busy={Boolean(productPending)}
-          aria-label={editingId ? "تعديل منتج" : "إنشاء منتج"}
+          aria-label="تعديل منتج"
           onSubmit={(event) => void onSaveProduct(event)}
         >
-          <h2>{editingId ? "تعديل منتج" : "إنشاء منتج"}</h2>
+          <h2 ref={productFeedback.headingRef} tabIndex={-1}>تعديل منتج</h2>
           <div className="field">
             <label htmlFor="productCode">رمز المنتج</label>
-            <input id="productCode" value={product.code} onChange={(event) => setProduct({ ...product, code: event.target.value })} required />
+            <input id="productCode" value={product.code} readOnly />
           </div>
           <div className="field">
             <label htmlFor="productName">اسم المنتج</label>
@@ -563,36 +596,53 @@ export default function CatalogPage({
             ) : <p className="muted">لا توجد صور مضافة.</p>}
           </fieldset>
           <fieldset className="grant-editor">
-            <legend>المتغيرات</legend>
+            <legend>المقاسات والألوان المسجلة في المخزون</legend>
+            <p className="muted">تظهر التركيبات المسجلة فقط. اختيار مقاس أو لون يحدد كل تركيباته الموجودة، ويمكنك ضبط كل تركيبة على حدة. نفاد الكمية يوقف الطلب تلقائياً دون تغيير هذه الاختيارات.</p>
+            <div className="grid two">
+              <fieldset>
+                <legend>المقاسات المعروضة على الموقع</legend>
+                {[...new Set(product.variants.map((variant) => variant.sizeId))].map((sizeId) => {
+                  const inSize = product.variants.filter((variant) => variant.sizeId === sizeId);
+                  return <label key={sizeId}>
+                    <input
+                      type="checkbox"
+                      checked={inSize.every((variant) => variant.onlineVisible)}
+                      onChange={(event) => setProduct((current) => ({ ...current, variants: current.variants.map((variant) => variant.sizeId === sizeId ? { ...variant, onlineVisible: event.target.checked } : variant) }))}
+                    /> {sizes.find((item) => item.id === sizeId)?.nameAr ?? ""} ({inSize.filter((variant) => variant.onlineVisible).length}/{inSize.length})
+                  </label>;
+                })}
+              </fieldset>
+              <fieldset>
+                <legend>الألوان المعروضة على الموقع</legend>
+                {[...new Set(product.variants.map((variant) => variant.colorId))].map((colorId) => {
+                  const inColor = product.variants.filter((variant) => variant.colorId === colorId);
+                  return <label key={colorId}>
+                    <input
+                      type="checkbox"
+                      checked={inColor.every((variant) => variant.onlineVisible)}
+                      onChange={(event) => setProduct((current) => ({ ...current, variants: current.variants.map((variant) => variant.colorId === colorId ? { ...variant, onlineVisible: event.target.checked } : variant) }))}
+                    /> {colors.find((item) => item.id === colorId)?.nameAr ?? ""} ({inColor.filter((variant) => variant.onlineVisible).length}/{inColor.length})
+                  </label>;
+                })}
+              </fieldset>
+            </div>
+            <p>التركيبات المحددة للعرض</p>
             {product.variants.map((variant, index) => (
               <div className="variant-row" key={variant.key}>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={variant.onlineVisible}
+                    onChange={(event) => updateVariant(index, { ...variant, onlineVisible: event.target.checked })}
+                  /> عرض هذه التركيبة
+                </label>
                 <div className="field">
                   <label htmlFor={`variant-size-${index}`}>المقاس</label>
-                  <select
-                    id={`variant-size-${index}`}
-                    value={variant.sizeId}
-                    onChange={(event) => updateVariant(index, { ...variant, sizeId: event.target.value })}
-                    required
-                  >
-                    <option value="">اختر مقاساً</option>
-                    {sizes.map((item) => (
-                      <option key={item.id} value={item.id}>{item.nameAr}</option>
-                    ))}
-                  </select>
+                  <input id={`variant-size-${index}`} value={sizes.find((item) => item.id === variant.sizeId)?.nameAr ?? ""} readOnly />
                 </div>
                 <div className="field">
                   <label htmlFor={`variant-color-${index}`}>اللون</label>
-                  <select
-                    id={`variant-color-${index}`}
-                    value={variant.colorId}
-                    onChange={(event) => updateVariant(index, { ...variant, colorId: event.target.value })}
-                    required
-                  >
-                    <option value="">اختر لوناً</option>
-                    {colors.map((item) => (
-                      <option key={item.id} value={item.id}>{item.nameAr}</option>
-                    ))}
-                  </select>
+                  <input id={`variant-color-${index}`} value={colors.find((item) => item.id === variant.colorId)?.nameAr ?? ""} readOnly />
                 </div>
                 <div className="field">
                   <label htmlFor={`variant-price-${index}`}>سعر مختلف للمتغير (اختياري)</label>
@@ -603,23 +653,8 @@ export default function CatalogPage({
                     onChange={(event) => updateVariant(index, { ...variant, overrideEgp: event.target.value })}
                   />
                 </div>
-                <button
-                  type="button"
-                  className="secondary"
-                  disabled={product.variants.length <= 1}
-                  onClick={() => removeVariant(index)}
-                >
-                  حذف المتغير
-                </button>
               </div>
             ))}
-            <button
-              type="button"
-              className="secondary"
-              onClick={() => setProduct({ ...product, variants: [...product.variants, emptyVariant()] })}
-            >
-              إضافة متغير
-            </button>
           </fieldset>
           <div className="form-actions">
             {editingId ? (
@@ -630,21 +665,23 @@ export default function CatalogPage({
                 onClick={() => {
                   setEditingId(null);
                   replaceProductDraft(emptyProduct());
+                  productFeedback.clearHighlight();
                 }}
               >
                 إلغاء التعديل
               </button>
             ) : null}
             <button type="submit" disabled={Boolean(productPending)}>
-              {productPending === "product" ? "جارٍ الحفظ…" : editingId ? "حفظ التعديل" : "حفظ المنتج"}
+              {productPending === "product" ? "جارٍ الحفظ…" : "حفظ التعديل"}
             </button>
           </div>
-        </form>
+        </form> : <section className="card"><p className="muted">اختر رمز منتج لعرض تفاصيله وتعديل بياناته.</p></section>}
+        </div>
       </div>
       <section className="card">
         <h2>المنتجات</h2>
         {products.length === 0 ? (
-          <EmptyState title="لسه مفيش منتجات" message="ابدأ بإضافة أول صنف للمحل من النموذج فوق." />
+          <EmptyState title="لسه مفيش منتجات" message="ابدأ بإضافة أول صنف من صفحة استلام المخزون." />
         ) : (
           <div className="staff-list">
             {products.map((item) => (

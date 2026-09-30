@@ -322,6 +322,7 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
     const actors = {
       getStaff: (staffId: string) => directory.getStaff(staffId),
       getSessionBranch: (sessionId: string) => directory.getSessionBranch(sessionId),
+      listBranches: () => directory.listBranches(),
     };
     const catalog = createCatalogServices({
       store: catalogStore,
@@ -711,7 +712,12 @@ async function registerRoutes(
 
   app.post("/api/public/checkout/orders", async (request, reply) => {
     reply.header("cache-control", "no-store");
-    if (!publicOrderingEnabled) return publicOrderingDisabled(reply);
+    if (!publicOrderingEnabled) {
+      return handle(reply, async () => {
+        const accepted = await onlineOrders.replayAcceptedSubmission(request.body);
+        return accepted ?? publicOrderingDisabled(reply);
+      });
+    }
     return handle(reply, async () => {
       const result = await onlineOrders.submit(request.body);
       reply.status(result.created ? 201 : 200);

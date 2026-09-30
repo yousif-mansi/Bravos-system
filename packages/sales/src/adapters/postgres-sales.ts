@@ -109,6 +109,7 @@ function recoveryPayload(value: Record<string, unknown>): Record<string, unknown
     pendingOperationIds: payload.pendingOperationIds,
     occurredAt: payload.occurredAt,
     restoreGeneration: payload.restoreGeneration,
+    ...(payload.payment ? { payment: payload.payment } : {}),
   };
 }
 
@@ -148,6 +149,9 @@ type SaleRow = {
   final_total_piasters: number | string;
   exchange_credit_applied_piasters: number | string;
   cash_received_piasters: number | string;
+  payment_method: "cash" | "online" | "split";
+  online_received_piasters: number | string;
+  reference: string | null;
   payload_fingerprint: string;
   physically_completed: boolean;
   costs_incomplete: boolean;
@@ -212,14 +216,14 @@ export function createPostgresSaleStore(queryable: Queryable): SaleStore {
              applied_coupon_percentage_basis_points, applied_coupon_fixed_discount_piasters,
              applied_coupon_allow_automatic_offer, employee_discount_piasters, discount_reason, final_total_piasters, payload_fingerprint,
              physically_completed, costs_incomplete, recovered_by_staff_id, recovered_at,
-             exchange_credit_applied_piasters, cash_received_piasters,
+             exchange_credit_applied_piasters, cash_received_piasters, payment_method, online_received_piasters,
              coupon_usage_discrepancy_detected_at, coupon_usage_limit, coupon_usage_count_before,
              coupon_usage_actual_count, source_device_id, source_snapshot_id, source_restore_generation
            ) VALUES (
              $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
              $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34,
               $35, $36, $37, $38, $39, $40, $41, $42,
-              $43
+              $43, $44, $45
            ) ON CONFLICT (id) DO NOTHING
            RETURNING id`,
           [
@@ -258,7 +262,9 @@ export function createPostgresSaleStore(queryable: Queryable): SaleStore {
             input.recoveredByStaffId ?? null,
             input.recoveredAt ?? null,
             input.exchangeCreditAppliedPiasters ?? 0,
-            input.cashReceivedPiasters ?? input.finalTotalPiasters,
+            input.payment?.cashPiasters ?? input.cashReceivedPiasters ?? input.finalTotalPiasters,
+            input.payment?.method ?? "cash",
+            input.payment?.onlinePiasters ?? 0,
             input.couponUsageDiscrepancy?.detectedAt ?? null,
             input.couponUsageDiscrepancy?.usageLimit ?? null,
             input.couponUsageDiscrepancy?.countBefore ?? null,
@@ -302,7 +308,11 @@ export function createPostgresSaleStore(queryable: Queryable): SaleStore {
              coupon_usage_limit = COALESCE($8, coupon_usage_limit),
              coupon_usage_count_before = COALESCE($9, coupon_usage_count_before),
               coupon_usage_actual_count = COALESCE($10, coupon_usage_actual_count),
-              source_restore_generation = COALESCE($11, source_restore_generation)
+              source_restore_generation = COALESCE($11, source_restore_generation),
+              payment_method = COALESCE($12, payment_method),
+              cash_received_piasters = COALESCE($13, cash_received_piasters),
+              online_received_piasters = COALESCE($14, online_received_piasters),
+              payload_fingerprint = COALESCE($15, payload_fingerprint)
          WHERE id = $1`,
         [
           input.id,
@@ -316,6 +326,10 @@ export function createPostgresSaleStore(queryable: Queryable): SaleStore {
           input.couponUsageDiscrepancy?.countBefore ?? null,
           input.couponUsageDiscrepancy?.actualCount ?? null,
           input.sourceRestoreGeneration ?? null,
+          input.payment?.method ?? null,
+          input.payment?.cashPiasters ?? null,
+          input.payment?.onlinePiasters ?? null,
+          input.payloadFingerprint ?? null,
         ],
       );
       for (const line of input.lines) {
@@ -459,6 +473,7 @@ export function createPostgresStockReconciliationSales(queryable: Queryable): St
       : null;
     return {
       id: sale.id,
+      branchId: sale.branchId,
       operationId: sale.operationId,
       sourceDeviceId: sale.sourceDeviceId,
       sourceSnapshotId: sale.sourceSnapshotId,
@@ -815,6 +830,12 @@ function toSale(row: SaleRow, lines: SaleLineWrite[]): SaleRecord {
     finalTotalPiasters: asSafeInteger(row.final_total_piasters),
     exchangeCreditAppliedPiasters: asSafeInteger(row.exchange_credit_applied_piasters),
     cashReceivedPiasters: asSafeInteger(row.cash_received_piasters),
+    payment: {
+      method: row.payment_method ?? "cash",
+      cashPiasters: asSafeInteger(row.cash_received_piasters),
+      onlinePiasters: asSafeInteger(row.online_received_piasters ?? 0),
+    },
+    reference: row.reference ?? null,
     payloadFingerprint: row.payload_fingerprint,
     physicallyCompleted: row.physically_completed,
     costsIncomplete: row.costs_incomplete,

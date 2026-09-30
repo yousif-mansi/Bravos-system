@@ -12,14 +12,16 @@ const PUBLIC_ORIGIN = "http://127.0.0.1:3000";
 let cluster: PostgresCluster;
 let built: BuiltApp;
 let branchId = "";
+let databaseUrl = "";
 
 beforeAll(async () => {
   cluster = await startPostgresCluster({ port: Number(process.env.BRAVOS_CHECKOUT_TEST_PORT ?? 55456) });
   const databaseName = `bravos_checkout_${crypto.randomUUID().replaceAll("-", "")}`;
   await cluster.createDatabase(databaseName);
+  databaseUrl = cluster.connectionString(databaseName);
   built = await buildApp({
     nodeEnv: "test",
-    databaseUrl: cluster.connectionString(databaseName),
+    databaseUrl,
     authSecret: "test-secret-test-secret-test-secret-32",
     authBaseUrl: "http://127.0.0.1:3010",
     internalOrigin: INTERNAL_ORIGIN,
@@ -233,6 +235,60 @@ test("exact concurrent submission and later lost-response retry return one stabl
   expect(conflict.body.error.code).toBe("OPERATION_CONFLICT");
 });
 
+test("closed public ordering recovers only an exact accepted submission without new order or stock effects", async () => {
+  const manager = await signIn("owner", "owner-pass-1");
+  const seeded = await seedCheckout(manager, "CLOSED-REPLAY", 2, 18000);
+  const area = await createArea(manager, "استعادة طلب بعد الإغلاق", 2000);
+  const quote = await publicApi("POST", "/api/public/checkout/quote", {
+    deliveryAreaId: area.id, lines: [{ variantId: seeded.variantId, quantity: 1 }],
+  });
+  expect(quote.status).toBe(200);
+  const payload = {
+    operationId: crypto.randomUUID(), quoteId: quote.body.quoteId, deliveryAreaId: area.id,
+    lines: [{ variantId: seeded.variantId, quantity: 1 }], customerName: "عميل فقد الرد",
+    primaryPhone: "01012345678", detailedAddress: "عنوان الطلب السابق", notes: "ملاحظة خاصة",
+  };
+  const accepted = await publicApi("POST", "/api/public/checkout/orders", payload);
+  expect(accepted.status).toBe(201);
+  await api(manager, "PUT", `/api/internal/delivery-areas/${area.id}`, {
+    nameAr: area.nameAr, feePiasters: 9000, active: false,
+  });
+  const effectsBefore = await built.pool.query(
+    "SELECT (SELECT count(*) FROM online_order) AS orders, (SELECT count(*) FROM online_checkout_quote) AS quotes, (SELECT count(*) FROM inventory_movement) AS movements",
+  );
+  const closed = await buildApp({
+    nodeEnv: "test", databaseUrl,
+    authSecret: "test-secret-test-secret-test-secret-32", authBaseUrl: "http://127.0.0.1:3010",
+    internalOrigin: INTERNAL_ORIGIN, publicOrigin: PUBLIC_ORIGIN,
+    trustedOrigins: [INTERNAL_ORIGIN, "http://127.0.0.1:3010"], secureCookies: false,
+    ownerRecoveryAdapter: "local-outbox",
+    ownerRecoveryOutboxDir: await mkdtemp(path.join(tmpdir(), "bravos-checkout-replay-outbox-")),
+    publicOrderingEnabled: false,
+  });
+  const post = (body: unknown) => closed.app.inject({
+    method: "POST", url: "/api/public/checkout/orders",
+    headers: { origin: PUBLIC_ORIGIN, "content-type": "application/json" }, payload: body,
+  });
+  try {
+    const replay = await post(payload);
+    expect(replay.statusCode).toBe(200);
+    expect(replay.json()).toEqual(accepted.body);
+    expect(JSON.stringify(replay.json())).not.toMatch(/primaryPhone|customerName|detailedAddress|notes|cost|profit/i);
+    const changed = await post({ ...payload, notes: "محاولة مختلفة" });
+    expect(changed.statusCode).toBe(409);
+    expect(changed.json().error.code).toBe("OPERATION_CONFLICT");
+    const newOperation = await post({ ...payload, operationId: crypto.randomUUID() });
+    expect(newOperation.statusCode).toBe(503);
+    expect(newOperation.json().error.code).toBe("PUBLIC_ORDERING_DISABLED");
+    const effectsAfter = await built.pool.query(
+      "SELECT (SELECT count(*) FROM online_order) AS orders, (SELECT count(*) FROM online_checkout_quote) AS quotes, (SELECT count(*) FROM inventory_movement) AS movements",
+    );
+    expect(effectsAfter.rows).toEqual(effectsBefore.rows);
+  } finally {
+    await closed.close();
+  }
+});
+
 test("submission requires renewed review when the configured delivery fee changes", async () => {
   const manager = await signIn("owner", "owner-pass-1");
   const seeded = await seedCheckout(manager, "STALE", 1, 15000);
@@ -372,7 +428,7 @@ async function seedCheckout(manager: Session, prefix: string, quantity: number, 
   });
   const variantId = product.body.variants[0].id;
   const receipt = await api(manager, "POST", "/api/internal/receiving/receipts", {
-    operationId: crypto.randomUUID(), receiptDate: today(), lines: [{ variantId, quantity, unitCostPiasters: 5000 }],
+    operationId: crypto.randomUUID(), branchId, receiptDate: today(), lines: [{ variantId, quantity, unitCostPiasters: 5000 }],
   });
   expect(receipt.status, JSON.stringify(receipt.body)).toBe(201);
   return { productId: product.body.id, variantId };

@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { useState } from "react";
+import { useRef, useState, type KeyboardEvent, type TouchEvent } from "react";
 import { productMediaUrl } from "../../public-catalog";
 import styles from "./product-page.module.css";
 
@@ -13,11 +13,32 @@ type ProductGalleryProps = {
 export function ProductGallery({ productNameAr, imageRefs }: ProductGalleryProps) {
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [failedImages, setFailedImages] = useState<ReadonlySet<number>>(() => new Set());
+  const touchStart = useRef<{ x: number; y: number } | null>(null);
   const imageCount = imageRefs.length;
   const selectedRef = imageRefs[selectedIndex];
 
   function move(offset: number) {
+    if (imageCount < 2) return;
     setSelectedIndex((current) => (current + offset + imageCount) % imageCount);
+  }
+
+  function navigateByKeyboard(event: KeyboardEvent<HTMLElement>) {
+    if (imageCount < 2 || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    if (event.key === "Home") setSelectedIndex(0);
+    else if (event.key === "End") setSelectedIndex(imageCount - 1);
+    else move(event.key === "ArrowLeft" ? 1 : -1);
+  }
+
+  function finishSwipe(event: TouchEvent<HTMLDivElement>) {
+    const start = touchStart.current;
+    touchStart.current = null;
+    const end = event.changedTouches[0];
+    if (!start || !end) return;
+    const horizontal = end.clientX - start.x;
+    const vertical = end.clientY - start.y;
+    if (Math.abs(horizontal) < 50 || Math.abs(horizontal) < Math.abs(vertical) * 1.5) return;
+    move(horizontal < 0 ? 1 : -1);
   }
 
   function markFailed(index: number) {
@@ -30,8 +51,18 @@ export function ProductGallery({ productNameAr, imageRefs }: ProductGalleryProps
   }
 
   return (
-    <section className={styles.gallery} aria-label={`صور ${productNameAr}`}>
-      <div className={styles.mainFrame}>
+    <section className={styles.gallery} aria-label={`صور ${productNameAr}`} onKeyDown={navigateByKeyboard}>
+      <div
+        className={styles.mainFrame}
+        tabIndex={imageCount > 1 ? 0 : undefined}
+        aria-label={imageCount > 1 ? "استخدم سهمي اليمين واليسار لتصفح صور المنتج" : undefined}
+        onTouchStart={(event) => {
+          const touch = event.touches[0];
+          touchStart.current = event.touches.length === 1 && touch ? { x: touch.clientX, y: touch.clientY } : null;
+        }}
+        onTouchEnd={finishSwipe}
+        onTouchCancel={() => { touchStart.current = null; }}
+      >
         {selectedRef && !failedImages.has(selectedIndex) ? (
           <Image
             key={selectedIndex}
@@ -41,13 +72,14 @@ export function ProductGallery({ productNameAr, imageRefs }: ProductGalleryProps
             unoptimized
             priority={selectedIndex === 0}
             loading={selectedIndex === 0 ? undefined : "eager"}
-            sizes="(max-width: 800px) 94vw, 54vw"
+            sizes="(max-width: 1023px) 94vw, 58vw"
             onError={() => markFailed(selectedIndex)}
           />
         ) : (
-          <span className={styles.missingImage}>
-            {imageCount === 0 ? "لا توجد صورة لهذا المنتج" : "هذه الصورة غير متاحة حالياً"}
-          </span>
+          <div className={styles.missingImage}>
+            <span className={styles.mediaWordmark} aria-hidden="true">BRAVOS</span>
+            <span>{imageCount === 0 ? "لا توجد صورة لهذا المنتج" : "هذه الصورة غير متاحة حالياً"}</span>
+          </div>
         )}
       </div>
 
@@ -76,7 +108,9 @@ export function ProductGallery({ productNameAr, imageRefs }: ProductGalleryProps
               aria-current={selectedIndex === index ? "true" : undefined}
               onClick={() => setSelectedIndex(index)}
             >
-              {index + 1}
+              <span className={styles.selectorNumber} aria-hidden="true">{String(index + 1).padStart(2, "0")}</span>
+              <span className={styles.selectorCaption} aria-hidden="true">صورة</span>
+              <span className="sr-only">{index + 1}</span>
             </button>
           ))}
         </div>

@@ -99,6 +99,7 @@ export type RefundEventRecord = {
 
 export type ReturnRecord = {
   id: string;
+  reference: string;
   operationId: string;
   source: ReturnSourceKeyDto;
   handlingBranchId: string;
@@ -190,6 +191,8 @@ export type ReturnExchangeQuoteRecord = {
 
 export type ReturnListRecord = {
   id: string;
+  reference: string;
+  customerName: string | null;
   status: "draft" | "posted";
   revision: number;
   source: ReturnSourceKeyDto;
@@ -219,9 +222,9 @@ export type ReturnCorrectionStateReader = {
 
 export type SourceSearch = {
   reference?: string;
+  phone?: string;
   date?: string;
   branchId?: string;
-  item?: string;
   amountPiasters?: number;
   channel?: "physical" | "online";
 };
@@ -238,7 +241,7 @@ export type ReturnsStore = {
   getSourceKey(returnId: string): Promise<ReturnSourceKeyDto | null>;
   getSourceUsage(source: ReturnSourceKeyDto, lineIds: string[]): Promise<ReturnSourceUsage>;
   lockIdentities(returnId: string, operationId: string): Promise<void>;
-  insertDraft(input: Omit<ReturnRecord, "createdAt" | "updatedAt" | "postedByStaffId" | "postedAt" | "refundStatus" | "refundPaidPiasters" | "exchangeCreditAppliedPiasters" | "refundRecordedByStaffId" | "refundRecordedAt" | "restorations" | "refundEvents">): Promise<{ kind: "created" | "existing"; record: ReturnRecord }>;
+  insertDraft(input: Omit<ReturnRecord, "reference" | "createdAt" | "updatedAt" | "postedByStaffId" | "postedAt" | "refundStatus" | "refundPaidPiasters" | "exchangeCreditAppliedPiasters" | "refundRecordedByStaffId" | "refundRecordedAt" | "restorations" | "refundEvents">): Promise<{ kind: "created" | "existing"; record: ReturnRecord }>;
   updateDraft(input: {
     returnId: string;
     expectedRevision: number;

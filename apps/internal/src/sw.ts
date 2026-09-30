@@ -3,7 +3,7 @@ import { cleanupOutdatedCaches, createHandlerBoundToURL, getCacheKeyForURL, matc
 import { NavigationRoute, registerRoute } from "workbox-routing";
 import { NetworkOnly } from "workbox-strategies";
 
-export const POS_SW_SCHEMA_VERSION = Number.parseInt("3", 10);
+export const POS_SW_SCHEMA_VERSION = Number.parseInt("4", 10);
 
 declare const self: ServiceWorkerGlobalScope & {
   __WB_MANIFEST: Array<{ url: string; revision: string | null }>;

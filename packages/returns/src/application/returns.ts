@@ -78,7 +78,7 @@ export function createReturnServices(ports: Omit<ReturnServiceDependencies, "clo
       source: { kind: "delivered_online_order", id: delivered.orderId },
       reference: delivered.reference,
       channel: "online",
-      branchId: null,
+      branchId: delivered.fulfillmentBranchId,
       seller: null,
       receivedAt: delivered.customerReceivedAt,
       returnDeadlineAt: delivered.returnDeadlineAt,
@@ -238,6 +238,7 @@ export function createReturnServices(ports: Omit<ReturnServiceDependencies, "clo
     const correctedLines = new Map((corrected?.lines ?? []).map((line) => [line.returnLineId, line]));
     return {
       id: record.id,
+      reference: record.reference,
       operationId: record.operationId,
       status: record.status,
       revision: record.revision,
@@ -560,6 +561,7 @@ export function createReturnServices(ports: Omit<ReturnServiceDependencies, "clo
         }));
         if (record.source.kind === "delivered_online_order" && plan.protectionEffects.length > 0) {
           await tx.inventory.adjustDeliveredReturnProtection({
+            branchId: record.handlingBranchId,
             orderId: record.source.id,
             operationId: record.operationId,
             recordedAt: claimed.recordedAt,
@@ -568,6 +570,7 @@ export function createReturnServices(ports: Omit<ReturnServiceDependencies, "clo
         }
         for (const item of restorations) {
           await tx.inventory.restoreToOriginalBatch({
+            branchId: record.handlingBranchId,
             operationId: record.operationId,
             batchId: item.batchId,
             variantId: item.variantId,
@@ -789,6 +792,7 @@ export function createReturnServices(ports: Omit<ReturnServiceDependencies, "clo
           const restorations: ReturnRestorationWrite[] = plan.restorations.map((item) => ({ id: crypto.randomUUID(), ...item }));
           if (record.source.kind === "delivered_online_order" && plan.protectionEffects.length > 0) {
             await tx.inventory.adjustDeliveredReturnProtection({
+              branchId: record.handlingBranchId,
               orderId: record.source.id,
               operationId: record.operationId,
               recordedAt: completedAt,
@@ -797,6 +801,7 @@ export function createReturnServices(ports: Omit<ReturnServiceDependencies, "clo
           }
           for (const item of restorations) {
             await tx.inventory.restoreToOriginalBatch({
+              branchId: record.handlingBranchId,
               operationId: record.operationId,
               batchId: item.batchId,
               variantId: item.variantId,
@@ -1265,6 +1270,7 @@ function parseSearch(input: unknown): SourceSearch {
   const body = input && typeof input === "object" && !Array.isArray(input) ? input as Record<string, unknown> : {};
   const search: SourceSearch = {};
   if (typeof body.reference === "string" && body.reference.trim()) search.reference = body.reference.trim().slice(0, 100);
+  if (typeof body.phone === "string" && body.phone.trim()) search.phone = body.phone.trim().slice(0, 40);
   if (typeof body.date === "string" && body.date) {
     const match = DATE_PATTERN.exec(body.date);
     const parts = body.date.split("-").map(Number);
@@ -1275,7 +1281,6 @@ function parseSearch(input: unknown): SourceSearch {
     search.date = body.date;
   }
   if (typeof body.branchId === "string" && body.branchId) search.branchId = assertUuid(body.branchId, "فرع البحث غير صالح.");
-  if (typeof body.item === "string" && body.item.trim()) search.item = body.item.trim().slice(0, 120);
   if (body.amountPiasters !== undefined && body.amountPiasters !== "") search.amountPiasters = nonnegativeMoney(Number(body.amountPiasters), "قيمة البحث غير صالحة.");
   if (body.channel !== undefined && body.channel !== "physical" && body.channel !== "online") {
     throw new ReturnsValidationError("قناة البحث غير صالحة.");

@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-test("receiving, cash sale and authorized sales view form one connected workflow", async ({ page }) => {
+test("receiving, split sale and authorized sales view form one connected workflow", async ({ page }) => {
   await page.goto("http://127.0.0.1:5174/login");
   await page.getByLabel("اسم الدخول").fill("owner");
   await page.getByLabel("كلمة المرور").fill("e2e-owner-pass");
@@ -58,19 +58,32 @@ test("receiving, cash sale and authorized sales view form one connected workflow
   await page.getByLabel("اللون").selectOption({ label: "أزرق" });
   await expect(page.getByTestId("available-quantity")).toHaveText("الكمية المتاحة: 20");
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
-  const checkout = page.getByRole("form", { name: "إتمام البيع النقدي" });
+  const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByLabel("الكمية").fill("3");
   await checkout.getByLabel("خصم الموظف بالجنيه").fill("50");
   await checkout.getByLabel("سبب الخصم (اختياري)").fill("اتفاق الصندوق");
   await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
   await expect(page.getByTestId("accepted-prices")).toContainText("الإجمالي");
-  await checkout.getByLabel("استلم الزبون البضاعة ودفع نقداً").check();
+  await checkout.getByRole("radio", { name: "دفع مقسّم" }).check();
+  await checkout.getByLabel("المبلغ النقدي بالجنيه").fill("400");
+  await checkout.getByLabel("المبلغ الإلكتروني بالجنيه").fill("350");
+  await expect(page.getByTestId("payment-remaining")).toContainText("100");
+  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
-  await expect(page.getByRole("status")).toContainText("تم حفظ البيع النقدي.");
+  await expect(page.getByRole("alert")).toContainText("أدخل مبلغ النقد والدفع الإلكتروني");
+  await checkout.getByLabel("المبلغ الإلكتروني بالجنيه").fill("450");
+  await expect(page.getByTestId("payment-remaining")).toContainText("0");
+  await checkout.getByRole("button", { name: "إتمام البيع" }).click();
+  await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   await expect(page.getByTestId("sale-details")).toContainText("كاشير تجريبي");
   await expect(page.getByTestId("sale-details")).toContainText("أبشواي");
   await expect(page.getByTestId("sale-details")).toContainText("بدون اسم زبون");
   await expect(page.getByText(/تكلفة|ربح|شراء/)).toHaveCount(0);
+  const splitSales = await staffApi(page, "GET", "/api/internal/sales");
+  expect(splitSales.body.find((sale: { lines: Array<{ variant: { product: { code: string } } }> }) =>
+    sale.lines.some((line) => line.variant.product.code === "POS-E2E"))?.payment).toEqual({
+    method: "split", cashPiasters: 40000, onlinePiasters: 45000,
+  });
 
   await page.getByRole("link", { name: "المبيعات" }).click();
   await expect(page.getByRole("heading", { name: "المبيعات", exact: true })).toBeVisible();
@@ -162,12 +175,14 @@ test("lost complete response retries the same sale without charging the customer
     lostResponseCompleted = true;
   });
 
-  const checkout = page.getByRole("form", { name: "إتمام البيع النقدي" });
+  const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
   await expect(page.getByTestId("accepted-prices")).toBeVisible();
-  await checkout.getByLabel("استلم الزبون البضاعة ودفع نقداً").check();
+  await checkout.getByRole("radio", { name: /إلكترونياً بالكامل/ }).check();
+  await expect(page.getByTestId("payment-remaining")).toContainText("0");
+  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
-  await expect(page.getByRole("status")).toContainText("تم حفظ البيع النقدي.");
+  await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   const local = (await page.evaluate(async () => {
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
       const request = indexedDB.open("bravos-pos");
@@ -217,6 +232,7 @@ test("lost complete response retries the same sale without charging the customer
   );
   expect(lostSales).toHaveLength(1);
   expect(lostSales[0].id).toBe(local.id);
+  expect(lostSales[0].payment).toEqual({ method: "online", cashPiasters: 0, onlinePiasters: 20000 });
   const lookupAfter = await staffApi(page, "GET", `/api/internal/catalog/lookup?code=${encodeURIComponent("LOST-E2E")}`);
   expect(lookupAfter.status).toBe(200);
   expect(lookupAfter.body.variants[0].availableQuantity).toBe(3);
@@ -259,7 +275,7 @@ test("an unpaid price quote can be abandoned without recording a sale", async ({
   await page.getByLabel("المقاس").selectOption({ label: "مقاس إلغاء" });
   await page.getByLabel("اللون").selectOption({ label: "لون إلغاء" });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
-  const checkout = page.getByRole("form", { name: "إتمام البيع النقدي" });
+  const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
   await expect(page.getByTestId("accepted-prices")).toBeVisible();
   await checkout.getByRole("button", { name: "إلغاء عرض السعر" }).click();
@@ -329,12 +345,12 @@ test("lost complete before send recovers the prepared sale after stock is taken"
     }
     await route.continue();
   });
-  const checkout = page.getByRole("form", { name: "إتمام البيع النقدي" });
+  const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
   await expect(page.getByTestId("accepted-prices")).toBeVisible();
-  await checkout.getByLabel("استلم الزبون البضاعة ودفع نقداً").check();
+  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
-  await expect(page.getByRole("status")).toContainText("تم حفظ البيع النقدي.");
+  await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   await page.unroute("**/api/internal/sales");
   await page.getByRole("button", { name: "تسجيل الخروج" }).click();
   await page.getByLabel("اسم الدخول").fill("owner");
@@ -417,12 +433,12 @@ test("check result completes a physically paid preparation instead of accepting 
     }
     await route.continue();
   });
-  const checkout = page.getByRole("form", { name: "إتمام البيع النقدي" });
+  const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
   await expect(page.getByTestId("accepted-prices")).toBeVisible();
-  await checkout.getByLabel("استلم الزبون البضاعة ودفع نقداً").check();
+  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
-  await expect(page.getByRole("status")).toContainText("تم حفظ البيع النقدي.");
+  await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   await page.unroute("**/api/internal/sales");
   await page.getByRole("link", { name: "العودة لمساحة العمل" }).click();
   await expect(page.getByTestId("active-branch")).toBeVisible();
@@ -489,7 +505,7 @@ test("invalid employee discount stays editable then completes after correction",
   await page.getByLabel("المقاس").selectOption({ label: "مقاس خصم" });
   await page.getByLabel("اللون").selectOption({ label: "لون خصم" });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
-  const checkout = page.getByRole("form", { name: "إتمام البيع النقدي" });
+  const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByLabel("خصم الموظف بالجنيه").fill("abc");
   await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
   await expect(page.getByRole("alert")).toContainText("قيمة الخصم غير صالحة.");
@@ -498,9 +514,9 @@ test("invalid employee discount stays editable then completes after correction",
   await checkout.getByLabel("خصم الموظف بالجنيه").fill("10");
   await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
   await expect(page.getByTestId("accepted-prices")).toBeVisible();
-  await checkout.getByLabel("استلم الزبون البضاعة ودفع نقداً").check();
+  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
-  await expect(page.getByRole("status")).toContainText("تم حفظ البيع النقدي.");
+  await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   const listed = await staffApi(page, "GET", "/api/internal/sales");
   const saved = listed.body.filter((sale: { employeeDiscountPiasters: number; lines: Array<{ variant: { product: { code: string } } }> }) =>
     sale.lines.some((line) => line.variant.product.code === "DISCOUNT-E2E"),
@@ -567,12 +583,12 @@ test("two open tabs keep a physically completed marker and save that sale once",
     expect(response.status()).toBe(201);
     await route.abort("connectionreset");
   });
-  const checkout = page.getByRole("form", { name: "إتمام البيع النقدي" });
+  const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
   await expect(page.getByTestId("accepted-prices")).toBeVisible();
-  await checkout.getByLabel("استلم الزبون البضاعة ودفع نقداً").check();
+  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
-  await expect(page.getByRole("status")).toContainText("تم حفظ البيع النقدي.");
+  await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   expect(completedIds).toHaveLength(1);
   const originalId = completedIds[0];
   const originalLocal = await page.evaluate(async () => {
@@ -604,7 +620,7 @@ test("two open tabs keep a physically completed marker and save that sale once",
   expect(originalLocal?.id).toBe(originalId);
   expect(originalLocal?.lines[0]?.quantity).toBe(1);
   expect(originalLocal?.finalTotalPiasters).toBe(16000);
-  await page2.getByRole("form", { name: "إتمام البيع النقدي" }).getByRole("button", { name: "قبول الأسعار" }).click();
+  await page2.getByRole("form", { name: "إتمام البيع" }).getByRole("button", { name: "قبول الأسعار" }).click();
   await expect(page2.getByTestId("accepted-prices")).toBeVisible();
   await expect(page2.getByTestId("sale-details")).toHaveCount(0);
   const afterB = await page.evaluate(async () => {
@@ -730,7 +746,7 @@ test("rapid cart edit disables completion of the old quote until prices are acce
   await page.getByLabel("المقاس").selectOption({ label: "مقاس سريع" });
   await page.getByLabel("اللون").selectOption({ label: "لون سريع" });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
-  const checkout = page.getByRole("form", { name: "إتمام البيع النقدي" });
+  const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
   await expect(page.getByTestId("accepted-prices")).toBeVisible();
   const workspace = await staffApi(page, "GET", "/api/internal/workspace");
@@ -766,9 +782,9 @@ test("rapid cart edit disables completion of the old quote until prices are acce
   await locker.close();
   await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
   await expect(page.getByTestId("accepted-prices")).toBeVisible();
-  await checkout.getByLabel("استلم الزبون البضاعة ودفع نقداً").check();
+  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
-  await expect(page.getByRole("status")).toContainText("تم حفظ البيع النقدي.");
+  await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   expect(completeBodies).toEqual([{ quantity: 2 }]);
   const listed = await staffApi(page, "GET", "/api/internal/sales");
   const saved = listed.body.filter((sale: { lines: Array<{ quantity: number; variant: { product: { code: string } } }> }) =>
@@ -869,7 +885,7 @@ test("cart edits during delayed prepare cannot complete a stale quote", async ({
     }
     await route.continue();
   });
-  const checkout = page.getByRole("form", { name: "إتمام البيع النقدي" });
+  const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
   await expect(checkout.getByRole("button", { name: "جارٍ قبول الأسعار…" })).toBeVisible();
   await expect(checkout.getByLabel("الكمية")).toBeDisabled();
@@ -886,9 +902,9 @@ test("cart edits during delayed prepare cannot complete a stale quote", async ({
   await expect(page.getByTestId("accepted-prices")).toBeVisible();
   await expect(checkout.getByLabel("الكمية")).toHaveValue("1");
   await expect(page.getByTestId("accepted-prices")).toContainText("الإجمالي: 140 ج.م.");
-  await checkout.getByLabel("استلم الزبون البضاعة ودفع نقداً").check();
+  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
-  await expect(page.getByRole("status")).toContainText("تم حفظ البيع النقدي.");
+  await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   expect(prepareBodies).toEqual([{ quantity: 1, discount: 0 }]);
   expect(completeBodies).toHaveLength(1);
   expect(completeBodies[0]).toMatchObject({ quantity: 1, discount: 0 });
@@ -959,7 +975,7 @@ test("blocked tab recovers the other tab's sale then continues its own cart", as
     await target.getByRole("button", { name: "إضافة إلى السلة" }).click();
   }
   await searchAndAdd(page2);
-  await page2.getByRole("form", { name: "إتمام البيع النقدي" }).getByLabel("الكمية").fill("2");
+  await page2.getByRole("form", { name: "إتمام البيع" }).getByLabel("الكمية").fill("2");
   await searchAndAdd(page);
   const completedIds: string[] = [];
   await page.route("**/api/internal/sales", async (route) => {
@@ -973,14 +989,14 @@ test("blocked tab recovers the other tab's sale then continues its own cart", as
     expect(payload.lines[0]?.quantity).toBe(1);
     await route.abort("connectionreset");
   });
-  const checkoutA = page.getByRole("form", { name: "إتمام البيع النقدي" });
+  const checkoutA = page.getByRole("form", { name: "إتمام البيع" });
   await checkoutA.getByRole("button", { name: "قبول الأسعار" }).click();
   await expect(page.getByTestId("accepted-prices")).toBeVisible();
-  await checkoutA.getByLabel("استلم الزبون البضاعة ودفع نقداً").check();
+  await checkoutA.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkoutA.getByRole("button", { name: "إتمام البيع" }).click();
-  await expect(page.getByRole("status")).toContainText("تم حفظ البيع النقدي.");
+  await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   expect(completedIds).toHaveLength(1);
-  const checkoutB = page2.getByRole("form", { name: "إتمام البيع النقدي" });
+  const checkoutB = page2.getByRole("form", { name: "إتمام البيع" });
   await expect(checkoutB.getByLabel("الكمية")).toHaveValue("2");
   await expect(page2.getByTestId("sale-details")).toHaveCount(0);
   await page.unroute("**/api/internal/sales");
@@ -1056,9 +1072,9 @@ test("blocked tab recovers the other tab's sale then continues its own cart", as
   });
   await checkoutB.getByRole("button", { name: "قبول الأسعار" }).click();
   await expect(page2.getByTestId("accepted-prices")).toBeVisible();
-  await checkoutB.getByLabel("استلم الزبون البضاعة ودفع نقداً").check();
+  await checkoutB.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkoutB.getByRole("button", { name: "إتمام البيع" }).click();
-  await expect(page2.getByRole("status")).toContainText("تم حفظ البيع النقدي.");
+  await expect(page2.getByRole("status")).toContainText("تم حفظ البيع.");
   expect(bPrepareIds).toHaveLength(1);
   const listed = await staffApi(page2, "GET", "/api/internal/sales");
   const saved = listed.body.filter((sale: { id: string; lines: Array<{ quantity: number; variant: { product: { code: string } } }> }) =>
@@ -1110,10 +1126,10 @@ test("synchronous double complete keeps a single sale identity", async ({ page }
   await page.getByLabel("المقاس").selectOption({ label: "مقاس مزدوج" });
   await page.getByLabel("اللون").selectOption({ label: "لون مزدوج" });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
-  const checkout = page.getByRole("form", { name: "إتمام البيع النقدي" });
+  const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
   await expect(page.getByTestId("accepted-prices")).toBeVisible();
-  await checkout.getByLabel("استلم الزبون البضاعة ودفع نقداً").check();
+  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   const lookupBefore = await staffApi(page, "GET", `/api/internal/catalog/lookup?code=${encodeURIComponent("DOUBLE-E2E")}`);
   expect(lookupBefore.body.variants[0].availableQuantity).toBe(3);
   const saleIds: string[] = [];
@@ -1131,7 +1147,7 @@ test("synchronous double complete keeps a single sale identity", async ({ page }
     element.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     element.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
   });
-  await expect(page.getByRole("status")).toContainText(/تم حفظ البيع النقدي|تم العثور على البيع المحفوظ/);
+  await expect(page.getByRole("status")).toContainText(/تم حفظ البيع|تم العثور على البيع المحفوظ/);
   expect(saleIds).toHaveLength(1);
   const listed = await staffApi(page, "GET", "/api/internal/sales");
   const doubles = listed.body.filter((sale: {
@@ -1150,6 +1166,10 @@ test("synchronous double complete keeps a single sale identity", async ({ page }
 });
 
 async function staffApi(page: Page, method: "GET" | "POST", url: string, payload?: unknown) {
+  if (method === "POST" && url === "/api/internal/receiving/receipts" && payload && typeof payload === "object" && !("branchId" in payload)) {
+    const current = await staffApi(page, "GET", "/api/internal/workspace");
+    payload = { ...payload, branchId: current.body.activeBranch?.id };
+  }
   const response = await page.request.fetch(`http://127.0.0.1:5174${url}`, {
     method,
     headers: {

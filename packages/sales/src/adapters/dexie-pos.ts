@@ -5,6 +5,7 @@ import { mergeVariantQuantities } from "../domain/discount.ts";
 import { SalesValidationError } from "../domain/errors.ts";
 import { canonicalOfflineSaleFactsJson } from "../domain/canonical-payload.ts";
 import { digestOfflineSale } from "../domain/offline-digest.ts";
+import { cashPayment, paymentMatches, validatePayment } from "../domain/payment.ts";
 import {
   PosStorageError,
   type CompleteOfflineSaleInput,
@@ -70,6 +71,32 @@ function createDatabase(name: string): BravosPosDatabase {
     })
     .upgrade(async (tx) => {
       await upgradePosRecordsToV3(tx);
+    });
+  db.version(4)
+    .stores({
+      meta: "key",
+      sessions: "staffId",
+      snapshots: "staffId",
+      sales: "id, staffId, operationId, syncStatus",
+      effects: "id, staffId, variantId, operationId",
+      pending: "staffId, saleId",
+      legacyPending: "saleId, staffId",
+    })
+    .upgrade(async (tx) => {
+      // A prior upgrade may have quarantined a completed sale whose paid-unit
+      // facts cannot be reconstructed. Keep that decision and every raw row.
+      if ((await tx.table("meta").get("upgradeBlocked"))?.value) return;
+      const sales = await tx.table("sales").toArray() as OfflineCompletedSale[];
+      const byOperation = new Map(sales.map((sale) => [sale.operationId, sale.branch.id]));
+      await tx.table("effects").toCollection().modify((effect: OfflineStockEffect) => {
+        const branchId = byOperation.get(effect.operationId);
+        if (branchId) effect.branchId = branchId;
+      });
+      // Central-stock snapshots are not valid branch balances; refresh before another sale.
+      await tx.table("snapshots").clear();
+      await tx.table("meta").delete("stockCache");
+      await tx.table("meta").delete("stockVersion");
+      await tx.table("meta").put({ key: "schemaVersion", value: "4" });
     });
   return db;
 }
@@ -281,6 +308,7 @@ async function readStockCacheRecord(db: BravosPosDatabase): Promise<DeviceStockC
     }
     return {
       version: parsed.version,
+      branchVersions: parsed.branchVersions && typeof parsed.branchVersions === "object" ? parsed.branchVersions : {},
       restoreGeneration:
         Number.isSafeInteger(parsed.restoreGeneration) && (parsed.restoreGeneration ?? -1) >= 0
           ? parsed.restoreGeneration
@@ -324,7 +352,7 @@ function overlaySnapshot(snapshot: PosPriceSnapshotDto, cache: DeviceStockCache)
       Number.isSafeInteger(snapshot.restoreGeneration) && snapshot.restoreGeneration >= 0
         ? snapshot.restoreGeneration
         : cache.restoreGeneration,
-    stockVersion: cache.version,
+    stockVersion: cache.branchVersions?.[snapshot.branch.id] ?? cache.version,
     includedOperationIds: cache.includedOperationIds,
     includedOperations: [],
     products: snapshot.products.map((product) => ({
@@ -332,7 +360,9 @@ function overlaySnapshot(snapshot: PosPriceSnapshotDto, cache: DeviceStockCache)
       variants: product.variants.map((variant) => ({
         ...variant,
         availableQuantity:
-          variant.id in cache.availability ? cache.availability[variant.id] ?? 0 : variant.availableQuantity,
+          stockKey(snapshot.branch.id, variant.id) in cache.availability
+            ? cache.availability[stockKey(snapshot.branch.id, variant.id)] ?? 0
+            : variant.availableQuantity,
       })),
     })),
   };
@@ -366,6 +396,7 @@ function saleFacts(local: OfflineCompletedSale) {
     couponCode: local.couponCode,
     employeeDiscountPiasters: local.employeeDiscountPiasters,
     discountReason: local.discountReason,
+    ...(local.payment ? { payment: local.payment } : {}),
     lines: local.lines,
   };
 }
@@ -406,15 +437,20 @@ function localMatchesProof(
   return contentDigest.toLowerCase() === proof.contentDigest.toLowerCase();
 }
 
-async function remainingKnownStock(db: BravosPosDatabase, variantId: string, pinned: number): Promise<number> {
+function stockKey(branchId: string, variantId: string): string {
+  return `${branchId}:${variantId}`;
+}
+
+async function remainingKnownStock(db: BravosPosDatabase, branchId: string, variantId: string, pinned: number): Promise<number> {
   const cache = await readStockCacheRecord(db);
   const included = new Set(cache.includedOperationIds);
-  const base = Object.prototype.hasOwnProperty.call(cache.availability, variantId)
-    ? cache.availability[variantId] ?? 0
+  const key = stockKey(branchId, variantId);
+  const base = Object.prototype.hasOwnProperty.call(cache.availability, key)
+    ? cache.availability[key] ?? 0
     : pinned;
   const outstanding = await db.effects.where("variantId").equals(variantId).toArray();
   const used = outstanding
-    .filter((effect) => !included.has(effect.operationId))
+    .filter((effect) => effect.branchId === branchId && !included.has(effect.operationId))
     .reduce((sum, effect) => sum + effect.quantity, 0);
   return base - used;
 }
@@ -505,8 +541,13 @@ async function applyAcknowledgementRecord(
   }
   const proofs = Array.isArray(input.includedOperations) ? input.includedOperations : [];
   const cache = await readStockCacheRecord(db);
+  const proofSaleId = input.sales?.[0]?.id ?? proofs[0]?.saleId;
+  const proofSale = proofSaleId ? await db.sales.get(proofSaleId) : null;
+  const branchId = input.branchId ?? proofSale?.branch.id;
+  if (!branchId) throw new SalesValidationError("فرع المزامنة غير معروف.");
+  const branchVersion = cache.branchVersions?.[branchId] ?? 0;
   const acked = await acknowledgeMatchingOperations(db, proofs, input.sales, prepared);
-  if (input.stockVersion < cache.version) {
+  if (input.stockVersion < branchVersion) {
     const next = {
       ...cache,
       includedOperationIds: [...new Set([...cache.includedOperationIds, ...acked])],
@@ -516,19 +557,21 @@ async function applyAcknowledgementRecord(
     return;
   }
   const availability = { ...cache.availability };
-  if (input.stockVersion > cache.version) {
+  if (input.stockVersion > branchVersion) {
     for (const item of input.availability) {
-      availability[item.variantId] = item.availableQuantity;
+      availability[stockKey(branchId, item.variantId)] = item.availableQuantity;
     }
   } else {
     for (const item of input.availability) {
-      if (!(item.variantId in availability)) {
-        availability[item.variantId] = item.availableQuantity;
+      const key = stockKey(branchId, item.variantId);
+      if (!(key in availability)) {
+        availability[key] = item.availableQuantity;
       }
     }
   }
   const next: DeviceStockCache = {
-    version: input.stockVersion > cache.version ? input.stockVersion : cache.version,
+    version: Math.max(input.stockVersion, cache.version),
+    branchVersions: { ...cache.branchVersions, [branchId]: Math.max(input.stockVersion, branchVersion) },
     restoreGeneration: cache.restoreGeneration,
     availability,
     includedOperationIds: [...new Set([...cache.includedOperationIds, ...acked])],
@@ -581,6 +624,8 @@ function sameCompletedReplay(existing: OfflineCompletedSale, input: CompleteOffl
   if (existing.discountReason !== input.discountReason) {
     return false;
   }
+  if (!paymentMatches(existing.payment ?? cashPayment(existing.finalTotalPiasters),
+    validatePayment(input.payment, existing.finalTotalPiasters))) return false;
   const left = canonicalLines(existing.lines);
   const right = canonicalLines(input.lines);
   if (left.length !== right.length) {
@@ -631,6 +676,8 @@ function sameRecordedReplay(existing: OfflineCompletedSale, incoming: OfflineCom
   if (existing.finalTotalPiasters !== incoming.finalTotalPiasters) {
     return false;
   }
+  if (!paymentMatches(existing.payment ?? cashPayment(existing.finalTotalPiasters),
+    incoming.payment ?? cashPayment(incoming.finalTotalPiasters))) return false;
   const left = canonicalLines(existing.lines);
   const right = canonicalLines(incoming.lines);
   if (left.length !== right.length) {
@@ -864,17 +911,20 @@ export function createDexiePosStore(options?: { databaseName?: string }): Offlin
             typeof snapshot.stockVersion === "number" && Number.isSafeInteger(snapshot.stockVersion)
               ? snapshot.stockVersion
               : 0;
+          const branchId = snapshot.branch.id;
+          const branchVersion = cache.branchVersions?.[branchId] ?? 0;
           let next = cache;
           if (incomingGeneration > cache.restoreGeneration) {
             const availability: Record<string, number> = {};
             for (const product of snapshot.products) {
               for (const variant of product.variants) {
-                availability[variant.id] = variant.availableQuantity;
+                availability[stockKey(branchId, variant.id)] = variant.availableQuantity;
               }
             }
             const acked = await acknowledgeMatchingOperations(db, incomingProofs, undefined, prepared);
             next = {
               version: incomingVersion,
+              branchVersions: { [branchId]: incomingVersion },
               restoreGeneration: incomingGeneration,
               availability,
               includedOperationIds: [...new Set([...snapshot.includedOperationIds, ...acked])],
@@ -883,23 +933,24 @@ export function createDexiePosStore(options?: { databaseName?: string }): Offlin
             await overlayAllSnapshots(db, next);
           } else if (incomingGeneration < cache.restoreGeneration) {
             return;
-          } else if (incomingVersion > cache.version) {
+          } else if (incomingVersion > branchVersion) {
             const availability = { ...cache.availability };
             for (const product of snapshot.products) {
               for (const variant of product.variants) {
-                availability[variant.id] = variant.availableQuantity;
+                availability[stockKey(branchId, variant.id)] = variant.availableQuantity;
               }
             }
             const acked = await acknowledgeMatchingOperations(db, incomingProofs, undefined, prepared);
             next = {
-              version: incomingVersion,
+              version: Math.max(incomingVersion, cache.version),
+              branchVersions: { ...cache.branchVersions, [branchId]: incomingVersion },
               restoreGeneration: incomingGeneration,
               availability,
               includedOperationIds: [...new Set([...cache.includedOperationIds, ...acked])],
             };
             await writeStockCacheRecord(db, next);
             await overlayAllSnapshots(db, next);
-          } else if (incomingVersion === cache.version && incomingProofs.length > 0) {
+          } else if (incomingVersion === branchVersion && incomingProofs.length > 0) {
             const acked = await acknowledgeMatchingOperations(db, incomingProofs, undefined, prepared);
             next = {
               ...cache,
@@ -907,7 +958,7 @@ export function createDexiePosStore(options?: { databaseName?: string }): Offlin
               includedOperationIds: [...new Set([...cache.includedOperationIds, ...acked])],
             };
             await writeStockCacheRecord(db, next);
-          } else if (incomingVersion < cache.version && incomingProofs.length > 0) {
+          } else if (incomingVersion < branchVersion && incomingProofs.length > 0) {
             const acked = await acknowledgeMatchingOperations(db, incomingProofs, undefined, prepared);
             next = {
               ...cache,
@@ -951,16 +1002,9 @@ export function createDexiePosStore(options?: { databaseName?: string }): Offlin
       return snapshot.products.find((product) => product.code === needle) ?? null;
     },
 
-    async availableQuantity(variantId, cachedAvailable) {
+    async availableQuantity(branchId, variantId, cachedAvailable) {
       await ensureOpen();
-      const cache = await readStockCacheRecord(db);
-      const included = new Set(cache.includedOperationIds);
-      const base = variantId in cache.availability ? cache.availability[variantId] ?? 0 : cachedAvailable;
-      const outstanding = await db.effects.where("variantId").equals(variantId).toArray();
-      const used = outstanding
-        .filter((effect) => !included.has(effect.operationId))
-        .reduce((sum, effect) => sum + effect.quantity, 0);
-      return base - used;
+      return remainingKnownStock(db, branchId, variantId, cachedAvailable);
     },
 
     async countUnaccountedCouponUses(couponId, snapshotIssuedAt) {
@@ -996,6 +1040,7 @@ export function createDexiePosStore(options?: { databaseName?: string }): Offlin
           couponCode: input.couponCode,
           employeeDiscountPiasters: input.employeeDiscountPiasters,
           discountReason: input.discountReason,
+          ...(input.payment ? { payment: input.payment } : {}),
           lines: input.lines.map((line) => ({
             variantId: line.variantId,
             quantity: line.quantity,
@@ -1017,7 +1062,7 @@ export function createDexiePosStore(options?: { databaseName?: string }): Offlin
           for (const item of quantities) {
             const variant = input.lines.find((line) => line.variantId === item.variantId)?.variant;
             const pinned = variant?.availableQuantity ?? 0;
-            const remaining = await remainingKnownStock(db, item.variantId, pinned);
+            const remaining = await remainingKnownStock(db, input.branch.id, item.variantId, pinned);
             if (remaining < item.quantity) {
               throw new SalesValidationError("الكمية المتاحة غير كافية.");
             }
@@ -1050,6 +1095,7 @@ export function createDexiePosStore(options?: { databaseName?: string }): Offlin
             discountReason: input.discountReason,
             discountedByStaffId: input.employeeDiscountPiasters > 0 ? input.staffId : null,
             finalTotalPiasters: priced.finalTotalPiasters,
+            ...(input.payment ? { payment: validatePayment(input.payment, priced.finalTotalPiasters) } : {}),
             physicallyCompleted: true,
             payloadFingerprint: priced.payloadFingerprint.toLowerCase(),
             couponUsageAccountedSnapshotIssuedAt: null,
@@ -1065,6 +1111,7 @@ export function createDexiePosStore(options?: { databaseName?: string }): Offlin
               staffId: input.staffId,
               operationId: input.operationId,
               variantId: item.variantId,
+              branchId: input.branch.id,
               quantity: item.quantity,
             });
           }
@@ -1106,7 +1153,7 @@ export function createDexiePosStore(options?: { databaseName?: string }): Offlin
           const quantities = mergeVariantQuantities(sale.lines);
           for (const item of quantities) {
             const pinned = cachedByVariant.get(item.variantId) ?? 0;
-            const remaining = await remainingKnownStock(db, item.variantId, pinned);
+            const remaining = await remainingKnownStock(db, sale.branch.id, item.variantId, pinned);
             if (remaining < item.quantity) {
               throw new SalesValidationError("الكمية المتاحة غير كافية.");
             }
@@ -1122,6 +1169,7 @@ export function createDexiePosStore(options?: { databaseName?: string }): Offlin
               staffId: sale.staffId,
               operationId: sale.operationId,
               variantId: item.variantId,
+              branchId: sale.branch.id,
               quantity: item.quantity,
             });
           }

@@ -11,7 +11,7 @@ type Props = {
 };
 
 export function FilterChips({ query, categoryId, categoryName, sort, count }: Props) {
-  if (!query && !categoryId) return <p className={styles.count}>{count} منتج</p>;
+  if (!query && !categoryId) return <p className={styles.count} role="status">{count} منتج</p>;
 
   return (
     <div className={styles.activeFilters}>

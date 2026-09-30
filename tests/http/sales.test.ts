@@ -48,6 +48,58 @@ test("unauthenticated cash-sale completion is rejected", async () => {
   expect(result.status).toBeLessThan(500);
 });
 
+test("branch sale records full online and split tender exactly once", async () => {
+  const manager = await signIn("owner", "owner-pass-1");
+  await api(manager, "POST", "/api/internal/active-branch", { branchId: abshwayId });
+  const seed = await seedShirt(manager, { price: 30000 });
+  await receive(manager, seed.variantId, 5, 10000);
+
+  const onlineBody = saleBody(seed.variantId, 1, {
+    payment: { method: "online", cashPiasters: 0, onlinePiasters: 30000 },
+  });
+  const online = await api(manager, "POST", "/api/internal/sales", onlineBody);
+  expect(online.status).toBe(201);
+  expect(online.body.payment).toEqual(onlineBody.payment);
+  expect(online.body.cashReceivedPiasters).toBe(0);
+
+  const splitBody = saleBody(seed.variantId, 1, {
+    payment: { method: "split", cashPiasters: 15000, onlinePiasters: 15000 },
+  });
+  const split = await api(manager, "POST", "/api/internal/sales", splitBody);
+  expect(split.status).toBe(201);
+  expect(split.body.payment).toEqual(splitBody.payment);
+  expect(split.body.finalTotalPiasters).toBe(30000);
+
+  const replay = await api(manager, "POST", "/api/internal/sales", splitBody);
+  expect(replay.status).toBe(200);
+  expect(replay.body.id).toBe(split.body.id);
+  const changedTender = await api(manager, "POST", "/api/internal/sales", {
+    ...splitBody,
+    payment: { method: "cash", cashPiasters: 30000, onlinePiasters: 0 },
+  });
+  expect(changedTender.status).toBe(409);
+
+  const legacyCashBody = saleBody(seed.variantId, 1);
+  const legacyCash = await api(manager, "POST", "/api/internal/sales", legacyCashBody);
+  expect(legacyCash.status).toBe(201);
+  expect(legacyCash.body.payment).toEqual({ method: "cash", cashPiasters: 30000, onlinePiasters: 0 });
+  expect((await api(manager, "POST", "/api/internal/sales", legacyCashBody)).status).toBe(200);
+  const changedLegacyTender = await api(manager, "POST", "/api/internal/sales", {
+    ...legacyCashBody,
+    payment: { method: "online", cashPiasters: 0, onlinePiasters: 30000 },
+  });
+  expect(changedLegacyTender.status).toBe(409);
+
+  for (const payment of [
+    { method: "split", cashPiasters: 14999, onlinePiasters: 15000 },
+    { method: "online", cashPiasters: 1, onlinePiasters: 29999 },
+    { method: "split", cashPiasters: -100, onlinePiasters: 30100 },
+  ]) {
+    const invalid = await api(manager, "POST", "/api/internal/sales", saleBody(seed.variantId, 1, { payment }));
+    expect(invalid.status).toBe(400);
+  }
+});
+
 test("unassigned, representative-only and spoofed actors cannot complete a connected sale", async () => {
   const manager = await signIn("owner", "owner-pass-1");
   const seed = await seedShirt(manager, { price: 25000 });
@@ -103,7 +155,7 @@ test("managers see every completed sale and employees see only their own authori
   await api(manager, "POST", "/api/internal/active-branch", { branchId: abshwayId });
   const seed = await seedShirt(manager, { price: 18000, extraColor: true });
   await receive(manager, seed.variantId, 5, 7000);
-  await receive(manager, seed.secondVariantId, 5, 7000);
+  await receive(manager, seed.secondVariantId, 5, 7000, fayoumId);
   await api(manager, "POST", "/api/internal/staff", {
     loginName: "cashier.one",
     displayName: "كاشير واحد",
@@ -149,7 +201,7 @@ test("managers see every completed sale and employees see only their own authori
   const second = await signIn("cashier.two", "staff-pass-33");
   await api(second, "POST", "/api/internal/active-branch", { branchId: fayoumId });
   const secondSale = await api(second, "POST", "/api/internal/sales", saleBody(seed.secondVariantId, 1));
-  expect(secondSale.status).toBe(201);
+  expect(secondSale.status, JSON.stringify(secondSale.body)).toBe(201);
   expect(secondSale.body.branch.code).toBe("fayoum");
 
   const ownList = await api(first, "GET", "/api/internal/sales");
@@ -1343,7 +1395,7 @@ test("issued POS snapshot keeps original 300/200 prices after later catalog repr
       { variantId: seed.secondVariantId, quantity: 1, listedUnitPricePiasters: 20000 },
     ],
   });
-  expect(accepted.status).toBe(201);
+  expect(accepted.status, JSON.stringify(accepted.body)).toBe(201);
   expect(accepted.body.soldByDisplayName).toBe("كاشير دون اتصال");
   expect(accepted.body.branch.code).toBe("abshway");
   expect(accepted.body.occurredAt).toBe("2026-09-11T10:15:00.000Z");
@@ -1395,8 +1447,9 @@ test("issued POS snapshot keeps original 300/200 prices after later catalog repr
     30000,
   );
 
+  await api(cashier, "POST", "/api/internal/active-branch", { branchId: abshwayId });
   const connected = await api(cashier, "POST", "/api/internal/sales", saleBody(seed.variantId, 1));
-  expect(connected.status).toBe(201);
+  expect(connected.status, JSON.stringify(connected.body)).toBe(201);
   expect(connected.body.lines[0].listedUnitPricePiasters).toBe(90000);
 });
 
@@ -1718,9 +1771,10 @@ function saleBody(variantId: string, quantity: number, extra: Record<string, unk
   };
 }
 
-async function receive(manager: CookieSession, variantId: string, quantity: number, unitCostPiasters: number) {
+async function receive(manager: CookieSession, variantId: string, quantity: number, unitCostPiasters: number, branchId = abshwayId) {
   const result = await api(manager, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
+    branchId,
     receiptDate: "2026-09-11",
     lines: [{ variantId, quantity, unitCostPiasters }],
   });

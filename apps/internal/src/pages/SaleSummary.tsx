@@ -5,6 +5,7 @@ export function SaleSummary({ sale }: { sale: SaleDto }) {
   return (
     <section className="card" data-testid="sale-details">
       <h2>تفاصيل البيع</h2>
+      <p>{sale.reference ? `رقم البيع: ${sale.reference}` : `رقم مؤقت لحين المزامنة: ${sale.operationId}`}</p>
       <p>الموظف: {sale.soldByDisplayName}</p>
       <p>الفرع: {sale.branch.nameAr}</p>
       <p>وقت الحدوث: {formatTime(sale.occurredAt)}</p>
@@ -23,6 +24,8 @@ export function SaleSummary({ sale }: { sale: SaleDto }) {
       ) : null}
       <p>خصم الموظف: {formatEgpFromPiasters(sale.employeeDiscountPiasters)}</p>
       <p>الإجمالي: {formatEgpFromPiasters(sale.finalTotalPiasters)}</p>
+      <p>طريقة الدفع: {sale.payment.method === "cash" ? "نقداً" : sale.payment.method === "online" ? "إلكترونياً" : "مقسّم"}</p>
+      {sale.payment.method === "split" ? <p>نقداً: {formatEgpFromPiasters(sale.payment.cashPiasters)} · إلكترونياً: {formatEgpFromPiasters(sale.payment.onlinePiasters)}</p> : null}
       {sale.exchangeCreditAppliedPiasters > 0 ? (
         <p data-testid="sale-exchange-settlement">
           رصيد إرجاع مستخدم: {formatEgpFromPiasters(sale.exchangeCreditAppliedPiasters)} · نقد محصل فعلياً: {formatEgpFromPiasters(sale.cashReceivedPiasters)}

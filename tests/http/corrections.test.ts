@@ -10,6 +10,7 @@ const ORIGIN = "http://127.0.0.1:5173";
 let cluster: PostgresCluster;
 let built: BuiltApp;
 let branchId = "";
+let fayoumId = "";
 
 beforeAll(async () => { cluster = await startPostgresCluster({ port: 55451 }); }, 120_000);
 afterAll(async () => { if (built) await built.close(); await cluster.stop(); });
@@ -25,6 +26,7 @@ beforeEach(async () => {
     businessClock: () => new Date("2026-09-15T12:00:00.000Z"),
   });
   branchId = (await built.pool.query<{ id: string }>("SELECT id FROM branch WHERE code='abshway'")).rows[0]!.id;
+  fayoumId = (await built.pool.query<{ id: string }>("SELECT id FROM branch WHERE code='fayoum'")).rows[0]!.id;
   await ensureOwner(built.services, { loginName: "owner", displayName: "مدير التصحيح", password: "owner-pass-1" });
 });
 
@@ -81,6 +83,32 @@ test("manager corrects a duplicate cash-sale record using explicit goods and cas
   const sources = await api(manager, "GET", `/api/internal/returns/sources?reference=${original.id}`);
   expect(sources.status).toBe(200);
   expect(sources.body).toEqual([]);
+});
+
+test("sellable return received at Fayoum restores only Fayoum stock while retaining its original batch", async () => {
+  const manager = await signIn("owner", "owner-pass-1");
+  await api(manager, "POST", "/api/internal/active-branch", { branchId });
+  const { variantId } = await seedProduct(manager);
+  const receipt = await receive(manager, variantId, 2, 12000);
+  const batchId = receipt.lines[0].batchId as string;
+  const original = await sale(manager, variantId, 1);
+  const before = await branchBatchBalances(batchId);
+  expect(before).toMatchObject({ [branchId]: 1 });
+  expect(before[fayoumId] ?? 0).toBe(0);
+
+  const source = (await api(manager, "GET", `/api/internal/returns/sources?reference=${original.id}`)).body[0];
+  const draft = await api(manager, "POST", "/api/internal/returns", {
+    returnId: crypto.randomUUID(), operationId: crypto.randomUUID(), sourceSaleId: original.id,
+    handlingBranchId: fayoumId, authorizedRefundPiasters: 30000,
+    lines: [{ sourceSaleLineId: source.lines[0].saleLineId, quantity: 1, sellableQuantity: 1 }],
+  });
+  expect(draft.status).toBe(201);
+  const posted = await api(manager, "POST", `/api/internal/returns/${draft.body.id}/post`, {
+    receivedAndInspected: true, expectedRevision: draft.body.revision,
+  });
+  expect(posted.status).toBe(201);
+  expect(posted.body.restorations).toContainEqual(expect.objectContaining({ batchId, quantity: 1 }));
+  expect(await branchBatchBalances(batchId)).toMatchObject({ [branchId]: 1, [fayoumId]: 1 });
 });
 
 test("posted return correction preserves paid history, requires explicit stock and cash movement, and keeps later eligibility consistent", async () => {
@@ -509,15 +537,23 @@ async function seedProduct(session: Session) {
   });
   return { variantId: product.body.variants[0].id as string };
 }
-async function receive(session: Session, variantId: string, quantity: number, unitCostPiasters: number) { const response = await api(session, "POST", "/api/internal/receiving/receipts", { operationId: crypto.randomUUID(), receiptDate: "2026-09-01", lines: [{ variantId, quantity, unitCostPiasters }] }); expect(response.status).toBe(201); return response.body; }
+async function receive(session: Session, variantId: string, quantity: number, unitCostPiasters: number) { const response = await api(session, "POST", "/api/internal/receiving/receipts", { operationId: crypto.randomUUID(), branchId, receiptDate: "2026-09-01", lines: [{ variantId, quantity, unitCostPiasters }] }); expect(response.status).toBe(201); return response.body; }
 async function sale(session: Session, variantId: string, quantity: number) { const response = await api(session, "POST", "/api/internal/sales", { saleId: crypto.randomUUID(), operationId: crypto.randomUUID(), physicallyCompleted: true, occurredAt: "2026-09-10T12:00:00.000Z", employeeDiscountPiasters: 0, lines: [{ variantId, quantity }] }); expect(response.status).toBe(201); return response.body; }
 async function batches(session: Session) { return (await api(session, "GET", "/api/internal/inventory/batches")).body; }
 async function remainingTotal(session: Session) {
-  return (await batches(session)).reduce((sum: number, batch: { remainingQuantity: number }) => sum + batch.remainingQuantity, 0);
+  return (await batches(session)).reduce((sum: number, batch: { branchBalances: Array<{ branchId: string; availableQuantity: number }> }) =>
+    sum + (batch.branchBalances.find((balance) => balance.branchId === branchId)?.availableQuantity ?? 0), 0);
 }
 async function batchRemainders(session: Session) {
   const rows = await batches(session);
-  return Object.fromEntries(rows.map((row: { id: string; remainingQuantity: number }) => [row.id, row.remainingQuantity]));
+  return Object.fromEntries(rows.map((row: { id: string; branchBalances: Array<{ branchId: string; availableQuantity: number }> }) =>
+    [row.id, row.branchBalances.find((balance) => balance.branchId === branchId)?.availableQuantity ?? 0]));
+}
+async function branchBatchBalances(batchId: string) {
+  const result = await built.pool.query<{ branch_id: string; remaining_quantity: number }>(
+    "SELECT branch_id, remaining_quantity FROM inventory_batch_balance WHERE batch_id=$1", [batchId],
+  );
+  return Object.fromEntries(result.rows.map((row) => [row.branch_id, row.remaining_quantity]));
 }
 type Session = { cookie: string };
 async function signIn(username: string, password: string): Promise<Session> { const response = await built.app.inject({ method: "POST", url: "/api/auth/sign-in/username", headers: { origin: ORIGIN, "content-type": "application/json" }, payload: { username, password } }); expect(response.statusCode).toBe(200); const raw = response.headers["set-cookie"]; const values = Array.isArray(raw) ? raw : raw ? [raw] : []; return { cookie: values.map((value) => value.split(";")[0]).join("; ") }; }

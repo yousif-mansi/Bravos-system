@@ -7,16 +7,16 @@ test("staff fulfill orders in Arabic and a manager closes a partially inspected 
   await signIn(page, "owner", "e2e-owner-pass");
   const workspace = await staffApi(page, "GET", "/api/internal/workspace");
   const branchId = workspace.body.activeBranch.id as string;
-  const product = await seedProduct(page, `FULFILL-${crypto.randomUUID().slice(0, 8)}`, "قميص تنفيذ الطلب", 42_000, 5);
+  const product = await seedProduct(page, `FULFILL-${crypto.randomUUID().slice(0, 8)}`, "قميص تنفيذ الطلب", 42_000, 5, branchId);
   const area = await staffApi(page, "POST", "/api/internal/delivery-areas", {
     nameAr: `منطقة تنفيذ ${crypto.randomUUID().slice(0, 6)}`,
     feePiasters: 4_000,
     active: true,
   });
   expect(area.status).toBe(201);
-  const deliveredOrder = await submitAndConfirmOrder(page, area.body.id, product.variantId, 1, "عميل استلام");
-  const failedOrder = await submitAndConfirmOrder(page, area.body.id, product.variantId, 2, "عميل تعذر توصيله");
-  const cancelledOrder = await submitAndConfirmOrder(page, area.body.id, product.variantId, 1, "عميل إلغاء قبل الشحن");
+  const deliveredOrder = await submitAndConfirmOrder(page, area.body.id, product.variantId, 1, "عميل استلام", branchId);
+  const failedOrder = await submitAndConfirmOrder(page, area.body.id, product.variantId, 2, "عميل تعذر توصيله", branchId);
+  const cancelledOrder = await submitAndConfirmOrder(page, area.body.id, product.variantId, 1, "عميل إلغاء قبل الشحن", branchId);
 
   const representativeLogin = `fulfill.rep.${crypto.randomUUID().slice(0, 8)}`;
   const representative = await staffApi(page, "POST", "/api/internal/staff", {
@@ -65,7 +65,7 @@ test("staff fulfill orders in Arabic and a manager closes a partially inspected 
 
   const deliveredForm = page.getByRole("form", { name: "تسجيل استلام العميل" });
   await page.waitForTimeout(1_100);
-  await deliveredForm.getByLabel("وقت استلام العميل بتوقيت القاهرة").fill(await currentCairoDateTime(page));
+  await deliveredForm.getByLabel("وقت استلام العميل").fill(await currentCairoDateTime(page));
   await deliveredForm.getByRole("button", { name: "تسجيل الطلب كمُسلّم" }).click();
   await expect(page.getByRole("status")).toContainText("تم تسجيل استلام العميل");
   await expect(page.getByTestId("order-status")).toContainText("تم التسليم");
@@ -73,7 +73,8 @@ test("staff fulfill orders in Arabic and a manager closes a partially inspected 
   await openOrder(page, cancelledOrder.orderId);
   const cancelForm = page.getByRole("form", { name: "إلغاء طلب مؤكد قبل الشحن" });
   await cancelForm.getByLabel("سبب الإلغاء قبل الشحن").fill("طلب العميل الإلغاء قبل تسليم الشحنة");
-  await cancelForm.getByRole("button", { name: "إلغاء الطلب وإعادة الكمية المتاحة" }).click();
+  await cancelForm.getByLabel("استلمت جميع الأصناف وفحصتها وهي صالحة للبيع").check();
+  await cancelForm.getByRole("button", { name: "إلغاء الطلب", exact: true }).click();
   await expect(page.getByTestId("order-status")).toContainText("ملغي قبل الشحن");
 
   await openOrder(page, failedOrder.orderId);
@@ -109,6 +110,7 @@ test("staff fulfill orders in Arabic and a manager closes a partially inspected 
   await signOut(page);
   await signIn(page, "owner", "e2e-owner-pass");
   await openOrder(page, failedOrder.orderId);
+  await page.getByLabel("فرع استلام الشحنة").first().selectOption(branchId);
   await page.getByRole("button", { name: "ترحيل الفحص واستعادة القابل للبيع" }).click();
   await expect(page.getByRole("status")).toContainText("رُحّل الفحص واستُعيدت الكمية القابلة للبيع فقط");
   await expect(page.getByTestId("failed-return-remaining")).toHaveText("المتبقي خارج المحل: 1");
@@ -117,6 +119,7 @@ test("staff fulfill orders in Arabic and a manager closes a partially inspected 
   await secondInspection.getByLabel("الكمية المستلمة").fill("1");
   await secondInspection.getByLabel("منها قابلة للبيع").fill("0");
   await secondInspection.getByRole("button", { name: "حفظ مسودة الفحص" }).click();
+  await page.getByLabel("فرع استلام الشحنة").last().selectOption(branchId);
   await page.getByRole("button", { name: "ترحيل الفحص واستعادة القابل للبيع" }).click();
   await expect(page.getByTestId("failed-return-remaining")).toHaveText("المتبقي خارج المحل: 0");
 
@@ -177,7 +180,7 @@ async function signOut(page: Page) {
   await expect(page.getByRole("heading", { name: "تسجيل الدخول" })).toBeVisible();
 }
 
-async function seedProduct(page: Page, code: string, nameAr: string, pricePiasters: number, quantity: number) {
+async function seedProduct(page: Page, code: string, nameAr: string, pricePiasters: number, quantity: number, branchId: string) {
   const category = await staffApi(page, "POST", "/api/internal/catalog/categories", { nameAr: `تصنيف ${code}` });
   const size = await staffApi(page, "POST", "/api/internal/catalog/sizes", { nameAr: `مقاس ${code}` });
   const color = await staffApi(page, "POST", "/api/internal/catalog/colors", { nameAr: `لون ${code}` });
@@ -196,6 +199,7 @@ async function seedProduct(page: Page, code: string, nameAr: string, pricePiaste
   const variantId = product.body.variants[0].id as string;
   expect((await staffApi(page, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
+    branchId,
     receiptDate: cairoDate(),
     lines: [{ variantId, quantity, unitCostPiasters: 10_000 }],
   })).status).toBe(201);
@@ -208,6 +212,7 @@ async function submitAndConfirmOrder(
   variantId: string,
   quantity: number,
   customerName: string,
+  fulfillmentBranchId: string,
 ) {
   const quote = await publicApi(page, "POST", "/api/public/checkout/quote", {
     deliveryAreaId,
@@ -243,6 +248,7 @@ async function submitAndConfirmOrder(
     expectedRevision: agreed.body.revision,
     agreedRevision: agreed.body.agreedRevision.version,
     itemsLocatedAndSetAside: true,
+    fulfillmentBranchId,
   });
   expect(confirmed.status).toBe(201);
   return { orderId: submitted.body.orderId as string, reference: submitted.body.reference as string };

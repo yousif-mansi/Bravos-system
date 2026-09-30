@@ -221,7 +221,7 @@ function ReportContents({
       <section className="card" aria-labelledby="report-summary-heading">
         <h2 id="report-summary-heading">ملخص النشاط</h2>
         <div className="report-metrics" data-testid="report-summary">
-          <Metric label="العمليات المكتملة" value={String(summary.completedCount)} />
+          <Metric label="مبيعات الفروع والطلبات المؤكدة" value={String(summary.completedCount)} />
           <Metric label="إجمالي القيم النهائية" value={money(summary.grossFinalSalesPiasters)} />
           <Metric label="إجمالي قيمة البضاعة" value={money(summary.grossMerchandiseSalesPiasters)} />
           <Metric
@@ -258,7 +258,7 @@ function ReportContents({
       <BestSellers report={report} />
       <Inventory report={report} />
       <PurchasesAndExpenses report={report} />
-      <LowStock report={report} />
+      <LowStock report={report} branches={workspace.authorizedBranches} />
       <DetailPaging report={report} loading={loading} onPageChange={onPageChange} />
     </div>
   );
@@ -336,7 +336,7 @@ function OnlineOrderOperations({ report }: { report: ManagementReportDto }) {
   return (
     <section className="card" data-testid="online-order-operations" aria-labelledby="online-order-operations-heading">
       <h2 id="online-order-operations-heading">طلبات الأونلاين قيد التشغيل</h2>
-      <p className="muted">هذه لقطة تشغيلية حالية لا تتغير باختيار يوم أو شهر، ولا تدخل في إيراد المبيعات المكتملة.</p>
+      <p className="muted">هذه لقطة تشغيلية لجميع الفروع لا تتغير بالفترة أو فلتر الفرع. الطلبات المعلقة خارج المبيعات، وتُسجل قيمة الطلب عند التأكيد مرة واحدة.</p>
       <div className="report-metrics">
         <Metric label="معلق" value={String(operations.pendingCount)} />
         <Metric label="مؤكد ومحمي" value={String(operations.confirmedCount)} />
@@ -378,7 +378,7 @@ function CompletedSales({ sales }: { sales: ReportCompletedSaleDto[] }) {
   return (
     <section className="card" aria-labelledby="completed-sales-heading">
       <h2 id="completed-sales-heading">المبيعات المكتملة</h2>
-      <p className="muted">تظهر هنا مبيعات الفروع المكتملة والطلبات التي وصلت للعميل فقط. الطلبات المعلقة والمؤكدة تبقى في شاشة تشغيل الطلبات.</p>
+      <p className="muted">تظهر مبيعات الفروع والطلبات الأونلاين من وقت التأكيد. الشحن والتسليم لا يضيفان بيعاً جديداً. يُعكس الإيراد عند الإلغاء قبل الشحن أو تسجيل فشل التوصيل.</p>
       {sales.length ? <div className="report-card-list">
         {sales.map((sale) => (
           <article className="report-detail-card" data-testid="report-sale" key={`${sale.source.kind}:${sale.source.id}`}>
@@ -395,7 +395,7 @@ function CompletedSales({ sales }: { sales: ReportCompletedSaleDto[] }) {
             {sale.effectiveStatus === "cancelled" ? (
               <p className="report-warning">هذا البيع ملغى ولا يُعرض كبيع مكتمل عادي في الإجماليات.</p>
             ) : null}
-            <p>{sale.branch ? `الفرع: ${sale.branch.nameAr}` : "قناة الأونلاين المركزية"}</p>
+            <p>{sale.branch ? `الفرع: ${sale.branch.nameAr}` : "فرع التنفيذ غير مسجل"}</p>
             <p>{sale.employee ? `الموظف: ${sale.employee.displayName}` : "لا يوجد موظف بيع لطلب الأونلاين"}</p>
             <div className="report-amount-line">
               <span>الأصلي: {money(sale.accepted.originalPiasters)}</span>
@@ -450,7 +450,7 @@ function Refunds({ refunds, branches }: { refunds: ReportRefundDto[]; branches: 
             </div>
             <div className="report-amount-line">
               <span>القناة الأصلية: {channelName[refund.channel]}</span>
-              <span>الفرع الأصلي: {refund.originalBranchId ? branchNames.get(refund.originalBranchId) ?? refund.originalBranchId : "لا يوجد — طلب أونلاين"}</span>
+              <span>الفرع الأصلي: {refund.originalBranchId ? branchNames.get(refund.originalBranchId) ?? refund.originalBranchId : "فرع غير مسجل"}</span>
               <span>فرع المعالجة: {branchNames.get(refund.handlingBranchId) ?? refund.handlingBranchId}</span>
               <span>مراجعة التصحيح: {refund.correctionRevision}</span>
             </div>
@@ -503,12 +503,12 @@ function BestSellers({ report }: { report: ManagementReportDto }) {
   return (
     <section className="card" data-testid="best-sellers" aria-labelledby="best-sellers-heading">
       <h2 id="best-sellers-heading">الأكثر مبيعاً</h2>
-      <p className="muted">الترتيب حسب إجمالي الوحدات المباعة الفعلية. تظهر المرتجعات منفصلة ولا نخمّن صافي الوحدات.</p>
+      <p className="muted">الترتيب حسب الوحدات المباعة بعد أثر إلغاء الطلبات في الفترة. تظهر المرتجعات منفصلة.</p>
       {report.bestSellers.length ? <ol className="report-ranked-list">
         {report.bestSellers.map((product) => (
           <li key={product.productId}>
             <strong>{product.productNameAr} ({product.productCode})</strong>
-            <span>مباع فعلياً قبل المرتجعات: {product.grossEffectiveSoldQuantity}</span>
+            <span>وحدات البيع بعد الإلغاء وقبل المرتجعات: {product.grossEffectiveSoldQuantity}</span>
             <span>مرتجع: {product.returnedQuantity}</span>
           </li>
         ))}
@@ -521,12 +521,12 @@ function Inventory({ report }: { report: ManagementReportDto }) {
   const inventory = report.inventory;
   return (
     <section className="card" data-testid="inventory-valuation" aria-labelledby="inventory-heading">
-      <h2 id="inventory-heading">قيمة المخزون المركزي</h2>
-      <p className="muted">هذه لقطة المخزون الحالية الآن، ولا تتغير باختيار يوم أو شهر تاريخي في التقرير.</p>
+      <h2 id="inventory-heading">قيمة مخزون جميع الفروع</h2>
+      <p className="muted">هذه لقطة إجمالية للمخزون الحالي في جميع الفروع، ولا تتغير باختيار الفترة أو فلتر الفرع.</p>
       <div className="report-metrics">
         <Metric label="المتاح" value={`${inventory.availableQuantity} قطعة · ${money(inventory.availableValuePiasters)}`} />
         <Metric
-          label="المحمي للطلبات المؤكدة أو الجاري توصيلها"
+          label="المحمي للطلبات الجاري تجهيزها أو بانتظار فحص المرتجع"
           value={`${inventory.protectedQuantity} قطعة · ${money(inventory.protectedValuePiasters)}`}
         />
       </div>
@@ -545,7 +545,7 @@ function PurchasesAndExpenses({ report }: { report: ManagementReportDto }) {
     <section className="grid two" aria-label="المشتريات والمصروفات">
       <div className="card">
         <h2>المشتريات</h2>
-        <p className="muted">المشتريات مركزية ولا تتغير بفلتر الفرع أو الموظف أو قناة البيع.</p>
+        <p className="muted">المشتريات المعروضة لجميع الفروع ولا تتغير بفلتر الفرع أو الموظف أو قناة البيع.</p>
         <p className="expense-total">{money(report.purchases.totalPiasters)}</p>
         {report.purchases.receipts.length ? <ul className="report-plain-list">
           {report.purchases.receipts.map((receipt) => (
@@ -589,16 +589,17 @@ function PurchasesAndExpenses({ report }: { report: ManagementReportDto }) {
   );
 }
 
-function LowStock({ report }: { report: ManagementReportDto }) {
+function LowStock({ report, branches }: { report: ManagementReportDto; branches: BranchDto[] }) {
+  const branchNames = new Map(branches.map((branch) => [branch.id, branch.nameAr]));
   return (
     <section className="card" aria-labelledby="low-stock-heading">
       <h2 id="low-stock-heading">المخزون المنخفض الآن</h2>
-      <p className="muted">قائمة مركزية حالية لا تتغير باختيار فرع أو موظف في التقرير.</p>
+      <p className="muted">قائمة حالية حسب الفرع{report.filters.branchId ? " المحدد" : " لكل الفروع"}، ولا تتغير باختيار الفترة التاريخية.</p>
       {report.lowStock.length ? <ul className="report-plain-list">
         {report.lowStock.map((row) => (
-          <li key={row.variantId}>
+          <li key={`${row.branchId}:${row.variantId}`}>
             <strong>{row.variant.product.nameAr} ({row.variant.product.code})</strong>
-            <span>{row.variant.size.nameAr} · {row.variant.color.nameAr}</span>
+            <span>{branchNames.get(row.branchId) ?? "فرع غير معروف"} · {row.variant.size.nameAr} · {row.variant.color.nameAr}</span>
             <span>المتاح {row.availableQuantity} · حد التنبيه {row.threshold}</span>
           </li>
         ))}

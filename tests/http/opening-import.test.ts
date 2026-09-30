@@ -64,9 +64,9 @@ test("manager receives an immutable preview before accepting opening CSV data", 
         "variant,shirt-1-l-black,,,,,,,,,,shirt-1,l,black,",
       ].join("\n"),
       stock: [
-        "batch_key,variant_key,quantity,unit_cost_egp,receipt_date,batch_order",
-        "old-stock,shirt-1-l-black,2,200.00,2026-08-01,1",
-        "new-stock,shirt-1-l-black,3,240.00,2026-09-01,2",
+        "batch_key,branch_code,variant_key,quantity,unit_cost_egp,receipt_date,batch_order",
+        "old-stock,abshway,shirt-1-l-black,2,200.00,2026-08-01,1",
+        "new-stock,fayoum,shirt-1-l-black,3,240.00,2026-09-01,2",
       ].join("\n"),
       configuration: fullConfiguration(),
     },
@@ -78,8 +78,8 @@ test("manager receives an immutable preview before accepting opening CSV data", 
     status: "ready",
     counts: { products: 1, variants: 1, batches: 2, openingQuantity: 5 },
     batches: [
-      { key: "old-stock", quantity: 2, unitCostPiasters: 20000, batchOrder: 1 },
-      { key: "new-stock", quantity: 3, unitCostPiasters: 24000, batchOrder: 2 },
+      { key: "old-stock", branchCode: "abshway", quantity: 2, unitCostPiasters: 20000, batchOrder: 1 },
+      { key: "new-stock", branchCode: "fayoum", quantity: 3, unitCostPiasters: 24000, batchOrder: 2 },
     ],
   });
   expect(response.body.previewFingerprint).toMatch(/^[0-9a-f]{64}$/);
@@ -105,11 +105,11 @@ test("manager receives an immutable preview before accepting opening CSV data", 
     expect.objectContaining({ receivedQuantity: 3, remainingQuantity: 3, unitCostPiasters: 24000, receiptDate: "2026-09-01" }),
   ]);
   const receipts = await api(manager, "GET", "/api/internal/receiving/receipts");
-  expect(receipts.body).toHaveLength(1);
-  expect(receipts.body[0].lines).toEqual([
-    expect.objectContaining({ quantity: 2, unitCostPiasters: 20000 }),
-    expect.objectContaining({ quantity: 3, unitCostPiasters: 24000 }),
-  ]);
+  expect(receipts.body).toHaveLength(2);
+  expect(receipts.body).toEqual(expect.arrayContaining([
+    expect.objectContaining({ branchId: abshwayId, lines: [expect.objectContaining({ quantity: 2, unitCostPiasters: 20000 })] }),
+    expect.objectContaining({ lines: [expect.objectContaining({ quantity: 3, unitCostPiasters: 24000 })] }),
+  ]));
   const settings = await api(manager, "GET", "/api/internal/inventory/settings");
   expect(settings.body).toEqual({ lowStockThreshold: 3 });
   expect((await api(manager, "GET", "/api/internal/pricing/offers")).body).toEqual(expect.arrayContaining([
@@ -183,14 +183,14 @@ test("preview rejects invalid owning-feature configuration and preserves explici
   const files = validFiles();
   files.catalog = files.catalog.split("\n")[0];
   files.stock = [
-    "batch_key,variant_key,quantity,unit_cost_egp,receipt_date,batch_order",
+    "batch_key,branch_code,variant_key,quantity,unit_cost_egp,receipt_date,batch_order",
     "",
     "",
     "",
     "",
     "",
-    "missing-stock,id:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa,1,10.00,2026-02-28,1",
-    "bad-date,id:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb,1,10.00,2026-02-30,2",
+    "missing-stock,abshway,id:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa,1,10.00,2026-02-28,1",
+    "bad-date,abshway,id:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb,1,10.00,2026-02-30,2",
   ].join("\n");
   files.configuration = csv(CONFIG_HEADERS, [
     { record_type: "delivery_area", key: "long-area", name_ar: "م".repeat(121), fee_egp: "10.00", active: "true" },
@@ -245,7 +245,7 @@ test("manager can import opening batches for an explicitly referenced existing v
   const variantId = product.body.variants[0].id;
   const files = validFiles();
   files.catalog = files.catalog.split("\n")[0];
-  files.stock = `batch_key,variant_key,quantity,unit_cost_egp,receipt_date,batch_order\nmanual-stock,id:${variantId.toUpperCase()},4,300.00,2026-09-01,1`;
+  files.stock = `batch_key,branch_code,variant_key,quantity,unit_cost_egp,receipt_date,batch_order\nmanual-stock,abshway,id:${variantId.toUpperCase()},4,300.00,2026-09-01,1`;
   files.configuration = files.configuration.split("\n")[0];
   const operationId=crypto.randomUUID();
   const preview=await api(manager,"POST","/api/internal/opening-import/previews",{operationId,files});
@@ -306,9 +306,9 @@ function validFiles() {
       "variant,shirt-1-l-black,,,,,,,,,,shirt-1,l,black,",
     ].join("\n"),
     stock: [
-      "batch_key,variant_key,quantity,unit_cost_egp,receipt_date,batch_order",
-      "old-stock,shirt-1-l-black,2,200.00,2026-08-01,1",
-      "new-stock,shirt-1-l-black,3,240.00,2026-09-01,2",
+      "batch_key,branch_code,variant_key,quantity,unit_cost_egp,receipt_date,batch_order",
+      "old-stock,abshway,shirt-1-l-black,2,200.00,2026-08-01,1",
+      "new-stock,abshway,shirt-1-l-black,3,240.00,2026-09-01,2",
     ].join("\n"),
     configuration: fullConfiguration(),
   };

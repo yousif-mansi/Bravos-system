@@ -36,6 +36,7 @@ export const BACKUP_TABLE_SECTIONS: Record<string, BackupSectionName> = {
   inventory_stock_clock: "inventory",
   inventory_operation: "inventory",
   inventory_batch: "inventory",
+  inventory_batch_balance: "inventory",
   inventory_movement: "inventory",
   inventory_allocation: "inventory",
   inventory_discrepancy: "inventory",
@@ -170,6 +171,8 @@ export function createBackupServices(deps: {
           createdByStaffId: actorId,
           stockVersion: metadata.stockVersion,
           onlineOrderReferenceSequence: metadata.onlineOrderReferenceSequence,
+          salesSaleReferenceSequence: metadata.salesSaleReferenceSequence,
+          returnsReturnReferenceSequence: metadata.returnsReturnReferenceSequence,
           identityPolicy: { preservesStableIds: true, preservesForeignKeys: true, regeneratesIds: false },
           idProvenance: {
             source: "database_primary_and_foreign_keys",

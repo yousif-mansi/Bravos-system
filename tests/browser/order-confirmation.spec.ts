@@ -14,8 +14,8 @@ test("a representative reviews a WhatsApp replacement and safely retries confirm
   await settings.getByRole("button", { name: "حفظ الإعدادات" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ إعدادات الطلبات");
 
-  const requested = await seedProduct(page, "ORDER-ORIGINAL-20", "قميص الطلب الأصلي", 30_000, 1);
-  const replacement = await seedProduct(page, "ORDER-REPLACEMENT-20", "قميص بديل متفق عليه", 25_000, 2);
+  const requested = await seedProduct(page, "ORDER-ORIGINAL-20", "قميص الطلب الأصلي", 30_000, 1, branchId);
+  const replacement = await seedProduct(page, "ORDER-REPLACEMENT-20", "قميص بديل متفق عليه", 25_000, 2, branchId);
   const area = await staffApi(page, "POST", "/api/internal/delivery-areas", {
     nameAr: "مدينة الفيوم للطلبات",
     feePiasters: 5_000,
@@ -183,6 +183,7 @@ test("a representative reviews a WhatsApp replacement and safely retries confirm
   });
 
   const confirmation = page.getByRole("form", { name: "تأكيد تجهيز الطلب" });
+  await confirmation.getByLabel("فرع تجهيز الطلب").selectOption(branchId);
   await confirmation.getByLabel("وجدت الأصناف الفعلية وفصلتها لهذا الطلب").check();
   await confirmation.getByRole("button", { name: "تأكيد الطلب وخصم المخزون" }).click();
   await expect(page.getByRole("alert")).toContainText("قد يكون التأكيد حُفظ");
@@ -195,10 +196,12 @@ test("a representative reviews a WhatsApp replacement and safely retries confirm
   expect(confirmationPayloads).toHaveLength(2);
   expect(confirmationPayloads[1]).toEqual(confirmationPayloads[0]);
   expect((confirmationPayloads[0] as { itemsLocatedAndSetAside: boolean }).itemsLocatedAndSetAside).toBe(true);
+  expect((confirmationPayloads[0] as { fulfillmentBranchId: string }).fulfillmentBranchId).toBe(branchId);
 
   const listed = await staffApi(page, "GET", `/api/internal/online-orders/${order.orderId}`);
   expect(listed.status).toBe(200);
   expect(listed.body.status).toBe("confirmed");
+  expect(listed.body.fulfillmentBranchId).toBe(branchId);
   expect(listed.body.lines[0].variantId).toBe(requested.variantId);
   expect(listed.body.agreedRevision.quote.lines).toEqual([
     expect.objectContaining({ variantId: replacement.variantId, quantity: 1, merchandiseTotalPiasters: 25_000 }),
@@ -228,7 +231,7 @@ async function signOut(page: Page) {
   await expect(page.getByRole("heading", { name: "تسجيل الدخول" })).toBeVisible();
 }
 
-async function seedProduct(page: Page, code: string, nameAr: string, pricePiasters: number, quantity: number) {
+async function seedProduct(page: Page, code: string, nameAr: string, pricePiasters: number, quantity: number, branchId: string) {
   const category = await staffApi(page, "POST", "/api/internal/catalog/categories", { nameAr: `تصنيف ${code}` });
   const size = await staffApi(page, "POST", "/api/internal/catalog/sizes", { nameAr: `مقاس ${code}` });
   const color = await staffApi(page, "POST", "/api/internal/catalog/colors", { nameAr: `لون ${code}` });
@@ -247,6 +250,7 @@ async function seedProduct(page: Page, code: string, nameAr: string, pricePiaste
   const variantId = product.body.variants[0].id as string;
   expect((await staffApi(page, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
+    branchId,
     receiptDate: cairoDate(),
     lines: [{ variantId, quantity, unitCostPiasters: 10_000 }],
   })).status).toBe(201);

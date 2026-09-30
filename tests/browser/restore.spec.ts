@@ -22,8 +22,8 @@ test("a paid offline sale crosses restore generations through durable custody an
     await expect(cashier.getByTestId("offline-ready")).toBeVisible({ timeout: 30_000 });
     await cashier.getByRole("link", { name: "البحث عن منتج" }).click();
     await addAndPrice(cashier, seed);
-    await cashier.getByRole("form", { name: "إتمام البيع النقدي" })
-      .getByLabel("استلم الزبون البضاعة ودفع نقداً").check();
+    await cashier.getByRole("form", { name: "إتمام البيع" })
+      .getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
     await cashier.route("**/api/internal/sales/pos-snapshots", (route) => route.abort("failed"));
 
     await manager.goto(`${BASE_URL}/restore`);
@@ -61,11 +61,11 @@ test("a paid offline sale crosses restore generations through durable custody an
     await acknowledgeCheckpoint.click();
 
     await cashierContext.setOffline(true);
-    const checkout = cashier.getByRole("form", { name: "إتمام البيع النقدي" });
+    const checkout = cashier.getByRole("form", { name: "إتمام البيع" });
     const completePaidSale = checkout.getByRole("button", { name: "إتمام البيع" });
     await expect(completePaidSale).toBeEnabled();
     await completePaidSale.click();
-    await expect(cashier.getByRole("status")).toContainText("تم حفظ البيع النقدي");
+    await expect(cashier.getByRole("status")).toContainText("تم حفظ البيع");
     const offline = await readQueueState(cashier);
     expect(offline.sales).toHaveLength(1);
     expect(offline.sales[0]).toMatchObject({ syncStatus: "pending", restoreGeneration: 0 });
@@ -255,11 +255,14 @@ async function seedSingleProduct(page: Page, options: { quantity: number; price:
     variants: [{ sizeId: size.body.id, colorId: color.body.id, sellingPricePiastersOverride: null }],
   });
   const variantId = product.body.variants[0].id as string;
-  await staffApi(page, "POST", "/api/internal/receiving/receipts", {
+  const workspace = await staffApi(page, "GET", "/api/internal/workspace");
+  const receipt = await staffApi(page, "POST", "/api/internal/receiving/receipts", {
     operationId: randomUUID(),
+    branchId: workspace.body.activeBranch.id,
     receiptDate: "2026-09-16",
     lines: [{ variantId, quantity: options.quantity, unitCostPiasters: 5000 }],
   });
+  expect(receipt.status).toBe(201);
   return { code: options.code, nameAr, sizeName, colorName };
 }
 
@@ -274,7 +277,7 @@ async function addAndPrice(
   await page.getByLabel("المقاس").selectOption({ label: seed.sizeName });
   await page.getByLabel("اللون").selectOption({ label: seed.colorName });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
-  const checkout = page.getByRole("form", { name: "إتمام البيع النقدي" });
+  const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
   await expect(page.getByTestId("accepted-prices")).toBeVisible();
 }

@@ -43,6 +43,7 @@ export type OpeningImportReference = {
 };
 
 export type OpeningImportTransaction = {
+  resolveBranchIds(codes: string[]): Promise<Map<string, string>>;
   findByOperation(operationId: string): Promise<OpeningImportPreviewRecord | null>;
   findById(previewId: string): Promise<OpeningImportPreviewRecord | null>;
   insertPreview(input: OpeningImportPreviewRecord & { actorStaffId: string; createdAt: Date }): Promise<void>;
@@ -56,11 +57,11 @@ export type OpeningImportTransaction = {
     lockStockClock(mode: "share" | "update"): Promise<void>;
     assertStockMutationAllowed(): Promise<void>;
     claimOpeningImportOperation(input: { operationId: string; payloadFingerprint: string; actorStaffId: string }): Promise<{ kind: "created" | "replay" }>;
-    importOpeningBatches(input: { operationId: string; receiptId: string; lines: Array<{ lineId: string; batchId: string; movementId: string; variantId: string; quantity: number; unitCostPiasters: number; receiptDate: string; recordedAt: Date }> }): Promise<unknown>;
+    importOpeningBatches(input: { operationId: string; lines: Array<{ lineId: string; batchId: string; movementId: string; receiptId: string; branchId: string; variantId: string; quantity: number; unitCostPiasters: number; receiptDate: string; recordedAt: Date }> }): Promise<unknown>;
     applyOpeningSettings(input: { actorStaffId: string; at: Date; defaultThreshold: number | null; variantThresholds: Array<{ variantId: string; threshold: number }> }): Promise<void>;
     bumpStockVersion(): Promise<number>;
   };
-  receiving: { insertOpeningReceipt(input: { receiptId: string; operationId: string; receiptDate: string; actorStaffId: string; recordedAt: Date; lines: Array<{ id: string; variantId: string; quantity: number; unitCostPiasters: number; batchId: string; lineIndex: number }> }): Promise<void> };
+  receiving: { insertOpeningReceipt(input: { receiptId: string; branchId: string; operationId: string; receiptDate: string; actorStaffId: string; recordedAt: Date; lines: Array<{ id: string; variantId: string; quantity: number; unitCostPiasters: number; batchId: string; lineIndex: number }> }): Promise<void> };
   expenses: { inspectOpeningCategories(rows: Array<{ nameAr: string; line: number }>): Promise<{ state: unknown; errors: OpeningImportLineErrorDto[] }>; insertOpeningCategories(rows: Array<{ id: string; nameAr: string; active: boolean }>, actorStaffId: string, at: Date): Promise<void> };
   pricing: { inspectOpeningPricing(input: { offers: Array<{ key: string; nameAr: string; line: number }>; coupons: Array<{ normalizedCode: string; line: number }> }): Promise<{ state: unknown; errors: OpeningImportLineErrorDto[] }>; insertOpeningPricing(input: { offers: Array<OpeningImportPlan["offers"][number] & { actorStaffId: string; changedAt: Date }>; coupons: Array<OpeningImportPlan["coupons"][number] & { actorStaffId: string; changedAt: Date }> }): Promise<void> };
   storefront: { inspectOpeningContacts(): Promise<{ whatsappUrl: string | null; facebookUrl: string | null; instagramUrl: string | null; tiktokUrl: string | null }>; upsertOpeningContacts(input: { whatsappUrl: string | null; facebookUrl: string | null; instagramUrl: string | null; tiktokUrl: string | null; actorStaffId: string; at: Date }): Promise<void> };

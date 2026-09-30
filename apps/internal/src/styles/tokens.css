@@ -11,6 +11,7 @@
   --brand-accent: #c6b48a;
   --brand-on-accent: #090b0f;
   --success: #8f9a6b;
+  --checkbox-checked: #26a269;
   --warning: #c4a35a;
   --danger: #b56a5c;
   --surface-muted: #1c232d;
@@ -51,6 +52,7 @@
   --brand-accent: #8a7344;
   --brand-on-accent: #f5f1e8;
   --success: #4f5c32;
+  --checkbox-checked: #168052;
   --warning: #8a6420;
   --danger: #8b3d32;
   --surface-muted: #efece4;

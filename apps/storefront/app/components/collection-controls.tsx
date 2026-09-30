@@ -3,7 +3,7 @@
 import type { PublicCatalogOptionDto } from "@bravos/contracts/public";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import type { ChangeEvent } from "react";
+import { type ChangeEvent, useEffect, useState } from "react";
 import { collectionHref, type CollectionSort } from "../collection-sort";
 import styles from "./collection-controls.module.css";
 
@@ -16,6 +16,9 @@ type Props = {
 
 export function CollectionControls({ query, categoryId, categories, sort }: Props) {
   const router = useRouter();
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => { setMounted(true); }, []);
 
   function changeSort(event: ChangeEvent<HTMLSelectElement>) {
     const nextSort = event.target.value as CollectionSort;
@@ -36,7 +39,7 @@ export function CollectionControls({ query, categoryId, categories, sort }: Prop
         </form>
         <div className={styles.sort}>
           <label htmlFor="collection-sort">ترتيب المنتجات</label>
-          <select id="collection-sort" value={sort} onChange={changeSort}>
+          <select id="collection-sort" value={sort} onChange={changeSort} disabled={!mounted} aria-busy={!mounted}>
             <option value="default">ترتيب المتجر</option>
             <option value="name">الاسم بالعربية</option>
             <option value="price-asc">السعر يبدأ من: الأقل</option>

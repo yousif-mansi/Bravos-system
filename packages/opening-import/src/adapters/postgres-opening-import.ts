@@ -36,6 +36,13 @@ export function createPostgresOpeningImportStore(
         const bound = features(client);
         return work({
           ...bound,
+          async resolveBranchIds(codes) {
+            if (codes.length === 0) return new Map();
+            const result = await client.query<{ code: string; id: string }>(
+              "SELECT code, id FROM branch WHERE code = ANY($1::text[])", [codes],
+            );
+            return new Map(result.rows.map((row) => [row.code, row.id]));
+          },
           async findByOperation(operationId) { return toRecord(await byOperation(client, operationId)); },
           async findById(previewId) { return toRecord(await byId(client, previewId)); },
           async insertPreview(input) {

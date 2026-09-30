@@ -125,6 +125,30 @@ test("accepted sale returns a coherent acknowledgement covering both variants an
   expect(availability(replay.body.acknowledgement, seed.secondVariantId)).toBe(4);
   const lookup = await api(cashier, "GET", `/api/internal/catalog/lookup?code=${encodeURIComponent("TS-001")}`);
   expect(qty(lookup.body, seed.variantId)).toBe(4);
+
+  const onlineSale = {
+    saleId: crypto.randomUUID(), operationId: crypto.randomUUID(), deviceId,
+    snapshotId: snapshot.body.snapshotId, occurredAt: "2026-09-14T08:01:00.000Z",
+    physicallyCompleted: true, employeeDiscountPiasters: 0,
+    payment: { method: "online" as const, cashPiasters: 0, onlinePiasters: 30000 },
+    lines: [{ variantId: seed.variantId, quantity: 1, listedUnitPricePiasters: 30000 }],
+  };
+  const onlineAccepted = await api(cashier, "POST", "/api/internal/sales/accepted", onlineSale);
+  expect(onlineAccepted.status, JSON.stringify(onlineAccepted.body)).toBe(201);
+  expect(onlineAccepted.body.payment).toEqual(onlineSale.payment);
+  expect(onlineAccepted.body.acknowledgement.includedOperations).toEqual(expect.arrayContaining([expect.objectContaining({
+    operationId: onlineSale.operationId,
+    contentDigest: fingerprintAcceptedSalePayload({
+      saleId: onlineSale.saleId, snapshotId: onlineSale.snapshotId,
+      customerName: null, customerPhone: null, employeeDiscountPiasters: 0, discountReason: null,
+      payment: onlineSale.payment,
+      lines: [{ variantId: seed.variantId, quantity: 1 }],
+    }),
+  })]));
+  expect((await api(cashier, "POST", "/api/internal/sales/accepted", onlineSale)).status).toBe(200);
+  expect((await api(cashier, "POST", "/api/internal/sales/accepted", {
+    ...onlineSale, payment: { method: "cash", cashPiasters: 30000, onlinePiasters: 0 },
+  })).status).toBe(409);
 });
 
 test("a later sale includes a lost earlier operation id without subtracting it twice", async () => {
@@ -811,6 +835,7 @@ async function provisionCashier(manager: CookieSession, loginName: string, displ
 async function receive(manager: CookieSession, variantId: string, quantity: number, unitCostPiasters: number) {
   const result = await api(manager, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
+    branchId: abshwayId,
     receiptDate: "2026-09-11",
     lines: [{ variantId, quantity, unitCostPiasters }],
   });

@@ -49,6 +49,7 @@ type CorrectionRow = {
   operation_id: string;
   payload_fingerprint: string;
   coordination_id: string;
+  branch_id: string;
   variant_id: string;
   previous_available_quantity: number;
   corrected_available_quantity: number;
@@ -74,6 +75,7 @@ type ReconciliationRow = {
   operation_id: string;
   payload_fingerprint: string;
   correction_id: string;
+  branch_id: string;
   sale_id: string;
   variant_id: string;
   resolution: "included_in_count" | "allocate_missing_source";
@@ -246,7 +248,7 @@ export function createPostgresStockCoordinationStore(
         }
         const currentVersion = await inventory.currentStockVersion();
         if (currentVersion !== Number(coordination.boundary_stock_version)) throw new CoordinationStaleError();
-        const quantities = await inventory.quantitiesFor([input.variantId]);
+        const quantities = await inventory.quantitiesFor(input.branchId, [input.variantId]);
         const previous = quantities.get(input.variantId) ?? 0;
         if (previous !== input.previousAvailableQuantity) throw new CoordinationStaleError();
         const delta = input.correctedAvailableQuantity - previous;
@@ -271,6 +273,7 @@ export function createPostgresStockCoordinationStore(
         if (delta < 0) {
           const allocation = await inventory.allocateCorrectionFromOldestAvailable({
             operationId: input.operationId,
+            branchId: input.branchId,
             variantId: input.variantId,
             quantity: -delta,
             recordedAt: claimed.recordedAt,
@@ -285,6 +288,7 @@ export function createPostgresStockCoordinationStore(
         } else {
           const source = await inventory.adjustCorrectionBatch({
             operationId: input.operationId,
+            branchId: input.branchId,
             batchId: input.positiveSourceBatchId!,
             variantId: input.variantId,
             direction: "restore",
@@ -298,18 +302,18 @@ export function createPostgresStockCoordinationStore(
             ...source,
           });
         }
-        const resultingAvailable = (await inventory.quantitiesFor([input.variantId])).get(input.variantId) ?? 0;
+        const resultingAvailable = (await inventory.quantitiesFor(input.branchId, [input.variantId])).get(input.variantId) ?? 0;
         if (resultingAvailable !== input.correctedAvailableQuantity) {
           throw new InventoryValidationError("لا يمكن إثبات الكمية المصححة مع وجود فرق مخزون غير محلول.");
         }
         await client.query(
           `INSERT INTO inventory_stock_correction (
-             id, operation_id, coordination_id, variant_id, previous_available_quantity,
+             id, operation_id, coordination_id, branch_id, variant_id, previous_available_quantity,
              corrected_available_quantity, quantity_delta, reason, positive_source_batch_id,
              changed_by_staff_id, changed_at, boundary_stock_version, boundary_at
-           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
           [
-            input.id, input.operationId, input.coordinationId, input.variantId,
+            input.id, input.operationId, input.coordinationId, input.branchId, input.variantId,
             previous, input.correctedAvailableQuantity, delta, input.reason,
             input.positiveSourceBatchId, input.actorStaffId, claimed.recordedAt,
             coordination.boundary_stock_version, coordination.boundary_at,
@@ -375,15 +379,15 @@ export function createPostgresStockCoordinationStore(
         );
         const correctionRemaining = -correction.quantity_delta - Number(restored.rows[0]?.quantity ?? 0);
         for (const sale of late) {
-          if (!sale.sourceDeviceId || !sale.sourceSnapshotId || !sale.sourceSnapshotIssuedAt) continue;
+          if (sale.branchId !== correction.branch_id || !sale.sourceDeviceId || !sale.sourceSnapshotId || !sale.sourceSnapshotIssuedAt) continue;
           const lines = sale.lines.filter((line) => line.variantId === correction.variant_id);
           if (lines.length === 0) continue;
           const counted = await pool.query<{ quantity: string | number }>(
             `SELECT COALESCE(SUM(quantity), 0) AS quantity
              FROM inventory_stock_reconciliation
-             WHERE sale_id = $1 AND variant_id = $2
+             WHERE sale_id = $1 AND variant_id = $2 AND branch_id = $3
                AND resolution = 'included_in_count'`,
-            [sale.id, correction.variant_id],
+            [sale.id, correction.variant_id, correction.branch_id],
           );
           const soldQuantity = lines.reduce((sum, line) => sum + line.quantity, 0);
           const allocatedQuantity = lines.reduce((sum, line) => sum + line.allocatedQuantity, 0);
@@ -393,6 +397,7 @@ export function createPostgresStockCoordinationStore(
             correctionId: correction.id,
             saleId: sale.id,
             saleOperationId: sale.operationId,
+            branchId: correction.branch_id,
             variantId: correction.variant_id,
             deviceId: sale.sourceDeviceId,
             sourceSnapshotId: sale.sourceSnapshotId,
@@ -432,11 +437,11 @@ export function createPostgresStockCoordinationStore(
         }
         await inventory.assertStockMutationAllowed();
         const correction = await correctionById(client, input.correctionId, true);
-        if (!correction || correction.variant_id !== input.variantId) {
+        if (!correction || correction.variant_id !== input.variantId || correction.branch_id !== input.branchId) {
           throw new InventoryValidationError("تصحيح الكمية المحدد غير موجود.");
         }
         const sale = await sales.getById(input.saleId, true);
-        if (!sale || !sale.sourceDeviceId || sale.recordedAt <= correction.changed_at) {
+        if (!sale || sale.branchId !== input.branchId || !sale.sourceDeviceId || sale.recordedAt <= correction.changed_at) {
           throw new InventoryValidationError("البيع المحدد ليس حركة متأخرة بعد هذا التصحيح.");
         }
         const saleLines = sale.lines.filter((line) => line.variantId === input.variantId);
@@ -448,7 +453,7 @@ export function createPostgresStockCoordinationStore(
           kind: "stock_reconciliation",
         });
         if (claimed.kind === "replay") throw new OperationConflictError();
-        const previousAvailableQuantity = (await inventory.quantitiesFor([input.variantId])).get(input.variantId) ?? 0;
+        const previousAvailableQuantity = (await inventory.quantitiesFor(input.branchId, [input.variantId])).get(input.variantId) ?? 0;
         const effects: Array<Omit<StockCorrectionBatchEffectDto, "direction"> & { direction: "restore" | "allocate" }> = [];
         if (input.resolution === "included_in_count") {
           if (
@@ -464,9 +469,9 @@ export function createPostgresStockCoordinationStore(
           const priorSale = await client.query<{ quantity: string | number }>(
             `SELECT COALESCE(SUM(quantity), 0) AS quantity
              FROM inventory_stock_reconciliation
-             WHERE sale_id = $1 AND variant_id = $2
+             WHERE sale_id = $1 AND variant_id = $2 AND branch_id = $3
                AND resolution = 'included_in_count'`,
-            [input.saleId, input.variantId],
+            [input.saleId, input.variantId, input.branchId],
           );
           const saleRemaining = saleLines.reduce((sum, line) => sum + line.quantity, 0)
             - Number(priorSale.rows[0]?.quantity ?? 0);
@@ -493,10 +498,10 @@ export function createPostgresStockCoordinationStore(
             `SELECT rb.batch_id, SUM(rb.quantity) AS quantity
              FROM inventory_stock_reconciliation_batch rb
              JOIN inventory_stock_reconciliation r ON r.id = rb.reconciliation_id
-             WHERE r.sale_id = $1 AND r.variant_id = $2
+             WHERE r.sale_id = $1 AND r.variant_id = $2 AND r.branch_id = $3
                AND r.resolution = 'included_in_count' AND rb.direction = 'allocate'
              GROUP BY rb.batch_id`,
-            [input.saleId, input.variantId],
+            [input.saleId, input.variantId, input.branchId],
           );
           const excludedByBatch = new Map(priorAttributed.rows.map((row) => [row.batch_id, Number(row.quantity)]));
           for (const allocation of existingAllocations) {
@@ -507,6 +512,7 @@ export function createPostgresStockCoordinationStore(
             const quantity = Math.min(allocatedToReassign, usable);
             if (quantity === 0) continue;
             await inventory.removeAllocation({
+              branchId: input.branchId,
               operationId: sale.operationId,
               batchId: allocation.batchId,
               variantId: input.variantId,
@@ -514,6 +520,7 @@ export function createPostgresStockCoordinationStore(
             });
             const costs = await inventory.adjustCorrectionBatch({
               operationId: input.operationId,
+              branchId: input.branchId,
               batchId: allocation.batchId,
               variantId: input.variantId,
               direction: "restore",
@@ -542,6 +549,7 @@ export function createPostgresStockCoordinationStore(
             if (attributed > 0) {
               const allocation = await inventory.attributeHeldAllocation({
                 operationId: sale.operationId,
+                branchId: input.branchId,
                 batchId: effect.batch_id,
                 variantId: input.variantId,
                 quantity: attributed,
@@ -562,6 +570,7 @@ export function createPostgresStockCoordinationStore(
           }
           if (unallocatedToAttribute > 0) {
             await inventory.resolveDiscrepancy({
+              branchId: input.branchId,
               operationId: sale.operationId,
               variantId: input.variantId,
               allocatedQuantity: unallocatedToAttribute,
@@ -579,11 +588,13 @@ export function createPostgresStockCoordinationStore(
           }
           const allocated = await inventory.allocateHeldFromOldestAvailable({
             operationId: sale.operationId,
+            branchId: input.branchId,
             variantId: input.variantId,
             quantity: input.quantity,
             recordedAt: claimed.recordedAt,
           });
           await inventory.resolveDiscrepancy({
+            branchId: input.branchId,
             operationId: sale.operationId,
             variantId: input.variantId,
             allocatedQuantity: input.quantity,
@@ -601,15 +612,15 @@ export function createPostgresStockCoordinationStore(
             effectiveUnitCostPiasters: row.effectiveUnitCostPiasters,
           });
         }
-        const resultingAvailableQuantity = (await inventory.quantitiesFor([input.variantId])).get(input.variantId) ?? 0;
+        const resultingAvailableQuantity = (await inventory.quantitiesFor(input.branchId, [input.variantId])).get(input.variantId) ?? 0;
         await client.query(
           `INSERT INTO inventory_stock_reconciliation (
-             id, operation_id, correction_id, sale_id, variant_id, resolution, quantity,
+             id, operation_id, correction_id, branch_id, sale_id, variant_id, resolution, quantity,
              previous_available_quantity, resulting_available_quantity, resolved_by_staff_id,
              resolved_at, payload_fingerprint
-           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
           [
-            input.id, input.operationId, input.correctionId, input.saleId, input.variantId,
+            input.id, input.operationId, input.correctionId, input.branchId, input.saleId, input.variantId,
             input.resolution, input.quantity, previousAvailableQuantity, resultingAvailableQuantity,
             input.actorStaffId, claimed.recordedAt, input.payloadFingerprint,
           ],
@@ -752,6 +763,7 @@ async function toReconciliationRecord(
     id: row.id,
     operationId: row.operation_id,
     correctionId: row.correction_id,
+    branchId: row.branch_id,
     saleId: row.sale_id,
     variantId: row.variant_id,
     resolution: row.resolution,
@@ -783,6 +795,7 @@ async function toCorrectionRecord(
     id: row.id,
     operationId: row.operation_id,
     coordinationId: row.coordination_id,
+    branchId: row.branch_id,
     variantId: row.variant_id,
     previousAvailableQuantity: row.previous_available_quantity,
     correctedAvailableQuantity: row.corrected_available_quantity,

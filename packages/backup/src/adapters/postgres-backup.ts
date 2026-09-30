@@ -71,6 +71,8 @@ async function readMetadata(client: PoolClient, readers: BackupReaderSet): Promi
   const migration = await client.query<{ id: string }>("SELECT id FROM schema_migrations ORDER BY id DESC LIMIT 1");
   const stockVersion = await readers.inventory.readStockVersion();
   const onlineOrderReferenceSequence = await readers.onlineOrders.readReferenceSequence();
+  const salesSaleReferenceSequence = await readers.sales.readReferenceSequence();
+  const returnsReturnReferenceSequence = await readers.returns.readReferenceSequence();
   const sourceGeneration = await readers.restore.readRestoreGeneration();
   const capturedAt = captured.rows[0]?.captured_at;
   const schemaVersion = migration.rows[0]?.id;
@@ -82,6 +84,8 @@ async function readMetadata(client: PoolClient, readers: BackupReaderSet): Promi
     schemaVersion,
     stockVersion,
     onlineOrderReferenceSequence,
+    salesSaleReferenceSequence,
+    returnsReturnReferenceSequence,
     sourceGeneration,
   };
 }

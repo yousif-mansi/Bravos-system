@@ -116,6 +116,7 @@ export function assignPendingReceive(input: {
 }
 
 export async function digestReceivePayload(input: {
+  branchId: string;
   receiptDate: string;
   lines: ReceivePayloadLines;
 }): Promise<string> {
@@ -134,7 +135,7 @@ export async function digestReceivePayload(input: {
       }
       return left.quantity - right.quantity;
     });
-  const canonical = JSON.stringify({ receiptDate: input.receiptDate, lines });
+  const canonical = JSON.stringify({ branchId: input.branchId, receiptDate: input.receiptDate, lines });
   const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonical));
   return [...new Uint8Array(hash)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }

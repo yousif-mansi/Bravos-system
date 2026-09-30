@@ -13,6 +13,7 @@ import type {
   CouponUsageProofDto,
   SaleAcknowledgementDto,
   SaleDto,
+  SalePaymentDto,
   VariantIdentityDto,
 } from "@bravos/contracts";
 import type { AuthenticatedStaff, VerifiedAuth } from "@bravos/identity";
@@ -162,6 +163,7 @@ export type SaleLineWrite = {
 
 export type SaleRecord = {
   id: string;
+  reference: string | null;
   operationId: string;
   branchId: string;
   soldByStaffId: string;
@@ -187,6 +189,7 @@ export type SaleRecord = {
   finalTotalPiasters: number;
   exchangeCreditAppliedPiasters: number;
   cashReceivedPiasters: number;
+  payment: SalePaymentDto;
   payloadFingerprint: string;
   physicallyCompleted: boolean;
   costsIncomplete: boolean;
@@ -218,6 +221,7 @@ export type PhysicalSaleReportingReader = {
 
 export type SaleInsert = {
   id: string;
+  reference?: string | null;
   operationId: string;
   branchId: string;
   soldByStaffId: string;
@@ -238,6 +242,7 @@ export type SaleInsert = {
   finalTotalPiasters: number;
   exchangeCreditAppliedPiasters?: number;
   cashReceivedPiasters?: number;
+  payment?: SalePaymentDto;
   payloadFingerprint: string;
   physicallyCompleted: boolean;
   costsIncomplete: boolean;
@@ -258,6 +263,8 @@ export type SaleStore = {
   insert(input: SaleInsert): Promise<SaleInsertResult>;
   updateCompletion(input: {
     id: string;
+    payment?: SalePaymentDto;
+    payloadFingerprint?: string;
     occurredAt: Date;
     recordedAt: Date;
     costsIncomplete: boolean;

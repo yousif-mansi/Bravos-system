@@ -76,6 +76,7 @@ type OrderRow = {
   cancelled_by_staff_id: string | null;
   cancelled_at: Date | null;
   cancellation_reason: string | null;
+  pre_shipment_stock_disposition: "awaiting_inspection" | "released" | null;
   submitted_at: Date;
 };
 type LineRow = {
@@ -133,6 +134,7 @@ type ConfirmationRow = {
   confirmed_quote_json: OnlineOrderAgreementQuoteDto;
   confirmed_by_staff_id: string;
   confirmed_at: Date;
+  fulfillment_branch_id: string | null;
 };
 type FulfillmentEventRow = {
   id: string;
@@ -153,6 +155,7 @@ type InspectionRow = {
   recorded_at: Date;
   posted_by_staff_id: string | null;
   posted_at: Date | null;
+  receiving_branch_id: string | null;
   abandoned_by_staff_id: string | null;
   abandoned_at: Date | null;
   abandonment_reason: string | null;
@@ -331,6 +334,11 @@ export function createPostgresOnlineOrderStore(queryable: Queryable): OnlineOrde
         where.push(`(order_row.reference ILIKE '%' || $${values.length} || '%'
           OR order_row.id::text ILIKE '%' || $${values.length} || '%')`);
       }
+      if (search.phone) {
+        values.push(search.phone.replace(/\D/g, ""));
+        where.push(`(regexp_replace(order_row.primary_phone, '[^0-9]', '', 'g') LIKE '%' || $${values.length} || '%'
+          OR regexp_replace(COALESCE(order_row.alternate_phone, ''), '[^0-9]', '', 'g') LIKE '%' || $${values.length} || '%')`);
+      }
       if (search.date) {
         values.push(search.date);
         where.push(`(event.occurred_at AT TIME ZONE 'Africa/Cairo')::date = $${values.length}::date`);
@@ -353,11 +361,13 @@ export function createPostgresOnlineOrderStore(queryable: Queryable): OnlineOrde
         reference: string;
         customer_name: string;
         primary_phone: string;
+        fulfillment_branch_id: string | null;
         delivered_at: Date;
         return_deadline_at: Date;
         confirmed_quote_json: OnlineOrderAgreementQuoteDto;
       }>(
         `SELECT order_row.id,order_row.reference,order_row.customer_name,order_row.primary_phone,
+                confirmation.fulfillment_branch_id,
                 event.occurred_at AS delivered_at,
                 ((event.occurred_at AT TIME ZONE 'Africa/Cairo') + interval '14 days')
                   AT TIME ZONE 'Africa/Cairo' AS return_deadline_at,
@@ -372,6 +382,7 @@ export function createPostgresOnlineOrderStore(queryable: Queryable): OnlineOrde
       return result.rows.map((row) => ({
         orderId: row.id,
         reference: row.reference,
+        fulfillmentBranchId: row.fulfillment_branch_id,
         customerName: row.customer_name,
         primaryPhone: row.primary_phone,
         customerReceivedAt: row.delivered_at,
@@ -385,11 +396,13 @@ export function createPostgresOnlineOrderStore(queryable: Queryable): OnlineOrde
         reference: string;
         customer_name: string;
         primary_phone: string;
+        fulfillment_branch_id: string | null;
         delivered_at: Date;
         return_deadline_at: Date;
         confirmed_quote_json: OnlineOrderAgreementQuoteDto;
       }>(
         `SELECT order_row.id,order_row.reference,order_row.customer_name,order_row.primary_phone,
+                confirmation.fulfillment_branch_id,
                 event.occurred_at AS delivered_at,
                 ((event.occurred_at AT TIME ZONE 'Africa/Cairo') + interval '14 days')
                   AT TIME ZONE 'Africa/Cairo' AS return_deadline_at,
@@ -406,6 +419,7 @@ export function createPostgresOnlineOrderStore(queryable: Queryable): OnlineOrde
       return row ? {
         orderId: row.id,
         reference: row.reference,
+        fulfillmentBranchId: row.fulfillment_branch_id,
         customerName: row.customer_name,
         primaryPhone: row.primary_phone,
         customerReceivedAt: row.delivered_at,
@@ -468,10 +482,10 @@ export function createPostgresOnlineOrderStore(queryable: Queryable): OnlineOrde
       await queryable.query(
         `INSERT INTO online_order_confirmation (
            order_id,operation_id,agreed_revision,quote_id,review_digest,confirmed_quote_json,
-           pricing_snapshot_json,confirmed_by_staff_id,confirmed_at
-         ) SELECT $1,$2,$3,$4,$5,q.quote_json,q.pricing_snapshot_json,$6,$7
+           pricing_snapshot_json,confirmed_by_staff_id,confirmed_at,fulfillment_branch_id
+         ) SELECT $1,$2,$3,$4,$5,q.quote_json,q.pricing_snapshot_json,$6,$7,$8
            FROM online_order_agreement_quote q WHERE q.id=$4`,
-        [input.orderId,input.operationId,input.agreedRevision,input.quoteId,input.reviewDigest,input.actorStaffId,input.confirmedAt],
+        [input.orderId,input.operationId,input.agreedRevision,input.quoteId,input.reviewDigest,input.actorStaffId,input.confirmedAt,input.fulfillmentBranchId],
       );
       await queryable.query(
         `UPDATE online_order SET status='confirmed',revision=$2,confirmed_by_staff_id=$3,confirmed_at=$4 WHERE id=$1`,
@@ -509,13 +523,14 @@ export function createPostgresOnlineOrderStore(queryable: Queryable): OnlineOrde
       const updated = await queryable.query(
         `UPDATE online_order
          SET status=$2,revision=$3,
+             pre_shipment_stock_disposition=CASE WHEN $9::text IS NOT NULL THEN $9 ELSE pre_shipment_stock_disposition END,
              cancelled_by_staff_id=CASE WHEN $4 THEN $5 ELSE cancelled_by_staff_id END,
              cancelled_at=CASE WHEN $4 THEN $6 ELSE cancelled_at END,
              cancellation_reason=CASE WHEN $4 THEN $7 ELSE cancellation_reason END
          WHERE id=$1 AND status=$8
          RETURNING id`,
         [input.orderId,input.toStatus,input.nextRevision,cancelled,input.actorStaffId,
-          input.recordedAt,input.reason,input.fromStatus],
+          input.recordedAt,input.reason,input.fromStatus,input.preShipmentStockDisposition ?? null],
       );
       if (!updated.rows[0]) throw new OnlineOrderValidationError("تغيرت حالة الطلب أثناء تنفيذ العملية.");
       return finishOperation(queryable, input.operationId, input.orderId);
@@ -539,8 +554,8 @@ export function createPostgresOnlineOrderStore(queryable: Queryable): OnlineOrde
       await queryable.query(
         `INSERT INTO online_order_fulfillment_event (
            id,order_id,operation_id,event_type,from_status,to_status,actor_staff_id,occurred_at,recorded_at
-         ) VALUES (gen_random_uuid(),$1,$2,'failed_return_inspection_drafted','delivery_failed','delivery_failed',$3,$4,$4)`,
-        [input.orderId,input.operationId,input.actorStaffId,input.recordedAt],
+         ) VALUES (gen_random_uuid(),$1,$2,'failed_return_inspection_drafted',$3,$3,$4,$5,$5)`,
+        [input.orderId,input.operationId,input.sourceStatus,input.actorStaffId,input.recordedAt],
       );
       await setRevision(queryable,input.orderId,input.nextRevision);
       return finishOperation(queryable,input.operationId,input.orderId);
@@ -549,17 +564,25 @@ export function createPostgresOnlineOrderStore(queryable: Queryable): OnlineOrde
       await insertOperationShell(queryable, input, "failed_return_inspection_post", input.postedAt);
       const posted = await queryable.query(
         `UPDATE online_order_failed_return_inspection
-         SET status='posted',posted_operation_id=$3,posted_by_staff_id=$4,posted_at=$5
+         SET status='posted',posted_operation_id=$3,posted_by_staff_id=$4,posted_at=$5,
+             receiving_branch_id=$6
          WHERE id=$1 AND order_id=$2 AND status='draft'
          RETURNING id`,
-        [input.inspectionId,input.orderId,input.operationId,input.actorStaffId,input.postedAt],
+        [input.inspectionId,input.orderId,input.operationId,input.actorStaffId,input.postedAt,input.receivingBranchId],
       );
       if (!posted.rows[0]) throw new OnlineOrderValidationError("مسودة الفحص غير موجودة أو تم ترحيلها.");
+      if (input.allClassified) {
+        await queryable.query(
+          `UPDATE online_order SET pre_shipment_stock_disposition='released'
+           WHERE id=$1 AND status='cancelled_before_shipment' AND pre_shipment_stock_disposition='awaiting_inspection'`,
+          [input.orderId],
+        );
+      }
       await queryable.query(
         `INSERT INTO online_order_fulfillment_event (
            id,order_id,operation_id,event_type,from_status,to_status,actor_staff_id,occurred_at,recorded_at
-         ) VALUES (gen_random_uuid(),$1,$2,'failed_return_inspection_posted','delivery_failed','delivery_failed',$3,$4,$4)`,
-        [input.orderId,input.operationId,input.actorStaffId,input.postedAt],
+         ) VALUES (gen_random_uuid(),$1,$2,'failed_return_inspection_posted',$3,$3,$4,$5,$5)`,
+        [input.orderId,input.operationId,input.sourceStatus,input.actorStaffId,input.postedAt],
       );
       await setRevision(queryable,input.orderId,input.nextRevision);
       return finishOperation(queryable,input.operationId,input.orderId);
@@ -577,8 +600,8 @@ export function createPostgresOnlineOrderStore(queryable: Queryable): OnlineOrde
       await queryable.query(
         `INSERT INTO online_order_fulfillment_event (
            id,order_id,operation_id,event_type,from_status,to_status,actor_staff_id,occurred_at,recorded_at,reason
-         ) VALUES (gen_random_uuid(),$1,$2,'failed_return_inspection_abandoned','delivery_failed','delivery_failed',$3,$4,$4,$5)`,
-        [input.orderId,input.operationId,input.actorStaffId,input.abandonedAt,input.reason],
+         ) VALUES (gen_random_uuid(),$1,$2,'failed_return_inspection_abandoned',$3,$3,$4,$5,$5,$6)`,
+        [input.orderId,input.operationId,input.sourceStatus,input.actorStaffId,input.abandonedAt,input.reason],
       );
       await setRevision(queryable,input.orderId,input.nextRevision);
       return finishOperation(queryable,input.operationId,input.orderId);
@@ -651,7 +674,7 @@ async function loadOrder(queryable: Queryable, id: string, lock = false): Promis
        WHERE r.order_id=$1 ORDER BY r.version DESC LIMIT 1`, [id],
     ),
     queryable.query<ConfirmationRow>(
-      `SELECT operation_id,confirmed_quote_json,confirmed_by_staff_id,confirmed_at
+      `SELECT operation_id,confirmed_quote_json,confirmed_by_staff_id,confirmed_at,fulfillment_branch_id
        FROM online_order_confirmation WHERE order_id=$1`, [id],
     ),
     queryable.query<FulfillmentEventRow>(
@@ -659,6 +682,7 @@ async function loadOrder(queryable: Queryable, id: string, lock = false): Promis
     ),
     queryable.query<InspectionRow>(
       `SELECT id,draft_operation_id,status,recorded_by_staff_id,recorded_at,posted_by_staff_id,posted_at,
+              receiving_branch_id,
               abandoned_by_staff_id,abandoned_at,abandonment_reason
        FROM online_order_failed_return_inspection WHERE order_id=$1 ORDER BY recorded_at,id`, [id],
     ),
@@ -732,6 +756,7 @@ async function loadOrder(queryable: Queryable, id: string, lock = false): Promis
       agreedAt: agreed.agreed_at.toISOString(), quote: agreed.quote_json,
     } : null,
     confirmedQuote: confirmation?.confirmed_quote_json ?? null,
+    fulfillmentBranchId: confirmation?.fulfillment_branch_id ?? null,
     confirmedByStaffId: row.confirmed_by_staff_id,
     confirmedAt: row.confirmed_at?.toISOString() ?? null,
     shippedAt: shipped?.occurred_at.toISOString() ?? null,
@@ -740,6 +765,7 @@ async function loadOrder(queryable: Queryable, id: string, lock = false): Promis
     cancelledByStaffId: row.cancelled_by_staff_id,
     cancelledAt: row.cancelled_at?.toISOString() ?? null,
     cancellationReason: row.cancellation_reason,
+    preShipmentStockDisposition: row.pre_shipment_stock_disposition,
     lifecycle,
     failedReturnInspections: inspections,
     actionEligibility: {
@@ -763,7 +789,7 @@ async function loadInspection(
 ): Promise<OnlineOrderFailedReturnInspectionDto | null> {
   const result = await queryable.query<InspectionRow>(
     `SELECT id,draft_operation_id,status,recorded_by_staff_id,recorded_at,posted_by_staff_id,posted_at,
-            abandoned_by_staff_id,abandoned_at,abandonment_reason
+            receiving_branch_id,abandoned_by_staff_id,abandoned_at,abandonment_reason
      FROM online_order_failed_return_inspection WHERE id=$1${lock ? " FOR UPDATE" : ""}`,
     [id],
   );
@@ -793,6 +819,7 @@ function inspection(row: InspectionRow, lines: InspectionLineRow[]): OnlineOrder
     recordedAt: row.recorded_at.toISOString(),
     postedByStaffId: row.posted_by_staff_id,
     postedAt: row.posted_at?.toISOString() ?? null,
+    receivingBranchId: row.receiving_branch_id,
     abandonedByStaffId: row.abandoned_by_staff_id,
     abandonedAt: row.abandoned_at?.toISOString() ?? null,
     abandonmentReason: row.abandonment_reason,

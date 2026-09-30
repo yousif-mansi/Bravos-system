@@ -72,6 +72,7 @@ test("manager maintains fixed bundles and Buy-X-Get-Y rules in the Arabic offer 
 
   const received = await staffApi(page, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
+    branchId: (await (await page.request.get("http://127.0.0.1:5174/api/internal/workspace")).json()).activeBranch.id,
     receiptDate: "2026-09-15",
     lines: product.body.variants.map((variant: { id: string }) => ({
       variantId: variant.id,
@@ -92,7 +93,7 @@ test("manager maintains fixed bundles and Buy-X-Get-Y rules in the Arabic offer 
   await page.getByLabel("اللون").selectOption(expensiveVariant.color.id);
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
 
-  const checkout = page.getByRole("form", { name: "إتمام البيع النقدي" });
+  const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByLabel("الكمية").nth(0).fill("3");
   await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
   await expect(page.getByTestId("accepted-prices")).toContainText("العرض التلقائي: حزمة المتصفح");

@@ -21,7 +21,7 @@ import type {
   VerifiedAuth,
 } from "./ports.ts";
 
-const RECEIPT_KEYS = new Set(["operationId", "receiptDate", "lines"]);
+const RECEIPT_KEYS = new Set(["operationId", "branchId", "receiptDate", "lines"]);
 const LINE_KEYS = new Set(["variantId", "quantity", "unitCostPiasters"]);
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
@@ -76,6 +76,7 @@ export function createReceivingServices(ports: {
     const actorById = new Map(actorEntries);
     return {
       id: record.id,
+      branchId: record.branchId,
       operationId: record.operationId,
       receiptDate: record.receiptDate,
       receivedByStaffId: record.receivedByStaffId,
@@ -153,7 +154,7 @@ export function createReceivingServices(ports: {
         await tx.inventory.lockStockClock("update");
         const claimed = await tx.inventory.claimReceiveOperation({
           operationId: command.operationId,
-          payload: { receiptDate: command.receiptDate, lines: command.lines },
+          payload: { branchId: command.branchId, receiptDate: command.receiptDate, lines: command.lines },
           actorStaffId: staff.id,
         });
         if (claimed.kind === "replay") {
@@ -171,6 +172,7 @@ export function createReceivingServices(ports: {
           id: crypto.randomUUID(),
         }));
         const batches = await tx.inventory.receiveBatches({
+          branchId: command.branchId,
           operationId: command.operationId,
           receiptId,
           receiptDate: command.receiptDate,
@@ -198,6 +200,7 @@ export function createReceivingServices(ports: {
         });
         const record = await tx.receipts.insert({
           id: receiptId,
+          branchId: command.branchId,
           operationId: command.operationId,
           receiptDate: command.receiptDate,
           receivedByStaffId: staff.id,
@@ -251,6 +254,7 @@ export function createReceivingServices(ports: {
         assertExactCorrectionLines(record, command.lines);
         const requestedByLine = new Map(command.lines.map((line) => [line.lineId, line]));
         const applied = await tx.inventory.applyReceivingCorrection({
+          branchId: record.branchId,
           operationId: command.operationId,
           recordedAt: claimed.recordedAt,
           lines: record.lines.map((line) => {
@@ -389,6 +393,7 @@ async function sha256(value: string): Promise<string> {
 
 function parseReceiptWrite(input: unknown): {
   operationId: string;
+  branchId: string;
   receiptDate: string;
   lines: Array<{ variantId: string; quantity: number; unitCostPiasters: number }>;
 } {
@@ -399,6 +404,7 @@ function parseReceiptWrite(input: unknown): {
   }
   return {
     operationId: assertUuid(body.operationId, "معرّف العملية غير صالح."),
+    branchId: assertUuid(body.branchId, "فرع الاستلام غير صالح."),
     receiptDate: assertCairoDate(body.receiptDate),
     lines: body.lines.map((item) => {
       const line = expectObject(item, "بيانات صنف الاستلام غير صالحة.");

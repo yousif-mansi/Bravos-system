@@ -86,12 +86,12 @@ test("production precache serves first offline POS navigation and survives a sam
     await page.getByLabel("المقاس").selectOption({ label: "مقاس إنتاج" });
     await page.getByLabel("اللون").selectOption({ label: "لون إنتاج" });
     await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
-    const checkout = page.getByRole("form", { name: "إتمام البيع النقدي" });
+    const checkout = page.getByRole("form", { name: "إتمام البيع" });
     await checkout.getByLabel("خصم الموظف بالجنيه").fill("10");
     await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
-    await checkout.getByLabel("استلم الزبون البضاعة ودفع نقداً").check();
+    await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
     await checkout.getByRole("button", { name: "إتمام البيع" }).click();
-    await expect(page.getByRole("status")).toContainText("تم حفظ البيع النقدي.");
+    await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
     await expect(page.getByTestId("sale-details")).toContainText("150");
     const original = await readPosSales(page);
     expect(original).toHaveLength(1);
@@ -220,11 +220,11 @@ test("production offline queue survives restart then automatically syncs after r
     await page.getByLabel("المقاس").selectOption({ label: "مقاس مزامنة" });
     await page.getByLabel("اللون").selectOption({ label: "لون مزامنة" });
     await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
-    const checkout = page.getByRole("form", { name: "إتمام البيع النقدي" });
+    const checkout = page.getByRole("form", { name: "إتمام البيع" });
     await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
-    await checkout.getByLabel("استلم الزبون البضاعة ودفع نقداً").check();
+    await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
     await checkout.getByRole("button", { name: "إتمام البيع" }).click();
-    await expect(page.getByRole("status")).toContainText("تم حفظ البيع النقدي.");
+    await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
     const original = await readPosSales(page);
     expect(original).toHaveLength(1);
     expect(original[0]?.syncStatus).toBe("pending");
@@ -328,28 +328,20 @@ test("waiting service worker with an unknown schema defers activation", async ({
   await page.getByLabel("المقاس").selectOption({ label: "مقاس تحديث" });
   await page.getByLabel("اللون").selectOption({ label: "لون تحديث" });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
-  const checkout = page.getByRole("form", { name: "إتمام البيع النقدي" });
+  const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
-  await checkout.getByLabel("استلم الزبون البضاعة ودفع نقداً").check();
+  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
-  await expect(page.getByRole("status")).toContainText("تم حفظ البيع النقدي.");
+  await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   const queued = await readPosSales(page);
   expect(queued).toHaveLength(1);
   await page.getByRole("link", { name: "العودة لمساحة العمل" }).click();
   const swPath = path.join(workspaceRoot(), "apps", "internal", "dist", "sw.js");
   const originalSw = await readFile(swPath, "utf8");
   expect(originalSw).toContain("POS_RELEASE");
-  const replacedSw = originalSw
-    .replaceAll('Number.parseInt("3", 10)', "99")
-    .replaceAll('Number.parseInt("3",10)', "99")
-    .replaceAll('Number.parseInt("2", 10)', "99")
-    .replaceAll('Number.parseInt("2",10)', "99")
-    .replaceAll("schemaVersion:I", "schemaVersion:99")
-    .replaceAll("schemaVersion: I", "schemaVersion: 99")
-    .replace("schemaVersion:he", "schemaVersion:99")
-    .replace("schemaVersion: he", "schemaVersion: 99")
-    .replace(/POS_SW_SCHEMA_VERSION\s*=\s*3/, "POS_SW_SCHEMA_VERSION = 99")
-    .replace(/POS_SW_SCHEMA_VERSION\s*=\s*2/, "POS_SW_SCHEMA_VERSION = 99");
+  const schemaDeclaration = originalSw.match(/(?:const|let|var)\s+[A-Za-z_$][\w$]*=Number\.parseInt\("4",\s*10\)/);
+  expect(schemaDeclaration).not.toBeNull();
+  const replacedSw = originalSw.replace(schemaDeclaration![0], schemaDeclaration![0].replace(/Number\.parseInt\("4",\s*10\)/, "99"));
   expect(replacedSw).not.toBe(originalSw);
   await writeFile(swPath, `${replacedSw}\n// bravos-unknown-schema-fixture\n`);
   await page.context().route(/sw\.js/, async (route) => {
@@ -377,7 +369,7 @@ test("waiting service worker with an unknown schema defers activation", async ({
     });
     return { scriptURL: worker.scriptURL, schemaVersion: release.schemaVersion, state: worker.state };
   });
-  expect(originalController?.schemaVersion).toBe(3);
+  expect(originalController?.schemaVersion).toBe(4);
   expect(originalController?.state).toBe("activated");
   const waitingMeta = await page.evaluate(async () => {
     const registration = await navigator.serviceWorker.getRegistration();
@@ -435,7 +427,7 @@ test("waiting service worker with an unknown schema defers activation", async ({
       waitingState: waiting?.state ?? null,
     };
   });
-  expect(after.controllerSchema).toBe(3);
+  expect(after.controllerSchema).toBe(4);
   expect(after.controllerState).toBe("activated");
   expect(after.waitingSchema).toBe(99);
   expect(after.waitingState).toBe("installed");
@@ -545,12 +537,12 @@ test("schema 2 individual paid units and signed-in session survive upgrade and o
     await page.getByLabel("المقاس").selectOption({ label: "مقاس ترقية" });
     await page.getByLabel("اللون").selectOption({ label: "لون ترقية" });
     await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
-    const checkout = page.getByRole("form", { name: "إتمام البيع النقدي" });
+    const checkout = page.getByRole("form", { name: "إتمام البيع" });
     await checkout.getByLabel("خصم الموظف بالجنيه").fill("1");
     await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
-    await checkout.getByLabel("استلم الزبون البضاعة ودفع نقداً").check();
+    await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
     await checkout.getByRole("button", { name: "إتمام البيع" }).click();
-    await expect(page.getByRole("status")).toContainText("تم حفظ البيع النقدي.");
+    await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
     const snapshot = await page.evaluate(async () => {
       const db = await new Promise<IDBDatabase>((resolve, reject) => {
         const request = indexedDB.open("bravos-pos");
@@ -665,7 +657,7 @@ test("schema 2 individual paid units and signed-in session survive upgrade and o
       db.close();
       return { currentId, schema, sales, effects };
     });
-    expect(restored.schema).toBe("3");
+    expect(restored.schema).toBe("4");
     expect(restored.sales).toHaveLength(1);
     expect(restored.currentId).toBe(restored.sales[0]?.staffId);
     expect(restored.sales[0]?.soldByDisplayName).toBe("كاشير تجريبي");
@@ -746,11 +738,11 @@ test("schema 2 completed sales missing paid-unit allocations defer upgrade and k
     await page.getByLabel("المقاس").selectOption({ label: "مقاس ناقص" });
     await page.getByLabel("اللون").selectOption({ label: "لون ناقص" });
     await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
-    const checkout = page.getByRole("form", { name: "إتمام البيع النقدي" });
+    const checkout = page.getByRole("form", { name: "إتمام البيع" });
     await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
-    await checkout.getByLabel("استلم الزبون البضاعة ودفع نقداً").check();
+    await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
     await checkout.getByRole("button", { name: "إتمام البيع" }).click();
-    await expect(page.getByRole("status")).toContainText("تم حفظ البيع النقدي.");
+    await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
     const original = await readPosSales(page);
     expect(original).toHaveLength(1);
     const snapshot = await page.evaluate(async () => {
@@ -872,6 +864,32 @@ test("schema 2 completed sales missing paid-unit allocations defer upgrade and k
     await expect(again.getByTestId("update-deferred")).toBeVisible();
     await again.getByRole("link", { name: "المبيعات" }).click();
     await expect(again.getByTestId("sale-details")).toContainText("180");
+    let blockedUploadAttempts = 0;
+    await restarted.route(/\/api\/internal\/sales(?:\/accepted|\/recover)?$/, async (route) => {
+      if (route.request().method() === "POST") {
+        blockedUploadAttempts += 1;
+        await route.abort("failed");
+      } else {
+        await route.continue();
+      }
+    });
+    await again.getByRole("link", { name: "العودة لمساحة العمل" }).click();
+    await restarted.setOffline(false);
+    await again.getByTestId("retry-sync").click();
+    await expect(again.getByTestId("sync-error")).toContainText("تحديث نقطة البيع مؤجل");
+    await expect(again.getByTestId("unsynced-count")).toContainText("مبيعات غير مزامنة: 1");
+    expect(blockedUploadAttempts).toBe(0);
+
+    await again.getByRole("button", { name: "تسجيل الخروج" }).click();
+    await again.getByLabel("اسم الدخول").fill("owner");
+    await again.getByLabel("كلمة المرور").fill("e2e-owner-pass");
+    await again.getByRole("button", { name: "دخول" }).click();
+    await again.getByRole("button", { name: "أبشواي" }).click();
+    await expect(again).toHaveURL(`${PREVIEW_ORIGIN}/workspace`);
+    await expect(again.getByTestId("foreign-queue")).toContainText("مبيعات محفوظة لحساب تاني: 1");
+    await again.getByTestId("recover-queue").click();
+    await expect(again.getByTestId("sync-error")).toContainText("تحديث نقطة البيع مؤجل");
+    expect(blockedUploadAttempts).toBe(0);
   } finally {
     if (context) {
       await context.close().catch(() => undefined);
@@ -925,11 +943,11 @@ test("explicit logout from catalog, staff and receiving pages blocks offline res
   await page.getByLabel("المقاس").selectOption({ label: "مقاس خروج" });
   await page.getByLabel("اللون").selectOption({ label: "لون خروج" });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
-  const checkout = page.getByRole("form", { name: "إتمام البيع النقدي" });
+  const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
-  await checkout.getByLabel("استلم الزبون البضاعة ودفع نقداً").check();
+  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
-  await expect(page.getByRole("status")).toContainText("تم حفظ البيع النقدي.");
+  await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   const queued = await readPosSales(page);
   expect(queued).toHaveLength(1);
   const queuedId = queued[0]?.id;
@@ -943,7 +961,7 @@ test("explicit logout from catalog, staff and receiving pages blocks offline res
     await page.getByRole("button", { name: "دخول" }).click();
     await page.getByRole("button", { name: "أبشواي" }).click();
     await page.getByRole("link", { name: linkName }).click();
-    await expect(page.getByRole("heading", { name: heading })).toBeVisible();
+    await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible();
     await page.getByRole("button", { name: "تسجيل الخروج" }).click();
     await expect(page.getByRole("heading", { name: "تسجيل الدخول" })).toBeVisible();
     await page.evaluate(async () => {
@@ -1031,11 +1049,11 @@ test("a fresh cashier login keeps an old cached session from becoming current af
   await page.getByLabel("المقاس").selectOption({ label: "مقاس جلسة" });
   await page.getByLabel("اللون").selectOption({ label: "لون جلسة" });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
-  const checkout = page.getByRole("form", { name: "إتمام البيع النقدي" });
+  const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
-  await checkout.getByLabel("استلم الزبون البضاعة ودفع نقداً").check();
+  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
-  await expect(page.getByRole("status")).toContainText("تم حفظ البيع النقدي.");
+  await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   const original = (await readPosSales(page))[0];
   expect(original?.id).toBeTruthy();
   const staffA = await page.evaluate(async () => {
@@ -1391,6 +1409,10 @@ async function readPosSales(page: import("@playwright/test").Page) {
 }
 
 async function staffApi(page: import("@playwright/test").Page, method: "GET" | "POST", url: string, payload?: unknown) {
+  if (method === "POST" && url === "/api/internal/receiving/receipts" && payload && typeof payload === "object" && !("branchId" in payload)) {
+    const current = await staffApi(page, "GET", "/api/internal/workspace");
+    payload = { ...payload, branchId: current.body.activeBranch?.id };
+  }
   const response = await page.request.fetch(`${PREVIEW_ORIGIN}${url}`, {
     method,
     headers: {

@@ -31,6 +31,7 @@ test("product commerce keeps one variant and add state across the mobile bar and
   expect(sandVariant).toBeTruthy();
   const receipt = await staffApi(page, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
+    branchId: (await (await page.request.get("http://127.0.0.1:5174/api/internal/workspace")).json()).activeBranch.id,
     receiptDate: cairoDate(),
     lines: [
       { variantId: blackVariant.id, quantity: 2, unitCostPiasters: 10_000 },

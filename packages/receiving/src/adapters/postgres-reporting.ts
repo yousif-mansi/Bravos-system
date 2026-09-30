@@ -15,9 +15,9 @@ export function createPostgresPurchaseReportingReader(queryable: Queryable): Pur
     },
     async listReceiptFactsPage(input) {
       const receipts = await queryable.query<{
-        id: string; operation_id: string; receipt_date: string; received_by_staff_id: string; recorded_at: Date;
+        id: string; branch_id: string; operation_id: string; receipt_date: string; received_by_staff_id: string; recorded_at: Date;
       }>(
-        `SELECT id,operation_id,receipt_date::text AS receipt_date,received_by_staff_id,recorded_at
+        `SELECT id,branch_id,operation_id,receipt_date::text AS receipt_date,received_by_staff_id,recorded_at
          FROM receiving_receipt WHERE receipt_date >= $1::date AND receipt_date <= $2::date
            AND ($3::date IS NULL OR (receipt_date,id) < ($3::date,$4::uuid))
          ORDER BY receipt_date DESC,id DESC LIMIT $5`,
@@ -50,6 +50,7 @@ export function createPostgresPurchaseReportingReader(queryable: Queryable): Pur
       return receipts.rows.map((row): PurchaseReportingFact => ({
         receipt: {
           id: row.id,
+          branchId: row.branch_id,
           operationId: row.operation_id,
           receiptDate: row.receipt_date,
           receivedByStaffId: row.received_by_staff_id,

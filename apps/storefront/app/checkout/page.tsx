@@ -61,6 +61,7 @@ export default function CheckoutPage() {
   const [orderingState, setOrderingState] = useState<OrderingState>("loading");
   const [areas, setAreas] = useState<PublicDeliveryAreaDto[]>([]);
   const [areasLoading, setAreasLoading] = useState(true);
+  const [areasError, setAreasError] = useState(false);
   const [quote, setQuote] = useState<CheckoutQuoteDto | null>(null);
   const [quoteKey, setQuoteKey] = useState("");
   const [quoting, setQuoting] = useState(false);
@@ -70,9 +71,11 @@ export default function CheckoutPage() {
   const [messageKind, setMessageKind] = useState<"status" | "error">("status");
   const [storageBlocked, setStorageBlocked] = useState(false);
   const [unresolved, setUnresolved] = useState(false);
+  const [hasPendingAttempt, setHasPendingAttempt] = useState(false);
   const [invalidFields, setInvalidFields] = useState<string[]>([]);
   const recoveryStarted = useRef(false);
   const activeOperationId = useRef<string | null>(null);
+  const submitStarted = useRef(false);
   const currentInputKey = useMemo(
     () => checkoutInputKey(cart.items, fields.deliveryAreaId, fields.couponCode),
     [cart.items, fields.deliveryAreaId, fields.couponCode],
@@ -95,15 +98,12 @@ export default function CheckoutPage() {
           return;
         }
         setOrderingState("enabled");
-        const response = await fetch("/api/public/checkout/delivery-areas", { cache: "no-store" });
-        if (!response.ok) throw new Error("areas");
-        const loaded = await response.json() as PublicDeliveryAreaDto[];
-        if (active) setAreas(loaded);
+        await loadDeliveryAreas(() => active);
       })
       .catch(() => {
         if (active) {
-          setOrderingState((current) => current === "enabled" ? current : "unavailable");
-          showMessage("تعذر التحقق من إتاحة الطلب حالياً. لم نرسل أي طلب.", "error");
+          setOrderingState("unavailable");
+          showMessage("تعذر التحقق من إتاحة الطلب حالياً. احتفظنا ببيانات أي محاولة إرسال سابقة.", "error");
         }
       })
       .finally(() => {
@@ -134,8 +134,8 @@ export default function CheckoutPage() {
       if (!stored.cartCompleted || cart.items.length === 0) void acceptResult(stored.result, stored.request, stored.cartCompleted);
       return;
     }
-    if (orderingState !== "enabled") return;
     recoveryStarted.current = true;
+    setHasPendingAttempt(true);
     activeOperationId.current = stored.request.operationId;
     showMessage("جارٍ التحقق من نتيجة الإرسال السابق…", "status");
     void recoverStoredAttempt();
@@ -148,7 +148,8 @@ export default function CheckoutPage() {
       if (!stored) return;
       if (stored.status === "accepted" && activeOperationId.current === stored.request.operationId) {
         void acceptResult(stored.result, stored.request, stored.cartCompleted);
-      } else if (stored.status === "pending" && !submitting && orderingState === "enabled") {
+      } else if (stored.status === "pending" && !submitting && orderingState !== "loading") {
+        setHasPendingAttempt(true);
         activeOperationId.current = stored.request.operationId;
         showMessage("يوجد إرسال جارٍ من نافذة أخرى. نتحقق من نفس الطلب…", "status");
         void recoverStoredAttempt();
@@ -157,6 +158,21 @@ export default function CheckoutPage() {
     window.addEventListener("storage", syncAttempt);
     return () => window.removeEventListener("storage", syncAttempt);
   }, [orderingState, submitting]);
+
+  async function loadDeliveryAreas(isActive: () => boolean = () => true) {
+    setAreasLoading(true);
+    setAreasError(false);
+    try {
+      const response = await fetch("/api/public/checkout/delivery-areas", { cache: "no-store" });
+      if (!response.ok) throw new Error("areas");
+      const loaded = await response.json() as PublicDeliveryAreaDto[];
+      if (isActive()) setAreas(loaded);
+    } catch {
+      if (isActive()) setAreasError(true);
+    } finally {
+      if (isActive()) setAreasLoading(false);
+    }
+  }
 
   async function reviewPrice() {
     if (orderingState !== "enabled") return;
@@ -198,60 +214,79 @@ export default function CheckoutPage() {
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (orderingState !== "enabled") {
-      showMessage("الطلب عبر المتجر غير متاح حالياً.", "error");
-      return;
-    }
-    if (!quote || quoteKey !== currentInputKey) {
-      showMessage("راجع السعر الحالي قبل إرسال الطلب.", "error");
-      return;
-    }
-    if (cart.storageStatus !== "ready") {
-      showMessage("يلزم إتاحة حفظ المتصفح لضمان عدم تكرار الطلب عند انقطاع الاتصال.", "error");
-      return;
-    }
-    const request: PublicOrderSubmissionRequest = {
-      operationId: crypto.randomUUID(),
-      quoteId: quote.quoteId,
-      lines: cart.items.map(({ variantId, quantity }) => ({ variantId, quantity })),
-      deliveryAreaId: fields.deliveryAreaId,
-      customerName: fields.customerName.trim(),
-      primaryPhone: fields.primaryPhone.trim(),
-      detailedAddress: fields.detailedAddress.trim(),
-      ...optionalValue("alternatePhone", fields.alternatePhone.trim()),
-      ...optionalValue("landmark", fields.landmark.trim()),
-      ...optionalValue("notes", fields.notes.trim()),
-      ...optionalValue("couponCode", normalizedCoupon(fields.couponCode)),
-    };
-    await withCheckoutLock(async () => {
-      const stored = readAttempt();
-      if (stored === "invalid") {
-        setStorageBlocked(true);
-        showMessage("تعذر قراءة محاولة الطلب المحفوظة. لم نرسل طلباً جديداً حتى لا يتكرر طلب سابق.", "error");
+    if (submitStarted.current) return;
+    submitStarted.current = true;
+    setSubmitting(true);
+    try {
+      if (orderingState !== "enabled") {
+        showMessage("الطلب عبر المتجر غير متاح حالياً.", "error");
         return;
       }
-      if (stored?.status === "accepted") {
-        if (cart.items.length === 0) {
-          await acceptResult(stored.result, stored.request, stored.cartCompleted);
+      if (!quote || quoteKey !== currentInputKey) {
+        showMessage("راجع السعر الحالي قبل إرسال الطلب.", "error");
+        return;
+      }
+      if (cart.storageStatus !== "ready") {
+        showMessage("يلزم إتاحة حفظ المتصفح لضمان عدم تكرار الطلب عند انقطاع الاتصال.", "error");
+        return;
+      }
+      const request: PublicOrderSubmissionRequest = {
+        operationId: crypto.randomUUID(),
+        quoteId: quote.quoteId,
+        lines: cart.items.map(({ variantId, quantity }) => ({ variantId, quantity })),
+        deliveryAreaId: fields.deliveryAreaId,
+        customerName: fields.customerName.trim(),
+        primaryPhone: fields.primaryPhone.trim(),
+        detailedAddress: fields.detailedAddress.trim(),
+        ...optionalValue("alternatePhone", fields.alternatePhone.trim()),
+        ...optionalValue("landmark", fields.landmark.trim()),
+        ...optionalValue("notes", fields.notes.trim()),
+        ...optionalValue("couponCode", normalizedCoupon(fields.couponCode)),
+      };
+      const attemptAtStart = readAttempt();
+      const requestedInputKey = currentInputKey;
+      await withCheckoutLock(async () => {
+        const stored = readAttempt();
+        if (stored === "invalid") {
+          setStorageBlocked(true);
+          showMessage("تعذر قراءة محاولة الطلب المحفوظة. لم نرسل طلباً جديداً حتى لا يتكرر طلب سابق.", "error");
           return;
         }
-      }
-      if (stored?.status === "pending") {
-        activeOperationId.current = stored.request.operationId;
-        showMessage("نستكمل محاولة الإرسال المحفوظة نفسها…", "status");
-        await sendExact(stored.request);
-        return;
-      }
-      try {
-        writeAttempt({ version: CHECKOUT_STORAGE_VERSION, status: "pending", request });
-        activeOperationId.current = request.operationId;
-      } catch {
-        setStorageBlocked(true);
-        showMessage("تعذر حفظ هوية الطلب في هذا المتصفح، لذلك لم يتم الإرسال.", "error");
-        return;
-      }
-      await sendExact(request);
-    });
+        if (stored?.status === "accepted") {
+          if (cart.items.length === 0 || !stored.cartCompleted || stored.request.quoteId === request.quoteId
+            || !attemptAtStart || attemptAtStart === "invalid" || attemptAtStart.status === "pending"
+            || attemptAtStart.request.operationId !== stored.request.operationId) {
+            await acceptResult(stored.result, stored.request, stored.cartCompleted);
+            return;
+          }
+        }
+        if (stored?.status === "pending") {
+          activeOperationId.current = stored.request.operationId;
+          showMessage("نستكمل محاولة الإرسال المحفوظة نفسها…", "status");
+          await sendExact(stored.request);
+          return;
+        }
+        if (requestedInputKey !== currentInputKeyRef.current) {
+          setQuote(null);
+          setQuoteKey("");
+          showMessage("تغيّرت السلة أثناء انتظار الإرسال. راجع السعر الحالي قبل بدء طلب جديد.", "status");
+          return;
+        }
+        try {
+          writeAttempt({ version: CHECKOUT_STORAGE_VERSION, status: "pending", request });
+          setHasPendingAttempt(true);
+          activeOperationId.current = request.operationId;
+        } catch {
+          setStorageBlocked(true);
+          showMessage("تعذر حفظ هوية الطلب في هذا المتصفح، لذلك لم يتم الإرسال.", "error");
+          return;
+        }
+        await sendExact(request);
+      });
+    } finally {
+      submitStarted.current = false;
+      setSubmitting(false);
+    }
   }
 
   async function recoverStoredAttempt() {
@@ -290,12 +325,18 @@ export default function CheckoutPage() {
         showMessage(apiMessage(body, "تعذر مطابقة محاولة الطلب المحفوظة. تواصل مع برافوس قبل إعادة الإرسال."), "error");
         return;
       }
+      if (code === "QUOTE_ALREADY_USED") {
+        setUnresolved(true);
+        showMessage("تم استخدام مراجعة السعر هذه في طلب سابق. احتفظنا بمحاولة الإرسال؛ تواصل مع برافوس للتحقق من الطلب قبل بدء طلب آخر.", "error");
+        return;
+      }
       if (!isDefiniteRejection(response.status, code)) {
         setUnresolved(true);
         showMessage("لم نتمكن من معرفة نتيجة الإرسال. احتفظنا بالسلة وبنفس هوية الطلب، ويمكن التحقق من المحاولة نفسها دون إنشاء طلب آخر.", "error");
         return;
       }
       removePendingAttempt(request.operationId);
+      setHasPendingAttempt(false);
       activeOperationId.current = null;
       setUnresolved(false);
       setQuote(null);
@@ -324,6 +365,7 @@ export default function CheckoutPage() {
     setResult(accepted);
     setStorageBlocked(false);
     setUnresolved(false);
+    setHasPendingAttempt(false);
     activeOperationId.current = null;
     setMessage("");
   }
@@ -333,8 +375,16 @@ export default function CheckoutPage() {
     setMessageKind(kind);
   }
 
+  const intro = (
+    <div className={`page-title ${styles.intro}`}>
+      <p className="eyebrow">الدفع نقداً عند الاستلام</p>
+      <h1>إتمام طلب التوصيل</h1>
+      <p>لا تحتاج إلى إنشاء حساب. راجع إجمالي الدفع عند الاستلام، ثم أرسل طلبك ليتواصل معك ممثل برافوس عبر واتساب للتأكيد.</p>
+    </div>
+  );
+
   if (!cart.hydrated || orderingState === "loading") {
-    return <main id="main-content" className={`checkout-page ${styles.page}`}><p role="status" className={styles.loading}>لحظات... نجهّز بيانات الطلب.</p></main>;
+    return <main id="main-content" className={`checkout-page ${styles.page}`}>{intro}<p role="status" className={styles.loading}>لحظات... نجهّز بيانات الطلب.</p></main>;
   }
 
   if (result) {
@@ -359,7 +409,10 @@ export default function CheckoutPage() {
           <h1>الطلب عبر المتجر غير متاح حالياً</h1>
           <p>{orderingState === "disabled"
             ? "نجهّز استقبال طلبات التوصيل. يمكنك تصفح المنتجات والاحتفاظ بما أضفته إلى السلة حتى يبدأ استقبال الطلبات."
-            : "تعذر التحقق من إتاحة الطلب الآن. احتفظنا بسلتك ولم نرسل أي طلب؛ أعد المحاولة بعد قليل."}</p>
+            : "تعذر التحقق من إتاحة الطلب الآن. احتفظنا بسلتك وبيانات أي محاولة إرسال سابقة؛ أعد المحاولة بعد قليل."}</p>
+          {hasPendingAttempt ? <p role="status">توجد محاولة إرسال سابقة لم تتأكد نتيجتها بعد. نتحقق من نفس الطلب، وقد يكون قد تم استلامه قبل إيقاف الطلبات.</p> : null}
+          {message && hasPendingAttempt ? <p role={messageKind === "error" ? "alert" : "status"}>{message}</p> : null}
+          {hasPendingAttempt && !storageBlocked ? <button type="button" className="secondary-action" disabled={submitting} onClick={() => void recoverStoredAttempt()}>{submitting ? "لحظات... نتحقق من نفس الطلب" : "التحقق من نفس الطلب"}</button> : null}
           <div className="checkout-actions">
             <Link className="button-link" href="/">العودة إلى المتجر</Link>
             <Link href="/cart">عرض السلة</Link>
@@ -385,11 +438,7 @@ export default function CheckoutPage() {
 
   return (
     <main id="main-content" className={`checkout-page ${styles.page}`}>
-      <div className={`page-title ${styles.intro}`}>
-        <p className="eyebrow">الدفع نقداً عند الاستلام</p>
-        <h1>إتمام طلب التوصيل</h1>
-        <p>لا تحتاج إلى إنشاء حساب. راجع إجمالي الدفع عند الاستلام، ثم أرسل طلبك ليتواصل معك ممثل برافوس عبر واتساب للتأكيد.</p>
-      </div>
+      {intro}
       <div className={`checkout-layout ${styles.layout}`}>
         <form className={`checkout-form ${styles.form}`} aria-label="بيانات طلب التوصيل" onSubmit={(event) => void submit(event)} onInvalidCapture={markInvalidField} onChange={clearCorrectedField}>
           <fieldset disabled={submitting || storageBlocked || unresolved}>
@@ -405,7 +454,8 @@ export default function CheckoutPage() {
                   {areas.map((area) => <option key={area.id} value={area.id}>{area.nameAr} — {formatEgp(area.feePiasters)}</option>)}
                 </select>
                 {invalidFields.includes("deliveryAreaId") ? <small id="deliveryAreaId-error" className={styles.fieldError}>اختر منطقة التوصيل.</small> : null}
-                {!areasLoading && areas.length === 0 ? <small className={styles.areaHelp}>لا تظهر مناطق توصيل متاحة حالياً. لا يمكن مراجعة السعر قبل اختيار منطقة مدعومة.</small> : null}
+                {areasError ? <><small className={styles.fieldError} role="alert">تعذر تحميل مناطق التوصيل. بياناتك محفوظة في هذه الصفحة؛ أعد المحاولة.</small><button type="button" className="secondary-action" disabled={areasLoading} onClick={() => void loadDeliveryAreas()}>إعادة تحميل مناطق التوصيل</button></> : null}
+                {!areasLoading && !areasError && areas.length === 0 ? <small className={styles.areaHelp}>لا تظهر مناطق توصيل متاحة حالياً. لا يمكن مراجعة السعر قبل اختيار منطقة مدعومة.</small> : null}
               </label>
               <label className={`checkout-field checkout-wide ${styles.field}`}>
                 <span>العنوان بالتفصيل <span className={styles.requiredTag} aria-hidden="true">مطلوب</span></span>
@@ -449,15 +499,17 @@ export default function CheckoutPage() {
           <p className="muted">ترسل طلباً للمراجعة، والدفع نقداً عند الاستلام. لا تُحجز القطع ولا يُستهلك الكوبون عند الإرسال؛ يؤكد ممثل برافوس الطلب لاحقاً عبر واتساب.</p>
         </form>
         <aside className={`checkout-cart ${styles.summary}`} aria-label="ملخص منتجات الطلب">
-          <div className="checkout-cart-heading"><h2>منتجاتك</h2><Link href="/cart">تعديل السلة</Link></div>
-          {cart.items.map((item) => (
+          <div className="checkout-cart-heading"><h2>منتجاتك</h2><Link className={styles.editCartLink} href="/cart">تعديل السلة</Link></div>
+          {cart.items.map((item) => {
+            const reviewed = quoteKey === currentInputKey ? quote?.lines.find((line) => line.variantId === item.variantId) : undefined;
+            return (
             <article key={item.variantId}>
-              <div><strong>{item.productNameAr}</strong><small>{item.sizeNameAr} · {item.colorNameAr}</small></div>
-              <span>{item.quantity} × {formatEgp(item.unitPricePiasters)}</span>
+              <div><strong>{reviewed?.productNameAr ?? item.productNameAr}</strong><small>{reviewed?.sizeNameAr ?? item.sizeNameAr} · {reviewed?.colorNameAr ?? item.colorNameAr}</small></div>
+              <span>{reviewed?.quantity ?? item.quantity} × {formatEgp(reviewed?.listedUnitPricePiasters ?? item.unitPricePiasters)}</span>
               {!item.orderable || item.quantity > item.knownAvailableQuantity ? <p className="stock-warning">هذه الكمية تحتاج إلى تعديل في السلة.</p> : null}
             </article>
-          ))}
-          <p><span>مجموع المنتجات المبدئي</span><strong>{formatEgp(cart.items.reduce((sum, item) => sum + item.unitPricePiasters * item.quantity, 0))}</strong></p>
+          );})}
+          <p><span>{quote && quoteKey === currentInputKey ? "مجموع المنتجات قبل الخصم" : "مجموع المنتجات المبدئي"}</span><strong>{formatEgp(quote && quoteKey === currentInputKey ? quote.merchandiseOriginalPiasters : cart.items.reduce((sum, item) => sum + item.unitPricePiasters * item.quantity, 0))}</strong></p>
           <p className="muted">هذا المجموع قبل الخصومات ورسوم التوصيل. راجع الإجمالي النقدي النهائي في تفاصيل السعر.</p>
         </aside>
       </div>

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type {
   BackupData,
   BackupManifest,
+  BackupSnapshotMetadata,
   BackupReaderSet,
   BackupUnitOfWork,
   DecodedBackupArchive,
@@ -38,6 +39,7 @@ const TABLE_ORDER = [
   "sales_pos_snapshot", "sales_pos_snapshot_price", "sales_sale", "sales_sale_line", "sales_sale_unit",
   "sales_restore_deferred_completion",
   "inventory_settings", "inventory_variant_setting", "inventory_stock_clock", "inventory_operation", "inventory_batch",
+  "inventory_batch_balance",
   "inventory_movement", "inventory_allocation", "inventory_discrepancy", "inventory_known_till",
   "inventory_count_coordination", "inventory_count_coordination_device", "inventory_stock_correction",
   "inventory_stock_correction_batch", "inventory_stock_reconciliation", "inventory_stock_reconciliation_batch",
@@ -70,6 +72,11 @@ type Queryable = {
 };
 
 type SequenceState = { lastValue: string; isCalled: boolean };
+type ReferenceSequences = {
+  onlineOrder: SequenceState;
+  physicalSale: SequenceState;
+  return: SequenceState;
+};
 
 export type RestoreStoreFactories = {
   features(queryable: Queryable): RestoreFeatureSet;
@@ -362,11 +369,11 @@ export function createPostgresRestoreStore(input: {
         throw new RestoreStaleError();
       }
       const stagePool = new Pool({ connectionString: databaseUrlFor(databaseUrl, before.staging_database_name), max: 1 });
-      let staged: { tables: RestoreTables; sequence: SequenceState };
+      let staged: { tables: RestoreTables; sequences: ReferenceSequences };
       try {
         staged = await factories.snapshot(stagePool).run(async (transaction) => ({
           tables: tablesByName(await readAllTables(transaction.readers)),
-          sequence: (await transaction.metadata()).onlineOrderReferenceSequence,
+          sequences: metadataSequences(await transaction.metadata()),
         }));
       } finally {
         await stagePool.end();
@@ -398,6 +405,11 @@ export function createPostgresRestoreStore(input: {
 
         await client.query("SELECT set_config('bravos.restore_activation', $1, true)", [preview.id]);
         const liveReaders = factories.liveReaders(client);
+        const liveSequences: ReferenceSequences = {
+          onlineOrder: await liveReaders.onlineOrders.readReferenceSequence(),
+          physicalSale: await liveReaders.sales.readReferenceSequence(),
+          return: await liveReaders.returns.readReferenceSequence(),
+        };
         const liveControl = tablesByName([
           ...await liveReaders.sales.readBackupTables(),
           ...await liveReaders.inventory.readBackupTables(),
@@ -406,7 +418,9 @@ export function createPostgresRestoreStore(input: {
         assertCrossFeatureLinks(data);
         await clearAll(features);
         await insertAll(features, data);
-        await features.onlineOrders.restoreReferenceSequence(staged.sequence);
+        // Sequence changes are not rolled back by PostgreSQL, so activation also considers
+        // the live positions at the final checkpoint before changing them.
+        await restoreReferenceSequences(features, laterSequences(staged.sequences, liveSequences));
 
         const previousGeneration = Number(runtime.rows[0]!.current_generation);
         const sourceGeneration = preview.source_generation === null ? 0 : Number(preview.source_generation);
@@ -449,7 +463,7 @@ async function createStage(databaseUrl: string, name: string, archive: DecodedBa
   const stage = new Pool({ connectionString: databaseUrlFor(databaseUrl, name), max: 1 });
   try {
     await factories.migrate(stage);
-    await loadStage(stage, flattenData(archive.data), archive.manifest.onlineOrderReferenceSequence, factories);
+    await loadStage(stage, flattenData(archive.data), manifestSequences(archive.manifest), factories);
   } finally {
     await stage.end();
   }
@@ -471,7 +485,7 @@ async function reconcileStage(
   try {
     const staged = await factories.snapshot(stage).run(async (transaction) => ({
       tables: tablesByName(await readAllTables(transaction.readers)),
-      sequence: (await transaction.metadata()).onlineOrderReferenceSequence,
+      sequences: metadataSequences(await transaction.metadata()),
     }));
     const live = flattenData(liveArchive.data);
     const keys = await primaryKeyColumns(stage);
@@ -541,22 +555,22 @@ async function reconcileStage(
     if (blockers.length > 0) return { differences, blockers };
 
     assertCrossFeatureLinks(merged);
-    const sequence = liveIsBootstrap ? staged.sequence : laterSequence(staged.sequence, liveArchive.manifest.onlineOrderReferenceSequence);
-    await loadStage(stage, merged, sequence, factories);
+    const sequences = liveIsBootstrap ? staged.sequences : laterSequences(staged.sequences, manifestSequences(liveArchive.manifest));
+    await loadStage(stage, merged, sequences, factories);
     return { differences, blockers };
   } finally {
     await stage.end();
   }
 }
 
-async function loadStage(stage: Pool, data: RestoreTables, sequence: SequenceState, factories: RestoreStoreFactories) {
+async function loadStage(stage: Pool, data: RestoreTables, sequences: ReferenceSequences, factories: RestoreStoreFactories) {
   const client = await stage.connect();
   try {
     await client.query("BEGIN");
     const features = factories.features(client);
     await clearAll(features);
     await insertAll(features, data);
-    await features.onlineOrders.restoreReferenceSequence(sequence);
+    await restoreReferenceSequences(features, sequences);
     await client.query("COMMIT");
   } catch (error) {
     await client.query("ROLLBACK").catch(() => undefined);
@@ -783,13 +797,46 @@ async function failuresOf(work: Array<Promise<unknown>>): Promise<unknown[]> {
   return results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
 }
 
-// Archives are staged on this server's current schema. Version 1 archives made before restore
-// generations existed (028) are upgraded after authenticated decoding.
+// The staged archive must have this server's exact schema. Even authenticated older archives
+// can no longer be reinterpreted after inventory and reference semantics changed.
 async function assertSupportedSchema(queryable: Queryable, schemaVersion: string) {
   const result = await queryable.query<{ id: string }>("SELECT id FROM schema_migrations ORDER BY id DESC LIMIT 1");
   const latest = result.rows[0]?.id;
-  if (schemaVersion === latest || (schemaVersion === "028_aggregate_analytics.sql" && latest === "029_restore.sql")) return;
+  if (schemaVersion === latest) return;
   throw new RestoreValidationError("إصدار مخطط النسخة لا يطابق إصدار هذا الخادم. استخدم نسخة من الإصدار نفسه أو حدّث الخادم أولاً.");
+}
+
+function metadataSequences(metadata: BackupSnapshotMetadata): ReferenceSequences {
+  return {
+    onlineOrder: metadata.onlineOrderReferenceSequence,
+    physicalSale: metadata.salesSaleReferenceSequence,
+    return: metadata.returnsReturnReferenceSequence,
+  };
+}
+
+function manifestSequences(manifest: BackupManifest): ReferenceSequences {
+  if (!manifest.salesSaleReferenceSequence || !manifest.returnsReturnReferenceSequence) {
+    throw new RestoreValidationError("إصدار النسخة لا يحتوي على مراجع البيع والمرتجعات المطلوبة لهذا الخادم.");
+  }
+  return {
+    onlineOrder: manifest.onlineOrderReferenceSequence,
+    physicalSale: manifest.salesSaleReferenceSequence,
+    return: manifest.returnsReturnReferenceSequence,
+  };
+}
+
+async function restoreReferenceSequences(features: RestoreFeatureSet, sequences: ReferenceSequences) {
+  await features.onlineOrders.restoreReferenceSequence(sequences.onlineOrder);
+  await features.sales.restoreReferenceSequence(sequences.physicalSale);
+  await features.returns.restoreReferenceSequence(sequences.return);
+}
+
+function laterSequences(left: ReferenceSequences, right: ReferenceSequences): ReferenceSequences {
+  return {
+    onlineOrder: laterSequence(left.onlineOrder, right.onlineOrder),
+    physicalSale: laterSequence(left.physicalSale, right.physicalSale),
+    return: laterSequence(left.return, right.return),
+  };
 }
 
 function laterSequence(left: SequenceState, right: SequenceState): SequenceState {

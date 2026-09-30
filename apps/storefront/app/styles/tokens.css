@@ -1,23 +1,15 @@
-@font-face {
-  font-family: "Amiri Editorial";
-  src: url("/fonts/amiri-arabic-regular.woff2") format("woff2");
-  font-style: normal;
-  font-weight: 400;
-  font-display: optional;
-  unicode-range: U+0600-06FF, U+0750-077F, U+08A0-08FF, U+FB50-FDFF, U+FE70-FEFC;
-}
-
 :root {
-  color-scheme: light;
-  --store-canvas: #fffffc;
-  --store-surface: #ffffff;
-  --store-ink: #121110;
-  --store-muted: #5f5b55;
-  --store-border: #d8d4cc;
-  --store-focus: #745337;
-  --store-error: #932f2c;
-  --store-success: #28613e;
-  --store-disabled: #e9e6e0;
+  color-scheme: dark;
+  --store-canvas: #0c0d0d;
+  --store-surface: #171918;
+  --store-ink: #f3efe6;
+  --store-muted: #b5b5ac;
+  --store-border: #797b71;
+  --store-focus: #e2cda3;
+  --store-error: #ffaca4;
+  --store-success: #a5d8b1;
+  --store-disabled: #2d302d;
+  --store-accent: #d9c5a2;
 
   --space-1: 4px;
   --space-2: 8px;
@@ -29,8 +21,10 @@
   --space-16: 64px;
   --space-24: 96px;
 
-  --font-commerce: var(--font-cairo), "Segoe UI", Tahoma, Arial, sans-serif;
-  --font-editorial: "Amiri Editorial", var(--font-cairo), "Segoe UI", Tahoma, Arial, sans-serif;
+  --font-commerce: var(--font-thmanyah-sans), "Segoe UI", Tahoma, Arial, sans-serif;
+  --font-editorial: var(--font-thmanyah-editorial), "Segoe UI", Tahoma, Arial, sans-serif;
+  --font-display: var(--font-androgy), "Arial Narrow", "Segoe UI", sans-serif;
+  --font-metadata: var(--font-thmanyah-sans), "Segoe UI", Tahoma, Arial, sans-serif;
 
   /* Existing route styles keep these aliases while later tickets refine their layouts. */
   --background-primary: var(--store-canvas);
@@ -38,12 +32,12 @@
   --text-primary: var(--store-ink);
   --text-secondary: var(--store-muted);
   --border: var(--store-border);
-  --brand-accent: var(--store-ink);
+  --brand-accent: var(--store-accent);
   --canvas: var(--store-canvas);
   --ink: var(--store-ink);
   --muted: var(--store-muted);
   --line: var(--store-border);
-  --accent: var(--store-ink);
-  --warm: #d9d4cc;
+  --accent: var(--store-accent);
+  --warm: var(--store-accent);
   --danger: var(--store-error);
 }

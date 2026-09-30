@@ -38,6 +38,7 @@ export function createPostgresStockReconciliationCorrectionFacts(queryable: Quer
 
 type SaleRow = {
   id: string;
+  branch_id: string;
   operation_id: string;
   final_total_piasters: number | string;
   cash_received_piasters: number | string;
@@ -45,6 +46,7 @@ type SaleRow = {
 };
 type ReturnRow = {
   id: string; source_sale_id: string | null; source_online_order_id: string | null; status: "draft" | "posted";
+  handling_branch_id: string;
   authorized_refund_piasters: number | string; authorized_merchandise_refund_piasters: number | string;
   authorized_checkout_charge_refund_piasters: number | string; refund_paid_piasters: number | string;
   exchange_credit_applied_piasters: number | string;
@@ -112,7 +114,7 @@ export function createPostgresReturnCorrectionStateReader(queryable: Queryable) 
 
 async function changeSale(client: PoolClient, inventory: InventoryTransaction, input: SaleCorrectionWrite): Promise<ChangeResult<SaleCorrectionDetailDto>> {
   await inventory.lockStockClock("update");
-  const locked = await client.query<SaleRow>(`SELECT id, operation_id, final_total_piasters, cash_received_piasters, physically_completed FROM sales_sale WHERE id = $1 FOR UPDATE`, [input.saleId]);
+  const locked = await client.query<SaleRow>(`SELECT id, branch_id, operation_id, final_total_piasters, cash_received_piasters, physically_completed FROM sales_sale WHERE id = $1 FOR UPDATE`, [input.saleId]);
   if (!locked.rows[0]?.physically_completed) return { kind: "not-found" };
   const existingOperation = await correctionByOperation(client, input.operationId);
   if (existingOperation) return replaySale(client, input, existingOperation);
@@ -163,7 +165,7 @@ async function changeSale(client: PoolClient, inventory: InventoryTransaction, i
   }
   const claimed = await inventory.claimCorrectionOperation({ operationId: input.operationId, payloadFingerprint: input.payloadFingerprint, actorStaffId: input.actorStaffId });
   if (claimed.kind === "replay") return replaySale(client, input);
-  const facts = await applySaleMovements(client, inventory, input.saleId, input.operationId, claimed.recordedAt, merchandise);
+  const facts = await applySaleMovements(client, inventory, locked.rows[0].branch_id, input.saleId, input.operationId, claimed.recordedAt, merchandise);
   await insertCorrection(client, input, nextRevision, input.effective?.finalTotalPiasters ?? null);
   if (input.effective) {
     for (const line of effectiveLines) await client.query(
@@ -205,7 +207,7 @@ async function changeReturn(
     onlineAllocations = await inventory.lockProtectedOrderAllocations(sourceOnlineOrderId!);
   }
   const locked = await client.query<ReturnRow>(
-    `SELECT id,source_sale_id,source_online_order_id,status,authorized_refund_piasters,
+    `SELECT id,source_sale_id,source_online_order_id,handling_branch_id,status,authorized_refund_piasters,
             authorized_merchandise_refund_piasters,authorized_checkout_charge_refund_piasters,
             refund_paid_piasters,exchange_credit_applied_piasters
      FROM returns_return WHERE id = $1 FOR UPDATE`, [input.returnId]);
@@ -297,13 +299,14 @@ async function changeReturn(
   if (claimed.kind === "replay") return replayReturn(client, input);
   if (sourceOnlineOrderId && protectionEffects.length > 0) {
     await inventory.adjustDeliveredReturnProtection({
+      branchId: locked.rows[0].handling_branch_id,
       orderId: sourceOnlineOrderId,
       operationId: input.operationId,
       recordedAt: claimed.recordedAt,
       effects: protectionEffects,
     });
   }
-  const facts = await applyReturnMovements(inventory, input.operationId, claimed.recordedAt, merchandise, movementPlans);
+  const facts = await applyReturnMovements(inventory, locked.rows[0].handling_branch_id, input.operationId, claimed.recordedAt, merchandise, movementPlans);
   await insertCorrection(client, input, nextRevision, input.effective?.authorizedRefundPiasters ?? null);
   if (input.effective) {
     for (const line of input.effective.lines) await client.query(
@@ -340,7 +343,7 @@ async function replayReturn(client: PoolClient, input: ReturnCorrectionWrite, kn
 type AppliedFact = { lineId: string; variantId: string; batchId: string; direction: "restore" | "deduct"; quantity: number; unitCostPiasters: number };
 type PlannedBatch = { batchId: string; variantId: string; quantity: number; unitCostPiasters: number };
 
-async function applySaleMovements(client: PoolClient, inventory: InventoryTransaction, saleId: string, operationId: string, at: Date, entries: MerchandiseAdjustmentWrite[]): Promise<AppliedFact[]> {
+async function applySaleMovements(client: PoolClient, inventory: InventoryTransaction, branchId: string, saleId: string, operationId: string, at: Date, entries: MerchandiseAdjustmentWrite[]): Promise<AppliedFact[]> {
   const lines = await saleLineMap(client, saleId);
   const facts: AppliedFact[] = [];
   for (const entry of entries) {
@@ -351,26 +354,27 @@ async function applySaleMovements(client: PoolClient, inventory: InventoryTransa
       for (const batch of balances) {
         const take = Math.min(remaining, number(batch.balance));
         if (take <= 0) continue;
-        const adjusted = await inventory.adjustCorrectionBatch({ operationId, batchId: batch.batch_id, variantId: line.variant_id, direction: "restore", quantity: take, recordedAt: at });
+        const adjusted = await inventory.adjustCorrectionBatch({ branchId, operationId, batchId: batch.batch_id, variantId: line.variant_id, direction: "restore", quantity: take, recordedAt: at });
         facts.push({ lineId: entry.lineId, variantId: line.variant_id, batchId: batch.batch_id, direction: "restore", quantity: take, unitCostPiasters: adjusted.unitCostPiasters });
         remaining -= take;
       }
       if (remaining > 0) throw new CorrectionsValidationError("لا توجد كمية مخصصة كافية يمكن إعادتها لهذه الحركة.");
     } else {
-      const result = await inventory.allocateCorrectionFromOldestAvailable({ operationId, variantId: line.variant_id, quantity: -entry.quantityDelta, recordedAt: at });
+      const result = await inventory.allocateCorrectionFromOldestAvailable({ branchId, operationId, variantId: line.variant_id, quantity: -entry.quantityDelta, recordedAt: at });
       for (const allocation of result.allocations) facts.push({ lineId: entry.lineId, variantId: line.variant_id, batchId: allocation.batchId, direction: "deduct", quantity: allocation.quantity, unitCostPiasters: allocation.unitCostPiasters });
     }
   }
   return facts;
 }
 
-async function applyReturnMovements(inventory: InventoryTransaction, operationId: string, at: Date, entries: MerchandiseAdjustmentWrite[], plans: Map<string, PlannedBatch[]>): Promise<AppliedFact[]> {
+async function applyReturnMovements(inventory: InventoryTransaction, branchId: string, operationId: string, at: Date, entries: MerchandiseAdjustmentWrite[], plans: Map<string, PlannedBatch[]>): Promise<AppliedFact[]> {
   const facts: AppliedFact[] = [];
   for (const entry of entries) {
     const direction = entry.quantityDelta > 0 ? "restore" : "deduct";
     const batches = plans.get(entry.lineId) ?? [];
     for (const batch of batches) {
       const adjusted = await inventory.adjustCorrectionBatch({
+        branchId,
         operationId,
         batchId: batch.batchId,
         variantId: batch.variantId,

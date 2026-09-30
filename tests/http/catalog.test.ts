@@ -89,6 +89,106 @@ test("manager creates a product with unique code, taxonomy, variants and default
   expect(JSON.stringify(created.body)).not.toMatch(/cost|profit|purchase|batch/i);
 });
 
+test("online variant selection keeps exact inventory pairs and leaves hidden pairs in POS", async () => {
+  const manager = await signIn("owner", "owner-pass-1");
+  await api(manager, "POST", "/api/internal/active-branch", { branchId: abshwayId });
+  const seed = await seedTaxonomy(manager);
+  const secondSize = await api(manager, "POST", "/api/internal/catalog/sizes", { nameAr: "M" });
+  const created = await api(manager, "POST", "/api/internal/catalog/products", {
+    code: "PAIR-VIS-1",
+    nameAr: "قميص بتركيبتين",
+    descriptionAr: "",
+    categoryId: seed.categoryId,
+    defaultSellingPricePiasters: 30000,
+    publication: "available",
+    imageRefs: [],
+    variants: [
+      { sizeId: seed.sizeId, colorId: seed.colorId, onlineVisible: false, sellingPricePiastersOverride: null },
+      { sizeId: secondSize.body.id, colorId: seed.colorId, onlineVisible: true, sellingPricePiastersOverride: 32000 },
+    ],
+  });
+  expect(created.status).toBe(201);
+  expect(created.body.variants).toHaveLength(2);
+  const hidden = created.body.variants.find((item: { size: { id: string } }) => item.size.id === seed.sizeId);
+  const visible = created.body.variants.find((item: { size: { id: string } }) => item.size.id === secondSize.body.id);
+  expect(hidden?.onlineVisible).toBe(false);
+  expect(visible?.onlineVisible).toBe(true);
+  const received = await api(manager, "POST", "/api/internal/receiving/receipts", {
+    operationId: crypto.randomUUID(),
+    branchId: abshwayId,
+    receiptDate: "2026-09-29",
+    lines: [
+      { variantId: hidden.id, quantity: 2, unitCostPiasters: 10000 },
+      { variantId: visible.id, quantity: 3, unitCostPiasters: 11000 },
+    ],
+  });
+  expect(received.status).toBe(201);
+  const publicProduct = await api(undefined, "GET", `/api/public/catalog/products/${created.body.id}`);
+  expect(publicProduct.status).toBe(200);
+  expect(publicProduct.body.variants.map((item: { id: string }) => item.id)).toEqual([visible.id]);
+  expect(publicProduct.body.variants[0].availableQuantity).toBe(3);
+  const pos = await api(manager, "GET", "/api/internal/catalog/pos-snapshot");
+  const posProduct = pos.body.find((item: { id: string }) => item.id === created.body.id);
+  expect(posProduct.variants).toHaveLength(2);
+  expect(posProduct.variants.find((item: { id: string }) => item.id === hidden.id).availableQuantity).toBe(2);
+
+  const edited = await api(manager, "PATCH", `/api/internal/catalog/products/${created.body.id}`, {
+    code: created.body.code,
+    nameAr: created.body.nameAr,
+    descriptionAr: created.body.descriptionAr,
+    categoryId: seed.categoryId,
+    defaultSellingPricePiasters: 30000,
+    publication: "available",
+    imageRefs: [],
+    variants: created.body.variants.map((item: { size: { id: string }; color: { id: string }; sellingPricePiastersOverride: number | null }) => ({ sizeId: item.size.id, colorId: item.color.id, sellingPricePiastersOverride: item.sellingPricePiastersOverride })),
+  });
+  expect(edited.status).toBe(200);
+  expect(edited.body.variants.find((item: { id: string }) => item.id === hidden.id).onlineVisible).toBe(false);
+});
+
+test("a stale product edit cannot remove a variant just added through inventory intake", async () => {
+  const manager = await signIn("owner", "owner-pass-1");
+  const seed = await seedTaxonomy(manager);
+  const secondSize = await api(manager, "POST", "/api/internal/catalog/sizes", { nameAr: "M" });
+  const initial = await api(manager, "POST", "/api/internal/catalog/products", {
+    code: "SKU-RACE-1", nameAr: "منتج", descriptionAr: "", categoryId: seed.categoryId,
+    defaultSellingPricePiasters: 20000, publication: "hidden", imageRefs: [],
+    variants: [{ sizeId: seed.sizeId, colorId: seed.colorId, onlineVisible: false, sellingPricePiastersOverride: null }],
+  });
+  expect(initial.status).toBe(201);
+  const base = {
+    code: initial.body.code,
+    nameAr: initial.body.nameAr,
+    descriptionAr: initial.body.descriptionAr,
+    categoryId: seed.categoryId,
+    defaultSellingPricePiasters: initial.body.defaultSellingPricePiasters,
+    publication: initial.body.publication,
+    imageRefs: initial.body.imageRefs,
+    sizeGuideAr: initial.body.sizeGuideAr,
+    expectedRevision: initial.body.editRevision,
+    expectedVariantIds: initial.body.variants.map((item: { id: string }) => item.id),
+  };
+  const added = await api(manager, "PATCH", `/api/internal/catalog/products/${initial.body.id}`, {
+    ...base,
+    variants: [
+      { sizeId: seed.sizeId, colorId: seed.colorId, onlineVisible: false, sellingPricePiastersOverride: null },
+      { sizeId: secondSize.body.id, colorId: seed.colorId, onlineVisible: false, sellingPricePiastersOverride: null },
+    ],
+  });
+  expect(added.status).toBe(200);
+  expect(added.body.editRevision).toBe(initial.body.editRevision + 1);
+
+  const stale = await api(manager, "PATCH", `/api/internal/catalog/products/${initial.body.id}`, {
+    ...base,
+    variants: [{ sizeId: seed.sizeId, colorId: seed.colorId, onlineVisible: true, sellingPricePiastersOverride: null }],
+  });
+  expect(stale.status).toBe(400);
+  expect(stale.body.error.messageAr).toContain("أعد تحميل");
+  const current = await api(manager, "GET", `/api/internal/catalog/products/${initial.body.id}`);
+  expect(current.body.variants).toHaveLength(2);
+  expect(current.body.variants.every((item: { onlineVisible: boolean }) => item.onlineVisible === false)).toBe(true);
+});
+
 test("duplicate product codes are rejected case-insensitively with a useful error", async () => {
   const manager = await signIn("owner", "owner-pass-1");
   const seed = await seedShirt(manager);
@@ -304,6 +404,7 @@ test("cashier POS snapshot lists selling prices and availability without cost da
   const variantId = created.body.variants[0].id as string;
   const received = await api(manager, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
+    branchId: abshwayId,
     receiptDate: "2026-09-11",
     lines: [{ variantId, quantity: 4, unitCostPiasters: 8000 }],
   });
@@ -650,6 +751,7 @@ test("public catalog exposes safe live variant availability across restocking an
   }
   const receipt = await api(manager, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
+    branchId: abshwayId,
     receiptDate: "2026-09-14",
     lines: [{ variantId: stockedVariant.id, quantity: 3, unitCostPiasters: 17000 }],
   });

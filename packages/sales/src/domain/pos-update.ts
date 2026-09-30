@@ -1,8 +1,8 @@
 export type PosUpdateDecision = "activate" | "defer";
 
-export const POS_SCHEMA_VERSION = 3;
+export const POS_SCHEMA_VERSION = 4;
 
-const SAFE_STEP_MIGRATIONS = new Set(["1->2", "2->3"]);
+const SAFE_STEP_MIGRATIONS = new Set(["1->2", "2->3", "3->4"]);
 
 export function isDeclaredSafeMigration(fromVersion: number, toVersion: number): boolean {
   if (!Number.isInteger(fromVersion) || !Number.isInteger(toVersion)) {

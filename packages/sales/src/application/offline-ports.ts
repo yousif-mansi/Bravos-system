@@ -5,6 +5,7 @@ import type {
   PosPriceSnapshotDto,
   SaleAcknowledgementDto,
   SaleDto,
+  SalePaymentDto,
   WorkspaceDto,
 } from "@bravos/contracts";
 
@@ -66,6 +67,7 @@ export type OfflineCompletedSale = {
   discountReason: string | null;
   discountedByStaffId: string | null;
   finalTotalPiasters: number;
+  payment?: SalePaymentDto;
   physicallyCompleted: true;
   payloadFingerprint: string | null;
   couponUsageAccountedSnapshotIssuedAt?: string | null;
@@ -77,6 +79,7 @@ export type OfflineStockEffect = {
   staffId: string;
   operationId: string;
   variantId: string;
+  branchId?: string;
   quantity: number;
 };
 
@@ -93,6 +96,7 @@ export type OfflinePendingSale = {
     couponCode?: string | null;
     employeeDiscountPiasters: number;
     discountReason: string | null;
+    payment?: SalePaymentDto;
     lines: Array<{ variantId: string; quantity: number }>;
   } | null;
   occurredAt: string | null;
@@ -126,6 +130,7 @@ export type CompleteOfflineSaleInput = {
   couponCode: string | null;
   employeeDiscountPiasters: number;
   discountReason: string | null;
+  payment?: SalePaymentDto;
   lines: Array<{
     key?: string;
     variantId: string;
@@ -150,6 +155,7 @@ export type SessionTransition = {
 
 export type DeviceStockCache = {
   version: number;
+  branchVersions?: Record<string, number>;
   restoreGeneration: number;
   availability: Record<string, number>;
   includedOperationIds: string[];
@@ -178,7 +184,7 @@ export type OfflinePosStore = {
   saveSnapshot(staffId: string, snapshot: PosPriceSnapshotDto): Promise<void>;
   loadSnapshot(staffId: string): Promise<PosPriceSnapshotDto | null>;
   lookupProduct(staffId: string, code: string): Promise<CashierProductLookupDto | null>;
-  availableQuantity(variantId: string, cachedAvailable: number): Promise<number>;
+  availableQuantity(branchId: string, variantId: string, cachedAvailable: number): Promise<number>;
   countUnaccountedCouponUses(couponId: string, snapshotIssuedAt: string): Promise<number>;
   completeSale(
     input: CompleteOfflineSaleInput,

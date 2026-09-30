@@ -27,4 +27,4 @@ If a needed concept is absent, check whether the project already has a term for 
 
 If a proposal contradicts an existing ADR, identify the ADR and explain why the decision needs reconsideration. Do not silently override it.
 
-Keep the distinction between shared central inventory, branch operations, and online orders explicit.
+Keep branch inventory, branch operations, and online orders explicit. The approved 2026-09-29 branch-stock decision supersedes the earlier shared-central-quantity model; see ADR 0005.

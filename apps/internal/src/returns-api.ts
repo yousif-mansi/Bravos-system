@@ -9,9 +9,9 @@ import { request, type SaleCorrectionWrite } from "./api.ts";
 
 export type ReturnSourceSearch = {
   reference?: string;
+  phone?: string;
   date?: string;
   branchId?: string;
-  item?: string;
   amountPiasters?: number;
   channel?: "physical" | "online";
 };
@@ -19,9 +19,9 @@ export type ReturnSourceSearch = {
 export function listReturnSources(search: ReturnSourceSearch = {}) {
   const query = new URLSearchParams();
   if (search.reference) query.set("reference", search.reference);
+  if (search.phone) query.set("phone", search.phone);
   if (search.date) query.set("date", search.date);
   if (search.branchId) query.set("branchId", search.branchId);
-  if (search.item) query.set("item", search.item);
   if (search.amountPiasters !== undefined) query.set("amountPiasters", String(search.amountPiasters));
   if (search.channel) query.set("channel", search.channel);
   const suffix = query.size ? `?${query.toString()}` : "";

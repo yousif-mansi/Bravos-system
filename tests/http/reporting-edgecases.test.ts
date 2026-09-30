@@ -333,7 +333,9 @@ test("exchange reports full replacement revenue while credit and both cash direc
   const [originalVariant, dearerVariant, cheaperVariant] = variantIds as [string, string, string];
   await receive(manager, originalVariant, 2, 10_000, "2026-09-14");
   await receive(manager, dearerVariant, 1, 15_000, "2026-09-15");
-  await receive(manager, cheaperVariant, 1, 9_000, "2026-09-15");
+  await selectBranch(manager, fayoumId);
+  await receive(manager, cheaperVariant, 1, 9_000, "2026-09-15", fayoumId);
+  await selectBranch(manager, abshwayId);
   const originalSale = await completeSale(manager, [{ variantId: originalVariant, quantity: 2 }], {
     occurredAt: "2026-09-16T09:00:00.000Z",
   });
@@ -615,12 +617,227 @@ test("a late unallocated sale cancelled without a stock reversal keeps its unkno
   });
 });
 
+test("online confirmation and each cancellation reversal use their own Cairo day and fulfillment branch", async () => {
+  const manager = await signIn("owner", "owner-pass-1");
+  await selectBranch(manager, abshwayId);
+  const { variantIds } = await seedProduct(manager, [30_000], "توقيت طلبات الفروع", "available");
+  const variantId = variantIds[0]!;
+  await receive(manager, variantId, 1, 12_000, "2026-09-16");
+  await selectBranch(manager, fayoumId);
+  await receive(manager, variantId, 2, 8_000, "2026-09-16", fayoumId);
+  const area = await api(manager, "POST", "/api/internal/delivery-areas", {
+    nameAr: `منطقة ${crypto.randomUUID().slice(0, 8)}`, feePiasters: 5_000, active: true,
+  });
+  expect(area.status, JSON.stringify(area.body)).toBe(201);
+  const cancelledOrder = await submitOnlineOrderForReport(area.body.id, variantId, 1);
+  const failedOrder = await submitOnlineOrderForReport(area.body.id, variantId, 2);
+
+  const pending = await api(manager, "GET", "/api/internal/reports/management?period=day&date=2026-09-16&channel=online");
+  expect(pending.status, JSON.stringify(pending.body)).toBe(200);
+  expect(pending.body.summary).toMatchObject({ completedCount: 0, grossFinalSalesPiasters: 0 });
+
+  at("2026-09-16T10:00:00.000Z");
+  const firstConfirmed = await confirmOnlineOrderForReport(manager, cancelledOrder.orderId, variantId, 1, abshwayId);
+  const secondConfirmed = await confirmOnlineOrderForReport(manager, failedOrder.orderId, variantId, 2, fayoumId);
+  const confirmationDay = await api(manager, "GET", "/api/internal/reports/management?period=day&date=2026-09-16&channel=online");
+  expect(confirmationDay.status, JSON.stringify(confirmationDay.body)).toBe(200);
+  expect(confirmationDay.body.summary).toMatchObject({
+    completedCount: 2, grossFinalSalesPiasters: 100_000, grossMerchandiseSalesPiasters: 90_000,
+    deliveryChargesPiasters: 10_000, knownNetMerchandiseCostPiasters: 28_000,
+  });
+  expect(confirmationDay.body.completedSales).toEqual(expect.arrayContaining([
+    expect.objectContaining({ source: expect.objectContaining({ id: cancelledOrder.orderId }),
+      branch: expect.objectContaining({ id: abshwayId }), occurredAt: "2026-09-16T10:00:00.000Z" }),
+    expect.objectContaining({ source: expect.objectContaining({ id: failedOrder.orderId }),
+      branch: expect.objectContaining({ id: fayoumId }) }),
+  ]));
+  expect(confirmationDay.body.lowStock).toEqual(expect.arrayContaining([
+    expect.objectContaining({ branchId: abshwayId, variantId, availableQuantity: 0 }),
+    expect.objectContaining({ branchId: fayoumId, variantId, availableQuantity: 0 }),
+  ]));
+  const abshwayConfirmation = await api(manager, "GET",
+    `/api/internal/reports/management?period=day&date=2026-09-16&channel=online&branchId=${abshwayId}`);
+  expect(abshwayConfirmation.body.summary).toMatchObject({ completedCount: 1, grossFinalSalesPiasters: 35_000 });
+  const fayoumConfirmation = await api(manager, "GET",
+    `/api/internal/reports/management?period=day&date=2026-09-16&channel=online&branchId=${fayoumId}`);
+  expect(fayoumConfirmation.body.summary).toMatchObject({ completedCount: 1, grossFinalSalesPiasters: 65_000 });
+
+  at("2026-09-17T10:00:00.000Z");
+  const cancellationPayload = { operationId: crypto.randomUUID(), expectedRevision: firstConfirmed.revision,
+    reason: "إلغاء قبل الشحن", itemsReturnedAndInspected: true };
+  const cancelled = await api(manager, "POST",
+    `/api/internal/online-orders/${cancelledOrder.orderId}/cancel-before-shipment`, cancellationPayload);
+  expect(cancelled.status, JSON.stringify(cancelled.body)).toBe(201);
+  const cancellationReplay = await api(manager, "POST",
+    `/api/internal/online-orders/${cancelledOrder.orderId}/cancel-before-shipment`, cancellationPayload);
+  expect(cancellationReplay.status, JSON.stringify(cancellationReplay.body)).toBe(200);
+  const shipped = await api(manager, "POST", `/api/internal/online-orders/${failedOrder.orderId}/ship`, {
+    operationId: crypto.randomUUID(), expectedRevision: secondConfirmed.revision,
+  });
+  expect(shipped.status, JSON.stringify(shipped.body)).toBe(201);
+  const failed = await api(manager, "POST", `/api/internal/online-orders/${failedOrder.orderId}/delivery-failure`, {
+    operationId: crypto.randomUUID(), expectedRevision: shipped.body.result.revision,
+    reason: "لم يستلم العميل الطرد",
+  });
+  expect(failed.status, JSON.stringify(failed.body)).toBe(201);
+  const cancellationDay = await api(manager, "GET", "/api/internal/reports/management?period=day&date=2026-09-17&channel=online");
+  expect(cancellationDay.status, JSON.stringify(cancellationDay.body)).toBe(200);
+  expect(cancellationDay.body.summary).toMatchObject({
+    completedCount: 0, grossFinalSalesPiasters: -100_000, grossMerchandiseSalesPiasters: -90_000,
+    deliveryChargesPiasters: -10_000, knownNetMerchandiseCostPiasters: -12_000,
+  });
+  expect(cancellationDay.body.completedSales).toEqual([]);
+  const abshwayCancellation = await api(manager, "GET",
+    `/api/internal/reports/management?period=day&date=2026-09-17&channel=online&branchId=${abshwayId}`);
+  expect(abshwayCancellation.body.summary.grossFinalSalesPiasters).toBe(-35_000);
+  const fayoumShipment = await api(manager, "GET",
+    `/api/internal/reports/management?period=day&date=2026-09-17&channel=online&branchId=${fayoumId}`);
+  expect(fayoumShipment.body.summary.grossFinalSalesPiasters).toBe(-65_000);
+
+  at("2026-09-18T10:00:00.000Z");
+  const drafted = await api(manager, "POST", `/api/internal/online-orders/${failedOrder.orderId}/failed-return-inspections`, {
+    operationId: crypto.randomUUID(), expectedRevision: failed.body.result.revision,
+    lines: [{ variantId, receivedQuantity: 2, sellableQuantity: 1 }],
+  });
+  expect(drafted.status, JSON.stringify(drafted.body)).toBe(201);
+  const inspectionId = drafted.body.result.failedReturnInspections.find((item: { status: string }) => item.status === "draft")?.id;
+  expect(inspectionId).toBeTruthy();
+  const posted = await api(manager, "POST",
+    `/api/internal/online-orders/${failedOrder.orderId}/failed-return-inspections/${inspectionId}/post`, {
+      operationId: crypto.randomUUID(), expectedRevision: drafted.body.result.revision,
+      receivingBranchId: fayoumId,
+    });
+  expect(posted.status, JSON.stringify(posted.body)).toBe(201);
+  const inspectionDay = await api(manager, "GET", "/api/internal/reports/management?period=day&date=2026-09-18&channel=online");
+  expect(inspectionDay.status, JSON.stringify(inspectionDay.body)).toBe(200);
+  expect(inspectionDay.body.summary).toMatchObject({
+    completedCount: 0, grossFinalSalesPiasters: 0, grossMerchandiseSalesPiasters: 0,
+    knownNetMerchandiseCostPiasters: -8_000,
+  });
+
+  at("2026-09-19T10:00:00.000Z");
+  const closurePayload = { operationId: crypto.randomUUID(), expectedRevision: posted.body.result.revision,
+    reason: "فحص الطرد المرتجع" };
+  const closed = await api(manager, "POST",
+    `/api/internal/online-orders/${failedOrder.orderId}/close-failed-delivery`, closurePayload);
+  expect(closed.status, JSON.stringify(closed.body)).toBe(201);
+  const closureReplay = await api(manager, "POST",
+    `/api/internal/online-orders/${failedOrder.orderId}/close-failed-delivery`, closurePayload);
+  expect(closureReplay.status, JSON.stringify(closureReplay.body)).toBe(200);
+  const closureDay = await api(manager, "GET", "/api/internal/reports/management?period=day&date=2026-09-19&channel=online");
+  expect(closureDay.status, JSON.stringify(closureDay.body)).toBe(200);
+  expect(closureDay.body.summary).toMatchObject({
+    completedCount: 0, grossFinalSalesPiasters: 0, grossMerchandiseSalesPiasters: 0,
+    deliveryChargesPiasters: 0, knownNetMerchandiseCostPiasters: 0,
+  });
+  const fayoumClosure = await api(manager, "GET",
+    `/api/internal/reports/management?period=day&date=2026-09-19&channel=online&branchId=${fayoumId}`);
+  expect(fayoumClosure.body.summary.grossFinalSalesPiasters).toBe(0);
+  const abshwayClosure = await api(manager, "GET",
+    `/api/internal/reports/management?period=day&date=2026-09-19&channel=online&branchId=${abshwayId}`);
+  expect(abshwayClosure.body.summary.grossFinalSalesPiasters).toBe(0);
+  const month = await api(manager, "GET", "/api/internal/reports/management?period=month&month=2026-09&channel=online");
+  expect(month.body.summary).toMatchObject({
+    completedCount: 2, grossFinalSalesPiasters: 0, grossMerchandiseSalesPiasters: 0,
+    knownNetMerchandiseCostPiasters: 8_000, merchandiseGrossProfitPiasters: -8_000,
+  });
+});
+
+test("cancellation awaiting physical inspection keeps protected cost until sellable stock is received", async () => {
+  const manager = await signIn("owner", "owner-pass-1");
+  await selectBranch(manager, abshwayId);
+  const { variantIds } = await seedProduct(manager, [30_000], "فحص إلغاء الطلب", "available");
+  const variantId = variantIds[0]!;
+  await receive(manager, variantId, 1, 12_000, "2026-09-16");
+  const area = await api(manager, "POST", "/api/internal/delivery-areas", {
+    nameAr: `منطقة ${crypto.randomUUID().slice(0, 8)}`, feePiasters: 5_000, active: true,
+  });
+  expect(area.status, JSON.stringify(area.body)).toBe(201);
+  const order = await submitOnlineOrderForReport(area.body.id, variantId, 1);
+  const confirmed = await confirmOnlineOrderForReport(manager, order.orderId, variantId, 1, abshwayId);
+
+  at("2026-09-17T10:00:00.000Z");
+  const cancelled = await api(manager, "POST", `/api/internal/online-orders/${order.orderId}/cancel-before-shipment`, {
+    operationId: crypto.randomUUID(), expectedRevision: confirmed.revision, reason: "إلغاء مع بقاء القطعة قيد الفحص",
+  });
+  expect(cancelled.status, JSON.stringify(cancelled.body)).toBe(201);
+  expect(cancelled.body.result).toMatchObject({ status: "cancelled_before_shipment",
+    preShipmentStockDisposition: "awaiting_inspection" });
+  const cancellationDay = await api(manager, "GET", "/api/internal/reports/management?period=day&date=2026-09-17&channel=online");
+  expect(cancellationDay.status, JSON.stringify(cancellationDay.body)).toBe(200);
+  expect(cancellationDay.body.summary).toMatchObject({
+    completedCount: 0, grossFinalSalesPiasters: -35_000, grossMerchandiseSalesPiasters: -30_000,
+    knownNetMerchandiseCostPiasters: 0,
+  });
+  expect(cancellationDay.body.inventory).toMatchObject({
+    availableQuantity: 0, protectedQuantity: 1, protectedValuePiasters: 12_000,
+  });
+
+  at("2026-09-18T10:00:00.000Z");
+  const drafted = await api(manager, "POST", `/api/internal/online-orders/${order.orderId}/failed-return-inspections`, {
+    operationId: crypto.randomUUID(), expectedRevision: cancelled.body.result.revision,
+    lines: [{ variantId, receivedQuantity: 1, sellableQuantity: 1 }],
+  });
+  expect(drafted.status, JSON.stringify(drafted.body)).toBe(201);
+  const inspectionId = drafted.body.result.failedReturnInspections.find((item: { status: string }) => item.status === "draft")?.id;
+  expect(inspectionId).toBeTruthy();
+  const posted = await api(manager, "POST",
+    `/api/internal/online-orders/${order.orderId}/failed-return-inspections/${inspectionId}/post`, {
+      operationId: crypto.randomUUID(), expectedRevision: drafted.body.result.revision,
+      receivingBranchId: abshwayId,
+    });
+  expect(posted.status, JSON.stringify(posted.body)).toBe(201);
+  expect(posted.body.result.preShipmentStockDisposition).toBe("released");
+  const inspectionDay = await api(manager, "GET", "/api/internal/reports/management?period=day&date=2026-09-18&channel=online");
+  expect(inspectionDay.status, JSON.stringify(inspectionDay.body)).toBe(200);
+  expect(inspectionDay.body.summary).toMatchObject({
+    completedCount: 0, grossFinalSalesPiasters: 0, grossMerchandiseSalesPiasters: 0,
+    knownNetMerchandiseCostPiasters: -12_000,
+  });
+  expect(inspectionDay.body.inventory).toMatchObject({
+    availableQuantity: 1, protectedQuantity: 0, protectedValuePiasters: 0,
+  });
+});
+
+async function submitOnlineOrderForReport(deliveryAreaId: string, variantId: string, quantity: number) {
+  const quote = await api(undefined, "POST", "/api/public/checkout/quote", {
+    deliveryAreaId, lines: [{ variantId, quantity }],
+  }, "http://127.0.0.1:3000");
+  expect(quote.status, JSON.stringify(quote.body)).toBe(200);
+  const submitted = await api(undefined, "POST", "/api/public/checkout/orders", {
+    operationId: crypto.randomUUID(), quoteId: quote.body.quoteId, deliveryAreaId,
+    lines: [{ variantId, quantity }], customerName: "عميل التقرير", primaryPhone: "01012345678",
+    detailedAddress: "عنوان التقرير",
+  }, "http://127.0.0.1:3000");
+  expect(submitted.status, JSON.stringify(submitted.body)).toBe(201);
+  return submitted.body as { orderId: string; reference: string };
+}
+
+async function confirmOnlineOrderForReport(manager: Session, orderId: string, variantId: string,
+  quantity: number, fulfillmentBranchId: string) {
+  const review = await api(manager, "POST", `/api/internal/online-orders/${orderId}/agreement-quotes`, {
+    expectedRevision: 1, lines: [{ variantId, quantity }],
+  });
+  expect(review.status, JSON.stringify(review.body)).toBe(201);
+  const agreed = await api(manager, "POST", `/api/internal/online-orders/${orderId}/agreed-revisions`, {
+    operationId: crypto.randomUUID(), expectedRevision: 1, quoteId: review.body.quoteId,
+    reviewDigest: review.body.reviewDigest, customerAgreed: true,
+  });
+  expect(agreed.status, JSON.stringify(agreed.body)).toBe(201);
+  const confirmed = await api(manager, "POST", `/api/internal/online-orders/${orderId}/confirm`, {
+    operationId: crypto.randomUUID(), expectedRevision: agreed.body.revision,
+    agreedRevision: agreed.body.revision, fulfillmentBranchId, itemsLocatedAndSetAside: true,
+  });
+  expect(confirmed.status, JSON.stringify(confirmed.body)).toBe(201);
+  return confirmed.body;
+}
+
 function at(value: string) {
   now = new Date(value);
 }
 
 async function managementReport(manager: Session, suffix = "") {
-  return api(manager, "GET", `/api/internal/reports/management?period=today&detailPage=1&detailPageSize=100${suffix}`);
+  return api(manager, "GET", `/api/internal/reports/management?period=month&month=2026-09&detailPage=1&detailPageSize=100${suffix}`);
 }
 
 async function selectBranch(session: Session, branchId: string) {
@@ -639,7 +856,8 @@ async function createEmployee(manager: Session, loginName: string) {
   return { id: created.body.id as string, loginName };
 }
 
-async function seedProduct(manager: Session, prices: number[], label: string) {
+async function seedProduct(manager: Session, prices: number[], label: string,
+  publication: "available" | "hidden" = "hidden") {
   const suffix = crypto.randomUUID().slice(0, 8);
   const category = await api(manager, "POST", "/api/internal/catalog/categories", { nameAr: `${label} ${suffix}` });
   const size = await api(manager, "POST", "/api/internal/catalog/sizes", { nameAr: `مقاس ${suffix}` });
@@ -657,7 +875,7 @@ async function seedProduct(manager: Session, prices: number[], label: string) {
     descriptionAr: "اختبار حواف التقرير",
     categoryId: category.body.id,
     defaultSellingPricePiasters: prices[0],
-    publication: "hidden",
+    publication,
     imageRefs: [],
     variants,
   });
@@ -674,9 +892,11 @@ async function receive(
   quantity: number,
   unitCostPiasters: number,
   receiptDate: string,
+  branchId = abshwayId,
 ) {
   const received = await api(manager, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
+    branchId,
     receiptDate,
     lines: [{ variantId, quantity, unitCostPiasters }],
   });
@@ -777,11 +997,12 @@ async function signIn(username: string, password: string): Promise<Session> {
   return { cookie: values.map((value) => value.split(";")[0]).join("; ") };
 }
 
-async function api(session: Session | undefined, method: "GET" | "POST", url: string, payload?: unknown): Promise<ApiResult> {
+async function api(session: Session | undefined, method: "GET" | "POST", url: string, payload?: unknown,
+  origin = ORIGIN): Promise<ApiResult> {
   const response = await built.app.inject({
     method,
     url,
-    headers: { origin: ORIGIN, cookie: session?.cookie ?? "", ...(payload ? { "content-type": "application/json" } : {}) },
+    headers: { origin, cookie: session?.cookie ?? "", ...(payload ? { "content-type": "application/json" } : {}) },
     payload,
   });
   return { status: response.statusCode, body: response.body ? JSON.parse(response.body) : null };

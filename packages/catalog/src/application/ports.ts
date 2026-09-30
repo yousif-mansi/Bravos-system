@@ -19,7 +19,8 @@ export type CatalogActorPort = {
 };
 
 export type AvailabilityReader = {
-  quantitiesFor(variantIds: string[]): Promise<Map<string, number>>;
+  quantitiesFor(branchId: string, variantIds: string[]): Promise<Map<string, number>>;
+  quantitiesByBranchFor(variantIds: string[]): Promise<Map<string, Map<string, number>>>;
 };
 
 export type VariantReferenceReader = {
@@ -37,10 +38,13 @@ export type ListedPriceBasis = {
 export type VariantWrite = {
   sizeId: string;
   colorId: string;
+  onlineVisible?: boolean;
   sellingPricePiastersOverride: number | null;
 };
 
 export type ProductWrite = {
+  expectedRevision?: number;
+  expectedVariantIds?: string[];
   code: string;
   nameAr: string;
   descriptionAr: string;

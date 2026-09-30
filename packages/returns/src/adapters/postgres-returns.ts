@@ -50,6 +50,7 @@ export function createPostgresStockReconciliationReturnFacts(queryable: Queryabl
 
 type SourceRow = {
   id: string;
+  reference: string;
   operation_id: string;
   branch_id: string;
   sold_by_staff_id: string;
@@ -91,6 +92,7 @@ type AllocationRow = {
 
 type ReturnRow = {
   id: string;
+  reference: string;
   operation_id: string;
   source_sale_id: string | null;
   source_online_order_id: string | null;
@@ -120,6 +122,8 @@ type ReturnRow = {
 
 type ReturnListRow = {
   id: string;
+  reference: string;
+  customer_name: string | null;
   status: "draft" | "posted";
   revision: number;
   source_sale_id: string | null;
@@ -384,9 +388,10 @@ export function createPostgresReturnsStore(queryable: Queryable): ReturnsStore {
     getByOperationId: (operationId) => loadReturnByOperation(queryable, operationId),
     async listPage(input) {
       const result = await queryable.query<ReturnListRow>(
-        `SELECT r.id,r.status,r.revision,r.source_sale_id,r.source_online_order_id,
+        `SELECT r.id,r.reference,r.status,r.revision,r.source_sale_id,r.source_online_order_id,
                 CASE WHEN r.source_online_order_id IS NULL THEN 'physical' ELSE 'online' END AS channel,
-                COALESCE(online_source.reference,r.source_sale_id::text) AS source_reference,
+                COALESCE(online_source.reference,source_sale.reference) AS source_reference,
+                COALESCE(online_source.customer_name,source_sale.customer_name) AS customer_name,
                 original_branch.id AS original_branch_id, original_branch.code AS original_branch_code,
                 original_branch.name_ar AS original_branch_name_ar,
                 handling_branch.id AS handling_branch_id, handling_branch.code AS handling_branch_code,
@@ -396,7 +401,8 @@ export function createPostgresReturnsStore(queryable: Queryable): ReturnsStore {
          FROM returns_return r
          LEFT JOIN sales_sale source_sale ON source_sale.id = r.source_sale_id
          LEFT JOIN online_order online_source ON online_source.id=r.source_online_order_id
-         LEFT JOIN branch original_branch ON original_branch.id = source_sale.branch_id
+         LEFT JOIN online_order_confirmation online_confirmation ON online_confirmation.order_id = online_source.id
+         LEFT JOIN branch original_branch ON original_branch.id = COALESCE(source_sale.branch_id, online_confirmation.fulfillment_branch_id)
          JOIN branch handling_branch ON handling_branch.id = r.handling_branch_id
          WHERE ($2::uuid IS NULL OR (r.created_at, r.id) < (
            SELECT cursor_return.created_at, cursor_return.id FROM returns_return cursor_return WHERE cursor_return.id = $2
@@ -586,7 +592,7 @@ export function createPostgresReturnsUnitOfWork(
 
 async function loadPhysicalSource(queryable: Queryable, saleId: string, lock: boolean): Promise<ReturnSourceRecord | null> {
   const result = await queryable.query<SourceRow>(
-    `SELECT s.id, s.operation_id, s.branch_id, s.sold_by_staff_id, s.sold_by_display_name,
+    `SELECT s.id, s.reference, s.operation_id, s.branch_id, s.sold_by_staff_id, s.sold_by_display_name,
             s.occurred_at,
             ((s.occurred_at AT TIME ZONE 'Africa/Cairo') + interval '14 days')
               AT TIME ZONE 'Africa/Cairo' AS return_deadline_at,
@@ -689,7 +695,7 @@ async function loadPhysicalSource(queryable: Queryable, saleId: string, lock: bo
   }));
   return {
     source: { kind: "physical_sale", id: row.id },
-    reference: row.id,
+    reference: row.reference,
     channel: "physical",
     branchId: row.branch_id,
     seller: { staffId: row.sold_by_staff_id, displayName: row.sold_by_display_name },
@@ -756,6 +762,7 @@ async function toReturn(queryable: Queryable, row: ReturnRow): Promise<ReturnRec
   ]);
   return {
     id: row.id,
+    reference: row.reference,
     operationId: row.operation_id,
     source: row.source_sale_id
       ? { kind: "physical_sale", id: row.source_sale_id }
@@ -846,6 +853,8 @@ function toReturnListRecord(row: ReturnListRow): ReturnListRecord {
     : null;
   return {
     id: row.id,
+    reference: row.reference,
+    customerName: row.customer_name,
     status: row.status,
     revision: row.revision,
     source: row.source_sale_id
@@ -917,35 +926,27 @@ function toEvent(row: EventRow): RefundEventRecord {
 
 function sourceSearchSql(search: SourceSearch) {
   const where = ["s.physically_completed = true"];
-  if (search.reference) where.push("(s.id::text ILIKE '%' || $1 || '%' OR s.operation_id::text ILIKE '%' || $1 || '%')");
+  if (search.reference) {
+    const index = paramIndex(search, "reference");
+    where.push(`(s.reference ILIKE '%' || $${index} || '%' OR s.id::text ILIKE '%' || $${index} || '%' OR s.operation_id::text ILIKE '%' || $${index} || '%')`);
+  }
+  if (search.phone) where.push(`s.customer_phone ILIKE '%' || $${paramIndex(search, "phone")} || '%'`);
   if (search.date) where.push(`(s.occurred_at AT TIME ZONE 'Africa/Cairo')::date = $${paramIndex(search, "date")}::date`);
   if (search.branchId) where.push(`s.branch_id = $${paramIndex(search, "branchId")}::uuid`);
-  if (search.item) {
-    const index = paramIndex(search, "item");
-    where.push(`EXISTS (
-      SELECT 1 FROM sales_sale_line sl
-      JOIN catalog_product_variant v ON v.id = sl.variant_id
-      JOIN catalog_product p ON p.id = v.product_id
-      JOIN catalog_size sz ON sz.id = v.size_id
-      JOIN catalog_color c ON c.id = v.color_id
-      WHERE sl.sale_id = s.id AND (p.code ILIKE '%' || $${index} || '%' OR p.name_ar ILIKE '%' || $${index} || '%'
-        OR sz.name_ar ILIKE '%' || $${index} || '%' OR c.name_ar ILIKE '%' || $${index} || '%')
-    )`);
-  }
   return `SELECT s.id FROM sales_sale s WHERE ${where.join(" AND ")} ORDER BY s.occurred_at DESC, s.id DESC LIMIT 100`;
 }
 
 function sourceSearchParams(search: SourceSearch) {
   const params: unknown[] = [];
   if (search.reference) params.push(search.reference);
+  if (search.phone) params.push(search.phone);
   if (search.date) params.push(search.date);
   if (search.branchId) params.push(search.branchId);
-  if (search.item) params.push(search.item);
   return params;
 }
 
 function paramIndex(search: SourceSearch, key: keyof SourceSearch) {
-  const order: Array<keyof SourceSearch> = ["reference", "date", "branchId", "item", "amountPiasters"];
+  const order: Array<keyof SourceSearch> = ["reference", "phone", "date", "branchId", "amountPiasters"];
   return order.filter((item) => order.indexOf(item) <= order.indexOf(key) && search[item] !== undefined).length;
 }
 

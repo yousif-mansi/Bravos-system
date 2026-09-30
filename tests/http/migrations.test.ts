@@ -52,6 +52,11 @@ test("apply, down the latest migration, and reapply works with multiple migratio
       "027_online_returns.sql",
       "028_aggregate_analytics.sql",
       "029_restore.sql",
+      "030_branch_inventory.sql",
+      "031_sale_payments.sql",
+      "032_catalog_online_variants.sql",
+      "033_human_references.sql",
+      "034_order_recognition_branch.sql",
     ]);
     expect(await listAppliedMigrations(pool)).toEqual(first);
     expect(await tableNames(pool)).toEqual(
@@ -61,6 +66,7 @@ test("apply, down the latest migration, and reapply works with multiple migratio
         "catalog_product",
         "catalog_product_variant",
         "inventory_batch",
+        "inventory_batch_balance",
         "receiving_receipt",
         "inventory_allocation",
         "sales_sale",
@@ -228,6 +234,7 @@ test("apply, down the latest migration, and reapply works with multiple migratio
       "public_analytics_event",
       "restore_preview", "restore_runtime", "restore_preview_till", "restore_activation",
       "sales_restore_deferred_completion",
+      "inventory_batch_balance",
     ]));
     expect(await columnExists(pool, "sales_pos_snapshot", "restore_generation")).toBe(true);
     expect(await columnExists(pool, "sales_sale", "source_restore_generation")).toBe(true);
@@ -408,6 +415,11 @@ test("008 down expands counted unit ranges into one legacy row per ordinal", asy
       "027_online_returns.sql",
       "028_aggregate_analytics.sql",
       "029_restore.sql",
+      "030_branch_inventory.sql",
+      "031_sale_payments.sql",
+      "032_catalog_online_variants.sql",
+      "033_human_references.sql",
+      "034_order_recognition_branch.sql",
     ]);
     const restored = await pool.query<{ unit_index: number; quantity: number; paid_piasters: number }>(
       `SELECT unit_index, quantity, paid_piasters FROM sales_sale_unit ORDER BY unit_index`,
@@ -427,6 +439,7 @@ test("029 refuses to discard restore history or retained sales during rollback",
   const pool = new Pool({ connectionString: cluster.connectionString(databaseName), max: 3 });
   try {
     await applyMigrations(pool);
+    await revertToMigration(pool, "029_restore.sql");
     expect((await pool.query("SELECT current_generation::text AS generation FROM restore_runtime")).rows).toEqual([{ generation: "0" }]);
     await pool.query("UPDATE restore_runtime SET current_generation = 1");
     await expect(revertLastMigration(pool)).rejects.toThrow(/Cannot remove restore history/);
@@ -448,7 +461,10 @@ test("029 refuses to discard restore history or retained sales during rollback",
     expect(await tableNames(pool)).not.toContain("restore_runtime");
     expect(await triggerCount(pool, "restore_write_guard_%")).toBe(0);
     expect(await constraintDeferrable(pool, "expense_operation_expense_fk")).toBe(false);
-    expect(await applyMigrations(pool)).toEqual(["029_restore.sql"]);
+    expect(await applyMigrations(pool)).toEqual([
+      "029_restore.sql", "030_branch_inventory.sql", "031_sale_payments.sql",
+      "032_catalog_online_variants.sql", "033_human_references.sql", "034_order_recognition_branch.sql",
+    ]);
     expect(await unguardedBusinessTables(pool)).toEqual([]);
     expect(await constraintDeferrable(pool, "expense_operation_expense_fk")).toBe(true);
   } finally {
@@ -462,6 +478,7 @@ test("028 refuses to discard retained analytics events during rollback", async (
   const pool = new Pool({ connectionString: cluster.connectionString(databaseName), max: 3 });
   try {
     await applyMigrations(pool);
+    await revertToMigration(pool, "029_restore.sql");
     expect(await revertLastMigration(pool)).toBe("029_restore.sql");
     await pool.query(
       `INSERT INTO public_analytics_event
@@ -477,7 +494,11 @@ test("028 refuses to discard retained analytics events during rollback", async (
     await pool.query("DELETE FROM public_analytics_event");
     expect(await revertLastMigration(pool)).toBe("028_aggregate_analytics.sql");
     expect(await tableNames(pool)).not.toContain("public_analytics_event");
-    expect(await applyMigrations(pool)).toEqual(["028_aggregate_analytics.sql", "029_restore.sql"]);
+    expect(await applyMigrations(pool)).toEqual([
+      "028_aggregate_analytics.sql", "029_restore.sql", "030_branch_inventory.sql",
+      "031_sale_payments.sql", "032_catalog_online_variants.sql", "033_human_references.sql",
+      "034_order_recognition_branch.sql",
+    ]);
   } finally {
     await pool.end();
   }
@@ -539,6 +560,11 @@ test("020 backfills each legacy till from its latest snapshot without inventing 
       "027_online_returns.sql",
       "028_aggregate_analytics.sql",
       "029_restore.sql",
+      "030_branch_inventory.sql",
+      "031_sale_payments.sql",
+      "032_catalog_online_variants.sql",
+      "033_human_references.sql",
+      "034_order_recognition_branch.sql",
     ]);
     const knownTills = await pool.query<{
       device_id: string;
@@ -587,6 +613,7 @@ test("027 refuses to discard delivered online Return evidence during rollback", 
   const pool = new Pool({ connectionString: cluster.connectionString(databaseName), max: 3 });
   try {
     await applyMigrations(pool);
+    await revertToMigration(pool, "029_restore.sql");
     expect(await revertLastMigration(pool)).toBe("029_restore.sql");
     expect(await revertLastMigration(pool)).toBe("028_aggregate_analytics.sql");
     await pool.query(`
@@ -740,6 +767,14 @@ async function tableNames(pool: Pool): Promise<string[]> {
     `SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename`,
   );
   return result.rows.map((row) => row.tablename);
+}
+
+async function revertToMigration(pool: Pool, target: string): Promise<void> {
+  const applied = await listAppliedMigrations(pool);
+  if (!applied.includes(target)) throw new Error(`Migration ${target} is not applied.`);
+  for (const migration of applied.slice(applied.indexOf(target) + 1).reverse()) {
+    expect(await revertLastMigration(pool)).toBe(migration);
+  }
 }
 
 async function columnExists(pool: Pool, table: string, column: string): Promise<boolean> {

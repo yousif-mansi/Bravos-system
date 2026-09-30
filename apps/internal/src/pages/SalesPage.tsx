@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { accountGeneration, subscribeAccount } from "../account-session.ts";
 import { Link, useSearchParams } from "react-router-dom";
-import type { ManagerSaleDto, SaleDto, WorkspaceDto } from "@bravos/contracts";
-import { ApiError, getSale, listSales } from "../api.ts";
+import type { ManagerSaleDto, OnlineOrderDto, SaleDto, WorkspaceDto } from "@bravos/contracts";
+import { ApiError, getSale, listOnlineOrders, listSales } from "../api.ts";
 import { pos, saleFromOffline } from "../pos.ts";
 import { formatEgpFromPiasters } from "../money.ts";
 import { EmptyState } from "../ui/EmptyState.tsx";
@@ -19,6 +19,7 @@ export default function SalesPage({
   const requestedSaleId = searchParams.get("saleId");
   const [error, setError] = useState("");
   const [sales, setSales] = useState<SaleDto[]>([]);
+  const [confirmedOrders, setConfirmedOrders] = useState<OnlineOrderDto[]>([]);
   const [selected, setSelected] = useState<SaleDto | ManagerSaleDto | null>(null);
   const generationRef = useRef(accountGeneration());
   const canSeeCosts = workspace.staff.role === "manager" && workspace.capabilities.manageInventory;
@@ -28,6 +29,7 @@ export default function SalesPage({
       generationRef.current = payload.generation;
       if (payload.staffId !== workspace.staff.id) {
         setSales([]);
+        setConfirmedOrders([]);
         setSelected(null);
       }
     });
@@ -41,13 +43,15 @@ export default function SalesPage({
     const role = workspace.staff.role;
     const stillCurrent = () => !cancelled && generationRef.current === generation;
     setSales([]);
+    setConfirmedOrders([]);
     setSelected(null);
     setError("");
     void (async () => {
-      const [localResult, remoteResult, requestedResult] = await Promise.allSettled([
+      const [localResult, remoteResult, requestedResult, ordersResult] = await Promise.allSettled([
         pos.listCompleted(staffId),
         listSales(),
         requestedSaleId ? getSale(requestedSaleId) : Promise.resolve(null),
+        role === "manager" ? listOnlineOrders() : Promise.resolve([]),
       ]);
       if (!stillCurrent()) {
         return;
@@ -65,6 +69,9 @@ export default function SalesPage({
       }
       const rows = [...byId.values()];
       setSales(rows);
+      if (ordersResult.status === "fulfilled" && role === "manager") {
+        setConfirmedOrders(ordersResult.value.filter((order) => order.confirmedAt !== null));
+      }
       if (requestedResult.status === "fulfilled" && requestedResult.value) {
         setSelected(requestedResult.value);
       } else {
@@ -115,13 +122,13 @@ export default function SalesPage({
       <header className="page-hero">
         <h1>المبيعات</h1>
         {workspace.capabilities.cashier ? (
-          <Link className="button" to="/lookup" aria-label="بيع نقدي البحث عن منتج">بيع نقدي</Link>
+          <Link className="button" to="/lookup" aria-label="نقطة البيع البحث عن منتج">نقطة البيع</Link>
         ) : null}
       </header>
       {error ? <div className="error" role="alert">{error}</div> : null}
       <div className="grid two">
         <section className="card">
-          <h2>قائمة المبيعات</h2>
+          <h2>مبيعات الفروع</h2>
           {sales.length === 0 ? (
             <EmptyState title="مفيش مبيعات تظهر" message="أول ما تبيع، العملية هتظهر هنا." />
           ) : (
@@ -129,7 +136,7 @@ export default function SalesPage({
               {sales.map((sale) => (
                 <li key={sale.id}>
                   <button type="button" className="secondary" onClick={() => void openSale(sale.id)}>
-                    {sale.soldByDisplayName} — {sale.branch.nameAr} — {formatEgpFromPiasters(sale.finalTotalPiasters)}
+                    {sale.reference ?? "بيع غير مزامن"} — {sale.soldByDisplayName} — {sale.branch.nameAr} — {formatEgpFromPiasters(sale.finalTotalPiasters)}
                     {sale.recordedAt ? "" : " — غير مزامن"}
                   </button>
                 </li>
@@ -137,6 +144,24 @@ export default function SalesPage({
             </ul>
           )}
         </section>
+        {workspace.staff.role === "manager" ? (
+          <section className="card" data-testid="confirmed-online-sales">
+            <h2>الطلبات الإلكترونية بعد التأكيد وحالات الإلغاء</h2>
+            {confirmedOrders.length === 0 ? <p className="muted">لا توجد طلبات تم تأكيدها بعد.</p> : (
+              <ul>
+                {confirmedOrders.map((order) => (
+                  <li key={order.id}>
+                    <Link to={`/online-orders/${order.id}`}>
+                      {order.reference} — {order.customerName} — {order.fulfillmentBranchId
+                        ? workspace.authorizedBranches.find((branch) => branch.id === order.fulfillmentBranchId)?.nameAr ?? "—"
+                        : "—"} — {formatEgpFromPiasters(order.confirmedQuote?.finalTotalPiasters ?? 0)} — {new Date(order.confirmedAt!).toLocaleString("ar-EG", { timeZone: "Africa/Cairo" })} — {onlineOrderStatus(order.status)}
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        ) : null}
         {selected ? (
           <div>
             <SaleSummary sale={selected} />
@@ -163,4 +188,18 @@ export default function SalesPage({
       </div>
     </main>
   );
+}
+
+function onlineOrderStatus(status: OnlineOrderDto["status"]): string {
+  const labels: Record<OnlineOrderDto["status"], string> = {
+    pending: "قيد الانتظار",
+    confirmed: "مؤكد",
+    shipped: "تم الشحن",
+    delivered: "تم التسليم",
+    delivery_failed: "فشل التسليم",
+    cancelled_unreachable: "ملغي لعدم الرد",
+    cancelled_before_shipment: "ملغي قبل الشحن",
+    cancelled_after_failed_delivery: "ملغي بعد فشل التسليم",
+  };
+  return labels[status];
 }

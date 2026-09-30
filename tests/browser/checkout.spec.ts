@@ -311,6 +311,7 @@ async function seedCheckoutProduct(page: Page, code: string, pricePiasters: numb
   const variantId = product.body.variants[0].id as string;
   expect((await staffApi(page, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
+    branchId: (await staffApi(page, "GET", "/api/internal/workspace")).body.activeBranch.id,
     receiptDate: cairoDate(),
     lines: [{ variantId, quantity, unitCostPiasters: 10_000 }],
   })).status).toBe(201);

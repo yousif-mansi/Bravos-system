@@ -176,6 +176,7 @@ test("accepted submissions and delivered sales come from durable order operation
     operationId: crypto.randomUUID(),
     expectedRevision: agreed.body.revision,
     agreedRevision: agreed.body.revision,
+    fulfillmentBranchId: branchId,
     itemsLocatedAndSetAside: true,
   });
   const shipped = await api(manager, "POST", `/api/internal/online-orders/${seeded.orderId}/ship`, {
@@ -297,7 +298,7 @@ test("manager exports the exact authorized management report as bounded PDF and 
   expect(summaryValues.get("المصروفات الفعلية (ج.م)")).toBe(report.body.summary.effectiveExpensesPiasters / 100);
   expect(summaryValues.get("صافي مبيعات البضاعة (ج.م)")).toBe(report.body.summary.netMerchandiseSalesPiasters / 100);
   expect(summaryValues.get("تكلفة المشتريات (ج.م)")).toBe(report.body.summary.purchaseCostPiasters / 100);
-  expect(summaryValues.get("عدد المبيعات المكتملة")).toBe(report.body.summary.completedCount);
+  expect(summaryValues.get("عدد مبيعات الفروع والطلبات المؤكدة")).toBe(report.body.summary.completedCount);
   workbook.eachSheet((sheet) => {
     expect(sheet.views[0]).toMatchObject({ rightToLeft: true });
     const headers = (sheet.getRow(1).values as unknown[]).slice(1).map(String);
@@ -317,7 +318,7 @@ test("manager exports the exact authorized management report as bounded PDF and 
   ]);
   const salesSheet = workbook.getWorksheet("المبيعات المكتملة");
   const salesHeaders = (salesSheet?.getRow(1).values as unknown[]).slice(1).map(String);
-  const completedAt = (salesSheet?.getRow(2).values as unknown[]).slice(1)[salesHeaders.indexOf("وقت الإكمال (القاهرة)")];
+  const completedAt = (salesSheet?.getRow(2).values as unknown[]).slice(1)[salesHeaders.indexOf("وقت البيع/التأكيد (القاهرة)")];
   expect(completedAt).toBe("2026-09-16 13:00:00");
 
   const longDescription = `بداية النص الطويل ${"تفاصيل عربية كاملة يجب أن تنتقل بين صفحات التقرير دون حذف أو اقتطاع. ".repeat(600)} نهاية النص الطويل`;
@@ -504,6 +505,7 @@ async function seedPublicProduct(manager: Session, suffix: string, quantity: num
   const variantId = product.body.variants[0].id as string;
   const received = await api(manager, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
+    branchId,
     receiptDate: "2026-09-16",
     lines: [{ variantId, quantity, unitCostPiasters: 9_000 }],
   });

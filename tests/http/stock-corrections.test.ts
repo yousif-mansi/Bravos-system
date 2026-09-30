@@ -56,6 +56,7 @@ test("manager coordinates a known till and records an exact negative available-q
   const variantId = await seedVariant(manager);
   await api(manager, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
+    branchId: abshwayId,
     receiptDate: "2026-09-15",
     lines: [{ variantId, quantity: 5, unitCostPiasters: 10000 }],
   });
@@ -79,6 +80,7 @@ test("manager coordinates a known till and records an exact negative available-q
 
   const pausedReceipt = await api(manager, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
+    branchId: abshwayId,
     receiptDate: "2026-09-15",
     lines: [{ variantId, quantity: 1, unitCostPiasters: 12000 }],
   });
@@ -119,6 +121,7 @@ test("manager coordinates a known till and records an exact negative available-q
   const corrected = await api(manager, "POST", "/api/internal/inventory/stock-corrections", {
     operationId,
     coordinationId: started.body.id,
+    branchId: abshwayId,
     variantId,
     previousAvailableQuantity: 5,
     correctedAvailableQuantity: 4,
@@ -141,6 +144,7 @@ test("manager coordinates a known till and records an exact negative available-q
   const replay = await api(manager, "POST", "/api/internal/inventory/stock-corrections", {
     operationId,
     coordinationId: started.body.id,
+    branchId: abshwayId,
     variantId,
     previousAvailableQuantity: 5,
     correctedAvailableQuantity: 4,
@@ -189,6 +193,7 @@ test("reconciles a pre-count late sale exactly once and rejects a post-count sal
     operationId,
     correctionId: correction.id,
     saleId: preCountSale.body.id,
+    branchId: abshwayId,
     variantId,
     resolution: "included_in_count",
     quantity: 1,
@@ -207,6 +212,7 @@ test("reconciles a pre-count late sale exactly once and rejects a post-count sal
     operationId,
     correctionId: correction.id,
     saleId: preCountSale.body.id,
+    branchId: abshwayId,
     variantId,
     resolution: "included_in_count",
     quantity: 1,
@@ -235,6 +241,7 @@ test("reconciles a pre-count late sale exactly once and rejects a post-count sal
     operationId: crypto.randomUUID(),
     correctionId: correction.id,
     saleId: postCountSale.body.id,
+    branchId: abshwayId,
     variantId,
     resolution: "included_in_count",
     quantity: 1,
@@ -262,7 +269,7 @@ test("keeps an uncosted late sale held until a real batch is allocated", async (
     coordinationId: heldCoordination.body.id, deviceId, snapshotId: heldSnapshot.body.snapshotId,
   });
   const falseAvailability = await api(manager, "POST", "/api/internal/inventory/stock-corrections", {
-    operationId: crypto.randomUUID(), coordinationId: heldCoordination.body.id, variantId,
+    operationId: crypto.randomUUID(), coordinationId: heldCoordination.body.id, branchId: abshwayId, variantId,
     previousAvailableQuantity: 0, correctedAvailableQuantity: 1,
     reason: "لا يجوز تحرير الفرق المحجوز", positiveSourceBatchId: correction.batches[0].batchId,
   });
@@ -274,7 +281,7 @@ test("keeps an uncosted late sale held until a real batch is allocated", async (
   });
 
   const counted = await api(manager, "POST", "/api/internal/inventory/stock-reconciliations", {
-    operationId: crypto.randomUUID(), correctionId: correction.id, saleId: late.body.id, variantId,
+    operationId: crypto.randomUUID(), correctionId: correction.id, saleId: late.body.id, branchId: abshwayId, variantId,
     resolution: "included_in_count", quantity: 1,
   });
   expect(counted.status).toBe(201);
@@ -287,7 +294,7 @@ test("keeps an uncosted late sale held until a real batch is allocated", async (
   expect(await available(manager, variantId)).toBe(0);
 
   const fabricated = await api(manager, "POST", "/api/internal/inventory/stock-reconciliations", {
-    operationId: crypto.randomUUID(), correctionId: correction.id, saleId: late.body.id, variantId,
+    operationId: crypto.randomUUID(), correctionId: correction.id, saleId: late.body.id, branchId: abshwayId, variantId,
     resolution: "allocate_missing_source", quantity: 1,
   });
   expect(fabricated.status).toBe(400);
@@ -296,7 +303,7 @@ test("keeps an uncosted late sale held until a real batch is allocated", async (
   await receive(manager, variantId, 1, 12000);
   expect(await available(manager, variantId)).toBe(0);
   const allocated = await api(manager, "POST", "/api/internal/inventory/stock-reconciliations", {
-    operationId: crypto.randomUUID(), correctionId: correction.id, saleId: late.body.id, variantId,
+    operationId: crypto.randomUUID(), correctionId: correction.id, saleId: late.body.id, branchId: abshwayId, variantId,
     resolution: "allocate_missing_source", quantity: 1,
   });
   expect(allocated.status, JSON.stringify(allocated.body)).toBe(201);
@@ -377,13 +384,13 @@ test("requires retained batch provenance for a positive correction and replays i
     coordinationId: started.body.id, deviceId, snapshotId: snapshot.body.snapshotId,
   });
   const missingSource = await api(manager, "POST", "/api/internal/inventory/stock-corrections", {
-    operationId: crypto.randomUUID(), coordinationId: started.body.id, variantId,
+    operationId: crypto.randomUUID(), coordinationId: started.body.id, branchId: abshwayId, variantId,
     previousAvailableQuantity: 1, correctedAvailableQuantity: 2, reason: "قطعة من الدفعة الأصلية",
   });
   expect(missingSource.status).toBe(400);
   const operationId = crypto.randomUUID();
   const corrected = await api(manager, "POST", "/api/internal/inventory/stock-corrections", {
-    operationId, coordinationId: started.body.id, variantId,
+    operationId, coordinationId: started.body.id, branchId: abshwayId, variantId,
     previousAvailableQuantity: 1, correctedAvailableQuantity: 2,
     reason: "قطعة من الدفعة الأصلية", positiveSourceBatchId: sourceBatchId,
   });
@@ -392,7 +399,7 @@ test("requires retained batch provenance for a positive correction and replays i
     expect.objectContaining({ batchId: sourceBatchId, direction: "restore", quantity: 1, unitCostPiasters: 6500 }),
   ]);
   const replay = await api(manager, "POST", "/api/internal/inventory/stock-corrections", {
-    operationId, coordinationId: started.body.id, variantId,
+    operationId, coordinationId: started.body.id, branchId: abshwayId, variantId,
     previousAvailableQuantity: 1, correctedAvailableQuantity: 2,
     reason: "قطعة من الدفعة الأصلية", positiveSourceBatchId: sourceBatchId,
   });
@@ -417,12 +424,12 @@ test("cannot count the same late sale again under a second negative correction",
   expect(late.status).toBe(201);
   const firstResolution = await api(manager, "POST", "/api/internal/inventory/stock-reconciliations", {
     operationId: crypto.randomUUID(), correctionId: first.correction.id, saleId: late.body.id,
-    variantId, resolution: "included_in_count", quantity: 1,
+    branchId: abshwayId, variantId, resolution: "included_in_count", quantity: 1,
   });
   expect(firstResolution.status).toBe(201);
   const duplicate = await api(manager, "POST", "/api/internal/inventory/stock-reconciliations", {
     operationId: crypto.randomUUID(), correctionId: second.correction.id, saleId: late.body.id,
-    variantId, resolution: "included_in_count", quantity: 1,
+    branchId: abshwayId, variantId, resolution: "included_in_count", quantity: 1,
   });
   expect(duplicate.status).toBe(400);
   expect(duplicate.body.error.messageAr).toContain("أثر البيع غير المصالح");
@@ -463,7 +470,7 @@ test("rejects cost reassignment after a return already restored the original sal
   expect(await available(manager, variantId)).toBe(1);
   const rejected = await api(manager, "POST", "/api/internal/inventory/stock-reconciliations", {
     operationId: crypto.randomUUID(), correctionId: correction.id, saleId: late.body.id,
-    variantId, resolution: "included_in_count", quantity: 1,
+    branchId: abshwayId, variantId, resolution: "included_in_count", quantity: 1,
   });
   expect(rejected.status).toBe(400);
   expect(rejected.body.error.messageAr).toContain("بعد تسجيل إرجاع أو تصحيح مرتبط");
@@ -501,6 +508,7 @@ async function managerSession() {
 async function receive(manager: CookieSession, variantId: string, quantity: number, unitCostPiasters: number) {
   return api(manager, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
+    branchId: abshwayId,
     receiptDate: "2026-09-15",
     lines: [{ variantId, quantity, unitCostPiasters }],
   });
@@ -523,6 +531,7 @@ async function coordinateAndCorrect(
   const corrected = await api(manager, "POST", "/api/internal/inventory/stock-corrections", {
     operationId: crypto.randomUUID(),
     coordinationId: started.body.id,
+    branchId: abshwayId,
     variantId,
     previousAvailableQuantity,
     correctedAvailableQuantity,
@@ -561,7 +570,7 @@ function acceptSnapshotSale(
 
 async function available(manager: CookieSession, variantId: string) {
   void manager;
-  return (await built.inventory.quantitiesFor([variantId])).get(variantId) ?? 0;
+  return (await built.inventory.quantitiesFor(abshwayId, [variantId])).get(variantId) ?? 0;
 }
 
 type CookieSession = { cookie: string };

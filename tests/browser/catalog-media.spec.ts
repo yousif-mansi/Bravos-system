@@ -11,13 +11,27 @@ test("manager publishes product media and customers see only selectable stocked 
   await signInManager(page);
   await createTaxonomy(page);
 
-  const form = page.getByRole("form", { name: "إنشاء منتج" });
-  await form.getByLabel("رمز المنتج").fill("MEDIA-E2E-17");
-  await form.getByLabel("اسم المنتج").fill("قميص برافوس المصور");
+  const categories = await staffApi(page, "GET", "/api/internal/catalog/categories");
+  const sizes = await staffApi(page, "GET", "/api/internal/catalog/sizes");
+  const colors = await staffApi(page, "GET", "/api/internal/catalog/colors");
+  const category = categories.body.find((item: { nameAr: string }) => item.nameAr === "قمصان 17");
+  const size = sizes.body.find((item: { nameAr: string }) => item.nameAr === "XL17");
+  const green = colors.body.find((item: { nameAr: string }) => item.nameAr === "أخضر 17");
+  const sand = colors.body.find((item: { nameAr: string }) => item.nameAr === "رملي 17");
+  const created = await staffApi(page, "POST", "/api/internal/catalog/products", {
+    code: "MEDIA-E2E-17", nameAr: "قميص برافوس المصور", descriptionAr: "", categoryId: category.id,
+    defaultSellingPricePiasters: 32000, publication: "available", imageRefs: [], sizeGuideAr: null,
+    variants: [
+      { sizeId: size.id, colorId: green.id, sellingPricePiastersOverride: null },
+      { sizeId: size.id, colorId: sand.id, sellingPricePiastersOverride: null },
+    ],
+  });
+  expect(created.status).toBe(201);
+  await page.reload();
+  await page.getByLabel("رمز المنتج", { exact: true }).first().fill("MEDIA-E2E-17");
+  await page.getByRole("button", { name: "عرض المنتج" }).click();
+  const form = page.getByRole("form", { name: "تعديل منتج" });
   await form.getByLabel("الوصف").fill("قميص قطني بصورة حقيقية");
-  await form.getByLabel("التصنيف").selectOption({ label: "قمصان 17" });
-  await form.getByLabel("سعر البيع الافتراضي بالجنيه").fill("320");
-  await form.getByLabel("حالة الموقع").selectOption("available");
   await form.getByLabel("دليل المقاسات (اختياري)").fill("XL17 — عرض الصدر 54 سم");
   const uploadInput = form.getByLabel(/رفع صور JPG/);
   let uploadRequests = 0;
@@ -48,27 +62,22 @@ test("manager publishes product media and customers see only selectable stocked 
     { name: "broken-17.png", mimeType: "image/png", buffer: BROKEN_PNG },
   ]);
   await uploadObserved;
-  await expect(form.getByRole("button", { name: "حفظ المنتج" })).toBeDisabled();
+  await expect(form.getByRole("button", { name: "حفظ التعديل" })).toBeDisabled();
   const categoryDuringUpload = page.getByRole("form", { name: "إضافة تصنيف" });
   await categoryDuringUpload.getByLabel("اسم التصنيف").fill("تصنيف أثناء الرفع 17");
   await categoryDuringUpload.getByRole("button", { name: "حفظ التصنيف" }).click();
   await expect(page.getByText("تم حفظ التصنيف.", { exact: true })).toBeVisible();
-  await expect(form.getByRole("button", { name: "حفظ المنتج" })).toBeDisabled();
+  await expect(form.getByRole("button", { name: "حفظ التعديل" })).toBeDisabled();
   releaseUpload();
   await expect(page.getByRole("alert")).toContainText("ملف الصورة تالف أو غير قابل للقراءة");
   await expect(page.getByRole("status")).toContainText("تم رفع 1 من 2 صورة");
-  await expect(form.getByRole("button", { name: "حفظ المنتج" })).toBeEnabled();
+  await expect(form.getByRole("button", { name: "حفظ التعديل" })).toBeEnabled();
   await expect.poll(() => uploadRequests).toBe(2);
   await expect(form.getByRole("img", { name: "صورة المنتج 1" })).toBeVisible();
 
-  await form.getByLabel("المقاس", { exact: true }).selectOption({ label: "XL17" });
-  await form.getByLabel("اللون", { exact: true }).selectOption({ label: "أخضر 17" });
-  await form.getByRole("button", { name: "إضافة متغير" }).click();
-  await form.getByLabel("المقاس", { exact: true }).nth(1).selectOption({ label: "XL17" });
-  await form.getByLabel("اللون", { exact: true }).nth(1).selectOption({ label: "رملي 17" });
   await form.getByLabel("سعر مختلف للمتغير (اختياري)").nth(1).fill("340");
-  await form.getByRole("button", { name: "حفظ المنتج" }).click();
-  await expect(page.getByRole("status")).toContainText("تم إنشاء المنتج");
+  await form.getByRole("button", { name: "حفظ التعديل" }).click();
+  await expect(page.getByRole("status")).toContainText("تم تحديث المنتج");
 
   const products = await staffApi(page, "GET", "/api/internal/catalog/products");
   const product = (products.body as ManagerProductDto[]).find((item) => item.code === "MEDIA-E2E-17");
@@ -89,6 +98,7 @@ test("manager publishes product media and customers see only selectable stocked 
 
   const receipt = await staffApi(page, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
+    branchId: (await staffApi(page, "GET", "/api/internal/workspace")).body.activeBranch.id,
     receiptDate: "2026-09-14",
     lines: [{ variantId: stocked.id, quantity: 2, unitCostPiasters: 18000 }],
   });
@@ -208,6 +218,7 @@ function productWrite(
     variants: product.variants.map((variant) => ({
       sizeId: variant.size.id,
       colorId: variant.color.id,
+      onlineVisible: variant.onlineVisible,
       sellingPricePiastersOverride: variant.sellingPricePiastersOverride,
     })),
   };

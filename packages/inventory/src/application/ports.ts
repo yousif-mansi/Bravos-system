@@ -39,6 +39,7 @@ export type ReceiveBatchLine = {
 export type ReceivedBatchRecord = {
   id: string;
   variantId: string;
+  branchBalances: Array<{ branchId: string; availableQuantity: number }>;
   receivedQuantity: number;
   effectiveReceivedQuantity: number;
   remainingQuantity: number;
@@ -53,6 +54,7 @@ export type ReceivedBatchRecord = {
 export type BatchRecord = {
   id: string;
   variantId: string;
+  branchBalances: Array<{ branchId: string; availableQuantity: number }>;
   receivedQuantity: number;
   effectiveReceivedQuantity: number;
   remainingQuantity: number;
@@ -99,6 +101,7 @@ export type ReceivingBatchCorrectionResult = {
 };
 
 export type DiscrepancyRecord = {
+  branchId: string;
   variantId: string;
   requestedQuantity: number;
   allocatedQuantity: number;
@@ -112,6 +115,7 @@ export type AllocateResult = {
 };
 
 export type ProtectedOrderAllocation = {
+  branchId: string;
   allocationId: string;
   variantId: string;
   quantity: number;
@@ -148,6 +152,7 @@ export type OnlineOrderDispositionResult = {
 };
 
 export type ProtectedOrderAllocationProvenance = {
+  branchId: string;
   protectedOrderId: string;
   allocationId: string;
   sourceLineId: string;
@@ -218,6 +223,7 @@ export type InventoryTransaction = {
     kind?: "stock_correction" | "stock_reconciliation";
   }): Promise<ClaimedOperation>;
   receiveBatches(input: {
+    branchId: string;
     operationId: string;
     receiptId: string;
     receiptDate: string;
@@ -226,8 +232,9 @@ export type InventoryTransaction = {
   }): Promise<ReceivedBatchRecord[]>;
   importOpeningBatches(input: {
     operationId: string;
-    receiptId: string;
     lines: Array<ReceiveBatchLine & {
+      branchId: string;
+      receiptId: string;
       batchId: string;
       movementId: string;
       receiptDate: string;
@@ -241,11 +248,13 @@ export type InventoryTransaction = {
     variantThresholds: Array<{ variantId: string; threshold: number }>;
   }): Promise<void>;
   applyReceivingCorrection(input: {
+    branchId: string;
     operationId: string;
     recordedAt: Date;
     lines: ReceivingBatchCorrection[];
   }): Promise<ReceivingBatchCorrectionResult[]>;
   protectOnlineOrder(input: {
+    branchId: string;
     orderId: string;
     operationId: string;
     payloadFingerprint: string;
@@ -253,6 +262,7 @@ export type InventoryTransaction = {
     lines: Array<{ lineId: string; variantId: string; quantity: number }>;
   }): Promise<ProtectOnlineOrderResult>;
   disposeProtectedOnlineOrder(input: {
+    branchId: string;
     orderId: string;
     operationId: string;
     payloadFingerprint: string;
@@ -264,12 +274,14 @@ export type InventoryTransaction = {
   lockProtectedOrderAllocations(orderId: string): Promise<ProtectedOrderAllocationProvenance[]>;
   listDeliveredReturnAllocationEffects(operationIds: string[]): Promise<RecordedDeliveredReturnAllocationEffect[]>;
   adjustDeliveredReturnProtection(input: {
+    branchId: string;
     orderId: string;
     operationId: string;
     recordedAt: Date;
     effects: DeliveredReturnAllocationEffect[];
   }): Promise<void>;
   allocateFromOldestAvailable(input: {
+    branchId: string;
     operationId: string;
     variantId: string;
     quantity: number;
@@ -277,12 +289,14 @@ export type InventoryTransaction = {
     allowPartial: boolean;
   }): Promise<AllocateResult>;
   allocateHeldFromOldestAvailable(input: {
+    branchId: string;
     operationId: string;
     variantId: string;
     quantity: number;
     recordedAt: Date;
   }): Promise<AllocateResult>;
   attributeHeldAllocation(input: {
+    branchId: string;
     operationId: string;
     batchId: string;
     variantId: string;
@@ -290,18 +304,21 @@ export type InventoryTransaction = {
     recordedAt: Date;
   }): Promise<AllocationRecord>;
   removeAllocation(input: {
+    branchId: string;
     operationId: string;
     batchId: string;
     variantId: string;
     quantity: number;
   }): Promise<void>;
   allocateCorrectionFromOldestAvailable(input: {
+    branchId: string;
     operationId: string;
     variantId: string;
     quantity: number;
     recordedAt: Date;
   }): Promise<AllocateResult>;
   restoreToOriginalBatch(input: {
+    branchId: string;
     operationId: string;
     batchId: string;
     variantId: string;
@@ -309,6 +326,7 @@ export type InventoryTransaction = {
     recordedAt: Date;
   }): Promise<void>;
   adjustCorrectionBatch(input: {
+    branchId: string;
     operationId: string;
     batchId: string;
     variantId: string;
@@ -317,6 +335,7 @@ export type InventoryTransaction = {
     recordedAt: Date;
   }): Promise<{ unitCostPiasters: number; effectiveUnitCostPiasters: number }>;
   recordDiscrepancy(input: {
+    branchId: string;
     operationId: string;
     variantId: string;
     requestedQuantity: number;
@@ -324,6 +343,7 @@ export type InventoryTransaction = {
     recordedAt: Date;
   }): Promise<DiscrepancyRecord>;
   resolveDiscrepancy(input: {
+    branchId: string;
     operationId: string;
     variantId: string;
     allocatedQuantity: number;
@@ -333,9 +353,10 @@ export type InventoryTransaction = {
   listDiscrepancies(operationId: string): Promise<DiscrepancyRecord[]>;
   listDiscrepanciesForOperations(operationIds: string[]): Promise<ReportingDiscrepancyRecord[]>;
   unresolvedDiscrepancyQuantity(): Promise<number>;
-  quantitiesFor(variantIds: string[]): Promise<Map<string, number>>;
+  quantitiesFor(branchId: string, variantIds: string[]): Promise<Map<string, number>>;
+  quantitiesByBranchFor(variantIds: string[]): Promise<Map<string, Map<string, number>>>;
   referencedVariantIds(variantIds: string[]): Promise<string[]>;
-  listAvailableBatchesFifo(variantId: string): Promise<ReceivedBatchRecord[]>;
+  listAvailableBatchesFifo(branchId: string, variantId: string): Promise<ReceivedBatchRecord[]>;
   getBatchStates(batchIds: string[]): Promise<BatchRecord[]>;
   lockStockClock(mode: "share" | "update"): Promise<void>;
   bumpStockVersion(): Promise<number>;
@@ -354,7 +375,9 @@ export type InventoryTransaction = {
 };
 
 export type InventoryReadStore = {
-  quantitiesFor(variantIds: string[]): Promise<Map<string, number>>;
+  quantitiesFor(branchId: string, variantIds: string[]): Promise<Map<string, number>>;
+  quantitiesByBranchFor(variantIds: string[]): Promise<Map<string, Map<string, number>>>;
+  listBranchIds(): Promise<string[]>;
   currentStockVersion(): Promise<number>;
   referencedVariantIds(variantIds: string[]): Promise<string[]>;
   listBatches(): Promise<BatchRecord[]>;
@@ -368,6 +391,7 @@ export type InventoryReadStore = {
   listProtectedOrderAllocationProvenance(orderIds: string[]): Promise<ProtectedOrderAllocationProvenance[]>;
   summarizeAuthoritativeAvailableInventory(): Promise<{ quantity: number; valuePiasters: number }>;
   summarizeProtectedOrderInventory(orderIds: string[]): Promise<{ quantity: number; valuePiasters: number }>;
+  listOrderRestoredCostByOperations(operationIds: string[]): Promise<Map<string, number>>;
   getSettings(): Promise<SettingsRecord>;
   updateSettings(lowStockThreshold: number, actorStaffId: string): Promise<SettingsRecord>;
   upsertVariantThreshold(
@@ -380,7 +404,8 @@ export type InventoryReadStore = {
 };
 
 export type InventoryServices = {
-  quantitiesFor(variantIds: string[]): Promise<Map<string, number>>;
+  quantitiesFor(branchId: string, variantIds: string[]): Promise<Map<string, number>>;
+  quantitiesByBranchFor(variantIds: string[]): Promise<Map<string, Map<string, number>>>;
   referencedVariantIds(variantIds: string[]): Promise<string[]>;
   listBatches(auth: VerifiedAuth | null): Promise<InventoryBatchDto[]>;
   listLowStock(auth: VerifiedAuth | null): Promise<LowStockVariantDto[]>;
@@ -446,6 +471,7 @@ export type StockCoordinationStore = {
     actorStaffId: string;
   }): Promise<CountCoordinationRecord>;
   finalize(input: {
+    branchId: string;
     id: string;
     operationId: string;
     payloadFingerprint: string;
@@ -461,6 +487,7 @@ export type StockCoordinationStore = {
   listReconciliations(): Promise<Array<Omit<StockReconciliationDto, "resolvedBy"> & { resolvedByStaffId: string }>>;
   listReconciliationCases(): Promise<StockReconciliationCaseDto[]>;
   reconcile(input: {
+    branchId: string;
     id: string;
     operationId: string;
     payloadFingerprint: string;
@@ -478,6 +505,7 @@ export type StockCoordinationStore = {
 
 export type StockReconciliationSale = {
   id: string;
+  branchId: string;
   operationId: string;
   sourceDeviceId: string | null;
   sourceSnapshotId: string | null;

@@ -115,6 +115,19 @@ export function createOnlineOrderServices(ports: {
       });
     },
 
+    async replayAcceptedSubmission(input: unknown): Promise<PublicOrderSubmissionDto | null> {
+      let request: ReturnType<typeof parseSubmission>;
+      try { request = parseSubmission(input); }
+      catch (error) {
+        if (error instanceof OnlineOrderValidationError) return null;
+        throw error;
+      }
+      const accepted = await ports.store.getSubmissionByOperation(request.operationId);
+      if (!accepted) return null;
+      if (accepted.payloadFingerprint !== fingerprint(request)) throw new OnlineOrderOperationConflictError();
+      return accepted.result;
+    },
+
     async submit(input: unknown): Promise<{ created: boolean; result: PublicOrderSubmissionDto }> {
       const request = parseSubmission(input);
       const payloadFingerprint = fingerprint(request);
@@ -270,6 +283,7 @@ export function createOnlineOrderServices(ports: {
         if (replay) return { created: false, result: presentOrder(replay, isManager(actor)) };
         const order = requiredOrder(await store.getOrder(orderId, true));
         assertPendingRevision(order, command.expectedRevision);
+        if (!capabilitiesFor(actor, command.fulfillmentBranchId).orderRepresentative) throw new ForbiddenError();
         const agreed = order.agreedRevision;
         if (!agreed || agreed.version !== command.agreedRevision) throw new QuoteStaleError("يلزم تأكيد نسخة الاتفاق الحالية.");
         const accepted = await store.getAgreementQuote(agreed.quote.quoteId, true);
@@ -282,11 +296,13 @@ export function createOnlineOrderServices(ports: {
           dependencies,
           confirmedAt,
           true,
+          command.fulfillmentBranchId,
         );
         if (canonicalAgreementPrice(current.quote, current.pricing) !== canonicalAgreementPrice(accepted.quote, accepted.pricingSnapshot)) {
           throw new QuoteStaleError("تغير السعر أو العرض. راجع الاتفاق مع العميل من جديد.");
         }
         const protection = await dependencies.inventory.protectOnlineOrder({
+          branchId: command.fulfillmentBranchId,
           orderId, operationId: command.operationId, payloadFingerprint, actorStaffId: actor.id,
           lines: accepted.quote.lines.map((line) => ({
             lineId: line.id,
@@ -303,7 +319,8 @@ export function createOnlineOrderServices(ports: {
         }
         if (protection.kind === "created") await dependencies.inventory.bumpStockVersion();
         const result = await store.confirm({
-          orderId, operationId: command.operationId, payloadFingerprint, actorStaffId: actor.id,
+          orderId, fulfillmentBranchId: command.fulfillmentBranchId,
+          operationId: command.operationId, payloadFingerprint, actorStaffId: actor.id,
           agreedRevision: agreed.version, quoteId: accepted.id, reviewDigest: accepted.reviewDigest,
           confirmedAt, nextRevision: order.revision + 1,
         });
@@ -404,7 +421,7 @@ export function createOnlineOrderServices(ports: {
     async cancelBeforeShipment(auth: VerifiedAuth | null, id: string, input: unknown) {
       const actor = await requireOrderReader(auth);
       const orderId = uuid(id);
-      const command = parseReasonMutation(input, true);
+      const command = parseBeforeShipmentCancellation(input);
       const payloadFingerprint = fingerprint(command);
       return ports.uow.run(async ({ store, ...dependencies }) => {
         await dependencies.inventory.lockStockClock("update");
@@ -414,12 +431,15 @@ export function createOnlineOrderServices(ports: {
         assertRevisionAndStatus(order, command.expectedRevision, ["pending", "confirmed"]);
         const recordedAt = now();
         if (order.status === "confirmed") {
-          const disposition = await dependencies.inventory.disposeProtectedOnlineOrder({
-            orderId, operationId: command.operationId, payloadFingerprint, actorStaffId: actor.id,
-            dispositionType: "pre_shipment_cancellation", lines: [],
-          });
-          if (disposition.kind === "created" && disposition.allocations.some((item) => item.disposition === "sellable_restored")) {
-            await dependencies.inventory.bumpStockVersion();
+          if (command.itemsReturnedAndInspected) {
+            const disposition = await dependencies.inventory.disposeProtectedOnlineOrder({
+              branchId: requiredFulfillmentBranch(order),
+              orderId, operationId: command.operationId, payloadFingerprint, actorStaffId: actor.id,
+              dispositionType: "pre_shipment_cancellation", lines: [],
+            });
+            if (disposition.kind === "created" && disposition.allocations.some((item) => item.disposition === "sellable_restored")) {
+              await dependencies.inventory.bumpStockVersion();
+            }
           }
           await dependencies.couponUsage.releaseOnlineOrder({
             sourceId: orderId, operationId: command.operationId, payloadFingerprint,
@@ -431,6 +451,8 @@ export function createOnlineOrderServices(ports: {
           eventType: "cancelled_before_shipment", actorStaffId: actor.id, fromStatus: order.status,
           toStatus: "cancelled_before_shipment", occurredAt: recordedAt, recordedAt,
           reason: command.reason, nextRevision: order.revision + 1,
+          ...(order.status === "confirmed" ? { preShipmentStockDisposition:
+            command.itemsReturnedAndInspected ? "released" as const : "awaiting_inspection" as const } : {}),
         });
         return { created: true, result: presentOrder(result, isManager(actor)) };
       }, command.operationId);
@@ -446,7 +468,7 @@ export function createOnlineOrderServices(ports: {
         const replay = await replayMutation(store, orderId, "failed_return_inspection_draft", command.operationId, payloadFingerprint);
         if (replay) return { created: false, result: presentOrder(replay, isManager(actor)) };
         const order = requiredOrder(await store.getOrder(orderId, true));
-        assertRevisionAndStatus(order, command.expectedRevision, ["delivery_failed"]);
+        assertInspectionState(order, command.expectedRevision);
         if (order.failedReturnInspections.some((inspection) => inspection.status === "draft")) {
           throw new OnlineOrderStateConflictError("توجد مسودة فحص مفتوحة لهذا الطلب.");
         }
@@ -455,6 +477,7 @@ export function createOnlineOrderServices(ports: {
         const result = await store.insertFailedReturnInspection({
           id: crypto.randomUUID(), orderId, operationId: command.operationId, payloadFingerprint,
           actorStaffId: actor.id, recordedAt, nextRevision: order.revision + 1, lines,
+          sourceStatus: order.status,
         });
         return { created: true, result: presentOrder(result, isManager(actor)) };
       }, command.operationId);
@@ -471,7 +494,7 @@ export function createOnlineOrderServices(ports: {
         const replay = await replayMutation(store, orderId, "failed_return_inspection_abandon", command.operationId, payloadFingerprint);
         if (replay) return { created: false, result: presentOrder(replay, isManager(actor)) };
         const order = requiredOrder(await store.getOrder(orderId, true));
-        assertRevisionAndStatus(order, command.expectedRevision, ["delivery_failed"]);
+        assertInspectionState(order, command.expectedRevision);
         const inspection = await store.getFailedReturnInspection(inspectionId, true);
         if (!inspection || inspection.status !== "draft"
           || !order.failedReturnInspections.some((item) => item.id === inspectionId)) {
@@ -481,6 +504,7 @@ export function createOnlineOrderServices(ports: {
         const result = await store.abandonFailedReturnInspection({
           inspectionId, orderId, operationId: command.operationId, payloadFingerprint,
           actorStaffId: actor.id, reason: command.reason!, abandonedAt, nextRevision: order.revision + 1,
+          sourceStatus: order.status,
         });
         return { created: true, result: presentOrder(result, isManager(actor)) };
       }, command.operationId);
@@ -490,14 +514,15 @@ export function createOnlineOrderServices(ports: {
       const actor = await requireManager(auth);
       const orderId = uuid(id);
       const inspectionId = uuid(inspectionIdInput);
-      const command = parseMutation(input);
+      const command = parseFailedInspectionPosting(input);
+      if (!capabilitiesFor(actor, command.receivingBranchId).orderRepresentative) throw new ForbiddenError();
       const payloadFingerprint = fingerprint({ ...command, inspectionId });
       return ports.uow.run(async ({ store, ...dependencies }) => {
         await dependencies.inventory.lockStockClock("update");
         const replay = await replayMutation(store, orderId, "failed_return_inspection_post", command.operationId, payloadFingerprint);
         if (replay) return { created: false, result: presentOrder(replay, true) };
         const order = requiredOrder(await store.getOrder(orderId, true));
-        assertRevisionAndStatus(order, command.expectedRevision, ["delivery_failed"]);
+        assertInspectionState(order, command.expectedRevision);
         const inspection = await store.getFailedReturnInspection(inspectionId, true);
         if (!inspection || inspection.status !== "draft"
           || !order.failedReturnInspections.some((item) => item.id === inspectionId)) {
@@ -505,6 +530,7 @@ export function createOnlineOrderServices(ports: {
         }
         const postedAt = now();
         const disposition = await dependencies.inventory.disposeProtectedOnlineOrder({
+          branchId: command.receivingBranchId,
           orderId, operationId: command.operationId, payloadFingerprint, actorStaffId: actor.id,
           dispositionType: "failed_delivery_inspection",
           lines: inspection.lines.map((line) => ({
@@ -516,8 +542,11 @@ export function createOnlineOrderServices(ports: {
           await dependencies.inventory.bumpStockVersion();
         }
         const result = await store.postFailedReturnInspection({
-          inspectionId, orderId, operationId: command.operationId, payloadFingerprint,
+          inspectionId, orderId, receivingBranchId: command.receivingBranchId,
+          operationId: command.operationId, payloadFingerprint,
           actorStaffId: actor.id, postedAt, nextRevision: order.revision + 1,
+          sourceStatus: order.status,
+          allClassified: allFailedUnitsClassified(order, inspectionId),
         });
         return { created: true, result: presentOrder(result, true) };
       }, command.operationId);
@@ -576,19 +605,27 @@ async function evaluateQuote(
   dependencies: CheckoutDependencies,
   at: Date,
   stalePricing: boolean,
+  availabilityBranchId: string | null = null,
 ): Promise<EvaluatedQuote> {
   const area = await store.getArea(request.deliveryAreaId);
   if (!area?.active) throw new UnsupportedDeliveryAreaError();
   const ids = request.lines.map((line) => line.variantId);
-  const [catalogLines, quantities] = await Promise.all([
-    dependencies.catalog.getLines(ids), dependencies.inventory.quantitiesFor(ids),
+  const [catalogLines, quantitiesByBranch] = await Promise.all([
+    dependencies.catalog.getLines(ids), availabilityBranchId
+      ? dependencies.inventory.quantitiesFor(availabilityBranchId, ids).then((quantities) => new Map([[availabilityBranchId, quantities]]))
+      : dependencies.inventory.quantitiesByBranchFor(ids),
   ]);
   const catalogById = new Map(catalogLines.map((line) => [line.variantId, line]));
   for (const line of request.lines) {
     const catalog = catalogById.get(line.variantId);
-    if (!catalog || catalog.publication !== "available") throw new VariantNotOrderableError();
-    if ((quantities.get(line.variantId) ?? 0) < line.quantity) throw new InsufficientStockError();
+    if (!catalog || catalog.publication !== "available" || !catalog.onlineVisible) throw new VariantNotOrderableError();
   }
+  if (![...quantitiesByBranch.values()].some((quantities) => request.lines.every(
+    (line) => (quantities.get(line.variantId) ?? 0) >= line.quantity,
+  ))) throw new InsufficientStockError();
+  const quantities = new Map(ids.map((variantId) => [variantId, Math.max(0,
+    ...[...quantitiesByBranch.values()].map((branch) => branch.get(variantId) ?? 0),
+  )]));
   const pricingLines = request.lines.map((line) => {
     const catalog = catalogById.get(line.variantId)!;
     return { variantId: line.variantId, productId: catalog.productId, categoryId: catalog.categoryId,
@@ -661,6 +698,17 @@ function assertRevisionAndStatus(
   if (order.revision !== expectedRevision) throw new OnlineOrderRevisionConflictError();
 }
 
+function assertInspectionState(
+  order: OnlineOrderDto,
+  expectedRevision: number,
+): asserts order is OnlineOrderDto & { status: "delivery_failed" | "cancelled_before_shipment" } {
+  assertRevisionAndStatus(order, expectedRevision, ["delivery_failed", "cancelled_before_shipment"]);
+  if (order.status === "cancelled_before_shipment"
+    && order.preShipmentStockDisposition !== "awaiting_inspection") {
+    throw new OnlineOrderStateConflictError("هذا الطلب لا يملك أصنافاً محمية تنتظر الفحص.");
+  }
+}
+
 function inspectionLines(
   order: OnlineOrderDto,
   requested: Array<{ variantId: string; receivedQuantity: number; sellableQuantity: number }>,
@@ -687,10 +735,14 @@ function inspectionLines(
   });
 }
 
-function allFailedUnitsClassified(order: OnlineOrderDto): boolean {
-  if (!order.confirmedQuote || order.failedReturnInspections.some((inspection) => inspection.status === "draft")) return false;
+function allFailedUnitsClassified(order: OnlineOrderDto, postingDraftId: string | null = null): boolean {
+  if (!order.confirmedQuote || order.failedReturnInspections.some(
+    (inspection) => inspection.status === "draft" && inspection.id !== postingDraftId,
+  )) return false;
   const received = new Map<string, number>();
-  for (const inspection of order.failedReturnInspections.filter((item) => item.status === "posted")) {
+  for (const inspection of order.failedReturnInspections.filter(
+    (item) => item.status === "posted" || item.id === postingDraftId,
+  )) {
     for (const line of inspection.lines) {
       received.set(line.confirmedLineId, (received.get(line.confirmedLineId) ?? 0) + line.receivedQuantity);
     }
@@ -716,6 +768,9 @@ function presentOrder(order: OnlineOrderDto, manager: boolean): OnlineOrderDto {
   };
   const hasDraft = normalized.failedReturnInspections.some((inspection) => inspection.status === "draft");
   const complete = allFailedUnitsClassified(normalized);
+  const canInspect = normalized.status === "delivery_failed"
+    || (normalized.status === "cancelled_before_shipment"
+      && normalized.preShipmentStockDisposition === "awaiting_inspection");
   return {
     ...normalized,
     actionEligibility: {
@@ -723,9 +778,9 @@ function presentOrder(order: OnlineOrderDto, manager: boolean): OnlineOrderDto {
       canDeliver: normalized.status === "shipped",
       canMarkDeliveryFailed: normalized.status === "shipped",
       canCancelBeforeShipment: normalized.status === "pending" || normalized.status === "confirmed",
-      canDraftFailedReturnInspection: normalized.status === "delivery_failed" && !hasDraft && !complete,
-      canPostFailedReturnInspection: normalized.status === "delivery_failed" && manager && hasDraft,
-      canAbandonFailedReturnInspection: normalized.status === "delivery_failed" && hasDraft,
+      canDraftFailedReturnInspection: canInspect && !hasDraft && !complete,
+      canPostFailedReturnInspection: canInspect && manager && hasDraft,
+      canAbandonFailedReturnInspection: canInspect && hasDraft,
       canCloseFailedDelivery: normalized.status === "delivery_failed" && manager && complete,
     },
   };
@@ -734,6 +789,11 @@ function presentOrder(order: OnlineOrderDto, manager: boolean): OnlineOrderDto {
 function requiredOrder(order: OnlineOrderDto | null): OnlineOrderDto {
   if (!order) throw new NotFoundError("طلب المتجر غير موجود.");
   return order;
+}
+
+function requiredFulfillmentBranch(order: OnlineOrderDto): string {
+  if (!order.fulfillmentBranchId) throw new OnlineOrderStateConflictError("فرع تجهيز الطلب غير مسجل.");
+  return order.fulfillmentBranchId;
 }
 
 function parseArea(id: string, actorStaffId: string, input: unknown, changedAt: Date): DeliveryAreaWrite {
@@ -829,16 +889,24 @@ function parseContactAttempt(input: unknown): {
 
 function parseConfirmation(input: unknown) {
   const body = object(input, "بيانات تأكيد الطلب غير صالحة.");
-  exactKeys(body, new Set(["operationId", "expectedRevision", "agreedRevision", "itemsLocatedAndSetAside"]), "بيانات تأكيد الطلب غير صالحة.");
+  exactKeys(body, new Set(["operationId", "expectedRevision", "agreedRevision", "itemsLocatedAndSetAside", "fulfillmentBranchId"]), "بيانات تأكيد الطلب غير صالحة.");
   if (body.itemsLocatedAndSetAside !== true) throw new OnlineOrderValidationError("يلزم إثبات العثور على المنتجات ووضعها جانباً فعلياً.");
   return { operationId: uuid(body.operationId), expectedRevision: revision(body.expectedRevision),
-    agreedRevision: revision(body.agreedRevision), itemsLocatedAndSetAside: true as const };
+    agreedRevision: revision(body.agreedRevision), fulfillmentBranchId: uuid(body.fulfillmentBranchId),
+    itemsLocatedAndSetAside: true as const };
 }
 
 function parseMutation(input: unknown) {
   const body = object(input, "بيانات العملية غير صالحة.");
   exactKeys(body, MUTATION_KEYS, "بيانات العملية غير صالحة.");
   return { operationId: uuid(body.operationId), expectedRevision: revision(body.expectedRevision) };
+}
+
+function parseFailedInspectionPosting(input: unknown) {
+  const body = object(input, "بيانات استلام الشحنة غير صالحة.");
+  exactKeys(body, new Set(["operationId", "expectedRevision", "receivingBranchId"]), "بيانات استلام الشحنة غير صالحة.");
+  return { operationId: uuid(body.operationId), expectedRevision: revision(body.expectedRevision),
+    receivingBranchId: uuid(body.receivingBranchId) };
 }
 
 function parseDelivery(input: unknown) {
@@ -863,6 +931,17 @@ function parseReasonMutation(input: unknown, required: boolean) {
     ? requiredText(body.reason, 500, "يجب تسجيل سبب واضح.")
     : optionalText(body.reason, 500, "سبب تعذر التسليم غير صالح.");
   return { operationId: uuid(body.operationId), expectedRevision: revision(body.expectedRevision), reason };
+}
+
+function parseBeforeShipmentCancellation(input: unknown) {
+  const body = object(input, "بيانات إلغاء الطلب غير صالحة.");
+  exactKeys(body, new Set(["operationId", "expectedRevision", "reason", "itemsReturnedAndInspected"]), "بيانات إلغاء الطلب غير صالحة.");
+  if (body.itemsReturnedAndInspected !== undefined && typeof body.itemsReturnedAndInspected !== "boolean") {
+    throw new OnlineOrderValidationError("تأكيد فحص الأصناف غير صالح.");
+  }
+  return { operationId: uuid(body.operationId), expectedRevision: revision(body.expectedRevision),
+    reason: requiredText(body.reason, 500, "يجب تسجيل سبب واضح."),
+    itemsReturnedAndInspected: body.itemsReturnedAndInspected === true };
 }
 
 function parseInspection(input: unknown) {

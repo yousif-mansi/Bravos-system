@@ -66,7 +66,7 @@ export function managementReportPresentation(report: ManagementReportDto): Repor
 
 const PIASTER_LABEL = "(قرش)";
 const POUND_LABEL = "(ج.م)";
-const CAIRO_TIME_COLUMNS = new Set(["وقت الإكمال", "وقت الترحيل", "الوقت"]);
+const CAIRO_TIME_COLUMNS = new Set(["وقت البيع/التأكيد", "وقت الترحيل", "الوقت"]);
 const CAIRO_DATE_TIME = new Intl.DateTimeFormat("en-CA", {
   timeZone: "Africa/Cairo",
   hourCycle: "h23",
@@ -133,7 +133,7 @@ function rawManagementReportSheets(report: ManagementReportDto): ReportSheet[] {
       ["عدد تفاصيل المرتجعات", report.pageInfo.totalRefunds],
       ["عدد تفاصيل المشتريات", report.pageInfo.totalPurchases],
       ["عدد تفاصيل المصروفات", report.pageInfo.totalExpenses],
-      ["عدد المبيعات المكتملة", report.summary.completedCount],
+      ["عدد مبيعات الفروع والطلبات المؤكدة", report.summary.completedCount],
       ["إجمالي المبيعات النهائية (قرش)", report.summary.grossFinalSalesPiasters],
       ["إجمالي مبيعات البضاعة (قرش)", report.summary.grossMerchandiseSalesPiasters],
       ["رسوم التوصيل (قرش)", report.summary.deliveryChargesPiasters],
@@ -170,8 +170,8 @@ function rawManagementReportSheets(report: ManagementReportDto): ReportSheet[] {
     },
     {
       nameAr: "المبيعات المكتملة",
-      columnsAr: ["المرجع", "معرف المصدر", "نوع المصدر", "القناة", "وقت الإكمال", "الحالة", "مراجعة التصحيح", "الفرع", "الموظف", "معرف الموظف", "الإجمالي الأصلي (قرش)", "خصم العرض (قرش)", "خصم الكوبون (قرش)", "خصم الموظف (قرش)", "منفذ خصم الموظف", "سبب خصم الموظف", "البضاعة الفعلية (قرش)", "التوصيل (قرش)", "الإجمالي الفعلي (قرش)", "التكلفة المعروفة (قرش)", "كمية غير محسومة", "تكلفة غير مكتملة"],
-      rows: report.completedSales.map((row) => [row.source.reference, row.source.id, sourceKindAr(row.source.kind), channelAr(row.channel), row.occurredAt, effectiveStatusAr(row.effectiveStatus), row.correctionRevision, row.branch ? auditLabel(row.branch.nameAr, row.branch.id) : null, row.employee?.displayName ?? null, row.employee?.staffId ?? null, row.accepted.originalPiasters, row.accepted.automaticOfferDiscountPiasters, row.accepted.couponDiscountPiasters, row.accepted.employeeDiscountPiasters, row.accepted.employeeDiscountedByStaffId, row.accepted.employeeDiscountReason, row.effectiveMerchandisePiasters, row.deliveryChargePiasters, row.effectiveFinalPiasters, row.knownCostPiasters, row.unresolvedCostQuantity, yesNo(row.costsIncomplete)]),
+      columnsAr: ["المرجع", "معرف المصدر", "نوع المصدر", "القناة", "وقت البيع/التأكيد", "الحالة", "مراجعة التصحيح", "الفرع", "الموظف", "معرف الموظف", "الإجمالي الأصلي (قرش)", "خصم العرض (قرش)", "خصم الكوبون (قرش)", "خصم الموظف (قرش)", "منفذ خصم الموظف", "سبب خصم الموظف", "البضاعة الفعلية (قرش)", "التوصيل (قرش)", "الإجمالي الفعلي (قرش)", "التكلفة المعروفة (قرش)", "كمية غير محسومة", "تكلفة غير مكتملة"],
+      rows: report.completedSales.map((row) => [row.source.reference, row.source.id, sourceKindAr(row.source.kind, "sale"), channelAr(row.channel), row.occurredAt, effectiveStatusAr(row.effectiveStatus), row.correctionRevision, row.branch ? auditLabel(row.branch.nameAr, row.branch.id) : null, row.employee?.displayName ?? null, row.employee?.staffId ?? null, row.accepted.originalPiasters, row.accepted.automaticOfferDiscountPiasters, row.accepted.couponDiscountPiasters, row.accepted.employeeDiscountPiasters, row.accepted.employeeDiscountedByStaffId, row.accepted.employeeDiscountReason, row.effectiveMerchandisePiasters, row.deliveryChargePiasters, row.effectiveFinalPiasters, row.knownCostPiasters, row.unresolvedCostQuantity, yesNo(row.costsIncomplete)]),
     },
     {
       nameAr: "تفاصيل المبيعات",
@@ -225,13 +225,14 @@ function rawManagementReportSheets(report: ManagementReportDto): ReportSheet[] {
     },
     {
       nameAr: "الأكثر مبيعاً",
-      columnsAr: ["كود المنتج", "اسم المنتج", "الكمية المباعة", "الكمية المرتجعة"],
+      columnsAr: ["كود المنتج", "اسم المنتج", "وحدات البيع بعد الإلغاء", "الكمية المرتجعة"],
       rows: report.bestSellers.map((row) => [row.productCode, row.productNameAr, row.grossEffectiveSoldQuantity, row.returnedQuantity]),
     },
     {
       nameAr: "المخزون",
       columnsAr: ["البيان", "القيمة"],
       rows: [
+        ["نطاق المخزون", "جميع الفروع"],
         ["الكمية المتاحة", report.inventory.availableQuantity],
         ["قيمة المتاح (قرش)", report.inventory.availableValuePiasters],
         ["الكمية المحمية", report.inventory.protectedQuantity],
@@ -244,6 +245,7 @@ function rawManagementReportSheets(report: ManagementReportDto): ReportSheet[] {
       nameAr: "الطلبات التشغيلية",
       columnsAr: ["الحالة", "العدد"],
       rows: [
+        ["نطاق الحالات", "جميع الفروع"],
         ["قيد الانتظار", report.onlineOrderOperations.pendingCount],
         ["مؤكد", report.onlineOrderOperations.confirmedCount],
         ["تم الشحن", report.onlineOrderOperations.shippedCount],
@@ -252,8 +254,8 @@ function rawManagementReportSheets(report: ManagementReportDto): ReportSheet[] {
     },
     {
       nameAr: "المخزون المنخفض",
-      columnsAr: ["كود المنتج", "اسم المنتج", "المقاس", "اللون", "المتاح", "الحد", "مصدر الحد"],
-      rows: report.lowStock.map((row) => [row.variant.product.code, row.variant.product.nameAr, row.variant.size.nameAr, row.variant.color.nameAr, row.availableQuantity, row.threshold, thresholdSourceAr(row.thresholdSource)]),
+      columnsAr: ["الفرع", "كود المنتج", "اسم المنتج", "المقاس", "اللون", "المتاح", "الحد", "مصدر الحد"],
+      rows: report.lowStock.map((row) => [branchAuditLabel(report, row.branchId), row.variant.product.code, row.variant.product.nameAr, row.variant.size.nameAr, row.variant.color.nameAr, row.availableQuantity, row.threshold, thresholdSourceAr(row.thresholdSource)]),
     },
   ];
 }
@@ -283,8 +285,9 @@ function channelAr(value: "all" | "physical" | "online"): string {
   return value === "physical" ? "البيع داخل الفرع" : "المتجر الإلكتروني";
 }
 
-function sourceKindAr(value: "physical_sale" | "delivered_online_order"): string {
-  return value === "physical_sale" ? "بيع داخل الفرع" : "طلب إلكتروني مُسلَّم";
+function sourceKindAr(value: "physical_sale" | "delivered_online_order", context: "sale" | "return" = "return"): string {
+  return value === "physical_sale" ? "بيع داخل الفرع"
+    : context === "sale" ? "طلب إلكتروني مؤكد" : "طلب إلكتروني مُسلَّم";
 }
 
 function effectiveStatusAr(value: "active" | "cancelled"): string {

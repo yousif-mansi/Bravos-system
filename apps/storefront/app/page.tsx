@@ -2,6 +2,7 @@ import Link from "next/link";
 import { CollectionControls } from "./components/collection-controls";
 import { FilterChips } from "./components/filter-chips";
 import { ShopWall } from "./components/shop-wall";
+import { HomeConfidence, HomeIntroduction } from "./components/home-introduction";
 import { collectionHref, parseCollectionSort, sortCollection } from "./collection-sort";
 import { browsePublicProducts } from "./public-catalog";
 import styles from "./components/collection-controls.module.css";
@@ -26,17 +27,11 @@ export default async function Page({ searchParams }: PageProps) {
 
   return (
     <main id="main-content">
-      {!isCollectionView ? (
-        <section className="hero">
-          <p className="eyebrow">برافوس للملابس الرجالي</p>
-          <h1>اختيارات هادئة.<br />حضور واضح.</h1>
-          <p>تصفّح التشكيلة واختر المقاس واللون المناسبين قبل تجهيز طلبك.</p>
-        </section>
-      ) : null}
+      {!isCollectionView ? <HomeIntroduction categories={catalog.categories} /> : null}
       <section className="browse-panel" aria-labelledby="catalog-title">
         <div className="section-heading">
           <div>
-            <p className="eyebrow">التشكيلة</p>
+            <p className="eyebrow">التشكيلة / اختر تفاصيلك</p>
             {isCollectionView ? <h1 id="catalog-title" className={styles.collectionTitle}>كل المنتجات</h1> : <h2 id="catalog-title">كل المنتجات</h2>}
           </div>
         </div>
@@ -56,6 +51,7 @@ export default async function Page({ searchParams }: PageProps) {
           </div>
         ) : <ShopWall products={products} prioritizeLead={isCollectionView} />}
       </section>
+      {!isCollectionView ? <HomeConfidence /> : null}
     </main>
   );
 }

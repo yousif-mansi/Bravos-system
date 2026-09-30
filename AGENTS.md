@@ -4,6 +4,8 @@ Read `bravos.md` before architecture, technology selection, database design, or 
 
 ## Business rules
 
+**2026-09-29 superseding update:** Follow [Phase 1 operational updates](docs/planning/phase-1-operational-updates.md) for the latest user-requested changes. Branch stock is now separate; POS supports cash/manual online/split payment; online sales recognition moves to confirmation with cancellation/failed-delivery reversals. Inventory-first intake, readable transaction references, return phone lookup and action feedback are authorized. One branch must fulfill a whole online order; Products controls online visibility of existing variant pairs without removing POS/inventory variants; a sellable return restocks its receiving branch while retaining original cost and sale attribution. Older conflicting bullets below describe the previous v1 baseline. Existing data is disposable, but use a fresh isolated database for implementation verification rather than silently reassigning central stock.
+
 - Both physical branches and the online store consume one shared central inventory. Keep branch sales, employees, expenses, and reporting distinct.
 - Every physical sale records its branch and employee. Physical sales are cash only; online orders are cash on delivery with guest checkout.
 - Customer name and phone are optional for physical cash sales. Online checkout requires name, primary mobile, area, and detailed address; alternate phone, landmark, and notes are optional. Delivery areas/fees are manager-configured.

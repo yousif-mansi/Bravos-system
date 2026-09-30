@@ -2,7 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 
 const CATALOG_HEADER =
   "record_type,key,name_ar,parent_key,product_code,description_ar,category_key,default_price_egp,publication,image_refs,size_guide_ar,product_key,size_key,color_key,price_override_egp";
-const STOCK_HEADER = "batch_key,variant_key,quantity,unit_cost_egp,receipt_date,batch_order";
+const STOCK_HEADER = "batch_key,branch_code,variant_key,quantity,unit_cost_egp,receipt_date,batch_order";
 const CONFIGURATION_HEADER =
   "record_type,key,name_ar,value,variant_key,fee_egp,active,discount_type,percentage,amount_egp,starts_on,ends_on,allow_combination,usage_limit,product_keys,category_keys,buy_quantity,reward_quantity,reward_percentage,bundle_total_egp,offer_key,required_quantity,buy_product_keys,buy_category_keys,reward_product_keys,reward_category_keys";
 
@@ -32,14 +32,14 @@ const catalogCsv = [
 
 const validStockCsv = [
   STOCK_HEADER,
-  "old-stock,shirt-1-l-black,2,200.00,2026-08-01,1",
-  "new-stock,shirt-1-l-black,3,240.00,2026-09-01,2",
+  "old-stock,abshway,shirt-1-l-black,2,200.00,2026-08-01,1",
+  "new-stock,fayoum,shirt-1-l-black,3,240.00,2026-09-01,2",
 ].join("\n");
 
 const invalidStockCsv = [
   STOCK_HEADER,
-  "old-stock,shirt-1-l-black,2,200.00,2026-08-01,1",
-  "new-stock,shirt-1-l-black,3,240.00,2026-09-01,1",
+  "old-stock,abshway,shirt-1-l-black,2,200.00,2026-08-01,1",
+  "new-stock,abshway,shirt-1-l-black,3,240.00,2026-09-01,1",
 ].join("\n");
 
 const configurationCsv = [

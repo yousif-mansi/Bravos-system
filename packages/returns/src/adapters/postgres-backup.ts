@@ -28,5 +28,13 @@ export function createPostgresReturnsBackupReader(queryable: Queryable) {
       }
       return result;
     },
+    async readReferenceSequence(): Promise<{ lastValue: string; isCalled: boolean }> {
+      const rows = await queryable.query<{ last_value: string; is_called: boolean }>(
+        "SELECT last_value::text, is_called FROM returns_return_reference_number_seq",
+      );
+      const sequence = rows.rows[0];
+      if (!sequence) throw new Error("Return reference sequence is missing.");
+      return { lastValue: sequence.last_value, isCalled: sequence.is_called };
+    },
   };
 }

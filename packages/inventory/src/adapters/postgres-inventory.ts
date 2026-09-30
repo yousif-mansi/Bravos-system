@@ -17,7 +17,7 @@ import type {
   SettingsRecord,
 } from "../application/ports.ts";
 
-const FIFO_BATCH_ORDER_SQL = "recorded_at ASC, id ASC";
+const FIFO_BATCH_ORDER_SQL = "b.recorded_at ASC, b.id ASC";
 
 type Queryable = Pick<Pool, "query"> | PoolClient;
 
@@ -33,6 +33,7 @@ type BatchRow = {
   received_quantity: number;
   effective_received_quantity: number;
   remaining_quantity: number;
+  branch_balances?: Array<{ branch_id: string; remaining_quantity: number }>;
   unit_cost_piasters: number;
   effective_unit_cost_piasters: number;
   recorded_at: Date;
@@ -47,12 +48,14 @@ type SettingsRow = {
 
 type ProtectedOrderRow = {
   order_id: string;
+  branch_id: string;
   operation_id: string;
   protected_at: Date;
 };
 
 type ProtectedAllocationRow = {
   allocation_id: string;
+  branch_id: string;
   variant_id: string;
   quantity: number;
   protected_at: Date;
@@ -78,15 +81,20 @@ type DispositionAllocationRow = {
 
 export function createPostgresInventoryStore(queryable: Queryable): InventoryReadStore {
   return {
-    quantitiesFor: (variantIds) => quantitiesFor(queryable, variantIds),
+    async listBranchIds() {
+      const result = await queryable.query<{ id: string }>(`SELECT id FROM branch ORDER BY id`);
+      return result.rows.map((row) => row.id);
+    },
+    quantitiesFor: (branchId, variantIds) => quantitiesFor(queryable, branchId, variantIds),
+    quantitiesByBranchFor: (variantIds) => quantitiesByBranchFor(queryable, variantIds),
     currentStockVersion: () => currentStockVersion(queryable),
     referencedVariantIds: (variantIds) => referencedVariantIds(queryable, variantIds),
     async listBatches() {
       const result = await queryable.query<BatchRow>(
-        `SELECT id, variant_id, received_quantity, effective_received_quantity,
-                remaining_quantity, unit_cost_piasters, effective_unit_cost_piasters,
-                recorded_at, source_receipt_id, receipt_date::text AS receipt_date, source_line_id
-         FROM inventory_batch
+        `SELECT b.id, b.variant_id, b.received_quantity, b.effective_received_quantity,
+                ${batchBalanceColumns("b")}, b.unit_cost_piasters, b.effective_unit_cost_piasters,
+                b.recorded_at, b.source_receipt_id, b.receipt_date::text AS receipt_date, b.source_line_id
+         FROM inventory_batch b
          ORDER BY ${FIFO_BATCH_ORDER_SQL}`,
       );
       return result.rows.map(toBatchRecord);
@@ -108,13 +116,14 @@ export function createPostgresInventoryStore(queryable: Queryable): InventoryRea
     },
     async summarizeAuthoritativeAvailableInventory() {
       const result = await queryable.query<{ quantity: number | string; value_piasters: number | string }>(
-        `SELECT COALESCE(SUM(b.remaining_quantity),0)::bigint AS quantity,
-                COALESCE(SUM(b.remaining_quantity::bigint * b.effective_unit_cost_piasters::bigint),0)::bigint AS value_piasters
+        `SELECT COALESCE(SUM(balance.remaining_quantity),0)::bigint AS quantity,
+                COALESCE(SUM(balance.remaining_quantity::bigint * b.effective_unit_cost_piasters::bigint),0)::bigint AS value_piasters
          FROM inventory_batch b
-         WHERE b.remaining_quantity > 0
+         JOIN inventory_batch_balance balance ON balance.batch_id=b.id
+         WHERE balance.remaining_quantity > 0
            AND NOT EXISTS (
              SELECT 1 FROM inventory_discrepancy d
-             WHERE d.variant_id=b.variant_id AND d.unallocated_quantity > 0
+             WHERE d.variant_id=b.variant_id AND d.branch_id=balance.branch_id AND d.unallocated_quantity > 0
            )`,
       );
       return { quantity: asSafeInteger(result.rows[0]?.quantity ?? 0),
@@ -147,6 +156,23 @@ export function createPostgresInventoryStore(queryable: Queryable): InventoryRea
       );
       return { quantity: asSafeInteger(result.rows[0]?.quantity ?? 0),
         valuePiasters: asSafeInteger(result.rows[0]?.value_piasters ?? 0) };
+    },
+    async listOrderRestoredCostByOperations(operationIds) {
+      const costs = new Map<string, number>();
+      if (operationIds.length === 0) return costs;
+      const result = await queryable.query<{ operation_id: string; cost_piasters: number | string }>(
+        `SELECT disposition.operation_id,
+                SUM(effect.quantity::bigint * batch.effective_unit_cost_piasters::bigint)::bigint AS cost_piasters
+         FROM inventory_order_disposition disposition
+         JOIN inventory_order_disposition_allocation effect ON effect.operation_id = disposition.operation_id
+         JOIN inventory_allocation allocation ON allocation.id = effect.allocation_id
+         JOIN inventory_batch batch ON batch.id = allocation.batch_id
+         WHERE disposition.operation_id = ANY($1::uuid[]) AND effect.disposition = 'sellable_restored'
+         GROUP BY disposition.operation_id`,
+        [operationIds],
+      );
+      for (const row of result.rows) costs.set(row.operation_id, asSafeInteger(row.cost_piasters));
+      return costs;
     },
     async getSettings() {
       return loadSettings(queryable);
@@ -337,12 +363,12 @@ export function createInventoryTransaction(client: PoolClient): InventoryTransac
           const inserted = await client.query<BatchRow>(
             `INSERT INTO inventory_batch (
                id, variant_id, received_quantity, effective_received_quantity,
-               remaining_quantity, unit_cost_piasters, effective_unit_cost_piasters,
+               unit_cost_piasters, effective_unit_cost_piasters,
                recorded_at, operation_id, source_receipt_id, receipt_date, source_line_id
              ) VALUES (
-               gen_random_uuid(), $1, $2, $2, $2, $3, $3, $4, $5, $6, $7::date, $8
+               gen_random_uuid(), $1, $2, $2, $3, $3, $4, $5, $6, $7::date, $8
              ) RETURNING id, variant_id, received_quantity, effective_received_quantity,
-                         remaining_quantity, unit_cost_piasters, effective_unit_cost_piasters,
+                         unit_cost_piasters, effective_unit_cost_piasters,
                          recorded_at, source_receipt_id, receipt_date::text AS receipt_date, source_line_id`,
             [
               line.variantId,
@@ -355,12 +381,18 @@ export function createInventoryTransaction(client: PoolClient): InventoryTransac
               line.lineId,
             ],
           );
-          const batch = toReceivedBatch(mustRow(inserted.rows[0]));
+          const row = mustRow(inserted.rows[0]);
+          await client.query(
+            `INSERT INTO inventory_batch_balance (batch_id, branch_id, remaining_quantity) VALUES ($1,$2,$3)`,
+            [row.id, input.branchId, line.quantity],
+          );
+          const batch = toReceivedBatch({ ...row, remaining_quantity: line.quantity,
+            branch_balances: [{ branch_id: input.branchId, remaining_quantity: line.quantity }] });
           await client.query(
             `INSERT INTO inventory_movement (
-               id, batch_id, variant_id, operation_id, kind, quantity, recorded_at
-             ) VALUES (gen_random_uuid(), $1, $2, $3, 'receive', $4, $5)`,
-            [batch.id, batch.variantId, input.operationId, line.quantity, input.recordedAt],
+               id, batch_id, variant_id, branch_id, operation_id, kind, quantity, recorded_at
+             ) VALUES (gen_random_uuid(), $1, $2, $3, $4, 'receive', $5, $6)`,
+            [batch.id, batch.variantId, input.branchId, input.operationId, line.quantity, input.recordedAt],
           );
           created.push(batch);
         }
@@ -379,19 +411,25 @@ export function createInventoryTransaction(client: PoolClient): InventoryTransac
         const inserted = await client.query<BatchRow>(
           `INSERT INTO inventory_batch (
              id, variant_id, received_quantity, effective_received_quantity,
-             remaining_quantity, unit_cost_piasters, effective_unit_cost_piasters,
+             unit_cost_piasters, effective_unit_cost_piasters,
              recorded_at, operation_id, source_receipt_id, receipt_date, source_line_id
-           ) VALUES ($1,$2,$3,$3,$3,$4,$4,$5,$6,$7,$8::date,$9)
-           RETURNING id,variant_id,received_quantity,effective_received_quantity,remaining_quantity,
+           ) VALUES ($1,$2,$3,$3,$4,$4,$5,$6,$7,$8::date,$9)
+           RETURNING id,variant_id,received_quantity,effective_received_quantity,
                      unit_cost_piasters,effective_unit_cost_piasters,recorded_at,source_receipt_id,
                      receipt_date::text AS receipt_date,source_line_id`,
-          [line.batchId,line.variantId,line.quantity,line.unitCostPiasters,line.recordedAt,input.operationId,input.receiptId,line.receiptDate,line.lineId],
+          [line.batchId,line.variantId,line.quantity,line.unitCostPiasters,line.recordedAt,input.operationId,line.receiptId,line.receiptDate,line.lineId],
         );
-        const batch = toReceivedBatch(mustRow(inserted.rows[0]));
+        const row = mustRow(inserted.rows[0]);
         await client.query(
-          `INSERT INTO inventory_movement (id,batch_id,variant_id,operation_id,kind,quantity,recorded_at)
-           VALUES ($1,$2,$3,$4,'receive',$5,$6)`,
-          [line.movementId,line.batchId,line.variantId,input.operationId,line.quantity,line.recordedAt],
+          `INSERT INTO inventory_batch_balance (batch_id, branch_id, remaining_quantity) VALUES ($1,$2,$3)`,
+          [row.id, line.branchId, line.quantity],
+        );
+        const batch = toReceivedBatch({ ...row, remaining_quantity: line.quantity,
+          branch_balances: [{ branch_id: line.branchId, remaining_quantity: line.quantity }] });
+        await client.query(
+          `INSERT INTO inventory_movement (id,batch_id,variant_id,branch_id,operation_id,kind,quantity,recorded_at)
+           VALUES ($1,$2,$3,$4,$5,'receive',$6,$7)`,
+          [line.movementId,line.batchId,line.variantId,line.branchId,input.operationId,line.quantity,line.recordedAt],
         );
         created.push(batch);
       }
@@ -412,13 +450,13 @@ export function createInventoryTransaction(client: PoolClient): InventoryTransac
     async applyReceivingCorrection(input) {
       const batchIds = [...new Set(input.lines.map((line) => line.batchId))].sort();
       const locked = await client.query<BatchRow>(
-        `SELECT id, variant_id, received_quantity, effective_received_quantity,
-                remaining_quantity, unit_cost_piasters, effective_unit_cost_piasters,
-                recorded_at, source_receipt_id, receipt_date::text AS receipt_date, source_line_id
-         FROM inventory_batch
-         WHERE id = ANY($1::uuid[])
-         ORDER BY id
-         FOR UPDATE`,
+        `SELECT b.id, b.variant_id, b.received_quantity, b.effective_received_quantity,
+                ${batchBalanceColumns("b")}, b.unit_cost_piasters, b.effective_unit_cost_piasters,
+                b.recorded_at, b.source_receipt_id, b.receipt_date::text AS receipt_date, b.source_line_id
+         FROM inventory_batch b
+         WHERE b.id = ANY($1::uuid[])
+         ORDER BY b.id
+         FOR UPDATE OF b`,
         [batchIds],
       );
       const byId = new Map(locked.rows.map((row) => [row.id, row]));
@@ -437,27 +475,28 @@ export function createInventoryTransaction(client: PoolClient): InventoryTransac
         }
         const quantityDelta = line.effectiveQuantity - row.effective_received_quantity;
         const unitCostDeltaPiasters = line.effectiveUnitCostPiasters - row.effective_unit_cost_piasters;
-        const updated = await client.query<{ remaining_quantity: number }>(
+        const receiptBranchAvailable = row.branch_balances?.find((balance) => balance.branch_id === input.branchId)?.remaining_quantity ?? 0;
+        if (quantityDelta < 0 && receiptBranchAvailable < -quantityDelta) {
+          throw new InventoryValidationError("لا يمكن تقليل الاستلام لأن الكمية المتاحة في فرع الاستلام غير كافية؛ الأصناف المرتجعة في فرع آخر تبقى هناك.");
+        }
+        const updated = await client.query<{ effective_received_quantity: number }>(
           `UPDATE inventory_batch
            SET effective_received_quantity = $2,
-               effective_unit_cost_piasters = $3,
-               remaining_quantity = remaining_quantity + $4
+               effective_unit_cost_piasters = $3
            WHERE id = $1
-             AND remaining_quantity + $4 >= 0
-             AND remaining_quantity + $4 <= $2 - (${activeProtectedQuantitySql("inventory_batch.id")})
-           RETURNING remaining_quantity`,
-          [line.batchId, line.effectiveQuantity, line.effectiveUnitCostPiasters, quantityDelta],
+           RETURNING effective_received_quantity`,
+          [line.batchId, line.effectiveQuantity, line.effectiveUnitCostPiasters],
         );
-        const remainingQuantity = updated.rows[0]?.remaining_quantity;
-        if (remainingQuantity === undefined) {
+        if (!updated.rows[0]) {
           throw new InventoryValidationError("لا يمكن تقليل كمية الاستلام عن الوحدات المستهلكة حالياً.");
         }
+        const remainingQuantity = await changeBatchBalance(client, line.batchId, input.branchId, quantityDelta);
         if (quantityDelta !== 0) {
           await client.query(
             `INSERT INTO inventory_movement (
-               id, batch_id, variant_id, operation_id, kind, quantity, recorded_at
-             ) VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6)`,
-            [line.batchId, line.variantId, input.operationId,
+               id, batch_id, variant_id, branch_id, operation_id, kind, quantity, recorded_at
+             ) VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7)`,
+            [line.batchId, line.variantId, input.branchId, input.operationId,
               quantityDelta > 0 ? "correction_restore" : "correction_deduct",
               Math.abs(quantityDelta), input.recordedAt],
           );
@@ -513,10 +552,10 @@ export function createInventoryTransaction(client: PoolClient): InventoryTransac
     },
     async attributeHeldAllocation(input) {
       const batch = await client.query<BatchRow>(
-        `SELECT id, variant_id, received_quantity, effective_received_quantity,
-                remaining_quantity, unit_cost_piasters, effective_unit_cost_piasters,
-                recorded_at, source_receipt_id, receipt_date::text AS receipt_date, source_line_id
-         FROM inventory_batch WHERE id = $1 FOR UPDATE`,
+        `SELECT b.id, b.variant_id, b.received_quantity, b.effective_received_quantity,
+                ${batchBalanceColumns("b")}, b.unit_cost_piasters, b.effective_unit_cost_piasters,
+                b.recorded_at, b.source_receipt_id, b.receipt_date::text AS receipt_date, b.source_line_id
+         FROM inventory_batch b WHERE b.id = $1 FOR UPDATE OF b`,
         [input.batchId],
       );
       const row = batch.rows[0];
@@ -525,9 +564,9 @@ export function createInventoryTransaction(client: PoolClient): InventoryTransac
       }
       await client.query(
         `INSERT INTO inventory_allocation (
-           id, batch_id, variant_id, operation_id, quantity, unit_cost_piasters, recorded_at
-         ) VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6)`,
-        [row.id, input.variantId, input.operationId, input.quantity, row.unit_cost_piasters, input.recordedAt],
+           id, batch_id, variant_id, branch_id, operation_id, quantity, unit_cost_piasters, recorded_at
+         ) VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7)`,
+        [row.id, input.variantId, input.branchId, input.operationId, input.quantity, row.unit_cost_piasters, input.recordedAt],
       );
       return {
         batchId: row.id,
@@ -541,14 +580,14 @@ export function createInventoryTransaction(client: PoolClient): InventoryTransac
     async removeAllocation(input) {
       const rows = await client.query<{ id: string; quantity: number }>(
         `SELECT id, quantity FROM inventory_allocation
-         WHERE operation_id = $1 AND batch_id = $2 AND variant_id = $3
+         WHERE operation_id = $1 AND batch_id = $2 AND variant_id = $3 AND branch_id = $4
            AND NOT EXISTS (
              SELECT 1 FROM inventory_protected_order_allocation protected
              WHERE protected.allocation_id = inventory_allocation.id
            )
          ORDER BY recorded_at DESC, id DESC
          FOR UPDATE`,
-        [input.operationId, input.batchId, input.variantId],
+        [input.operationId, input.batchId, input.variantId, input.branchId],
       );
       let remaining = input.quantity;
       for (const row of rows.rows) {
@@ -567,50 +606,24 @@ export function createInventoryTransaction(client: PoolClient): InventoryTransac
       return allocateFromOldestAvailable(client, { ...input, allowPartial: false, movementKind: "correction_deduct" });
     },
     async restoreToOriginalBatch(input) {
-      const updated = await client.query<{ remaining_quantity: number }>(
-        `UPDATE inventory_batch
-         SET remaining_quantity = remaining_quantity + $3
-         WHERE id = $1 AND variant_id = $2
-           AND remaining_quantity + $3 <= effective_received_quantity
-             - (${activeProtectedQuantitySql("inventory_batch.id")})
-         RETURNING remaining_quantity`,
-        [input.batchId, input.variantId, input.quantity],
-      );
-      if (!updated.rows[0]) {
-        throw new InventoryValidationError("تعذر استعادة الصنف إلى دفعة التكلفة الأصلية.");
-      }
+      await assertBatchVariant(client, input.batchId, input.variantId);
+      await changeBatchBalance(client, input.batchId, input.branchId, input.quantity);
       await client.query(
         `INSERT INTO inventory_movement (
-           id, batch_id, variant_id, operation_id, kind, quantity, recorded_at
-         ) VALUES (gen_random_uuid(), $1, $2, $3, 'return', $4, $5)`,
-        [input.batchId, input.variantId, input.operationId, input.quantity, input.recordedAt],
+           id, batch_id, variant_id, branch_id, operation_id, kind, quantity, recorded_at
+         ) VALUES (gen_random_uuid(), $1, $2, $3, $4, 'return', $5, $6)`,
+        [input.batchId, input.variantId, input.branchId, input.operationId, input.quantity, input.recordedAt],
       );
     },
     async adjustCorrectionBatch(input) {
       const delta = input.direction === "restore" ? input.quantity : -input.quantity;
-      const updated = await client.query<{
-        unit_cost_piasters: number | string;
-        effective_unit_cost_piasters: number | string;
-      }>(
-        `UPDATE inventory_batch
-         SET remaining_quantity = remaining_quantity + $3
-         WHERE id = $1 AND variant_id = $2
-           AND remaining_quantity + $3 BETWEEN 0 AND effective_received_quantity
-             - (${activeProtectedQuantitySql("inventory_batch.id")})
-         RETURNING unit_cost_piasters, effective_unit_cost_piasters`,
-        [input.batchId, input.variantId, delta],
-      );
-      const row = updated.rows[0];
-      if (!row) throw new InventoryValidationError(
-        input.direction === "restore"
-          ? "تعذر استعادة الصنف إلى دفعة التكلفة الأصلية."
-          : "تعذر خصم الصنف من دفعة التكلفة الأصلية لأن الكمية لم تعد متاحة.",
-      );
+      const row = await assertBatchVariant(client, input.batchId, input.variantId);
+      await changeBatchBalance(client, input.batchId, input.branchId, delta);
       await client.query(
         `INSERT INTO inventory_movement (
-           id, batch_id, variant_id, operation_id, kind, quantity, recorded_at
-         ) VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6)`,
-        [input.batchId, input.variantId, input.operationId,
+           id, batch_id, variant_id, branch_id, operation_id, kind, quantity, recorded_at
+         ) VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7)`,
+        [input.batchId, input.variantId, input.branchId, input.operationId,
           input.direction === "restore" ? "correction_restore" : "correction_deduct",
           input.quantity, input.recordedAt],
       );
@@ -631,13 +644,14 @@ export function createInventoryTransaction(client: PoolClient): InventoryTransac
         unallocated_quantity: number;
       }>(
         `INSERT INTO inventory_discrepancy (
-           id, operation_id, variant_id, requested_quantity, allocated_quantity,
+           id, operation_id, variant_id, branch_id, requested_quantity, allocated_quantity,
            unallocated_quantity, recorded_at
-         ) VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6)
+         ) VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7)
          RETURNING variant_id, requested_quantity, allocated_quantity, unallocated_quantity`,
         [
           input.operationId,
           input.variantId,
+          input.branchId,
           input.requestedQuantity,
           input.allocatedQuantity,
           unallocatedQuantity,
@@ -646,6 +660,7 @@ export function createInventoryTransaction(client: PoolClient): InventoryTransac
       );
       const row = mustRow(inserted.rows[0]);
       return {
+        branchId: input.branchId,
         variantId: row.variant_id,
         requestedQuantity: row.requested_quantity,
         allocatedQuantity: row.allocated_quantity,
@@ -660,9 +675,9 @@ export function createInventoryTransaction(client: PoolClient): InventoryTransac
       }>(
         `SELECT requested_quantity, allocated_quantity, unallocated_quantity
          FROM inventory_discrepancy
-         WHERE operation_id = $1 AND variant_id = $2
+         WHERE operation_id = $1 AND variant_id = $2 AND branch_id = $3
          FOR UPDATE`,
-        [input.operationId, input.variantId],
+        [input.operationId, input.variantId, input.branchId],
       );
       const existing = current.rows[0];
       if (!existing || existing.unallocated_quantity < input.allocatedQuantity) {
@@ -670,8 +685,8 @@ export function createInventoryTransaction(client: PoolClient): InventoryTransac
       }
       if (existing.unallocated_quantity === input.allocatedQuantity) {
         await client.query(
-          `DELETE FROM inventory_discrepancy WHERE operation_id = $1 AND variant_id = $2`,
-          [input.operationId, input.variantId],
+          `DELETE FROM inventory_discrepancy WHERE operation_id = $1 AND variant_id = $2 AND branch_id = $3`,
+          [input.operationId, input.variantId, input.branchId],
         );
         return null;
       }
@@ -683,13 +698,14 @@ export function createInventoryTransaction(client: PoolClient): InventoryTransac
         `UPDATE inventory_discrepancy
          SET allocated_quantity = allocated_quantity + $3,
              unallocated_quantity = unallocated_quantity - $3
-         WHERE operation_id = $1 AND variant_id = $2 AND unallocated_quantity >= $3
+         WHERE operation_id = $1 AND variant_id = $2 AND branch_id = $4 AND unallocated_quantity >= $3
          RETURNING requested_quantity, allocated_quantity, unallocated_quantity`,
-        [input.operationId, input.variantId, input.allocatedQuantity],
+        [input.operationId, input.variantId, input.allocatedQuantity, input.branchId],
       );
       const row = updated.rows[0];
       if (!row) throw new InventoryValidationError("الكمية غير المخصصة لا تطابق واقعة البيع.");
       return {
+        branchId: input.branchId,
         variantId: input.variantId,
         requestedQuantity: row.requested_quantity,
         allocatedQuantity: row.allocated_quantity,
@@ -706,17 +722,20 @@ export function createInventoryTransaction(client: PoolClient): InventoryTransac
       );
       return asSafeInteger(result.rows[0]?.quantity ?? 0);
     },
-    quantitiesFor: (variantIds) => quantitiesFor(client, variantIds),
+    quantitiesFor: (branchId, variantIds) => quantitiesFor(client, branchId, variantIds),
+    quantitiesByBranchFor: (variantIds) => quantitiesByBranchFor(client, variantIds),
     referencedVariantIds: (variantIds) => referencedVariantIds(client, variantIds),
-    async listAvailableBatchesFifo(variantId) {
+    async listAvailableBatchesFifo(branchId, variantId) {
       const result = await client.query<BatchRow>(
-        `SELECT id, variant_id, received_quantity, effective_received_quantity,
-                remaining_quantity, unit_cost_piasters, effective_unit_cost_piasters,
-                recorded_at, source_receipt_id, receipt_date::text AS receipt_date, source_line_id
-         FROM inventory_batch
-         WHERE variant_id = $1 AND remaining_quantity > 0
+        `SELECT b.id, b.variant_id, b.received_quantity, b.effective_received_quantity,
+                ${batchBalanceColumns("b")},
+                b.unit_cost_piasters, b.effective_unit_cost_piasters,
+                b.recorded_at, b.source_receipt_id, b.receipt_date::text AS receipt_date, b.source_line_id
+         FROM inventory_batch b
+         JOIN inventory_batch_balance balance ON balance.batch_id=b.id AND balance.branch_id=$1
+         WHERE b.variant_id = $2 AND balance.remaining_quantity > 0
          ORDER BY ${FIFO_BATCH_ORDER_SQL}`,
-        [variantId],
+        [branchId, variantId],
       );
       return result.rows.map(toReceivedBatch);
     },
@@ -849,16 +868,16 @@ async function protectOnlineOrder(
     ) {
       throw new OperationConflictError();
     }
-    return loadProtectedOrderResult(client, input.orderId, operation, "replay");
+    return loadProtectedOrderResult(client, input.orderId, input.branchId, operation, "replay");
   }
 
   await assertStockMutationAllowed(client);
   const protectedOrder = await client.query<ProtectedOrderRow>(
-    `INSERT INTO inventory_protected_order (order_id, operation_id, protected_at)
-     VALUES ($1, $2, $3)
+    `INSERT INTO inventory_protected_order (order_id, branch_id, operation_id, protected_at)
+     VALUES ($1, $2, $3, $4)
      ON CONFLICT (order_id) DO NOTHING
      RETURNING order_id, operation_id, protected_at`,
-    [input.orderId, input.operationId, created.recorded_at],
+    [input.orderId, input.branchId, input.operationId, created.recorded_at],
   );
   const header = protectedOrder.rows[0];
   if (!header) {
@@ -868,6 +887,7 @@ async function protectOnlineOrder(
   for (const [variantId, line] of [...lines.entries()].sort(([left], [right]) => left.localeCompare(right))) {
     await allocateFromOldestAvailable(client, {
       operationId: input.operationId,
+      branchId: input.branchId,
       variantId,
       quantity: line.quantity,
       recordedAt: created.recorded_at,
@@ -881,32 +901,33 @@ async function protectOnlineOrder(
          (protected_order_id, operation_id, allocation_id, source_line_id)
        SELECT $1, $2, id, $3
        FROM inventory_allocation
-       WHERE operation_id = $2 AND variant_id = $4
+       WHERE operation_id = $2 AND variant_id = $4 AND branch_id = $5
        ORDER BY id`,
-      [input.orderId, input.operationId, line.lineId, variantId],
+      [input.orderId, input.operationId, line.lineId, variantId, input.branchId],
     );
   }
-  return loadProtectedOrderResult(client, input.orderId, created, "created");
+  return loadProtectedOrderResult(client, input.orderId, input.branchId, created, "created");
 }
 
 async function loadProtectedOrderResult(
   queryable: Queryable,
   orderId: string,
+  branchId: string,
   operation: OperationRow,
   kind: "created" | "replay",
 ): Promise<ProtectOnlineOrderResult> {
   const protectedOrder = await queryable.query<ProtectedOrderRow>(
-    `SELECT order_id, operation_id, protected_at
+    `SELECT order_id, branch_id, operation_id, protected_at
      FROM inventory_protected_order
      WHERE operation_id = $1`,
     [operation.id],
   );
   const header = protectedOrder.rows[0];
-  if (!header || header.order_id !== orderId) {
+  if (!header || header.order_id !== orderId || header.branch_id !== branchId) {
     throw new OperationConflictError();
   }
   const protectedAllocations = await queryable.query<ProtectedAllocationRow>(
-    `SELECT a.id AS allocation_id, a.variant_id, a.quantity, p.protected_at
+    `SELECT a.id AS allocation_id, a.branch_id, a.variant_id, a.quantity, p.protected_at
      FROM inventory_protected_order p
      JOIN inventory_protected_order_allocation pa ON pa.protected_order_id = p.order_id
      JOIN inventory_allocation a ON a.id = pa.allocation_id
@@ -924,6 +945,7 @@ async function loadProtectedOrderResult(
     orderId: header.order_id,
     recordedAt: operation.recorded_at,
     allocations: protectedAllocations.rows.map((row) => ({
+      branchId: row.branch_id,
       allocationId: row.allocation_id,
       variantId: row.variant_id,
       quantity: row.quantity,
@@ -1042,15 +1064,19 @@ async function disposeProtectedOnlineOrder(
     const operation = existing.rows[0];
     if (!operation || operation.kind !== "order_disposition"
       || operation.payload_fingerprint !== input.payloadFingerprint) throw new OperationConflictError();
-    return loadOrderDispositionResult(client, input.orderId, operation, "replay");
+    return loadOrderDispositionResult(client, input.orderId, input.branchId, operation, "replay");
   }
 
   await assertStockMutationAllowed(client);
-  const protectedHeader = await client.query<{ order_id: string }>(
-    `SELECT order_id FROM inventory_protected_order WHERE order_id = $1 FOR UPDATE`,
+  const protectedHeader = await client.query<{ order_id: string; branch_id: string }>(
+    `SELECT order_id, branch_id FROM inventory_protected_order WHERE order_id = $1 FOR UPDATE`,
     [input.orderId],
   );
   if (!protectedHeader.rows[0]) throw new InventoryValidationError("لا توجد تخصيصات محمية لهذا الطلب.");
+  if (input.dispositionType === "pre_shipment_cancellation"
+    && protectedHeader.rows[0].branch_id !== input.branchId) {
+    throw new InventoryValidationError("فرع إلغاء الطلب لا يطابق فرع تجهيزه.");
+  }
 
   const allocations = await client.query<ActiveProtectedAllocationRow>(
     `SELECT a.id AS allocation_id, a.batch_id, pa.source_line_id, a.variant_id, a.quantity,
@@ -1113,9 +1139,9 @@ async function disposeProtectedOnlineOrder(
   }
 
   await client.query(
-    `INSERT INTO inventory_order_disposition (operation_id, order_id, disposition_type, recorded_at)
-     VALUES ($1, $2, $3, $4)`,
-    [input.operationId, input.orderId, input.dispositionType, created.recorded_at],
+    `INSERT INTO inventory_order_disposition (operation_id, order_id, branch_id, disposition_type, recorded_at)
+     VALUES ($1, $2, $3, $4, $5)`,
+    [input.operationId, input.orderId, input.branchId, input.dispositionType, created.recorded_at],
   );
 
   const availableByAllocation = new Map(active.map((row) => [
@@ -1142,21 +1168,12 @@ async function disposeProtectedOnlineOrder(
         );
         availableByAllocation.set(allocation.allocation_id, available - take);
         if (disposition === "sellable_restored") {
-          const restored = await client.query(
-            `UPDATE inventory_batch
-             SET remaining_quantity = remaining_quantity + $2
-             WHERE id = $1
-               AND remaining_quantity + $2 <= effective_received_quantity
-                 - (${activeProtectedQuantitySql("inventory_batch.id")})
-             RETURNING id`,
-            [allocation.batch_id, take],
-          );
-          if (!restored.rows[0]) throw new InventoryValidationError("تعذر استعادة الصنف إلى دفعته الأصلية.");
+          await changeBatchBalance(client, allocation.batch_id, input.branchId, take);
           await client.query(
             `INSERT INTO inventory_movement (
-               id, batch_id, variant_id, operation_id, kind, quantity, recorded_at
-             ) VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6)`,
-            [allocation.batch_id, allocation.variant_id, input.operationId,
+               id, batch_id, variant_id, branch_id, operation_id, kind, quantity, recorded_at
+             ) VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7)`,
+            [allocation.batch_id, allocation.variant_id, input.branchId, input.operationId,
               input.dispositionType === "pre_shipment_cancellation"
                 ? "order_cancellation_restore" : "failed_delivery_restore",
               take, created.recorded_at],
@@ -1167,21 +1184,22 @@ async function disposeProtectedOnlineOrder(
       if (needed !== 0) throw new InventoryValidationError("كمية الفحص لا تطابق التخصيصات الأصلية.");
     }
   }
-  return loadOrderDispositionResult(client, input.orderId, created, "created");
+  return loadOrderDispositionResult(client, input.orderId, input.branchId, created, "created");
 }
 
 async function loadOrderDispositionResult(
   queryable: Queryable,
   orderId: string,
+  branchId: string,
   operation: OperationRow,
   kind: "created" | "replay",
 ): Promise<OnlineOrderDispositionResult> {
-  const header = await queryable.query<{ order_id: string; recorded_at: Date }>(
-    `SELECT order_id, recorded_at FROM inventory_order_disposition WHERE operation_id = $1`,
+  const header = await queryable.query<{ order_id: string; branch_id: string; recorded_at: Date }>(
+    `SELECT order_id, branch_id, recorded_at FROM inventory_order_disposition WHERE operation_id = $1`,
     [operation.id],
   );
   const row = header.rows[0];
-  if (!row || row.order_id !== orderId) throw new OperationConflictError();
+  if (!row || row.order_id !== orderId || row.branch_id !== branchId) throw new OperationConflictError();
   const allocations = await queryable.query<DispositionAllocationRow>(
     `SELECT allocation_id, source_line_id, variant_id, disposition, quantity
      FROM inventory_order_disposition_allocation
@@ -1210,6 +1228,7 @@ async function loadProtectedOrderAllocationProvenance(
   lock: boolean,
 ) {
   const result = await queryable.query<{
+    branch_id: string;
     allocation_id: string;
     source_line_id: string;
     batch_id: string;
@@ -1222,7 +1241,7 @@ async function loadProtectedOrderAllocationProvenance(
     nonsellable_removed_quantity: number;
     customer_returned_quantity: number;
   }>(
-    `SELECT allocation.id AS allocation_id,protected.source_line_id,allocation.batch_id,
+    `SELECT allocation.id AS allocation_id,allocation.branch_id,protected.source_line_id,allocation.batch_id,
             allocation.variant_id,allocation.quantity,allocation.unit_cost_piasters,
             batch.effective_unit_cost_piasters,allocation.recorded_at AS allocated_at,
             COALESCE((SELECT SUM(item.quantity)::int
@@ -1245,6 +1264,7 @@ async function loadProtectedOrderAllocationProvenance(
     [orderId],
   );
   return result.rows.map((row) => ({
+    branchId: row.branch_id,
     protectedOrderId: orderId,
     allocationId: row.allocation_id,
     sourceLineId: row.source_line_id,
@@ -1265,12 +1285,12 @@ async function loadProtectedOrderAllocationProvenance(
 async function loadProtectedOrderAllocationProvenanceForOrders(queryable: Queryable, orderIds: string[]) {
   if (orderIds.length === 0) return [];
   const result = await queryable.query<{
-    protected_order_id: string; allocation_id: string; source_line_id: string; batch_id: string;
+    protected_order_id: string; branch_id: string; allocation_id: string; source_line_id: string; batch_id: string;
     variant_id: string; quantity: number; unit_cost_piasters: number | string;
     effective_unit_cost_piasters: number | string; allocated_at: Date;
     sellable_restored_quantity: number; nonsellable_removed_quantity: number; customer_returned_quantity: number;
   }>(
-    `SELECT protected.protected_order_id,allocation.id AS allocation_id,protected.source_line_id,
+    `SELECT protected.protected_order_id,allocation.branch_id,allocation.id AS allocation_id,protected.source_line_id,
             allocation.batch_id,allocation.variant_id,allocation.quantity,allocation.unit_cost_piasters,
             batch.effective_unit_cost_piasters,allocation.recorded_at AS allocated_at,
             COALESCE(disposed.sellable,0)::int AS sellable_restored_quantity,
@@ -1293,6 +1313,7 @@ async function loadProtectedOrderAllocationProvenanceForOrders(queryable: Querya
     [orderIds],
   );
   return result.rows.map((row) => ({
+    branchId: row.branch_id,
     protectedOrderId: row.protected_order_id,
     allocationId: row.allocation_id,
     sourceLineId: row.source_line_id,
@@ -1313,6 +1334,7 @@ async function allocateFromOldestAvailable(
   client: PoolClient,
   input: {
     operationId: string;
+    branchId: string;
     variantId: string;
     quantity: number;
     recordedAt: Date;
@@ -1322,24 +1344,26 @@ async function allocateFromOldestAvailable(
   },
 ): Promise<AllocateResult> {
   const locked = await client.query<BatchRow>(
-    `SELECT id, variant_id, received_quantity, effective_received_quantity,
-            remaining_quantity, unit_cost_piasters, effective_unit_cost_piasters,
-            recorded_at, source_receipt_id, receipt_date::text AS receipt_date, source_line_id
-     FROM inventory_batch
-     WHERE variant_id = $1 AND remaining_quantity > 0
+    `SELECT b.id, b.variant_id, b.received_quantity, b.effective_received_quantity,
+            balance.remaining_quantity, ${branchBalancesSql("b")} AS branch_balances,
+            b.unit_cost_piasters, b.effective_unit_cost_piasters,
+            b.recorded_at, b.source_receipt_id, b.receipt_date::text AS receipt_date, b.source_line_id
+     FROM inventory_batch b
+     JOIN inventory_batch_balance balance ON balance.batch_id=b.id AND balance.branch_id=$2
+     WHERE b.variant_id = $1 AND balance.remaining_quantity > 0
      ORDER BY ${FIFO_BATCH_ORDER_SQL}
-     FOR UPDATE`,
-    [input.variantId],
+     FOR UPDATE OF b, balance`,
+    [input.variantId, input.branchId],
   );
   await client.query(
-    `SELECT id FROM inventory_discrepancy WHERE variant_id = $1 FOR UPDATE`,
-    [input.variantId],
+    `SELECT id FROM inventory_discrepancy WHERE variant_id = $1 AND branch_id=$2 FOR UPDATE`,
+    [input.variantId, input.branchId],
   );
   const held = await client.query<{ held: number }>(
     `SELECT COALESCE(SUM(unallocated_quantity), 0)::int AS held
      FROM inventory_discrepancy
-     WHERE variant_id = $1`,
-    [input.variantId],
+     WHERE variant_id = $1 AND branch_id=$2`,
+    [input.variantId, input.branchId],
   );
   const batchRemaining = locked.rows.reduce((sum, row) => sum + row.remaining_quantity, 0);
   const unresolved = held.rows[0]?.held ?? 0;
@@ -1369,26 +1393,26 @@ async function allocateFromOldestAvailable(
         continue;
       }
       const updated = await client.query<{ remaining_quantity: number }>(
-        `UPDATE inventory_batch
+        `UPDATE inventory_batch_balance
          SET remaining_quantity = remaining_quantity - $2
-         WHERE id = $1 AND remaining_quantity >= $2
+         WHERE batch_id = $1 AND branch_id=$3 AND remaining_quantity >= $2
          RETURNING remaining_quantity`,
-        [row.id, take],
+        [row.id, take, input.branchId],
       );
       if (!updated.rows[0]) {
         throw new InventoryValidationError("الكمية المتاحة غير كافية.");
       }
       await client.query(
         `INSERT INTO inventory_movement (
-           id, batch_id, variant_id, operation_id, kind, quantity, recorded_at
-         ) VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6)`,
-        [row.id, input.variantId, input.operationId, input.movementKind ?? "sale", take, input.recordedAt],
+           id, batch_id, variant_id, branch_id, operation_id, kind, quantity, recorded_at
+         ) VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7)`,
+        [row.id, input.variantId, input.branchId, input.operationId, input.movementKind ?? "sale", take, input.recordedAt],
       );
       await client.query(
         `INSERT INTO inventory_allocation (
-           id, batch_id, variant_id, operation_id, quantity, unit_cost_piasters, recorded_at
-         ) VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6)`,
-        [row.id, input.variantId, input.operationId, take, row.unit_cost_piasters, input.recordedAt],
+           id, batch_id, variant_id, branch_id, operation_id, quantity, unit_cost_piasters, recorded_at
+         ) VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7)`,
+        [row.id, input.variantId, input.branchId, input.operationId, take, row.unit_cost_piasters, input.recordedAt],
       );
       allocations.push({
         batchId: row.id,
@@ -1464,18 +1488,20 @@ async function listAllocationsForOperations(queryable: Queryable, operationIds: 
 
 async function listDiscrepancies(queryable: Queryable, operationId: string): Promise<DiscrepancyRecord[]> {
   const result = await queryable.query<{
+    branch_id: string;
     variant_id: string;
     requested_quantity: number;
     allocated_quantity: number;
     unallocated_quantity: number;
   }>(
-    `SELECT variant_id, requested_quantity, allocated_quantity, unallocated_quantity
+    `SELECT branch_id, variant_id, requested_quantity, allocated_quantity, unallocated_quantity
      FROM inventory_discrepancy
      WHERE operation_id = $1
      ORDER BY variant_id`,
     [operationId],
   );
   return result.rows.map((row) => ({
+    branchId: row.branch_id,
     variantId: row.variant_id,
     requestedQuantity: row.requested_quantity,
     allocatedQuantity: row.allocated_quantity,
@@ -1486,15 +1512,15 @@ async function listDiscrepancies(queryable: Queryable, operationId: string): Pro
 async function listDiscrepanciesForOperations(queryable: Queryable, operationIds: string[]) {
   if (operationIds.length === 0) return [];
   const result = await queryable.query<{
-    operation_id: string; variant_id: string; requested_quantity: number;
+    operation_id: string; branch_id: string; variant_id: string; requested_quantity: number;
     allocated_quantity: number; unallocated_quantity: number;
   }>(
-    `SELECT operation_id,variant_id,requested_quantity,allocated_quantity,unallocated_quantity
+    `SELECT operation_id,branch_id,variant_id,requested_quantity,allocated_quantity,unallocated_quantity
      FROM inventory_discrepancy WHERE operation_id=ANY($1::uuid[])
      ORDER BY operation_id,variant_id`,
     [operationIds],
   );
-  return result.rows.map((row) => ({ operationId: row.operation_id, variantId: row.variant_id,
+  return result.rows.map((row) => ({ operationId: row.operation_id, branchId: row.branch_id, variantId: row.variant_id,
     requestedQuantity: row.requested_quantity, allocatedQuantity: row.allocated_quantity,
     unallocatedQuantity: row.unallocated_quantity }));
 }
@@ -1531,7 +1557,7 @@ async function currentStockVersion(queryable: Queryable): Promise<number> {
   return Number(row.version);
 }
 
-async function quantitiesFor(queryable: Queryable, variantIds: string[]): Promise<Map<string, number>> {
+async function quantitiesFor(queryable: Queryable, branchId: string, variantIds: string[]): Promise<Map<string, number>> {
   const quantities = new Map(variantIds.map((id) => [id, 0]));
   if (variantIds.length === 0) {
     return quantities;
@@ -1544,23 +1570,49 @@ async function quantitiesFor(queryable: Queryable, variantIds: string[]): Promis
             END::int AS available_quantity
      FROM UNNEST($1::uuid[]) AS v(variant_id)
      LEFT JOIN (
-       SELECT variant_id, SUM(remaining_quantity)::int AS remaining
-       FROM inventory_batch
-       WHERE variant_id = ANY($1::uuid[])
-       GROUP BY variant_id
+       SELECT batch.variant_id, SUM(balance.remaining_quantity)::int AS remaining
+       FROM inventory_batch batch
+       JOIN inventory_batch_balance balance ON balance.batch_id=batch.id
+       WHERE batch.variant_id = ANY($1::uuid[]) AND balance.branch_id=$2
+       GROUP BY batch.variant_id
      ) b ON b.variant_id = v.variant_id
      LEFT JOIN (
        SELECT variant_id, SUM(unallocated_quantity)::int AS held
        FROM inventory_discrepancy
-       WHERE variant_id = ANY($1::uuid[])
+       WHERE variant_id = ANY($1::uuid[]) AND branch_id=$2
        GROUP BY variant_id
      ) d ON d.variant_id = v.variant_id`,
-    [variantIds],
+    [variantIds, branchId],
   );
   for (const row of result.rows) {
     quantities.set(row.variant_id, row.available_quantity);
   }
   return quantities;
+}
+
+async function quantitiesByBranchFor(queryable: Queryable, variantIds: string[]): Promise<Map<string, Map<string, number>>> {
+  const byBranch = new Map<string, Map<string, number>>();
+  if (variantIds.length === 0) return byBranch;
+  const result = await queryable.query<{ branch_id: string; variant_id: string; available_quantity: number }>(
+    `SELECT branch.id AS branch_id, variants.variant_id,
+            CASE WHEN EXISTS (
+              SELECT 1 FROM inventory_discrepancy d
+              WHERE d.branch_id=branch.id AND d.variant_id=variants.variant_id AND d.unallocated_quantity>0
+            ) THEN 0 ELSE COALESCE((
+              SELECT SUM(balance.remaining_quantity)::int
+              FROM inventory_batch_balance balance
+              JOIN inventory_batch batch ON batch.id=balance.batch_id
+              WHERE balance.branch_id=branch.id AND batch.variant_id=variants.variant_id
+            ),0) END::int AS available_quantity
+     FROM branch CROSS JOIN UNNEST($1::uuid[]) AS variants(variant_id)
+     ORDER BY branch.id,variants.variant_id`, [variantIds],
+  );
+  for (const row of result.rows) {
+    const quantities = byBranch.get(row.branch_id) ?? new Map<string, number>();
+    quantities.set(row.variant_id, row.available_quantity);
+    byBranch.set(row.branch_id, quantities);
+  }
+  return byBranch;
 }
 
 async function referencedVariantIds(queryable: Queryable, variantIds: string[]): Promise<string[]> {
@@ -1649,6 +1701,10 @@ function toBatchRecord(row: BatchRow): BatchRecord {
     receivedQuantity: row.received_quantity,
     effectiveReceivedQuantity: row.effective_received_quantity,
     remainingQuantity: row.remaining_quantity,
+    branchBalances: row.branch_balances?.map((balance) => ({
+      branchId: balance.branch_id,
+      availableQuantity: balance.remaining_quantity,
+    })) ?? [],
     unitCostPiasters: row.unit_cost_piasters,
     effectiveUnitCostPiasters: row.effective_unit_cost_piasters,
     recordedAt: row.recorded_at,
@@ -1657,15 +1713,73 @@ function toBatchRecord(row: BatchRow): BatchRecord {
   };
 }
 
+function branchBalancesSql(batchAlias: string): string {
+  return `COALESCE((SELECT json_agg(json_build_object('branch_id', balance.branch_id,
+    'remaining_quantity', balance.remaining_quantity) ORDER BY balance.branch_id)
+    FROM inventory_batch_balance balance WHERE balance.batch_id=${batchAlias}.id), '[]'::json)`;
+}
+
+function batchBalanceColumns(batchAlias: string): string {
+  return `(SELECT COALESCE(SUM(balance.remaining_quantity),0)::int
+    FROM inventory_batch_balance balance WHERE balance.batch_id=${batchAlias}.id) AS remaining_quantity,
+    ${branchBalancesSql(batchAlias)} AS branch_balances`;
+}
+
+async function assertBatchVariant(client: PoolClient, batchId: string, variantId: string): Promise<{
+  unit_cost_piasters: number | string;
+  effective_unit_cost_piasters: number | string;
+}> {
+  const result = await client.query<{
+    unit_cost_piasters: number | string;
+    effective_unit_cost_piasters: number | string;
+  }>(`SELECT unit_cost_piasters,effective_unit_cost_piasters
+       FROM inventory_batch WHERE id=$1 AND variant_id=$2 FOR UPDATE`, [batchId, variantId]);
+  const row = result.rows[0];
+  if (!row) throw new InventoryValidationError("دفعة التكلفة لا تخص المتغير المحدد.");
+  return row;
+}
+
+async function changeBatchBalance(client: PoolClient, batchId: string, branchId: string, delta: number): Promise<number> {
+  const state = await client.query<{ effective_received_quantity: number; remaining_quantity: number; protected_quantity: number }>(
+    `SELECT b.effective_received_quantity,
+            (SELECT COALESCE(SUM(balance.remaining_quantity),0)::int
+             FROM inventory_batch_balance balance WHERE balance.batch_id=b.id) AS remaining_quantity,
+            (${activeProtectedQuantitySql("b.id")}) AS protected_quantity
+     FROM inventory_batch b WHERE b.id=$1 FOR UPDATE OF b`, [batchId],
+  );
+  const row = state.rows[0];
+  if (!row || row.remaining_quantity + delta < 0
+    || row.remaining_quantity + delta > row.effective_received_quantity - row.protected_quantity) {
+    throw new InventoryValidationError("تعذر تعديل كمية دفعة التكلفة الأصلية.");
+  }
+  if (delta > 0) {
+    await client.query(
+      `INSERT INTO inventory_batch_balance (batch_id,branch_id,remaining_quantity)
+       VALUES ($1,$2,$3)
+       ON CONFLICT (batch_id,branch_id) DO UPDATE
+       SET remaining_quantity=inventory_batch_balance.remaining_quantity+EXCLUDED.remaining_quantity`,
+      [batchId, branchId, delta],
+    );
+  } else if (delta < 0) {
+    const decreased = await client.query(
+      `UPDATE inventory_batch_balance SET remaining_quantity=remaining_quantity+$3
+       WHERE batch_id=$1 AND branch_id=$2 AND remaining_quantity+$3>=0 RETURNING batch_id`,
+      [batchId, branchId, delta],
+    );
+    if (!decreased.rows[0]) throw new InventoryValidationError("الكمية المتاحة في الفرع غير كافية.");
+  }
+  return row.remaining_quantity + delta;
+}
+
 async function getBatchStates(queryable: Queryable, batchIds: string[]): Promise<BatchRecord[]> {
   if (batchIds.length === 0) return [];
   const result = await queryable.query<BatchRow>(
-    `SELECT id, variant_id, received_quantity, effective_received_quantity,
-            remaining_quantity, unit_cost_piasters, effective_unit_cost_piasters,
-            recorded_at, source_receipt_id, receipt_date::text AS receipt_date, source_line_id
-     FROM inventory_batch
-     WHERE id = ANY($1::uuid[])
-     ORDER BY id`,
+    `SELECT b.id, b.variant_id, b.received_quantity, b.effective_received_quantity,
+            ${batchBalanceColumns("b")}, b.unit_cost_piasters, b.effective_unit_cost_piasters,
+            b.recorded_at, b.source_receipt_id, b.receipt_date::text AS receipt_date, b.source_line_id
+     FROM inventory_batch b
+     WHERE b.id = ANY($1::uuid[])
+     ORDER BY b.id`,
     [batchIds],
   );
   return result.rows.map(toBatchRecord);
