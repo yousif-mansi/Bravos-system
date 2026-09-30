@@ -1,3 +1,4 @@
+import { decodeSourceCursor, encodeSourceCursor, normalizeSourcePhone } from "../domain/source-search.ts";
 import type { ReturnDto, ReturnExchangeQuoteDto, ReturnRefundBreakdownDto, ReturnSourceDto, ReturnSourceKeyDto } from "@bravos/contracts";
 import {
   ForbiddenError,
@@ -36,8 +37,8 @@ import type {
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
-const DRAFT_KEYS = new Set(["returnId", "operationId", "source", "sourceSaleId", "handlingBranchId", "authorizedRefund", "authorizedRefundPiasters", "lines"]);
-const UPDATE_DRAFT_KEYS = new Set(["expectedRevision", "handlingBranchId", "authorizedRefund", "authorizedRefundPiasters", "lines"]);
+const DRAFT_KEYS = new Set(["returnId", "operationId", "source", "sourceSaleId", "handlingBranchId", "authorizedRefund", "authorizedRefundPiasters", "lines", "reason"]);
+const UPDATE_DRAFT_KEYS = new Set(["expectedRevision", "handlingBranchId", "authorizedRefund", "authorizedRefundPiasters", "lines", "reason"]);
 const LINE_KEYS = new Set(["sourceLineId", "sourceSaleLineId", "quantity", "sellableQuantity"]);
 const POST_KEYS = new Set(["receivedAndInspected", "expectedRevision"]);
 const PAY_KEYS = new Set(["operationId", "status", "amountPiasters"]);
@@ -81,6 +82,7 @@ export function createReturnServices(ports: Omit<ReturnServiceDependencies, "clo
       branchId: delivered.fulfillmentBranchId,
       seller: null,
       receivedAt: delivered.customerReceivedAt,
+      receivedAtKey: delivered.receivedAtKey,
       returnDeadlineAt: delivered.returnDeadlineAt,
       originalPayment: {
         merchandisePiasters: delivered.confirmedQuote.merchandiseTotalPiasters,
@@ -239,6 +241,7 @@ export function createReturnServices(ports: Omit<ReturnServiceDependencies, "clo
     return {
       id: record.id,
       reference: record.reference,
+      reason: record.reason,
       operationId: record.operationId,
       status: record.status,
       revision: record.revision,
@@ -363,24 +366,37 @@ export function createReturnServices(ports: Omit<ReturnServiceDependencies, "clo
     };
   }
 
+  async function listSourcesPage(auth: VerifiedAuth | null, input: unknown, legacyLimit?: number) {
+    await requireManager(auth);
+    const body = input && typeof input === "object" && !Array.isArray(input) ? input as Record<string, unknown> : {};
+    const search = parseSearch(body);
+    const limit = legacyLimit ?? Number(body.limit ?? 25);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new ReturnsValidationError("حجم صفحة البحث غير صالح.");
+    const after = legacyLimit ? undefined : decodeSourceCursor(body.cursor, search);
+    const window = { ...search, limit: limit + 1, ...(after ? { after } : {}) };
+    const [physical, onlineRows] = await Promise.all([
+      search.channel === "online" ? Promise.resolve([]) : ports.returns.listPhysicalSources(window),
+      search.channel === "physical" ? Promise.resolve([]) : ports.onlineSources.listDeliveredSources(window),
+    ]);
+    const online = await Promise.all(onlineRows.map(async (delivered) => onlineSourceRecord(
+      delivered, await ports.inventoryReads.listProtectedOrderAllocations(delivered.orderId), ports.returns,
+    )));
+    const rows = [...physical, ...online].sort((left, right) =>
+      right.receivedAtKey.localeCompare(left.receivedAtKey)
+      || right.source.id.localeCompare(left.source.id)
+      || (right.channel === "physical" ? 1 : 0) - (left.channel === "physical" ? 1 : 0));
+    const visible = rows.slice(0, limit);
+    const last = visible.at(-1);
+    return { items: await Promise.all(visible.map(sourceDto)), nextCursor: rows.length > limit && last
+      ? encodeSourceCursor({ receivedAt: last.receivedAtKey, id: last.source.id, channel: last.channel }, search) : null };
+  }
+
   return {
     async listSources(auth, input) {
-      await requireManager(auth);
-      const search = parseSearch(input);
-      const physical = search.channel === "online" ? [] : await ports.returns.listPhysicalSources(search);
-      const onlineRows = search.channel === "physical" || search.branchId
-        ? []
-        : await ports.onlineSources.listDeliveredSources(search);
-      const online = await Promise.all(onlineRows.map(async (delivered) => onlineSourceRecord(
-        delivered,
-        await ports.inventoryReads.listProtectedOrderAllocations(delivered.orderId),
-        ports.returns,
-      )));
-      const rows = [...physical, ...online]
-        .sort((left, right) => right.receivedAt.getTime() - left.receivedAt.getTime())
-        .slice(0, 100);
-      return Promise.all(rows.map(sourceDto));
+      const page = await listSourcesPage(auth, input, 100);
+      return page.items;
     },
+    listSourcesPage,
 
     async createDraft(auth, input) {
       const manager = await requireManager(auth);
@@ -388,6 +404,7 @@ export function createReturnServices(ports: Omit<ReturnServiceDependencies, "clo
       if (!canUseBranch(manager, command.handlingBranchId)) throw new ForbiddenError();
       const fingerprint = fingerprintReturnPayload({
         source: command.source,
+        reason: command.reason,
         handlingBranchId: command.handlingBranchId,
         authorizedRefund: command.authorizedRefund,
         lines: command.lines,
@@ -420,6 +437,7 @@ export function createReturnServices(ports: Omit<ReturnServiceDependencies, "clo
           id: command.returnId,
           operationId: command.operationId,
           source: command.source,
+          reason: command.reason,
           handlingBranchId: command.handlingBranchId,
           status: "draft",
           revision: 1,
@@ -454,6 +472,7 @@ export function createReturnServices(ports: Omit<ReturnServiceDependencies, "clo
         if (!canUseBranch(manager, command.handlingBranchId)) throw new ForbiddenError();
         const fingerprint = fingerprintReturnPayload({
           source: existing.source,
+          reason: command.reason === undefined ? existing.reason : command.reason,
           handlingBranchId: command.handlingBranchId,
           authorizedRefund: command.authorizedRefund,
           lines: command.lines,
@@ -474,6 +493,7 @@ export function createReturnServices(ports: Omit<ReturnServiceDependencies, "clo
         const plan = planReturn(source, command.lines);
         return tx.returns.updateDraft({
           returnId,
+          reason: command.reason === undefined ? existing.reason : command.reason,
           expectedRevision: command.expectedRevision,
           handlingBranchId: command.handlingBranchId,
           draftPayloadFingerprint: fingerprint,
@@ -868,6 +888,8 @@ export function createReturnServices(ports: Omit<ReturnServiceDependencies, "clo
       await requireManager(auth);
       const page = parseReturnList(input);
       const result = await ports.returns.listPage(page);
+      const identities = await ports.variants.getVariants([...new Set(result.items.flatMap((row) => row.lines.map((line) => line.variantId)))]);
+      const variantsById = new Map(identities.map((variant) => [variant.id, variant]));
       return {
         items: await Promise.all(result.items.map(async (row) => {
           const corrected = row.status === "posted"
@@ -880,8 +902,15 @@ export function createReturnServices(ports: Omit<ReturnServiceDependencies, "clo
             exchangeCreditAppliedPiasters: (await ports.returns.getById(row.id))?.exchangeCreditAppliedPiasters ?? 0,
             corrected,
           });
+          const { lines: summaryLines, ...summary } = row;
           return {
-            ...row,
+            ...summary,
+            products: summaryLines.map((line) => {
+              const variant = variantsById.get(line.variantId);
+              if (!variant) throw new ReturnsValidationError("بيانات صنف المرتجع غير موجودة.");
+              return { nameAr: variant.product.nameAr, sizeNameAr: variant.size.nameAr,
+                colorNameAr: variant.color.nameAr, quantity: line.quantity };
+            }),
             authorizedRefund: corrected?.authorizedRefund ?? row.authorizedRefund,
             authorizedRefundPiasters: refund.authorizedPiasters,
             originalAuthorizedRefundPiasters: row.authorizedRefundPiasters,
@@ -1158,11 +1187,18 @@ function restorationPlan(
   return [...totals.values()];
 }
 
+function parseReason(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string" || [...value].length > 500) throw new ReturnsValidationError("سبب المرتجع لا يزيد عن ٥٠٠ حرف.");
+  return value.trim() || null;
+}
+
 function parseDraft(input: unknown) {
   const body = expectObject(input, "بيانات الإرجاع غير صالحة.");
   assertAllowedKeys(body, DRAFT_KEYS, "بيانات الإرجاع غير صالحة.");
   if (!Array.isArray(body.lines) || body.lines.length === 0) throw new ReturnsValidationError("اختر صنفاً واحداً على الأقل.");
   return {
+    reason: parseReason(body.reason),
     returnId: assertUuid(body.returnId, "معرّف الإرجاع غير صالح."),
     operationId: assertUuid(body.operationId, "معرّف العملية غير صالح."),
     source: parseReturnSource(body.source, body.sourceSaleId),
@@ -1186,6 +1222,7 @@ function parseDraftUpdate(input: unknown) {
     throw new ReturnsValidationError("اختر صنفاً واحداً على الأقل.");
   }
   return {
+    reason: body.reason === undefined ? undefined : parseReason(body.reason),
     expectedRevision: positiveQuantity(body.expectedRevision, "نسخة المسودة غير صالحة."),
     handlingBranchId: assertUuid(body.handlingBranchId, "فرع معالجة الإرجاع غير صالح."),
     authorizedRefund: parseAuthorizedRefund(body.authorizedRefund, body.authorizedRefundPiasters),
@@ -1270,7 +1307,7 @@ function parseSearch(input: unknown): SourceSearch {
   const body = input && typeof input === "object" && !Array.isArray(input) ? input as Record<string, unknown> : {};
   const search: SourceSearch = {};
   if (typeof body.reference === "string" && body.reference.trim()) search.reference = body.reference.trim().slice(0, 100);
-  if (typeof body.phone === "string" && body.phone.trim()) search.phone = body.phone.trim().slice(0, 40);
+  if (typeof body.phone === "string" && body.phone.trim()) search.phone = normalizeSourcePhone(body.phone.trim().slice(0, 40));
   if (typeof body.date === "string" && body.date) {
     const match = DATE_PATTERN.exec(body.date);
     const parts = body.date.split("-").map(Number);

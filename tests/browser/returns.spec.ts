@@ -35,6 +35,7 @@ test("manager uses the separate Arabic Returns picker, posts inspection, and rec
     operationId: crypto.randomUUID(),
     physicallyCompleted: true,
     employeeDiscountPiasters: 0,
+    customerName: "عميل المرتجع", customerPhone: "01012345678",
     lines: [{ variantId, quantity: 1 }],
   });
   expect(original.status).toBe(201);
@@ -49,14 +50,99 @@ test("manager uses the separate Arabic Returns picker, posts inspection, and rec
   await expect(source).toHaveCount(1);
   await expect(source).toContainText("قميص إرجاع المتصفح");
   await source.click();
+  await expect(page.getByText("فرع البيع الأصلي: أبشواي", { exact: true })).toBeVisible();
+
+  // Isolate the picker page boundary while retaining real purchase/return mutations.
+  const sourceDto = (await staffApi(page, "GET", `/api/internal/returns/sources?reference=${original.body.reference}`)).body[0];
+  const sourceQueries: URL[] = [];
+  let failOlderPage = true;
+  let releaseStale!: () => void;
+  let markStaleStarted!: () => void;
+  const staleGate = new Promise<void>((resolve) => { releaseStale = resolve; });
+  const staleStarted = new Promise<void>((resolve) => { markStaleStarted = resolve; });
+  let gateSameAccount = true;
+  await page.route(/\/api\/internal\/returns\/sources-page(?:\?|$)/, async (route) => {
+    const query = new URL(route.request().url());
+    sourceQueries.push(query);
+    if (query.searchParams.get("phone") !== "010 1234 5678") return route.continue();
+    if (gateSameAccount && !query.searchParams.has("cursor")) {
+      gateSameAccount = false;
+      markStaleStarted();
+      await staleGate;
+      return route.fulfill({ json: { items: [sourceDto], nextCursor: "stale-cursor" } });
+    }
+    if (query.searchParams.has("cursor")) {
+      if (failOlderPage) {
+        failOlderPage = false;
+        return route.fulfill({ status: 503, json: { messageAr: "تعذر تحميل الطلبات الأقدم" } });
+      }
+      return route.fulfill({ json: { items: [sourceDto], nextCursor: null } });
+    }
+    return route.fulfill({ json: {
+      items: [{ ...sourceDto, source: { ...sourceDto.source, id: crypto.randomUUID() }, reference: "POS-OLDER-PAGE" }],
+      nextCursor: "older-purchases",
+    } });
+  });
+  await search.getByLabel("رقم الطلب").fill("");
+  await search.getByLabel("رقم هاتف العميل").fill("010 1234 5678");
+  await search.getByRole("button", { name: "بحث" }).click();
+  await staleStarted;
+  await page.evaluate(() => {
+    const account = JSON.parse(localStorage.getItem("bravos.account") ?? "null") as { staffId: string };
+    window.dispatchEvent(new CustomEvent("bravos-account", { detail: {
+      staffId: account.staffId, eventId: crypto.randomUUID(), generation: 0,
+    } }));
+  });
+  releaseStale();
+  await expect(search.getByRole("button", { name: "بحث" })).toBeEnabled();
+  await expect(page.getByTestId("return-source-list").getByRole("button")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "طلبات أقدم", exact: true })).toHaveCount(0);
+  await search.getByRole("button", { name: "بحث" }).click();
+  await expect(page.getByRole("form", { name: "إنشاء مسودة إرجاع" })).toHaveCount(0);
+  await expect(page.getByTestId("return-source-list").getByRole("button")).toHaveCount(1);
+  // Editing inputs alone must never change the filters used for the next page.
+  await search.getByLabel("رقم هاتف العميل").fill("01199999999");
+  await page.getByRole("button", { name: "طلبات أقدم", exact: true }).click();
+  await expect(page.getByRole("alert")).toBeVisible();
+  await page.getByRole("button", { name: "طلبات أقدم", exact: true }).click();
+  await expect(page.getByTestId("return-source-list").getByRole("button")).toHaveCount(2);
+  const olderQueries = sourceQueries.filter((query) => query.searchParams.has("cursor"));
+  expect(olderQueries).toHaveLength(2);
+  expect(olderQueries.every((query) => query.searchParams.get("phone") === "010 1234 5678" && query.searchParams.get("limit") === "25")).toBe(true);
+  await expect(page.getByRole("button", { name: "طلبات أقدم", exact: true })).toHaveCount(0);
+  await source.click();
 
   const draftForm = page.getByRole("form", { name: "إنشاء مسودة إرجاع" });
   await draftForm.getByLabel("الكمية المستلمة").fill("1");
   await draftForm.getByLabel("منها قابلة للبيع بعد الفحص").fill("1");
   await expect(page.getByTestId("refund-suggestion")).toContainText("850 ج.م.");
   await draftForm.getByLabel("قيمة الاسترداد المعتمدة بالجنيه").fill("800");
+  await draftForm.getByLabel("سبب المرتجع (اختياري)").fill("المقاس مش مناسب");
+  const attempts: unknown[] = [];
+  await page.route(/\/api\/internal\/returns$/, async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    attempts.push(route.request().postDataJSON());
+    if (attempts.length === 1) {
+      const response = await route.fetch();
+      expect(response.status()).toBe(201);
+      return route.abort("failed");
+    }
+    return route.continue();
+  });
   await draftForm.getByRole("button", { name: "حفظ المسودة" }).click();
-  await expect(page.getByRole("status")).toContainText("حُفظت المسودة دون تغيير المخزون أو النقد");
+  await expect(page.getByTestId("pending-return-attempt")).toBeVisible();
+  await expect(page.getByRole("button", { name: "إعادة محاولة العملية السابقة نفسها" })).toBeEnabled();
+  await page.reload();
+  await page.getByRole("button", { name: "إعادة محاولة العملية السابقة نفسها" }).click();
+  await expect(page.getByRole("status")).toContainText("تم العثور على نتيجة العملية السابقة");
+  expect(attempts).toHaveLength(2);
+  expect(attempts[1]).toEqual(attempts[0]);
+  await expect(page.getByTestId("return-details")).toContainText("المقاس مش مناسب");
+  const history = page.locator(".return-history").getByRole("button").filter({ hasText: original.body.reference });
+  await expect(history).toHaveCount(1);
+  await expect(history).toContainText("قميص إرجاع المتصفح — L إرجاع / كحلي إرجاع × 1");
+  await expect(history).toContainText("الأصلي: أبشواي · الاستلام: أبشواي");
+  await expect(history).toContainText("المقاس مش مناسب");
   await expect(page.getByTestId("return-details")).toContainText("800 ج.م.");
   await expect(page.getByTestId("return-details")).toContainText("المسودة لا تنشئ التزاماً نقدياً");
   const afterDraft = await staffApi(page, "GET", "/api/internal/inventory/batches");
@@ -64,10 +150,14 @@ test("manager uses the separate Arabic Returns picker, posts inspection, and rec
 
   await page.getByRole("button", { name: "تعديل المسودة" }).click();
   const editForm = page.getByRole("form", { name: "تعديل مسودة إرجاع" });
+  await expect(editForm.getByLabel("سبب المرتجع (اختياري)")).toHaveValue("المقاس مش مناسب");
+  await editForm.getByLabel("سبب المرتجع (اختياري)").fill("");
   await editForm.getByLabel("قيمة الاسترداد المعتمدة بالجنيه").fill("810");
   await editForm.getByRole("button", { name: "حفظ التعديلات" }).click();
   await expect(page.getByRole("status")).toContainText("تم تحديث المسودة دون تغيير المخزون أو النقد");
   await expect(page.getByTestId("return-details")).toContainText("810 ج.م.");
+  await expect(page.getByTestId("return-details")).not.toContainText("المقاس مش مناسب");
+  await expect(history).not.toContainText("المقاس مش مناسب");
   expect((await staffApi(page, "GET", "/api/internal/inventory/batches")).body).toEqual(afterDraft.body);
 
   await page.getByRole("button", { name: "تأكيد الاستلام والفحص وترحيل الإرجاع" }).click();

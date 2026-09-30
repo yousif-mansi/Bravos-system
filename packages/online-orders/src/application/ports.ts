@@ -192,15 +192,18 @@ export type DeliveredOnlineOrderSource = {
   customerName: string;
   primaryPhone: string;
   customerReceivedAt: Date;
+  receivedAtKey: string;
   returnDeadlineAt: Date;
   confirmedQuote: OnlineOrderAgreementQuoteDto;
 };
 
 export type DeliveredOnlineOrderSourceSearch = {
+  limit?: number;
+  after?: { receivedAt: string; id: string; channel: "physical" | "online" };
+  branchId?: string;
   reference?: string;
   phone?: string;
   date?: string;
-  item?: string;
   amountPiasters?: number;
 };
 

@@ -191,7 +191,7 @@ function validatePayload(value: unknown): DecodedBackupArchive {
   const knownSchemas = [
     "028_aggregate_analytics.sql", "029_restore.sql", "030_branch_inventory.sql",
     "031_sale_payments.sql", "032_catalog_online_variants.sql",
-    "033_human_references.sql", "034_order_recognition_branch.sql",
+    "033_human_references.sql", "034_order_recognition_branch.sql", "035_return_reason.sql",
   ];
   const schemaNumber = knownSchemas.indexOf(manifest.schemaVersion as string) + 28;
   if (schemaNumber < 28) {

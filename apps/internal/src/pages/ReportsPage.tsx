@@ -443,15 +443,15 @@ function Refunds({ refunds, branches }: { refunds: ReportRefundDto[]; branches: 
           <article className="report-detail-card" data-testid="report-refund" key={refund.returnId}>
             <div className="report-detail-heading">
               <div>
-                <h3>مرتجع {refund.returnId}</h3>
+                <h3>مرتجع {refund.reference}</h3>
                 <p className="muted">{formatCairoDateTime(refund.postedAt)}</p>
               </div>
               <RefundLinks refund={refund} />
             </div>
             <div className="report-amount-line">
               <span>القناة الأصلية: {channelName[refund.channel]}</span>
-              <span>الفرع الأصلي: {refund.originalBranchId ? branchNames.get(refund.originalBranchId) ?? refund.originalBranchId : "فرع غير مسجل"}</span>
-              <span>فرع المعالجة: {branchNames.get(refund.handlingBranchId) ?? refund.handlingBranchId}</span>
+              <span>الفرع الأصلي: {refund.originalBranchId ? branchNames.get(refund.originalBranchId) ?? "غير مسجل" : "فرع غير مسجل"}</span>
+              <span>فرع المعالجة: {branchNames.get(refund.handlingBranchId) ?? "غير مسجل"}</span>
               <span>مراجعة التصحيح: {refund.correctionRevision}</span>
             </div>
             <div className="report-amount-line">

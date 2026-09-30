@@ -143,6 +143,7 @@ export default function ReceivingPage({
   const [savedNewReceipt, setSavedNewReceipt] = useState<{ branchId: string; receiptDate: string; lines: ReceivePayloadLines } | null>(null);
   const [branchId, setBranchId] = useState(workspace.activeBranch?.id ?? workspace.authorizedBranches[0]?.id ?? "");
   const receiptFeedback = useRevealFeedback<HTMLElement>();
+  const correctionFeedback = useRevealFeedback<HTMLFormElement>();
   const [detailLoadingId, setDetailLoadingId] = useState<string | null>(null);
   const [receipts, setReceipts] = useState<ReceiptDto[]>([]);
   const [batches, setBatches] = useState<InventoryBatchDto[]>([]);
@@ -710,6 +711,7 @@ export default function ReceivingPage({
       costEgp: piastersToEgpInput(line.effectiveUnitCostPiasters),
     })));
     setEditingCorrection(true);
+    correctionFeedback.reveal();
   }
 
   function resetCorrectionAttempt() {
@@ -726,11 +728,11 @@ export default function ReceivingPage({
       unitCostPiasters: egpInputToPiasters(line.costEgp),
     }));
     if (parsed.some((line) => !Number.isInteger(line.quantity) || line.quantity < 0)) {
-      setError("الكمية الفعالة غير صالحة.");
+      setError("الكمية غير صالحة.");
       return;
     }
     if (parsed.some((line) => line.unitCostPiasters === null)) {
-      setError("تكلفة الشراء الفعالة غير صالحة.");
+      setError("تكلفة الشراء غير صالحة.");
       return;
     }
     correctionInFlightRef.current = true;
@@ -1043,20 +1045,20 @@ export default function ReceivingPage({
             <section ref={receiptFeedback.regionRef} className={`reveal-feedback${receiptFeedback.highlighted ? " is-highlighted" : ""}`} data-testid="receipt-details">
               <h3 ref={receiptFeedback.headingRef} tabIndex={-1}>تفاصيل الإذن</h3>
               <p>تاريخ الاستلام: {selectedReceipt.receiptDate}</p>
-              <p>الفرع: {workspace.authorizedBranches.find((branch) => branch.id === selectedReceipt.branchId)?.nameAr ?? selectedReceipt.branchId}</p>
+              <p>الفرع: {workspace.authorizedBranches.find((branch) => branch.id === selectedReceipt.branchId)?.nameAr ?? "فرع غير متاح"}</p>
               {selectedReceipt.lines.map((line) => (
                 <div key={line.id} className="staff-item">
-                  <p>{line.variant.product.code} / {line.variant.size.nameAr} / {line.variant.color.nameAr}</p>
-                  <p>الأصل: {line.quantity} × {formatEgpFromPiasters(line.unitCostPiasters)}</p>
-                  <p>الفعلي: {line.effectiveQuantity} × {formatEgpFromPiasters(line.effectiveUnitCostPiasters)}</p>
-                  <p className="muted">المتاح من الدفعة بكل الفروع: {line.remainingQuantity} — المستهلك حالياً: {line.allocatedQuantity}</p>
+                  <p>{line.variant.product.nameAr} — {line.variant.product.code} / {line.variant.size.nameAr} / {line.variant.color.nameAr}</p>
+                  <p>الكمية المستلمة: {line.effectiveQuantity} — تكلفة شراء الوحدة: {formatEgpFromPiasters(line.effectiveUnitCostPiasters)}</p>
+                  <p className="muted">المتبقي بالمخزون بكل الفروع: {line.remainingQuantity} — المستهلك حالياً: {line.allocatedQuantity}</p>
                 </div>
               ))}
               <div className="actions">
                 <button type="button" className="secondary" onClick={beginCorrection}>تصحيح الإذن</button>
               </div>
               {editingCorrection ? (
-                <form className="stacked-form" aria-label="تصحيح إذن الاستلام" onSubmit={(event) => void onCorrectReceipt(event)}>
+                <form ref={correctionFeedback.regionRef} className={`stacked-form reveal-feedback${correctionFeedback.highlighted ? " is-highlighted" : ""}`} aria-label="تصحيح إذن الاستلام" onSubmit={(event) => void onCorrectReceipt(event)}>
+                  <h4 ref={correctionFeedback.headingRef} tabIndex={-1}>تصحيح إذن الاستلام</h4>
                   <div className="field">
                     <label htmlFor="receivingCorrectionReason">سبب التصحيح</label>
                     <input
@@ -1073,7 +1075,7 @@ export default function ReceivingPage({
                     <div className="variant-row" key={line.lineId}>
                       <p>{line.label}</p>
                       <div className="field">
-                        <label htmlFor={`correctionQuantity-${line.lineId}`}>الكمية الفعالة</label>
+                        <label htmlFor={`correctionQuantity-${line.lineId}`}>الكمية</label>
                         <input
                           id={`correctionQuantity-${line.lineId}`}
                           inputMode="numeric"
@@ -1088,7 +1090,7 @@ export default function ReceivingPage({
                         />
                       </div>
                       <div className="field">
-                        <label htmlFor={`correctionCost-${line.lineId}`}>تكلفة الشراء الفعالة بالجنيه</label>
+                        <label htmlFor={`correctionCost-${line.lineId}`}>تكلفة الشراء بالجنيه</label>
                         <input
                           id={`correctionCost-${line.lineId}`}
                           value={line.costEgp}
@@ -1122,10 +1124,21 @@ export default function ReceivingPage({
                 <div className="staff-list">
                   <h4>سجل التصحيحات</h4>
                   {selectedReceipt.corrections.map((correction) => (
-                    <article className="staff-item" key={correction.id}>
-                      <p>التصحيح {correction.revision}: {correction.reason}</p>
+                    <details className="staff-item" key={correction.id}>
+                      <summary>التصحيح {correction.revision}: {correction.reason}</summary>
                       <p className="muted">نفّذه {correction.changedByDisplayName} — {new Date(correction.changedAt).toLocaleString("ar-EG")}</p>
-                    </article>
+                      {correction.lines.map((change) => {
+                        const line = selectedReceipt.lines.find((item) => item.id === change.lineId);
+                        return (
+                          <div key={change.lineId}>
+                            <p>{line ? `${line.variant.product.nameAr} — ${line.variant.product.code} / ${line.variant.size.nameAr} / ${line.variant.color.nameAr}` : "صنف الاستلام"}</p>
+                            <p>عند تسجيل الإذن: {change.originalQuantity} × {formatEgpFromPiasters(change.originalUnitCostPiasters)}</p>
+                            <p>قبل التصحيح: {change.previousQuantity} × {formatEgpFromPiasters(change.previousUnitCostPiasters)}</p>
+                            <p>بعد التصحيح: {change.effectiveQuantity} × {formatEgpFromPiasters(change.effectiveUnitCostPiasters)}</p>
+                          </div>
+                        );
+                      })}
+                    </details>
                   ))}
                 </div>
               ) : null}
@@ -1142,13 +1155,11 @@ export default function ReceivingPage({
               {batches.map((batch) => (
                 <article className="staff-item" key={batch.id}>
                   <p>
-                    {batch.variant.product.code} / {batch.variant.size.nameAr} / {batch.variant.color.nameAr}
+                    {batch.variant.product.nameAr} — {batch.variant.product.code} / {batch.variant.size.nameAr} / {batch.variant.color.nameAr}
                   </p>
-                  <p>المتبقي: {batch.remainingQuantity} من {batch.effectiveReceivedQuantity}</p>
-                  <p>حسب الفرع: {batch.branchBalances.map((balance) => `${workspace.authorizedBranches.find((branch) => branch.id === balance.branchId)?.nameAr ?? balance.branchId}: ${balance.availableQuantity}`).join("، ")}</p>
-                  <p>الكمية الأصلية: {batch.receivedQuantity} — الكمية الفعالة: {batch.effectiveReceivedQuantity}</p>
-                  <p>تكلفة الشراء الأصلية: {formatEgpFromPiasters(batch.unitCostPiasters)}</p>
-                  <p>التكلفة الفعالة: {formatEgpFromPiasters(batch.effectiveUnitCostPiasters)}</p>
+                  <p>المتبقي بالمخزون: {batch.remainingQuantity}</p>
+                  <p>حسب الفرع: {batch.branchBalances.map((balance) => `${workspace.authorizedBranches.find((branch) => branch.id === balance.branchId)?.nameAr ?? "فرع غير متاح"}: ${balance.availableQuantity}`).join("، ")}</p>
+                  <p>تكلفة شراء الوحدة: {formatEgpFromPiasters(batch.effectiveUnitCostPiasters)}</p>
                 </article>
               ))}
             </div>

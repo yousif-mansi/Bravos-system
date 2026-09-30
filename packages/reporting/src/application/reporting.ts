@@ -641,7 +641,7 @@ function toPhysicalDetail(
   }
   const effectiveTotal = cancelled ? 0 : correction?.effectiveTotalPiasters ?? sale.finalTotalPiasters;
   return {
-    source: { kind: "physical_sale", id: sale.id, reference: sale.id }, channel: "physical",
+    source: { kind: "physical_sale", id: sale.id, reference: required(sale.reference, "رقم البيع غير موجود.") }, channel: "physical",
     occurredAt: sale.occurredAt.toISOString(), branch: required(branches.get(sale.branchId), "فرع البيع غير موجود."),
     employee: { staffId: sale.soldByStaffId, displayName: sale.soldByDisplayName },
     effectiveStatus: correction?.status ?? "active", correctionRevision: correction?.revision ?? 0,
@@ -737,7 +737,7 @@ function composeReturn(
           ? "none"
           : "paid";
   return { dto: {
-    returnId: base.returnId, postedAt: base.postedAt.toISOString(), source: base.source, channel: base.channel,
+    returnId: base.returnId, reference: base.reference, postedAt: base.postedAt.toISOString(), source: base.source, channel: base.channel,
     originalBranchId: sourceSale?.branchId ?? onlineBranchId, handlingBranchId: base.handlingBranchId,
     effectiveStatus: status, correctionRevision: correction?.revision ?? 0,
     corrections: (correction?.changes ?? []).map((change) => ({ ...change,

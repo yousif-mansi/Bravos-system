@@ -724,7 +724,7 @@ export function WorkspacePage({
         <section className="sync-dock">
           {syncStatus ? <p data-testid="sync-status" role="status">{syncStatus}</p> : null}
           {unsynced > 0 ? (
-            <p className="muted" data-testid="sync-foreground-note">في مبيعات لسه متبعتش. ابعتها وأنت متصل.</p>
+            <p className="muted" data-testid="sync-foreground-note">في مبيعات لسه متبعتش. النظام بيحاول إرسالها تلقائياً وأنت متصل، وبيعيد المحاولة عند رجوع الاتصال.</p>
           ) : <p className="sr-only" data-testid="sync-foreground-note"> </p>}
           <button
             className="secondary"

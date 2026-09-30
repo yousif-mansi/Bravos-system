@@ -1,4 +1,4 @@
-import type { AppliedAutomaticOfferDto, BranchDto, ReturnDto, ReturnExchangeQuoteDto, ReturnListPageDto, ReturnRefundBreakdownDto, ReturnSourceDto, ReturnSourceKeyDto, VariantIdentityDto } from "@bravos/contracts";
+import type { AppliedAutomaticOfferDto, BranchDto, ReturnDto, ReturnExchangeQuoteDto, ReturnListPageDto, ReturnRefundBreakdownDto, ReturnSourceDto, ReturnSourcePageDto, ReturnSourceKeyDto, VariantIdentityDto } from "@bravos/contracts";
 import type { AuthenticatedStaff, VerifiedAuth } from "@bravos/identity";
 import type { AllocationRecord, InventoryReadStore, InventoryTransaction } from "@bravos/inventory";
 import type { DeliveredOnlineOrderSourceReader } from "@bravos/online-orders";
@@ -48,6 +48,8 @@ export type ReturnSourceRecord = {
   branchId: string | null;
   seller: { staffId: string; displayName: string } | null;
   receivedAt: Date;
+  /** Exact UTC microsecond text used only for source pagination. */
+  receivedAtKey: string;
   returnDeadlineAt: Date;
   originalPayment: ReturnRefundBreakdownDto;
   availableCheckoutChargePiasters: number;
@@ -98,6 +100,7 @@ export type RefundEventRecord = {
 };
 
 export type ReturnRecord = {
+  reason: string | null;
   id: string;
   reference: string;
   operationId: string;
@@ -190,6 +193,8 @@ export type ReturnExchangeQuoteRecord = {
 };
 
 export type ReturnListRecord = {
+  reason: string | null;
+  lines: Array<{ variantId: string; quantity: number }>;
   id: string;
   reference: string;
   customerName: string | null;
@@ -221,6 +226,8 @@ export type ReturnCorrectionStateReader = {
 };
 
 export type SourceSearch = {
+  limit?: number;
+  after?: { receivedAt: string; id: string; channel: "physical" | "online" };
   reference?: string;
   phone?: string;
   date?: string;
@@ -243,6 +250,7 @@ export type ReturnsStore = {
   lockIdentities(returnId: string, operationId: string): Promise<void>;
   insertDraft(input: Omit<ReturnRecord, "reference" | "createdAt" | "updatedAt" | "postedByStaffId" | "postedAt" | "refundStatus" | "refundPaidPiasters" | "exchangeCreditAppliedPiasters" | "refundRecordedByStaffId" | "refundRecordedAt" | "restorations" | "refundEvents">): Promise<{ kind: "created" | "existing"; record: ReturnRecord }>;
   updateDraft(input: {
+    reason: string | null;
     returnId: string;
     expectedRevision: number;
     handlingBranchId: string;
@@ -333,6 +341,7 @@ export type ReturnsUnitOfWork = {
 
 export type ReturnServices = {
   listSources(auth: VerifiedAuth | null, input: unknown): Promise<ReturnSourceDto[]>;
+  listSourcesPage(auth: VerifiedAuth | null, input: unknown): Promise<ReturnSourcePageDto>;
   createDraft(auth: VerifiedAuth | null, input: unknown): Promise<{ value: ReturnDto; created: boolean }>;
   updateDraft(auth: VerifiedAuth | null, id: string, input: unknown): Promise<ReturnDto>;
   post(auth: VerifiedAuth | null, id: string, input: unknown): Promise<{ value: ReturnDto; created: boolean }>;
@@ -357,6 +366,7 @@ export type ReturnServiceDependencies = {
 };
 
 export type ReturnReportingFact = {
+  reference: string;
   returnId: string;
   postedAt: Date;
   source: ReturnSourceKeyDto;

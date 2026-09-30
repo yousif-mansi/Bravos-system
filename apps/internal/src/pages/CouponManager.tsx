@@ -28,14 +28,17 @@ export function CouponManager({ products, categories }: Props) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [loaded, setLoaded] = useState(false);
+  const [loadFailed, setLoadFailed] = useState(false);
   const editFeedback = useRevealFeedback<HTMLFormElement>();
 
   useEffect(() => { void refresh(); }, []);
 
   async function refresh() {
     setPending(true);
-    try { setCoupons(await listCoupons()); }
-    catch (caught) { setError(caught instanceof ApiError ? caught.messageAr : "تعذر تحميل الكوبونات."); }
+    setLoadFailed(false); setError("");
+    try { setCoupons(await listCoupons()); setLoaded(true); }
+    catch (caught) { setLoadFailed(true); setError(caught instanceof ApiError ? caught.messageAr : "تعذر تحميل الكوبونات."); }
     finally { setPending(false); }
   }
 
@@ -80,6 +83,8 @@ export function CouponManager({ products, categories }: Props) {
     } catch (caught) { setError(caught instanceof ApiError ? caught.messageAr : "تعذر حفظ الكوبون."); }
     finally { setPending(false); }
   }
+
+  if (!loaded) return <section className="card" aria-label="إدارة الكوبونات"><h2>الكوبونات</h2>{loadFailed ? <><p className="error" role="alert">{error}</p><button type="button" disabled={pending} onClick={() => void refresh()}>إعادة تحميل الكوبونات</button></> : <p role="status">جارٍ تحميل الكوبونات…</p>}</section>;
 
   return <section className="card stacked-form" aria-label="إدارة الكوبونات">
     <h2>الكوبونات</h2>

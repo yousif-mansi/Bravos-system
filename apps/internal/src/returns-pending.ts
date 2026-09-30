@@ -18,6 +18,7 @@ export type PendingReturnAttempt =
         operationId: string;
         source: { kind: "physical_sale" | "delivered_online_order"; id: string };
         handlingBranchId: string;
+        reason?: string | null;
         authorizedRefund: { merchandisePiasters: number; checkoutChargePiasters: number };
         lines: Array<{ sourceLineId: string; quantity: number; sellableQuantity: number }>;
       };

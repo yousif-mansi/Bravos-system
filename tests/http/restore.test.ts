@@ -8,6 +8,7 @@ import { buildApp, type BuiltApp } from "../../apps/api/src/app.ts";
 import { ensureOwner } from "../../apps/api/src/bootstrap.ts";
 import { createNodeBackupCrypto, decodeBackupArchive } from "@bravos/backup/node";
 import { startPostgresCluster, type PostgresCluster } from "@bravos/testkit";
+import { applyMigrations, revertLastMigration } from "@bravos/persistence";
 
 const INTERNAL_ORIGIN = "http://127.0.0.1:5173";
 const ARCHIVE_PASSWORD = "restore-archive-password-1";
@@ -71,7 +72,7 @@ test("stages, pauses and activates twice, keeps a paid old-generation sale for o
   expect(oldSnapshot).toMatchObject({ status: 201, body: { restoreGeneration: 0, restorePause: null } });
   const firstArchive = await downloadBackup(manager);
   expect((await decodeBackupArchive(firstArchive, ARCHIVE_PASSWORD)).manifest).toMatchObject({
-    schemaVersion: "034_order_recognition_branch.sql",
+    schemaVersion: "035_return_reason.sql",
     sourceGeneration: 0,
   });
 
@@ -465,6 +466,74 @@ test("newer additions survive activation while a changed record blocks the previ
     .toBe("تصنيف معدل بعد النسخة");
 }, 180_000);
 
+test.each(["035", "034"])("restores an authentic %s return profile with readable references and reason compatibility", async (profile) => {
+  const manager = await signIn("owner", "owner-pass-1");
+  await api(manager, "POST", "/api/internal/active-branch", { branchId });
+  const variantId = await seedVariant(manager);
+  expect((await receive(manager, variantId, 1)).status).toBe(201);
+  const original = await api(manager, "POST", "/api/internal/sales", {
+    saleId: crypto.randomUUID(), operationId: crypto.randomUUID(), physicallyCompleted: true,
+    occurredAt: new Date().toISOString(), employeeDiscountPiasters: 0, lines: [{ variantId, quantity: 1 }],
+  });
+  expect(original.status, JSON.stringify(original.body)).toBe(201);
+  const source = await api(manager, "GET", `/api/internal/returns/sources?reference=${original.body.reference}`);
+  const draft = await api(manager, "POST", "/api/internal/returns", {
+    returnId: crypto.randomUUID(), operationId: crypto.randomUUID(), sourceSaleId: original.body.id,
+    handlingBranchId: branchId, authorizedRefundPiasters: 25000,
+    ...(profile === "035" ? { reason: "المقاس غير مناسب" } : {}),
+    lines: [{ sourceSaleLineId: source.body[0].lines[0].saleLineId, quantity: 1, sellableQuantity: 0 }],
+  });
+  expect(draft.status, JSON.stringify(draft.body)).toBe(201);
+  // Generate an actual old-schema archive, rather than relabeling current rows.
+  if (profile === "034") expect(await revertLastMigration(built.pool)).toBe("035_return_reason.sql");
+  const bytes = await downloadBackup(manager);
+  const decoded = await decodeBackupArchive(bytes, ARCHIVE_PASSWORD);
+  expect(decoded.manifest.schemaVersion).toBe(profile === "034" ? "034_order_recognition_branch.sql" : "035_return_reason.sql");
+  const archived = decoded.data.returns.returns_return![0]!;
+  if (profile === "034") expect(archived).not.toHaveProperty("reason");
+  else expect(archived.reason).toBe("المقاس غير مناسب");
+  if (profile === "034") await applyMigrations(built.pool);
+
+  // Reject malformed old-profile rows before pausing any writes.
+  if (profile === "034") {
+    for (const malformed of ["extra", "missing"] as const) {
+      const bad = structuredClone(decoded);
+      if (malformed === "extra") bad.data.returns.returns_return![0]!.reason = null;
+      else delete bad.data.returns.returns_return![0]!.reference;
+      resealSection(bad, "returns");
+      const invalid = Buffer.from(await createNodeBackupCrypto().protect(bad, ARCHIVE_PASSWORD));
+      const rejected = await createPreview(manager, invalid);
+      expect(rejected.status, JSON.stringify(rejected.body)).toBe(400);
+      expect((await api(manager, "GET", "/api/internal/restore/state")).body.pause).toBeNull();
+    }
+  }
+  // Remove only this isolated, unposted fixture to verify archive-only data is
+  // restored. Keeping the same actor lets activation replay test the same identity.
+  await built.pool.query("DELETE FROM returns_return_line WHERE return_id=$1", [draft.body.id]);
+  await built.pool.query("DELETE FROM returns_return WHERE id=$1", [draft.body.id]);
+  const target = manager;
+  const operationId = crypto.randomUUID();
+  const preview = await createPreview(target, bytes, operationId);
+  expect(preview.status, JSON.stringify(preview.body)).toBe(201);
+  expect(preview.body.archiveSchemaVersion).toBe(decoded.manifest.schemaVersion);
+  expect((await built.pool.query<{ archive_sha256: string }>("SELECT archive_sha256 FROM restore_preview WHERE id=$1", [preview.body.id])).rows[0]!.archive_sha256)
+    .toBe(createHash("sha256").update(bytes).digest("hex"));
+  const replay = await createPreview(target, bytes, operationId);
+  expect(replay.status, JSON.stringify(replay.body)).toBe(200);
+  expect(replay.body.id).toBe(preview.body.id);
+  const ready = await acknowledgeCheckpoint(target, preview.body.id);
+  expect(ready.body.status, JSON.stringify(ready.body)).toBe("ready");
+  const activation = { operationId: crypto.randomUUID(), previewFingerprint: ready.body.previewFingerprint };
+  const activated = await api(target, "POST", `/api/internal/restore/previews/${preview.body.id}/activate`, activation);
+  expect(activated.status, JSON.stringify(activated.body)).toBe(201);
+  const restored = await built.pool.query<{ reference: string; reason: string | null }>("SELECT reference,reason FROM returns_return WHERE id=$1", [draft.body.id]);
+  expect(restored.rows[0]).toEqual({ reference: draft.body.reference, reason: profile === "034" ? null : "المقاس غير مناسب" });
+  const recovered = await recoverOwner("reason-restored-owner-pass-1");
+  const activationReplay = await api(recovered, "POST", `/api/internal/restore/previews/${preview.body.id}/activate`, activation);
+  expect(activationReplay.status, JSON.stringify(activationReplay.body)).toBe(200);
+  expect((await api(recovered, "GET", `/api/internal/returns/${draft.body.id}`)).body.reason).toBe(profile === "034" ? null : "المقاس غير مناسب");
+}, 180_000);
+
 async function startApp(databaseName: string, displayName: string, password: string) {
   await cluster.createDatabase(databaseName);
   outboxDir = await mkdtemp(path.join(tmpdir(), "bravos-restore-outbox-"));
@@ -509,7 +578,7 @@ async function businessCounts(pool: Pool) {
   return result.rows[0];
 }
 
-function resealSection(archive: Awaited<ReturnType<typeof decodeBackupArchive>>, sectionName: "sales") {
+function resealSection(archive: Awaited<ReturnType<typeof decodeBackupArchive>>, sectionName: "sales" | "returns") {
   const section = archive.data[sectionName];
   const manifest = archive.manifest.sections.find((candidate) => candidate.name === sectionName)!;
   const count = Object.values(section).reduce((sum, rows) => sum + rows.length, 0);
@@ -549,7 +618,7 @@ async function acknowledgeCheckpoint(manager: CookieSession, previewId: string) 
   expect(response.statusCode, response.body).toBe(200);
   const archiveSha256 = String(response.headers["x-bravos-backup-sha256"]);
   expect(createHash("sha256").update(response.rawPayload).digest("hex")).toBe(archiveSha256);
-  expect((await decodeBackupArchive(response.rawPayload, CHECKPOINT_PASSWORD)).manifest.schemaVersion).toBe("034_order_recognition_branch.sql");
+  expect((await decodeBackupArchive(response.rawPayload, CHECKPOINT_PASSWORD)).manifest.schemaVersion).toBe("035_return_reason.sql");
   return api(manager, "POST", `/api/internal/restore/previews/${previewId}/pre-restore-backup/acknowledgement`, { archiveSha256 });
 }
 

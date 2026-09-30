@@ -16,6 +16,7 @@ import {
 } from "../api.ts";
 import { formatEgpFromPiasters } from "../money.ts";
 import { PageLoading } from "../ui/PageLoading.tsx";
+import { useRevealFeedback } from "../ui/useRevealFeedback.ts";
 import {
   assignPendingOpeningImport,
   clearPendingOpeningImport,
@@ -52,10 +53,12 @@ export default function OpeningImportPage({ workspace }: { workspace: WorkspaceD
   const previewAttemptRef = useRef<PreviewAttempt | null>(null);
   const busyRef = useRef(false);
   const lifecycle = useRef(0);
+  const previewFeedback = useRevealFeedback<HTMLElement>();
 
-  function applyPreview(next: OpeningImportPreviewDto | null) {
+  function applyPreview(next: OpeningImportPreviewDto | null, reveal = false) {
     previewRef.current = next;
     setPreview(next);
+    if (next && reveal) previewFeedback.reveal();
   }
 
   useEffect(() => {
@@ -138,6 +141,32 @@ export default function OpeningImportPage({ workspace }: { workspace: WorkspaceD
     setNotice("");
   }
 
+  async function recoverPreview() {
+    if (busyRef.current) return;
+    const stored = loadPendingOpeningImport(workspace.staff.id);
+    if (!stored) return;
+    const token = lifecycle.current;
+    const epoch = accountGeneration();
+    const stillCurrent = () => lifecycle.current === token && accountGeneration() === epoch;
+    busyRef.current = true;
+    setBusy(true);
+    setError("");
+    try {
+      const recovered = await getOpeningImportPreview(stored.previewId);
+      if (!stillCurrent()) return;
+      applyPreview(recovered, true);
+      if (recovered.status === "accepted") {
+        clearPendingOpeningImport(workspace.staff.id, stored);
+        setPendingMarker(null);
+        setNotice("تم قبول بيانات البداية وحفظها مرة واحدة.");
+      }
+    } catch (caught) {
+      if (stillCurrent()) setError(message(caught, "تعذر استعادة معاينة الاستيراد المحفوظة."));
+    } finally {
+      if (lifecycle.current === token) { busyRef.current = false; setBusy(false); }
+    }
+  }
+
   async function createPreview() {
     if (busyRef.current) return;
     if (!files.catalog || !files.stock || !files.configuration) {
@@ -179,7 +208,7 @@ export default function OpeningImportPage({ workspace }: { workspace: WorkspaceD
           try {
             const existing = await getOpeningImportPreview(stored.previewId);
             if (!stillCurrent()) return;
-            applyPreview(existing);
+            applyPreview(existing, true);
           } catch {
             /* retain the durable marker for a later recovery attempt */
           }
@@ -192,7 +221,7 @@ export default function OpeningImportPage({ workspace }: { workspace: WorkspaceD
         try {
           assignment = assignPendingOpeningImport(staffId, created);
         } catch {
-          applyPreview(created);
+          applyPreview(created, true);
           setPendingMarker(null);
           setError("تعذر حفظ هوية المعاينة على هذا الجهاز، لذلك لن يمكن قبولها بأمان. حرر مساحة التخزين ثم ابدأ من جديد.");
           return;
@@ -203,7 +232,7 @@ export default function OpeningImportPage({ workspace }: { workspace: WorkspaceD
           return;
         }
         setPendingMarker(assignment.pending);
-        applyPreview(created);
+        applyPreview(created, true);
         setNotice(created.status === "invalid"
           ? "حُفظت المعاينة بأخطائها للمراجعة. صحح الملفات ثم اختر ملفات جديدة."
           : "اكتملت المعاينة. راجع كل الدفعات والإعدادات قبل القبول.");
@@ -276,7 +305,7 @@ export default function OpeningImportPage({ workspace }: { workspace: WorkspaceD
         setPendingMarker(marker);
         const current = await getOpeningImportPreview(marker.previewId);
         if (!stillCurrent()) return;
-        applyPreview(current);
+        applyPreview(current, true);
         if (current.status === "accepted") {
           clearPendingOpeningImport(staffId, marker);
           setPendingMarker(null);
@@ -296,7 +325,7 @@ export default function OpeningImportPage({ workspace }: { workspace: WorkspaceD
           previewFingerprint: marker.previewFingerprint,
         });
         if (!stillCurrent()) return;
-        applyPreview(accepted);
+        applyPreview(accepted, true);
         clearPendingOpeningImport(staffId, marker);
         setPendingMarker(null);
         setNotice("تم قبول بيانات البداية وحفظها مرة واحدة.");
@@ -326,6 +355,7 @@ export default function OpeningImportPage({ workspace }: { workspace: WorkspaceD
 
       {error ? <div className="error" role="alert">{error}</div> : null}
       {notice ? <div className="notice" role="status">{notice}</div> : null}
+      {pendingMarker ? <button className="secondary" type="button" disabled={busy} onClick={() => void recoverPreview()}>{busy ? "جارٍ التحقق من المعاينة…" : "إعادة تحميل المعاينة المحفوظة"}</button> : null}
 
       <section className="card opening-import-templates">
         <h2>القوالب المعتمدة</h2>
@@ -398,6 +428,7 @@ export default function OpeningImportPage({ workspace }: { workspace: WorkspaceD
       ) : (
         <OpeningImportPreview
           preview={preview}
+          feedback={previewFeedback}
           branches={workspace.authorizedBranches}
           canAccept={Boolean(
             preview.status === "ready"
@@ -416,6 +447,7 @@ export default function OpeningImportPage({ workspace }: { workspace: WorkspaceD
 
 function OpeningImportPreview({
   preview,
+  feedback,
   branches,
   canAccept,
   busy,
@@ -423,6 +455,7 @@ function OpeningImportPreview({
   onNewUpload,
 }: {
   preview: OpeningImportPreviewDto;
+  feedback: ReturnType<typeof useRevealFeedback<HTMLElement>>;
   branches: BranchDto[];
   canAccept: boolean;
   busy: boolean;
@@ -430,10 +463,10 @@ function OpeningImportPreview({
   onNewUpload: () => void;
 }) {
   return (
-    <section className="card opening-import-preview" aria-label="معاينة الاستيراد">
+    <section ref={feedback.regionRef} className={`card opening-import-preview reveal-feedback${feedback.highlighted ? " is-highlighted" : ""}`} aria-label="معاينة الاستيراد">
       <div className="page-hero">
         <div>
-          <h2>{previewStatus(preview.status)}</h2>
+          <h2 ref={feedback.headingRef} tabIndex={-1}>{previewStatus(preview.status)}</h2>
           <p className="muted">رقم المعاينة: {preview.id}</p>
         </div>
         {preview.status !== "accepted" ? (

@@ -367,3 +367,12 @@ export type PrepareSaleResult = {
 };
 
 export type { AllocationRecord, DiscrepancyRecord };
+
+/** Sale-owned purchase lookup candidates; does not expose costs. */
+export type PhysicalSaleSourceSearch = {
+  reference?: string; phone?: string; date?: string; branchId?: string; amountPiasters?: number;
+  limit?: number; after?: { receivedAt: string; id: string; channel: "physical" | "online" };
+};
+export type PhysicalSaleSourceCandidateReader = {
+  list(search: PhysicalSaleSourceSearch): Promise<Array<{ id: string; receivedAtKey: string }>>;
+};

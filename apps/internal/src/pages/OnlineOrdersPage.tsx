@@ -10,6 +10,7 @@ import type { PublicProductDto, PublicProductSummaryDto } from "@bravos/contract
 import { accountGeneration } from "../account-session.ts";
 import { EmptyState } from "../ui/EmptyState.tsx";
 import { PageLoading } from "../ui/PageLoading.tsx";
+import { useRevealFeedback } from "../ui/useRevealFeedback.ts";
 import {
   abandonOnlineOrderFailedReturnInspection,
   ApiError,
@@ -208,6 +209,9 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
   const [pending, setPending] = useState("");
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [readVersion, setReadVersion] = useState(0);
+  const detailFeedback = useRevealFeedback<HTMLElement>();
   const [contactOutcome, setContactOutcome] = useState<"no_answer" | "reached">("no_answer");
   const [contactNote, setContactNote] = useState("");
   const [agreementLines, setAgreementLines] = useState<AgreementLineDraft[]>([]);
@@ -245,6 +249,7 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
       && lifecycle.current === token
       && currentRouteIdentity.current === routeIdentity;
     setLoading(true);
+    setLoadFailed(false);
     setPending("");
     setError("");
     setNotice("");
@@ -265,8 +270,9 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
         setSettings(currentSettings);
         setWaitHours(String(currentSettings.unreachableWaitHours));
         setMinimumAttempts(String(currentSettings.minimumContactAttempts));
+        if (order) detailFeedback.reveal();
       } catch (caught) {
-        if (stillCurrent()) setError(errorMessage(caught, "تعذر تحميل الطلبات الأونلاين."));
+        if (stillCurrent()) { setLoadFailed(true); setError(errorMessage(caught, "تعذر تحميل الطلبات الأونلاين.")); }
       } finally {
         if (stillCurrent()) setLoading(false);
       }
@@ -275,7 +281,7 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
       cancelled = true;
       if (lifecycle.current === token) lifecycle.current += 1;
     };
-  }, [workspace.staff.id, orderId]);
+  }, [workspace.staff.id, orderId, readVersion]);
 
   useEffect(() => {
     if (!selected) return;
@@ -770,8 +776,10 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
       </header>
       {error ? <div className="error" role="alert">{error}</div> : null}
       {notice ? <div className="notice" role="status">{notice}</div> : null}
+      {pending ? <p role="status">{pendingCopy(pending)}</p> : null}
+      {loadFailed ? <section className="card"><button type="button" onClick={() => setReadVersion((version) => version + 1)}>إعادة تحميل {orderId ? "تفاصيل الطلب" : "الطلبات"}</button></section> : null}
 
-      {!orderId ? (
+      {loadFailed ? null : !orderId ? (
         <>
           {manager && settings ? (
             <form className="card order-settings" aria-label="إعدادات تعذر الوصول" onSubmit={(event) => { event.preventDefault(); void saveSettings(); }}>
@@ -787,7 +795,7 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
                   <input id="order-minimum-attempts" type="number" min="2" step="1" value={minimumAttempts} onChange={(event) => setMinimumAttempts(event.target.value)} />
                 </div>
               </div>
-              <button type="submit" disabled={Boolean(pending)}>حفظ الإعدادات</button>
+              <button type="submit" disabled={Boolean(pending)}>{pending === "settings" ? pendingCopy(pending) : "حفظ الإعدادات"}</button>
             </form>
           ) : null}
           <section className="card">
@@ -811,9 +819,9 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
       ) : selected ? (
         <>
           <div className="actions order-back"><button className="secondary" type="button" onClick={() => navigate("/online-orders")}>العودة إلى الطلبات</button></div>
-          <section className="card order-heading">
+          <section ref={detailFeedback.regionRef} className={`card order-heading reveal-feedback${detailFeedback.highlighted ? " is-highlighted" : ""}`}>
             <div>
-              <h2>{selected.reference}</h2>
+              <h2 ref={detailFeedback.headingRef} tabIndex={-1}>{selected.reference}</h2>
               <p id="order-status" data-testid="order-status">الحالة: {statusLabel(selected.status)}</p>
               {selected.confirmedAt ? <p>أكد الطلب المسؤول {selected.confirmedByStaffId} في {formatDate(selected.confirmedAt)}.</p> : null}
               {selected.fulfillmentBranchId ? <p>فرع التجهيز: {workspace.authorizedBranches.find((branch) => branch.id === selected.fulfillmentBranchId)?.nameAr ?? selected.fulfillmentBranchId}</p> : null}
@@ -890,7 +898,7 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
             <section className="card fulfillment-card" aria-label="تسليم الطلب للشحن">
               <h2>تسليم الطلب لشركة الشحن</h2>
               <p>المخزون خُصم وحُمي عند التأكيد. تسجيل الشحن لا يخصمه مرة أخرى.</p>
-              <button type="button" disabled={frozen} onClick={() => void ship()}>تسليم الطلب لشركة الشحن</button>
+              <button type="button" disabled={frozen} onClick={() => void ship()}>{pending === "ship" ? pendingCopy(pending) : "تسليم الطلب لشركة الشحن"}</button>
             </section>
           ) : null}
 
@@ -902,7 +910,7 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
                 <label htmlFor="customer-received-at">وقت استلام العميل</label>
                 <input id="customer-received-at" type="datetime-local" step="1" value={customerReceivedAt} disabled={frozen} onChange={(event) => setCustomerReceivedAt(event.target.value)} required />
               </div>
-              <button type="submit" disabled={frozen || !customerReceivedAt}>تسجيل الطلب كمُسلّم</button>
+              <button type="submit" disabled={frozen || !customerReceivedAt}>{pending === "deliver" ? pendingCopy(pending) : "تسجيل الطلب كمُسلّم"}</button>
             </form>
           ) : null}
 
@@ -988,7 +996,7 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
                   <label htmlFor="contact-note">ملاحظة التواصل (اختياري)</label>
                   <textarea id="contact-note" value={contactNote} disabled={frozen} onChange={(event) => setContactNote(event.target.value)} />
                 </div>
-                <button type="submit" disabled={frozen}>حفظ محاولة التواصل</button>
+                <button type="submit" disabled={frozen}>{pending === "contact" ? pendingCopy(pending) : "حفظ محاولة التواصل"}</button>
               </form>
 
               <form className="card" aria-label="مراجعة الاتفاق مع العميل" onSubmit={(event) => { event.preventDefault(); void reviewAgreement(); }}>
@@ -1051,7 +1059,7 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
                   <input id="agreement-coupon" value={couponCode} disabled={frozen} onChange={(event) => { setCouponCode(event.target.value); invalidateAgreementReview(); }} />
                 </div>
                 {agreementDraft.error ? <p className="error" data-testid="agreement-quantity-error">{agreementDraft.error}</p> : null}
-                <button type="submit" disabled={frozen || Boolean(agreementDraft.error) || reviewLines.length === 0}>مراجعة السعر</button>
+                <button type="submit" disabled={frozen || Boolean(agreementDraft.error) || reviewLines.length === 0}>{pending === "review" ? pendingCopy(pending) : "مراجعة السعر"}</button>
                 {agreementQuote ? (
                   <div className="price-review" role="region" aria-label="مراجعة السعر المتفق عليه">
                     <h3>مراجعة السعر قبل تسجيل موافقة العميل</h3>
@@ -1076,7 +1084,7 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
                       <input type="checkbox" checked={customerAgreed} disabled={frozen} onChange={(event) => setCustomerAgreed(event.target.checked)} />
                       وافق العميل على هذه المنتجات والأسعار
                     </label>
-                    <button type="button" disabled={frozen || !customerAgreed} onClick={() => void saveAgreement()}>حفظ اتفاق العميل</button>
+                    <button type="button" disabled={frozen || !customerAgreed} onClick={() => void saveAgreement()}>{pending === "agreement" ? pendingCopy(pending) : "حفظ اتفاق العميل"}</button>
                   </div>
                 ) : null}
               </form>
@@ -1091,7 +1099,7 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
                     <input type="checkbox" checked={itemsSetAside} disabled={frozen || confirmationNeedsReview} onChange={(event) => setItemsSetAside(event.target.checked)} />
                     وجدت الأصناف الفعلية وفصلتها لهذا الطلب
                   </label>
-                  <button type="submit" disabled={frozen || confirmationNeedsReview || !itemsSetAside || !fulfillmentBranchId}>تأكيد الطلب وخصم المخزون</button>
+                  <button type="submit" disabled={frozen || confirmationNeedsReview || !itemsSetAside || !fulfillmentBranchId}>{pending === "confirmation" ? pendingCopy(pending) : "تأكيد الطلب وخصم المخزون"}</button>
                 </form>
               ) : (
                 <p className="card muted">لا يمكن تأكيد الطلب قبل حفظ اتفاق العميل على المنتجات والأسعار.</p>
@@ -1118,6 +1126,18 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
       )}
     </main>
   );
+}
+
+function pendingCopy(action: string) {
+  const copy: Record<string, string> = {
+    settings: "جارٍ حفظ الإعدادات…", search: "جارٍ البحث عن الأصناف…", replacement: "جارٍ تحميل الصنف البديل…",
+    review: "جارٍ مراجعة السعر…", contact: "جارٍ حفظ محاولة التواصل…", agreement: "جارٍ حفظ اتفاق العميل…",
+    confirmation: "جارٍ تأكيد الطلب…", cancellation: "جارٍ إلغاء الطلب…", ship: "جارٍ تسجيل تسليم الشحنة…",
+    deliver: "جارٍ تسجيل استلام العميل…", deliveryFailure: "جارٍ تسجيل تعذر التوصيل…",
+    cancelBeforeShipment: "جارٍ إلغاء الطلب قبل الشحن…", inspectionDraft: "جارٍ حفظ مسودة الفحص…",
+    inspectionPost: "جارٍ ترحيل الفحص…", inspectionAbandon: "جارٍ إلغاء مسودة الفحص…", failedClose: "جارٍ إغلاق الطلب…",
+  };
+  return copy[action] ?? "جارٍ إكمال العملية…";
 }
 
 function AgreementSnapshot({ quote, agreedAt, actorId }: { quote: OnlineOrderAgreementQuoteDto; agreedAt: string; actorId: string }) {

@@ -9,7 +9,8 @@ import {
   completeReturnExchange,
   createReturnDraft,
   getReturn,
-  listReturnSources,
+  listReturnSourcesPage,
+  type ReturnSourceSearch,
   listReturns,
   payReturnRefund,
   postReturn,
@@ -34,6 +35,15 @@ export default function ReturnsPage({ workspace }: { workspace: WorkspaceDto; on
   const [searchParams] = useSearchParams();
   const linkedReturnId = searchParams.get("returnId")?.trim() || null;
   const [sources, setSources] = useState<ReturnSourceDto[]>([]);
+  const [sourceNextCursor, setSourceNextCursor] = useState<string | null>(null);
+  const [sourceBusy, setSourceBusy] = useState(false);
+  const [reason, setReason] = useState("");
+  const submittedSearch = useRef<ReturnSourceSearch>({});
+  const sourceRequest = useRef(0);
+  const historyRequest = useRef(0);
+  const mounted = useRef(true);
+  const staffRef = useRef(workspace.staff.id);
+  staffRef.current = workspace.staff.id;
   const [returns, setReturns] = useState<ReturnListItemDto[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [selectedSource, setSelectedSource] = useState<ReturnSourceDto | null>(null);
@@ -71,21 +81,65 @@ export default function ReturnsPage({ workspace }: { workspace: WorkspaceDto; on
   const exchangeQuoteIdRef = useRef<string | null>(null);
   const linkedReturnRequest = useRef(0);
 
+  function accountGuard() {
+    const staffId = workspace.staff.id;
+    const epoch = accountGeneration();
+    return (checkEpoch = true) => mounted.current && staffRef.current === staffId && (!checkEpoch || accountGeneration() === epoch);
+  }
+
+  async function fetchSources(filters: ReturnSourceSearch, cursor?: string) {
+    const token = ++sourceRequest.current;
+    const accountCurrent = accountGuard();
+    const current = (checkEpoch = true) => accountCurrent(checkEpoch) && sourceRequest.current === token;
+    setSourceBusy(true);
+    try {
+      const page = await listReturnSourcesPage(filters, { limit: 25, ...(cursor ? { cursor } : {}) });
+      if (!current()) return;
+      setSources((previous) => cursor
+        ? [...previous, ...page.items.filter((item) => !previous.some((old) => old.source.kind === item.source.kind && old.source.id === item.source.id))]
+        : page.items);
+      setSourceNextCursor(page.nextCursor);
+    } catch (caught) {
+      if (current()) showError(caught);
+    } finally {
+      if (current(false)) setSourceBusy(false);
+    }
+  }
+
   async function refresh() {
-    const [nextSources, page, refreshedSelection] = await Promise.all([
-      listReturnSources(),
+    const token = ++historyRequest.current;
+    const accountCurrent = accountGuard();
+    const [page] = await Promise.all([
       listReturns(),
-      selectedReturn ? getReturn(selectedReturn.id) : Promise.resolve(null),
+      fetchSources(submittedSearch.current),
     ]);
-    setSources(nextSources);
+    if (!accountCurrent() || historyRequest.current !== token) return;
     setReturns(page.items);
     setNextCursor(page.nextCursor);
-    if (refreshedSelection) setSelectedReturn(refreshedSelection);
   }
 
   useEffect(() => {
-    void Promise.all([refresh(), listCashierCatalog().then(setExchangeCatalog)]).catch(showError);
-  }, []);
+    mounted.current = true;
+    const current = accountGuard();
+    submittedSearch.current = {};
+    setSources([]);
+    setSourceNextCursor(null);
+    setReturns([]);
+    setNextCursor(null);
+    setSelectedSource(null);
+    setSelectedReturn(null);
+    setEditingReturn(null);
+    setReason("");
+    setBusy(false);
+    void Promise.all([refresh(), listCashierCatalog().then((catalog) => {
+      if (current()) setExchangeCatalog(catalog);
+    })]).catch((caught: unknown) => { if (current()) showError(caught); });
+    return () => {
+      mounted.current = false;
+      sourceRequest.current += 1;
+      historyRequest.current += 1;
+    };
+  }, [workspace.staff.id]);
 
   useEffect(() => {
     if (!linkedReturnId) return;
@@ -93,9 +147,9 @@ export default function ReturnsPage({ workspace }: { workspace: WorkspaceDto; on
     const epoch = accountGeneration();
     const token = ++linkedReturnRequest.current;
     let cancelled = false;
-    const stillCurrent = () => !cancelled
-      && workspace.staff.id === staffId
-      && accountGeneration() === epoch
+    const stillCurrent = (checkEpoch = true) => !cancelled
+      && mounted.current && staffRef.current === staffId
+      && (!checkEpoch || accountGeneration() === epoch)
       && linkedReturnRequest.current === token;
     setBusy(true);
     setError("");
@@ -108,7 +162,7 @@ export default function ReturnsPage({ workspace }: { workspace: WorkspaceDto; on
     }).catch((caught: unknown) => {
       if (stillCurrent()) showError(caught);
     }).finally(() => {
-      if (stillCurrent()) setBusy(false);
+      if (stillCurrent(false)) setBusy(false);
     });
     return () => {
       cancelled = true;
@@ -155,6 +209,8 @@ export default function ReturnsPage({ workspace }: { workspace: WorkspaceDto; on
   }, [suggestion, authorizedEdited]);
 
   function selectSource(source: ReturnSourceDto) {
+    linkedReturnRequest.current += 1;
+    setReason("");
     exchangeIdentityRef.current = null;
     exchangeQuoteIdRef.current = null;
     setExchangeQuote(null);
@@ -174,24 +230,34 @@ export default function ReturnsPage({ workspace }: { workspace: WorkspaceDto; on
 
   async function search(event: FormEvent) {
     event.preventDefault();
-    setBusy(true);
     setError("");
     try {
       const amountPiasters = amount.trim() ? egpInputToPiasters(amount) : undefined;
       if (amount.trim() && amountPiasters === null) throw new Error("قيمة البحث غير صالحة.");
-      const next = await listReturnSources({
+      const filters: ReturnSourceSearch = {
         ...(reference.trim() ? { reference: reference.trim() } : {}),
         ...(phone.trim() ? { phone: phone.trim() } : {}),
         ...(date ? { date } : {}),
         ...(branchId ? { branchId } : {}),
         ...(amountPiasters !== undefined && amountPiasters !== null ? { amountPiasters } : {}),
-      });
-      setSources(next);
+      };
+      submittedSearch.current = filters;
+      linkedReturnRequest.current += 1;
+      setSelectedSource(null);
+      setSelectedReturn(null);
+      setEditingReturn(null);
+      setSources([]);
+      setSourceNextCursor(null);
+      await fetchSources(filters);
     } catch (caught) {
       showError(caught);
-    } finally {
-      setBusy(false);
     }
+  }
+
+  async function loadMoreSources() {
+    if (!sourceNextCursor || sourceBusy) return;
+    setError("");
+    await fetchSources(submittedSearch.current, sourceNextCursor);
   }
 
   async function saveDraft(event: FormEvent) {
@@ -215,24 +281,22 @@ export default function ReturnsPage({ workspace }: { workspace: WorkspaceDto; on
         value = await updateReturnDraft(editingReturn.id, {
             expectedRevision: editingReturn.revision,
             handlingBranchId,
+            reason: reason.trim() || null,
             authorizedRefund: { merchandisePiasters, checkoutChargePiasters },
             lines,
           });
       } else {
         const operationId = crypto.randomUUID();
-        value = await executeAttempt({
-          staffId: workspace.staff.id,
-          action: "create",
-          operationId,
-          payload: {
+        const payload: Parameters<typeof createReturnDraft>[0] = {
             returnId: crypto.randomUUID(),
             operationId,
             source: selectedSource.source,
             handlingBranchId,
+            reason: reason.trim() || null,
             authorizedRefund: { merchandisePiasters, checkoutChargePiasters },
             lines,
-          },
-        });
+        };
+        value = await executeAttempt({ staffId: workspace.staff.id, action: "create", operationId, payload });
       }
       if (!value) return;
       setSelectedReturn(value);
@@ -451,11 +515,15 @@ export default function ReturnsPage({ workspace }: { workspace: WorkspaceDto; on
   }
 
   async function openReturn(id: string) {
+    const token = ++linkedReturnRequest.current;
+    const accountCurrent = accountGuard();
+    const current = (checkEpoch = true) => accountCurrent(checkEpoch) && linkedReturnRequest.current === token;
     setBusy(true);
     setLoadingReturnId(id);
     setError("");
     try {
       const value = await getReturn(id);
+      if (!current()) return;
       exchangeIdentityRef.current = null;
       exchangeQuoteIdRef.current = null;
       setExchangeQuote(null);
@@ -465,16 +533,16 @@ export default function ReturnsPage({ workspace }: { workspace: WorkspaceDto; on
       setEditingReturn(null);
       detailsFeedback.reveal();
     } catch (caught) {
-      showError(caught);
+      if (current()) showError(caught);
     } finally {
-      setBusy(false);
-      setLoadingReturnId(null);
+      if (current(false)) { setBusy(false); setLoadingReturnId(null); }
     }
   }
 
   function editSelectedDraft() {
     if (!selectedReturn || selectedReturn.status !== "draft") return;
     setEditingReturn(selectedReturn);
+    setReason(selectedReturn.reason ?? "");
     setHandlingBranchId(selectedReturn.handlingBranch.id);
     setSelectedSource(selectedReturn.source);
     setSelection(Object.fromEntries(selectedReturn.source.lines.map((sourceLine) => {
@@ -495,15 +563,19 @@ export default function ReturnsPage({ workspace }: { workspace: WorkspaceDto; on
 
   async function loadMoreReturns() {
     if (!nextCursor) return;
+    const token = ++historyRequest.current;
+    const accountCurrent = accountGuard();
+    const current = (checkEpoch = true) => accountCurrent(checkEpoch) && historyRequest.current === token;
     setBusy(true);
     try {
       const page = await listReturns({ cursor: nextCursor });
+      if (!current()) return;
       setReturns((current) => [...current, ...page.items]);
       setNextCursor(page.nextCursor);
     } catch (caught) {
-      showError(caught);
+      if (current()) showError(caught);
     } finally {
-      setBusy(false);
+      if (current(false)) setBusy(false);
     }
   }
 
@@ -529,16 +601,18 @@ export default function ReturnsPage({ workspace }: { workspace: WorkspaceDto; on
           <div className="field"><label htmlFor="return-date">تاريخ الاستلام</label><input id="return-date" type="date" value={date} onChange={(event) => setDate(event.target.value)} /></div>
           <div className="field"><label htmlFor="return-branch">فرع البيع الأصلي</label><select id="return-branch" value={branchId} onChange={(event) => setBranchId(event.target.value)}><option value="">كل الفروع والطلبات الأونلاين</option>{workspace.authorizedBranches.map((branch) => <option key={branch.id} value={branch.id}>{branch.nameAr}</option>)}</select></div>
           <div className="field"><label htmlFor="return-amount">إجمالي المعاملة بالجنيه</label><input id="return-amount" inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value)} /></div>
-          <button type="submit" disabled={busy}>{busy ? "جارٍ البحث…" : "بحث"}</button>
+          <button type="submit" disabled={busy || sourceBusy}>{sourceBusy ? "جارٍ البحث…" : "بحث"}</button>
         </form>
         <div className="return-source-list" data-testid="return-source-list">
           {sources.map((source) => (
-            <button className="return-source" type="button" key={`${source.source.kind}:${source.source.id}`} onClick={() => selectSource(source)}>
-              <strong>طلب {source.reference}</strong><span>{source.customerName ?? "عميل غير مسجل"} · {formatCairoDate(source.receivedAt)}</span><span>{formatEgpFromPiasters(source.originalPayment.totalPiasters)} · {source.lines.map((line) => line.variant.product.nameAr).join("، ")}</span>
+            <button className="return-source" type="button" key={`${source.source.kind}:${source.source.id}`} disabled={busy} onClick={() => selectSource(source)}>
+              <strong>طلب {source.reference}</strong><span>{source.customerName ?? "عميل غير مسجل"} · {formatCairoDate(source.receivedAt)}</span><span>{source.channel === "online" ? "أونلاين · فرع التجهيز" : "فرع البيع"}: {source.originalBranch?.nameAr ?? "غير مسجل"}</span><span>{formatEgpFromPiasters(source.originalPayment.totalPiasters)} · {source.lines.map((line) => line.variant.product.nameAr).join("، ")}</span>
             </button>
           ))}
-          {sources.length === 0 ? <EmptyState title="مفيش عملية ترجع" message="ابحث برقم الهاتف أو الطلب أو التاريخ." /> : null}
+          {sources.length === 0 && !sourceBusy ? <EmptyState title="مفيش عملية ترجع" message="ابحث برقم الهاتف أو الطلب أو التاريخ." /> : null}
         </div>
+        {sourceBusy ? <p aria-live="polite">جارٍ تحميل الطلبات…</p> : null}
+        {sourceNextCursor ? <button type="button" className="secondary" disabled={busy || sourceBusy} onClick={() => void loadMoreSources()}>طلبات أقدم</button> : null}
       </section>
 
       {selectedSource && !selectedReturn ? (
@@ -547,8 +621,8 @@ export default function ReturnsPage({ workspace }: { workspace: WorkspaceDto; on
           <p>التاريخ: {formatCairoDate(selectedSource.receivedAt)} · المبلغ: {formatEgpFromPiasters(selectedSource.originalPayment.totalPiasters)}</p>
           <p>العميل: {selectedSource.customerName ?? "غير مسجل"} · الهاتف: {selectedSource.customerPhone ?? "غير مسجل"}</p>
           <ul>{selectedSource.lines.map((line) => <li key={line.sourceLineId}>{line.variant.product.nameAr} — {line.variant.size.nameAr} / {line.variant.color.nameAr} × {line.purchasedQuantity} · {formatEgpFromPiasters(line.paidPiasters)}</li>)}</ul>
-          <p>الفرع: {workspace.authorizedBranches.find((branch) => branch.id === handlingBranchId)?.nameAr ?? "—"}</p>
-          {selectedSource.channel === "online" ? <p className="muted">فرع تجهيز الطلب: {selectedSource.originalBranch?.nameAr ?? "غير مسجل"}</p> : null}
+          <p>فرع الاستلام: {workspace.authorizedBranches.find((branch) => branch.id === handlingBranchId)?.nameAr ?? "—"}</p>
+          <p className="muted">{selectedSource.channel === "online" ? "فرع تجهيز الطلب" : "فرع البيع الأصلي"}: {selectedSource.originalBranch?.nameAr ?? "غير مسجل"}</p>
           <form aria-label={editingReturn ? "تعديل مسودة إرجاع" : "إنشاء مسودة إرجاع"} onSubmit={(event) => void saveDraft(event)}>
             <div className="field"><label htmlFor="return-handling-branch-select">فرع معالجة الإرجاع</label><select id="return-handling-branch-select" value={handlingBranchId} onChange={(event) => setHandlingBranchId(event.target.value)} required>{workspace.authorizedBranches.map((branch) => <option key={branch.id} value={branch.id}>{branch.nameAr}</option>)}</select></div>
             {selectedSource.lines.map((line) => {
@@ -557,6 +631,7 @@ export default function ReturnsPage({ workspace }: { workspace: WorkspaceDto; on
             })}
             <div className="notice" data-testid="refund-suggestion"><strong>الاسترداد المقترح من الدفع الأصلي</strong><p>قيمة البضاعة: {formatEgpFromPiasters(suggestion.merchandisePiasters)} · رسوم التوصيل: {formatEgpFromPiasters(suggestion.checkoutChargePiasters)} · الإجمالي: {formatEgpFromPiasters(suggestion.totalPiasters)}</p>{selectedSource.channel === "online" && suggestion.checkoutChargePiasters === 0 ? <p className="muted">لا تُقترح رسوم التوصيل للإرجاع الجزئي أو إذا سبق أن حملها مرتجع فعّال.</p> : null}</div>
             <div className="grid two"><div className="field"><label htmlFor="authorized-merchandise-refund">{selectedSource.channel === "online" ? "استرداد البضاعة المعتمد بالجنيه" : "قيمة الاسترداد المعتمدة بالجنيه"}</label><input id="authorized-merchandise-refund" inputMode="decimal" value={authorizedMerchandise} onChange={(event) => { setAuthorizedMerchandise(event.target.value); setAuthorizedEdited(true); }} /></div>{selectedSource.channel === "online" ? <div className="field"><label htmlFor="authorized-checkout-refund">استرداد رسوم التوصيل المعتمد بالجنيه</label><input id="authorized-checkout-refund" inputMode="decimal" value={authorizedCheckoutCharge} onChange={(event) => { setAuthorizedCheckoutCharge(event.target.value); setAuthorizedEdited(true); }} /></div> : null}</div>
+            <div className="field"><label htmlFor="return-reason">سبب المرتجع (اختياري)</label><input id="return-reason" maxLength={500} value={reason} onChange={(event) => setReason(event.target.value)} /></div>
             <button type="submit" disabled={busy}>{editingReturn ? "حفظ التعديلات" : "حفظ المسودة"}</button>
           </form>
         </section>
@@ -564,7 +639,7 @@ export default function ReturnsPage({ workspace }: { workspace: WorkspaceDto; on
 
       <section className="card">
         <h2>سجل المرتجعات</h2>
-        <div className="return-history">{returns.map((row) => <button className="return-source" type="button" key={row.id} disabled={busy} onClick={() => void openReturn(row.id)}><strong>مرتجع {row.reference}</strong><span>{row.customerName ?? "عميل غير مسجل"} · {formatCairoDate(row.postedAt ?? row.createdAt)}</span><span>{formatEgpFromPiasters(row.authorizedRefund.totalPiasters)} · {loadingReturnId === row.id ? "جارٍ فتح التفاصيل…" : row.status === "draft" ? "مسودة" : row.effectiveStatus === "cancelled" ? "ملغى" : "مرحّل"}</span></button>)}</div>
+        <div className="return-history">{returns.map((row) => <button className="return-source" type="button" key={row.id} disabled={busy} onClick={() => void openReturn(row.id)}><strong>مرتجع {row.reference} · طلب {row.sourceReference}</strong><span>{row.products.map((product) => `${product.nameAr} — ${product.sizeNameAr} / ${product.colorNameAr} × ${product.quantity}`).join("، ")}</span><span>الأصلي: {row.originalBranch?.nameAr ?? "غير مسجل"} · الاستلام: {row.handlingBranch.nameAr}</span>{row.reason ? <span>السبب: {row.reason}</span> : null}<span>{row.customerName ?? "عميل غير مسجل"} · {formatCairoDate(row.postedAt ?? row.createdAt)}</span><span>{formatEgpFromPiasters(row.authorizedRefund.totalPiasters)} · {loadingReturnId === row.id ? "جارٍ فتح التفاصيل…" : row.status === "draft" ? "مسودة" : row.effectiveStatus === "cancelled" ? "ملغى" : "مرحّل"}</span></button>)}</div>
         {nextCursor ? <button type="button" className="secondary" disabled={busy} onClick={() => void loadMoreReturns()}>تحميل مرتجعات أقدم</button> : null}
       </section>
 
@@ -573,7 +648,8 @@ export default function ReturnsPage({ workspace }: { workspace: WorkspaceDto; on
           <h2 ref={detailsFeedback.headingRef} tabIndex={-1}>مرتجع {selectedReturn.reference}</h2>
           <p>الطلب: {selectedReturn.source.reference} · التاريخ: {formatCairoDate(selectedReturn.postedAt ?? selectedReturn.createdAt)}</p>
           <p>العميل: {selectedReturn.source.customerName ?? "غير مسجل"} · الهاتف: {selectedReturn.source.customerPhone ?? "غير مسجل"}</p>
-          <p>الفرع: {selectedReturn.handlingBranch.nameAr} · الحالة: {selectedReturn.status === "draft" ? "مسودة" : "مرحّل"}</p>
+          <p>{selectedReturn.source.channel === "online" ? "فرع التجهيز" : "فرع البيع الأصلي"}: {selectedReturn.source.originalBranch?.nameAr ?? "غير مسجل"} · فرع الاستلام: {selectedReturn.handlingBranch.nameAr} · الحالة: {selectedReturn.status === "draft" ? "مسودة" : "مرحّل"}</p>
+          {selectedReturn.reason ? <p>سبب الإرجاع: {selectedReturn.reason}</p> : null}
           {selectedReturn.source.channel === "online" ? <><p>المقترح: البضاعة {formatEgpFromPiasters(selectedReturn.suggestedRefund.merchandisePiasters)} · رسوم التوصيل {formatEgpFromPiasters(selectedReturn.suggestedRefund.checkoutChargePiasters)} · الإجمالي {formatEgpFromPiasters(selectedReturn.suggestedRefund.totalPiasters)}</p><p>المعتمد حالياً: البضاعة {formatEgpFromPiasters(selectedReturn.authorizedRefund.merchandisePiasters)} · رسوم التوصيل {formatEgpFromPiasters(selectedReturn.authorizedRefund.checkoutChargePiasters)} · الإجمالي {formatEgpFromPiasters(selectedReturn.authorizedRefund.totalPiasters)}</p></> : <p>المقترح: {formatEgpFromPiasters(selectedReturn.suggestedRefundPiasters)} · المعتمد حالياً: {formatEgpFromPiasters(selectedReturn.authorizedRefundPiasters)}</p>}
           {selectedReturn.correctionRevision > 0 ? selectedReturn.source.channel === "online" ? <p className="muted">المعتمد الأصلي المحفوظ: بضاعة {formatEgpFromPiasters(selectedReturn.originalAuthorizedRefund.merchandisePiasters)} · رسوم توصيل {formatEgpFromPiasters(selectedReturn.originalAuthorizedRefund.checkoutChargePiasters)} · إجمالي {formatEgpFromPiasters(selectedReturn.originalAuthorizedRefund.totalPiasters)}. توجد تصحيحات إدارية مرتبطة بهذا الأصل.</p> : <p className="muted">المعتمد الأصلي المحفوظ: {formatEgpFromPiasters(selectedReturn.originalAuthorizedRefundPiasters)} · توجد تصحيحات إدارية مرتبطة بهذا الأصل.</p> : null}
           <ul>{selectedReturn.lines.map((line) => <li key={line.id}>{line.variant.product.nameAr}: {line.quantity} مستلم، {line.sellableQuantity} قابل للبيع، {line.unsellableQuantity} غير قابل للبيع</li>)}</ul>

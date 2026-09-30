@@ -14,6 +14,7 @@ import {
 } from "../api.ts";
 import { egpInputToPiasters, formatEgpFromPiasters, piastersToEgpInput } from "../money.ts";
 import { EmptyState } from "../ui/EmptyState.tsx";
+import { useRevealFeedback } from "../ui/useRevealFeedback.ts";
 
 
 function todayCairoDate(): string {
@@ -60,6 +61,11 @@ export default function ExpensesPage({
   const [pending, setPending] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const detailsFeedback = useRevealFeedback<HTMLElement>();
+  const categoryFeedback = useRevealFeedback<HTMLFormElement>();
+  const [loading, setLoading] = useState(true);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [loadRevision, setLoadRevision] = useState(0);
 
   const selected = useMemo(() => expenses.find((item) => item.id === selectedId) ?? null, [expenses, selectedId]);
   const activeCategories = categories.filter((item) => item.active);
@@ -77,11 +83,12 @@ export default function ExpensesPage({
 
   useEffect(() => {
     let cancelled = false;
+    setLoading(true); setLoadFailed(false); setError("");
     void refresh().catch((caught) => {
-      if (!cancelled) setError(caught instanceof ApiError ? caught.messageAr : "تعذر تحميل المصروفات.");
-    });
+      if (!cancelled) { setError(caught instanceof ApiError ? caught.messageAr : "تعذر تحميل المصروفات."); setLoadFailed(true); }
+    }).finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [workspace.staff.id, workspace.activeBranch?.id]);
+  }, [workspace.staff.id, workspace.activeBranch?.id, loadRevision]);
 
   useEffect(() => {
     if (!selected?.effective) return;
@@ -168,7 +175,7 @@ export default function ExpensesPage({
   }
 
   async function toggleCategory(category: ExpenseCategoryDto) {
-    setPending("category-toggle"); setError(""); setNotice("");
+    setPending(`category-toggle-${category.id}`); setError(""); setNotice("");
     try {
       await updateExpenseCategory(category.id, { nameAr: category.nameAr, active: !category.active });
       setNotice(category.active ? "تم إيقاف الفئة للمدخلات الجديدة." : "تم تفعيل الفئة."); await refresh();
@@ -184,6 +191,8 @@ export default function ExpensesPage({
       {typeof navigator !== "undefined" && !navigator.onLine ? <div className="error" role="alert">تسجيل المصروفات يتطلب اتصالاً.</div> : null}
       {error ? <div className="error" role="alert">{error}</div> : null}
       {notice ? <div className="notice" role="status">{notice}</div> : null}
+      {loading ? <p role="status">جارٍ تحميل المصروفات…</p> : null}
+      {loadFailed ? <button type="button" className="secondary" disabled={loading} onClick={() => setLoadRevision((current) => current + 1)}>إعادة تحميل المصروفات</button> : null}
 
       <section className="card" data-testid="expense-totals">
         <h2>الإجمالي الفعلي</h2>
@@ -205,7 +214,7 @@ export default function ExpensesPage({
         </form>
 
         <section className="card"><h2>{manager ? "كل المصروفات" : "مصروفاتي في الفرع"}</h2>
-          {expenses.length === 0 ? (
+          {!loading && !loadFailed && expenses.length === 0 ? (
             <EmptyState title="لسه مفيش مصروفات" message="سجّل أول مصروف من النموذج جنب القائمة." />
           ) : (
             <div className="report-table-wrap" data-testid="expense-list">
@@ -225,7 +234,7 @@ export default function ExpensesPage({
                       <td>{item.status === "cancelled" ? "ملغي" : formatEgpFromPiasters(item.effective!.amountPiasters)}</td>
                       <td className="muted">{item.branch.nameAr} — {item.createdByDisplayName}</td>
                       <td className="table-actions">
-                        <button className="secondary" onClick={() => setSelectedId(item.id)}>عرض التفاصيل</button>
+                        <button className="secondary" aria-pressed={selectedId === item.id} onClick={() => { setSelectedId(item.id); detailsFeedback.reveal(); }}>عرض التفاصيل</button>
                       </td>
                     </tr>
                   ))}
@@ -236,7 +245,7 @@ export default function ExpensesPage({
         </section>
       </div>
 
-      {selected ? <section className="card expense-details" data-testid="expense-details"><h2>تفاصيل المصروف</h2>
+      {selected ? <section ref={detailsFeedback.regionRef} className={`card expense-details reveal-feedback${detailsFeedback.highlighted ? " is-highlighted" : ""}`} data-testid="expense-details"><h2 ref={detailsFeedback.headingRef} tabIndex={-1}>تفاصيل المصروف</h2>
         <p>الحالة: {selected.status === "cancelled" ? "ملغي" : "ساري"}</p>
         <p className="muted">سجله {selected.createdByDisplayName} في {selected.branch.nameAr} — {new Date(selected.recordedAt).toLocaleString("ar-EG", { timeZone: "Africa/Cairo" })}</p>
         <p>الأصل: {formatEgpFromPiasters(selected.original.amountPiasters)} — {selected.original.expenseDate} — {selected.original.category.nameAr} — {selected.original.description}</p>
@@ -258,7 +267,7 @@ export default function ExpensesPage({
       </section> : null}
 
       {manager ? <section className="card"><h2>فئات المصروفات</h2><form className="actions" aria-label="إضافة فئة مصروف" onSubmit={(event) => void addCategory(event)}><input aria-label="اسم الفئة الجديدة" value={newCategory} onChange={(event) => setNewCategory(event.target.value)} required /><button disabled={pending === "category"}>إضافة فئة</button></form>
-        <div className="staff-list category-list">{categories.map((item) => <article className="staff-item" key={item.id}><p>{item.nameAr} — {item.active ? "مفعلة" : "متوقفة"}</p><div className="actions"><button className="secondary" onClick={() => { setEditingCategoryId(item.id); setEditingCategoryName(item.nameAr); }}>تعديل الاسم</button><button className="secondary" onClick={() => void toggleCategory(item)}>{item.active ? "إيقاف" : "تفعيل"}</button></div>{editingCategoryId === item.id ? <form className="actions" onSubmit={(event) => void saveCategory(event)}><input aria-label="اسم الفئة المعدل" value={editingCategoryName} onChange={(event) => setEditingCategoryName(event.target.value)} required /><button disabled={pending === "category-edit"}>حفظ الاسم</button></form> : null}</article>)}</div>
+        <div className="staff-list category-list">{categories.map((item) => <article className="staff-item" key={item.id}><p>{item.nameAr} — {item.active ? "مفعلة" : "متوقفة"}</p><div className="actions"><button className="secondary" disabled={Boolean(pending)} aria-pressed={editingCategoryId === item.id} onClick={() => { setEditingCategoryId(item.id); setEditingCategoryName(item.nameAr); categoryFeedback.reveal(); }}>تعديل الاسم</button><button className="secondary" disabled={Boolean(pending)} aria-busy={pending === `category-toggle-${item.id}`} onClick={() => void toggleCategory(item)}>{pending === `category-toggle-${item.id}` ? "جارٍ تحديث الفئة…" : item.active ? "إيقاف" : "تفعيل"}</button></div>{editingCategoryId === item.id ? <form ref={categoryFeedback.regionRef} className={`reveal-feedback${categoryFeedback.highlighted ? " is-highlighted" : ""}`} aria-label="تعديل فئة المصروف" aria-busy={pending === "category-edit"} onSubmit={(event) => void saveCategory(event)}><h3 ref={categoryFeedback.headingRef} tabIndex={-1}>تعديل اسم الفئة</h3><input aria-label="اسم الفئة المعدل" value={editingCategoryName} disabled={Boolean(pending)} onChange={(event) => setEditingCategoryName(event.target.value)} required /><button disabled={Boolean(pending)}>{pending === "category-edit" ? "جارٍ حفظ الاسم…" : "حفظ الاسم"}</button></form> : null}</article>)}</div>
       </section> : null}
     </main>
   );

@@ -207,7 +207,92 @@ test("manager renames taxonomy, selects an inventory SKU, and keeps existing ima
   expect(publishedBody.variants[0].size.nameAr).toBe("XL");
 });
 
-async function staffApi(page: Page, method: "GET" | "PATCH", url: string, payload?: unknown) {
+test("bulk size and color visibility preserves sparse inventory pairs and POS availability", async ({ page }) => {
+  await page.goto("http://127.0.0.1:5174/login");
+  await page.getByLabel("اسم الدخول").fill("owner");
+  await page.getByLabel("كلمة المرور").fill("e2e-owner-pass");
+  await page.getByRole("button", { name: "دخول" }).click();
+  await expect(page.getByRole("heading", { name: "اختيار الفرع النشط" })).toBeVisible();
+  await page.getByRole("button", { name: "أبشواي" }).click();
+
+  const category = await staffApi(page, "POST", "/api/internal/catalog/categories", { nameAr: "تركيبات متفرقة" });
+  const medium = await staffApi(page, "POST", "/api/internal/catalog/sizes", { nameAr: "متوسط متفرق" });
+  const large = await staffApi(page, "POST", "/api/internal/catalog/sizes", { nameAr: "كبير متفرق" });
+  const red = await staffApi(page, "POST", "/api/internal/catalog/colors", { nameAr: "أحمر متفرق" });
+  const blue = await staffApi(page, "POST", "/api/internal/catalog/colors", { nameAr: "أزرق متفرق" });
+  const created = await staffApi(page, "POST", "/api/internal/catalog/products", {
+    code: "SPARSE-E2E",
+    nameAr: "منتج التركيبات المتفرقة",
+    descriptionAr: "",
+    categoryId: category.body.id,
+    defaultSellingPricePiasters: 25000,
+    publication: "available",
+    imageRefs: [],
+    variants: [
+      { sizeId: medium.body.id, colorId: red.body.id, onlineVisible: false, sellingPricePiastersOverride: null },
+      { sizeId: medium.body.id, colorId: blue.body.id, onlineVisible: false, sellingPricePiastersOverride: null },
+      { sizeId: large.body.id, colorId: red.body.id, onlineVisible: false, sellingPricePiastersOverride: null },
+    ],
+  });
+  expect(created.status).toBe(201);
+  const workspace = await staffApi(page, "GET", "/api/internal/workspace");
+  const received = await staffApi(page, "POST", "/api/internal/receiving/receipts", {
+    operationId: crypto.randomUUID(),
+    branchId: workspace.body.activeBranch.id,
+    receiptDate: "2026-09-15",
+    lines: created.body.variants.map((variant: { id: string }) => ({ variantId: variant.id, quantity: 2, unitCostPiasters: 10000 })),
+  });
+  expect(received.status).toBe(201);
+
+  await page.getByRole("link", { name: "المنتجات" }).click();
+  await page.getByLabel("رمز المنتج", { exact: true }).first().fill("SPARSE-E2E");
+  await page.getByRole("button", { name: "عرض المنتج" }).click();
+  const form = page.getByRole("form", { name: "تعديل منتج" });
+  const sizeChoices = form.getByRole("group", { name: "المقاسات المعروضة على الموقع", exact: true });
+  const colorChoices = form.getByRole("group", { name: "الألوان المعروضة على الموقع", exact: true });
+  const pairs = form.getByRole("checkbox", { name: "عرض هذه التركيبة" });
+  await expect(pairs).toHaveCount(3);
+  await sizeChoices.getByRole("checkbox", { name: /متوسط متفرق/ }).check();
+  await expect(sizeChoices.getByRole("checkbox", { name: /متوسط متفرق/ })).toHaveAccessibleName("متوسط متفرق (2/2)");
+  await colorChoices.getByRole("checkbox", { name: /أحمر متفرق/ }).check();
+  await expect(colorChoices.getByRole("checkbox", { name: /أحمر متفرق/ })).toHaveAccessibleName("أحمر متفرق (2/2)");
+  await sizeChoices.getByRole("checkbox", { name: /متوسط متفرق/ }).uncheck();
+  await colorChoices.getByRole("checkbox", { name: /أزرق متفرق/ }).check();
+  await expect(pairs).toHaveCount(3);
+  await form.getByRole("button", { name: "حفظ التعديل" }).click();
+  await expect(page.getByRole("status")).toContainText("تم تحديث المنتج.");
+
+  const after = await staffApi(page, "GET", `/api/internal/catalog/products/${created.body.id}`);
+  expect(after.status).toBe(200);
+  type Pair = { id: string; size: { id: string }; color: { id: string }; onlineVisible: boolean };
+  const identities = (variants: Pair[]) => variants.map((variant) => `${variant.id}:${variant.size.id}:${variant.color.id}`).sort();
+  expect(identities(after.body.variants)).toEqual(identities(created.body.variants));
+  expect(after.body.variants.filter((variant: Pair) => variant.onlineVisible).map((variant: Pair) => `${variant.size.id}:${variant.color.id}`).sort()).toEqual([
+    `${medium.body.id}:${blue.body.id}`, `${large.body.id}:${red.body.id}`,
+  ].sort());
+  const published = await page.request.get(`http://127.0.0.1:5174/api/public/catalog/products/${created.body.id}`);
+  expect(published.status()).toBe(200);
+  expect((await published.json()).variants).toHaveLength(2);
+
+  await page.getByRole("button", { name: "تسجيل الخروج" }).click();
+  await page.getByLabel("اسم الدخول").fill("cashier");
+  await page.getByLabel("كلمة المرور").fill("e2e-cashier-pass");
+  await page.getByRole("button", { name: "دخول" }).click();
+  await expect(page.getByRole("heading", { name: "اختيار الفرع النشط" })).toBeVisible();
+  await page.getByRole("button", { name: "أبشواي" }).click();
+  const lookup = await staffApi(page, "GET", "/api/internal/catalog/lookup?code=SPARSE-E2E");
+  expect(lookup.status).toBe(200);
+  expect(lookup.body.variants.map((variant: { id: string }) => variant.id).sort()).toEqual(created.body.variants.map((variant: { id: string }) => variant.id).sort());
+  await page.getByRole("link", { name: "البحث عن منتج" }).click();
+  const lookupForm = page.getByRole("form", { name: "البحث برمز المنتج" });
+  await lookupForm.getByRole("textbox", { name: "رمز المنتج" }).fill("SPARSE-E2E");
+  await lookupForm.getByRole("button", { name: "بحث" }).click();
+  await page.getByLabel("المقاس", { exact: true }).selectOption({ label: "متوسط متفرق" });
+  await page.getByLabel("اللون", { exact: true }).selectOption({ label: "أحمر متفرق" });
+  await expect(page.getByTestId("available-quantity")).toHaveText("الكمية المتاحة: 2");
+});
+
+async function staffApi(page: Page, method: "GET" | "PATCH" | "POST", url: string, payload?: unknown) {
   const response = await page.request.fetch(`http://127.0.0.1:5174${url}`, {
     method,
     headers: {

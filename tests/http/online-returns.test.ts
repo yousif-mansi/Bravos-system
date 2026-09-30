@@ -240,6 +240,24 @@ test("cancelling an earlier differently-paid Return preserves the later unit ide
   expect(reopened.lines[0].availablePaidRanges).toEqual([{ quantity: 1, paidUnitPiasters: firstPaid }]);
 });
 
+test("BRV references grow beyond six digits and remain selectable as original online purchases", async () => {
+  const manager = await signIn("owner", "owner-pass-1");
+  await expectOk(await api(manager, "POST", "/api/internal/active-branch", { branchId }));
+  await built.pool.query("SELECT setval('online_order_reference_number_seq', 999998, TRUE)");
+  const lastSixDigits = await createDeliveredPurchase(manager, 1);
+  const firstSevenDigits = await createDeliveredPurchase(manager, 1);
+  expect(lastSixDigits.reference).toBe("BRV-999999");
+  expect(firstSevenDigits.reference).toBe("BRV-1000000");
+  for (const purchase of [lastSixDigits, firstSevenDigits]) {
+    const lookup = await api(manager, "GET", `/api/internal/returns/sources-page?channel=online&reference=${purchase.reference}`);
+    expect(lookup.status, JSON.stringify(lookup.body)).toBe(200);
+    expect(lookup.body).toMatchObject({
+      items: [expect.objectContaining({ reference: purchase.reference, source: { kind: "delivered_online_order", id: purchase.orderId } })],
+      nextCursor: null,
+    });
+  }
+});
+
 test("a Delivered source can be exchanged atomically without creating a fake source Sale", async () => {
   const manager = await signIn("owner", "owner-pass-1");
   await expectOk(await api(manager, "POST", "/api/internal/active-branch", { branchId }));

@@ -1258,6 +1258,9 @@ export default function LookupPage({
   const formLocked = Boolean(
     submitting || (pendingSale && (pendingSale.physicallyCompleted || pendingSale.phase === "uncertain")),
   );
+  const paymentBalancePiasters = quote && paymentMethod === "split"
+    ? quote.finalTotalPiasters - (egpInputToPiasters(cashEgp) ?? 0) - (egpInputToPiasters(onlineEgp) ?? 0)
+    : 0;
 
   return (
     <main className="shell">
@@ -1416,7 +1419,10 @@ export default function LookupPage({
                 <div className="field"><label htmlFor="payment-online">المبلغ الإلكتروني بالجنيه</label><input id="payment-online" inputMode="decimal" value={onlineEgp} onChange={(event) => setOnlineEgp(event.target.value)} /></div>
               </div>
             ) : null}
-            <p role="status" data-testid="payment-remaining">المتبقي: {formatEgpFromPiasters(Math.max(0, quote.finalTotalPiasters - (paymentMethod === "cash" || paymentMethod === "online" ? quote.finalTotalPiasters : (egpInputToPiasters(cashEgp) ?? 0) + (egpInputToPiasters(onlineEgp) ?? 0))))}</p>
+            <p role="status" data-testid="payment-remaining">
+              {paymentBalancePiasters < 0 ? "المبلغ الزائد: " : "المتبقي: "}
+              {formatEgpFromPiasters(Math.abs(paymentBalancePiasters))}
+            </p>
           </fieldset>
         ) : null}
         <div className="field">

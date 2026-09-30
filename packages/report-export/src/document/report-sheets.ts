@@ -185,18 +185,18 @@ function rawManagementReportSheets(report: ManagementReportDto): ReportSheet[] {
     },
     {
       nameAr: "المرتجعات",
-      columnsAr: ["معرف المرتجع", "وقت الترحيل", "نوع المصدر", "معرف المصدر", "القناة", "فرع الأصل", "فرع المعالجة", "الحالة", "مراجعة التصحيح", "مرتجع البضاعة (قرش)", "مرتجع رسوم الطلب (قرش)", "إجمالي المرتجع (قرش)", "التكلفة المستعادة (قرش)", "المدفوع فعلياً (قرش)", "حالة رد النقد", "رد النقد المستحق إجمالاً (قرش)", "بيع الاستبدال", "بضاعة الاستبدال (قرش)", "الرصيد المطبق (قرش)", "النقد المحصل (قرش)", "نقد الاستبدال المسترد المستحق (قرش)", "نقد الاستبدال المسترد المدفوع (قرش)"],
-      rows: report.refunds.map((row) => [row.returnId, row.postedAt, sourceKindAr(row.source.kind), row.source.id, channelAr(row.channel), branchAuditLabel(report, row.originalBranchId), branchAuditLabel(report, row.handlingBranchId), effectiveStatusAr(row.effectiveStatus), row.correctionRevision, row.authorizedRefund.merchandisePiasters, row.authorizedRefund.checkoutChargePiasters, row.authorizedRefund.totalPiasters, row.sellableRestoredCostPiasters, row.actualRefundPaidPiasters, cashRefundStatusAr(row.cashRefundStatus), row.cashRefundOwedPiasters, row.exchange?.replacementSaleId ?? null, row.exchange?.replacementMerchandisePiasters ?? null, row.exchange?.creditAppliedPiasters ?? null, row.exchange?.cashCollectedPiasters ?? null, row.exchange?.cashRefundOwedPiasters ?? null, row.exchange?.cashRefundPaidPiasters ?? null]),
+      columnsAr: ["رقم المرتجع", "وقت الترحيل", "نوع المصدر", "معرف المصدر", "القناة", "فرع الأصل", "فرع المعالجة", "الحالة", "مراجعة التصحيح", "مرتجع البضاعة (قرش)", "مرتجع رسوم الطلب (قرش)", "إجمالي المرتجع (قرش)", "التكلفة المستعادة (قرش)", "المدفوع فعلياً (قرش)", "حالة رد النقد", "رد النقد المستحق إجمالاً (قرش)", "بيع الاستبدال", "بضاعة الاستبدال (قرش)", "الرصيد المطبق (قرش)", "النقد المحصل (قرش)", "نقد الاستبدال المسترد المستحق (قرش)", "نقد الاستبدال المسترد المدفوع (قرش)"],
+      rows: report.refunds.map((row) => [row.reference, row.postedAt, sourceKindAr(row.source.kind), row.source.id, channelAr(row.channel), branchAuditLabel(report, row.originalBranchId), branchAuditLabel(report, row.handlingBranchId), effectiveStatusAr(row.effectiveStatus), row.correctionRevision, row.authorizedRefund.merchandisePiasters, row.authorizedRefund.checkoutChargePiasters, row.authorizedRefund.totalPiasters, row.sellableRestoredCostPiasters, row.actualRefundPaidPiasters, cashRefundStatusAr(row.cashRefundStatus), row.cashRefundOwedPiasters, row.exchange?.replacementSaleId ?? null, row.exchange?.replacementMerchandisePiasters ?? null, row.exchange?.creditAppliedPiasters ?? null, row.exchange?.cashCollectedPiasters ?? null, row.exchange?.cashRefundOwedPiasters ?? null, row.exchange?.cashRefundPaidPiasters ?? null]),
     },
     {
       nameAr: "حركات نقد المرتجعات",
-      columnsAr: ["معرف المرتجع", "الاتجاه", "المبلغ (قرش)", "الوقت"],
-      rows: report.refunds.flatMap((refund) => refund.refundCashEvents.map((event) => [refund.returnId, cashDirectionAr(event.direction), event.amountPiasters, event.recordedAt])),
+      columnsAr: ["رقم المرتجع", "الاتجاه", "المبلغ (قرش)", "الوقت"],
+      rows: report.refunds.flatMap((refund) => refund.refundCashEvents.map((event) => [refund.reference, cashDirectionAr(event.direction), event.amountPiasters, event.recordedAt])),
     },
     {
       nameAr: "تصحيحات المرتجعات",
-      columnsAr: ["معرف المرتجع", "معرف التصحيح", "النوع", "المراجعة", "السبب", "معرف المنفذ", "اسم المنفذ", "الوقت"],
-      rows: report.refunds.flatMap((refund) => refund.corrections.map((change) => [refund.returnId, change.id, correctionTypeAr(change.type), change.revision, change.reason, change.changedByStaffId, change.changedByDisplayName, change.changedAt])),
+      columnsAr: ["رقم المرتجع", "معرف التصحيح", "النوع", "المراجعة", "السبب", "معرف المنفذ", "اسم المنفذ", "الوقت"],
+      rows: report.refunds.flatMap((refund) => refund.corrections.map((change) => [refund.reference, change.id, correctionTypeAr(change.type), change.revision, change.reason, change.changedByStaffId, change.changedByDisplayName, change.changedAt])),
     },
     {
       nameAr: "المشتريات",

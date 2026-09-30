@@ -59,6 +59,7 @@ export type RestoreOnlineOrdersFeaturePort = RestoreFeaturePort & {
 };
 
 export type RestoreReturnsFeaturePort = RestoreFeaturePort & {
+  upgradeReasonlessRestoreRows(rows: Array<Record<string, unknown>>): Promise<Array<Record<string, unknown>>>;
   restoreReferenceSequence(sequence: { lastValue: string; isCalled: boolean }): Promise<void>;
 };
 

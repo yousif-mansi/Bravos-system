@@ -23,12 +23,17 @@ export default function StorefrontSettingsPage({
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [loaded, setLoaded] = useState(false);
+  const [readVersion, setReadVersion] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
+    setLoaded(false);
+    setLoading(true);
+    setError("");
     void getStorefrontContacts()
       .then((contacts) => {
-        if (!cancelled) setDraft(toDraft(contacts));
+        if (!cancelled) { setDraft(toDraft(contacts)); setLoaded(true); }
       })
       .catch(() => {
         if (!cancelled) setError("تعذر تحميل روابط المتجر.");
@@ -39,7 +44,7 @@ export default function StorefrontSettingsPage({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [workspace.staff.id, readVersion]);
 
   async function save() {
     setSaving(true);
@@ -63,7 +68,7 @@ export default function StorefrontSettingsPage({
       </header>
       <section className="card">
         <p className="muted">أدخل الروابط الحقيقية فقط. اترك أي رابط فارغاً لإخفائه من المتجر.</p>
-        {loading ? <p role="status">لحظات…</p> : (
+        {loading ? <p role="status">جارٍ تحميل روابط المتجر…</p> : !loaded ? <button type="button" onClick={() => setReadVersion((version) => version + 1)}>إعادة تحميل روابط المتجر</button> : (
           <form
             aria-label="إعداد روابط التواصل في المتجر"
             onSubmit={(event) => {

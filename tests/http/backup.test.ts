@@ -149,7 +149,7 @@ test("manager downloads one authenticated business snapshot with privacy and uns
     includesUnsentBrowserRecords: false,
     imageBinariesIncluded: false,
     imageReferencesPreserved: true,
-    schemaVersion: "034_order_recognition_branch.sql",
+    schemaVersion: "035_return_reason.sql",
     sourceGeneration: 0,
     salesSaleReferenceSequence: { lastValue: expect.stringMatching(/^\d+$/), isCalled: expect.any(Boolean) },
     returnsReturnReferenceSequence: { lastValue: expect.stringMatching(/^\d+$/), isCalled: expect.any(Boolean) },

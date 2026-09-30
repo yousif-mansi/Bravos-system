@@ -15,6 +15,8 @@ import type {
   PriceSnapshotRecord,
   PriceSnapshotStore,
   PhysicalSaleReportingReader,
+  PhysicalSaleSourceSearch,
+  PhysicalSaleSourceCandidateReader,
   RestoreRuntimePort,
   SaleInsert,
   SaleLineWrite,
@@ -1013,4 +1015,30 @@ export function createPostgresPriceSnapshotStore(queryable: Queryable): PriceSna
       };
     },
   };
+}
+
+export function createPostgresPhysicalSaleSourceCandidateReader(queryable: Queryable): PhysicalSaleSourceCandidateReader {
+  return { async list(search) {
+    const query = sourceSearchQuery(search);
+    return (await queryable.query<{ id: string; received_at_key: string }>(query.sql, query.params)).rows
+      .map((row) => ({ id: row.id, receivedAtKey: row.received_at_key }));
+  } };
+}
+
+function sourceSearchQuery(search: PhysicalSaleSourceSearch) {
+  const params: unknown[] = [];
+  const bind = (value: unknown) => { params.push(value); return `$${params.length}`; };
+  const where = ["s.physically_completed = true"];
+  if (search.reference) {
+    const key = bind(search.reference);
+    where.push(`(s.reference ILIKE '%' || ${key} || '%' OR s.id::text ILIKE '%' || ${key} || '%' OR s.operation_id::text ILIKE '%' || ${key} || '%')`);
+  }
+  if (search.phone) where.push(`regexp_replace(translate(COALESCE(s.customer_phone,''), '٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹', '01234567890123456789'), '[^0-9]', '', 'g') LIKE '%' || ${bind(search.phone)} || '%'`);
+  if (search.date) where.push(`(s.occurred_at AT TIME ZONE 'Africa/Cairo')::date = ${bind(search.date)}::date`);
+  if (search.branchId) where.push(`s.branch_id = ${bind(search.branchId)}::uuid`);
+  if (search.after) where.push(`(s.occurred_at,s.id,1) < (${bind(search.after.receivedAt)}::timestamptz,${bind(search.after.id)}::uuid,${bind(search.after.channel === "physical" ? 1 : 0)}::int)`);
+  const limit = bind(search.limit ?? 100);
+  return { sql: `SELECT s.id,
+    to_char(s.occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS received_at_key
+    FROM sales_sale s WHERE ${where.join(" AND ")} ORDER BY s.occurred_at DESC,s.id DESC LIMIT ${limit}`, params };
 }

@@ -29,6 +29,7 @@ test("manager selects a delivered online purchase and reviews refund components 
   await expect(source).toHaveCount(1);
   await expect(source).toContainText(`طلب ${delivered.reference}`);
   await expect(source).toContainText("760 ج.م.");
+  await expect(source).toContainText("أونلاين · فرع التجهيز: أبشواي");
   await source.click();
   await expect(page.getByText(/العميل: عميل مرتجع أونلاين/)).toBeVisible();
 
@@ -46,6 +47,8 @@ test("manager selects a delivered online purchase and reviews refund components 
   await expect(suggestion).toContainText("رسوم التوصيل: 40 ج.م.");
   await expect(suggestion).toContainText("الإجمالي: 760 ج.م.");
 
+  await expect(draft.getByLabel("سبب المرتجع (اختياري)")).not.toHaveAttribute("required");
+  await draft.getByLabel("سبب المرتجع (اختياري)").fill("العميل رجع الطلب");
   await draft.getByLabel("استرداد البضاعة المعتمد بالجنيه").fill("700");
   await draft.getByLabel("استرداد رسوم التوصيل المعتمد بالجنيه").fill("30");
   await draft.getByRole("button", { name: "حفظ المسودة" }).click();
@@ -53,6 +56,11 @@ test("manager selects a delivered online purchase and reviews refund components 
 
   const details = page.getByTestId("return-details");
   await expect(details).toContainText(`الطلب: ${delivered.reference}`);
+  await expect(details).toContainText("فرع التجهيز: أبشواي · فرع الاستلام: أبشواي");
+  await expect(details).toContainText("سبب الإرجاع: العميل رجع الطلب");
+  const history = page.locator(".return-history").getByRole("button").filter({ hasText: delivered.reference });
+  await expect(history).toContainText("مرتجع طلب أونلاين");
+  await expect(history).toContainText("العميل رجع الطلب");
   await expect(details).toContainText("البضاعة 700 ج.م.");
   await expect(details).toContainText("رسوم التوصيل 30 ج.م.");
   await expect(details).toContainText("الإجمالي 730 ج.م.");

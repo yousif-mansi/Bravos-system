@@ -1,4 +1,5 @@
 import { mkdtemp } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, beforeEach, expect, test } from "vitest";
@@ -624,6 +625,7 @@ test("manager picks an unattributed-phone sale, drafts cross-branch, restores th
   const cashier = await signIn("cashier.return.denied", "staff-pass-71");
   await api(cashier, "POST", "/api/internal/active-branch", { branchId: abshwayId });
   const denied = await api(cashier, "GET", "/api/internal/returns/sources");
+  expect((await api(cashier, "GET", "/api/internal/returns/sources-page")).status).toBe(403);
   expect(denied.status).toBe(403);
 
   const picked = await api(manager, "GET", `/api/internal/returns/sources?reference=${originalSale.body.id}&date=2026-09-01&branchId=${abshwayId}&amountPiasters=45000`);
@@ -985,6 +987,93 @@ test("an exchange and later replacement return retain the corrected cost of thei
   });
 });
 
+
+test("optional return reasons preserve legacy create replays and distinguish omitted edits from clearing", async () => {
+  const manager = await signIn("owner", "owner-pass-1");
+  await api(manager, "POST", "/api/internal/active-branch", { branchId: abshwayId });
+  const product = await seedProduct(manager, [12000]);
+  await receive(manager, product.variantIds[0]!, 1, 5000);
+  const original = await sale(manager, {
+    occurredAt: "2026-09-10T12:00:00.000Z", customerName: "أحمد",
+    lines: [{ variantId: product.variantIds[0]!, quantity: 1 }],
+  });
+  const source = (await api(manager, "GET", `/api/internal/returns/sources?reference=${original.body.id}`)).body[0];
+  const command = {
+    returnId: crypto.randomUUID(), operationId: crypto.randomUUID(), sourceSaleId: original.body.id,
+    handlingBranchId: fayoumId, authorizedRefundPiasters: 12000,
+    lines: [{ sourceSaleLineId: source.lines[0].saleLineId, quantity: 1, sellableQuantity: 1 }],
+  };
+  const created = await api(manager, "POST", "/api/internal/returns", command);
+  expect(created.status).toBe(201);
+  expect(created.body.reason).toBeNull();
+  // Pin the pre-reason fingerprint, so a new create-and-replay alone cannot hide an incompatible hash change.
+  const legacyFingerprint = createHash("sha256").update(JSON.stringify({
+    source: { kind: "physical_sale", id: original.body.id }, handlingBranchId: fayoumId,
+    authorizedRefund: { merchandisePiasters: 12000, checkoutChargePiasters: 0, totalPiasters: 12000 },
+    lines: [{ sourceLineId: source.lines[0].saleLineId, quantity: 1, sellableQuantity: 1 }],
+  })).digest("hex");
+  const persisted = await built.pool.query<{ payload_fingerprint: string }>(
+    "SELECT payload_fingerprint FROM returns_return WHERE id=$1", [command.returnId]);
+  expect(persisted.rows[0]!.payload_fingerprint).toBe(legacyFingerprint);
+  for (const reason of [undefined, null, "  \n  "]) {
+    const replay = await api(manager, "POST", "/api/internal/returns", { ...command, reason });
+    expect(replay.status).toBe(200);
+    expect(replay.body).toEqual(created.body);
+  }
+  expect((await api(manager, "POST", "/api/internal/returns", { ...command, reason: "سبب جديد" })).status).toBe(409);
+  const reasonedCommand = { ...command, returnId: crypto.randomUUID(), operationId: crypto.randomUUID(), reason: "  سبب مسجل عند الإنشاء  " };
+  const reasoned = await api(manager, "POST", "/api/internal/returns", reasonedCommand);
+  expect(reasoned.status).toBe(201);
+  expect(reasoned.body.reason).toBe("سبب مسجل عند الإنشاء");
+  expect((await api(manager, "POST", "/api/internal/returns", reasonedCommand)).status).toBe(200);
+  expect((await api(manager, "POST", "/api/internal/returns", { ...reasonedCommand, reason: null })).status).toBe(409);
+
+  const update = { handlingBranchId: fayoumId, authorizedRefundPiasters: 12000, lines: command.lines };
+  const named = await api(manager, "PATCH", `/api/internal/returns/${command.returnId}`, {
+    ...update, expectedRevision: created.body.revision, reason: "  المقاس غير مناسب  ",
+  });
+  expect(named.status).toBe(200);
+  expect(named.body.reason).toBe("المقاس غير مناسب");
+  const preserved = await api(manager, "PATCH", `/api/internal/returns/${command.returnId}`, {
+    ...update, expectedRevision: named.body.revision,
+  });
+  expect(preserved.status).toBe(200);
+  expect(preserved.body.reason).toBe("المقاس غير مناسب");
+  const cleared = await api(manager, "PATCH", `/api/internal/returns/${command.returnId}`, {
+    ...update, expectedRevision: preserved.body.revision, reason: null,
+  });
+  expect(cleared.status).toBe(200);
+  expect(cleared.body.reason).toBeNull();
+  const maximumReason = "ع".repeat(500);
+  const maximum = await api(manager, "PATCH", `/api/internal/returns/${command.returnId}`, {
+    ...update, expectedRevision: cleared.body.revision, reason: maximumReason,
+  });
+  expect(maximum.status).toBe(200);
+  expect(maximum.body.reason).toBe(maximumReason);
+  for (const reason of ["ع".repeat(501), 123]) {
+    expect((await api(manager, "PATCH", `/api/internal/returns/${command.returnId}`, {
+      ...update, expectedRevision: maximum.body.revision, reason,
+    })).status).toBe(400);
+    expect((await api(manager, "POST", "/api/internal/returns", {
+      ...command, returnId: crypto.randomUUID(), operationId: crypto.randomUUID(), reason,
+    })).status).toBe(400);
+  }
+  const posted = await api(manager, "POST", `/api/internal/returns/${command.returnId}/post`, {
+    expectedRevision: maximum.body.revision, receivedAndInspected: true,
+  });
+  expect(posted.status).toBe(201);
+  expect(posted.body.reason).toBe(maximumReason);
+  const detail = await api(manager, "GET", `/api/internal/returns/${command.returnId}`);
+  expect(detail.body.reason).toBe(maximumReason);
+  const history = await api(manager, "GET", "/api/internal/returns");
+  expect(history.body.items.find((item: { id: string }) => item.id === command.returnId)).toMatchObject({
+    id: command.returnId, reason: maximumReason, sourceReference: original.body.reference,
+    originalBranch: { id: abshwayId, code: "abshway", nameAr: expect.any(String) },
+    handlingBranch: { id: fayoumId, code: "fayoum", nameAr: expect.any(String) },
+    products: [expect.objectContaining({ nameAr: "قميص مرتجع", sizeNameAr: expect.any(String), colorNameAr: expect.any(String), quantity: 1 })],
+  });
+  expect((await api(manager, "POST", "/api/internal/returns", command)).status).toBe(200);
+});
 
 async function seedProduct(session: Session, prices: number[]) {
   const suffix = crypto.randomUUID().slice(0, 6);

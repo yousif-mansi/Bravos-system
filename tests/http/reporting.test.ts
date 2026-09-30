@@ -199,7 +199,7 @@ test("manager report composes effective revenue, retained batch costs, returns a
     },
   });
   expect(report.body.completedSales[0]).toMatchObject({
-    source: { kind: "physical_sale", id: saleId },
+    source: { kind: "physical_sale", id: saleId, reference: sale.body.reference },
     employee: { staffId: employee.id },
     accepted: { originalPiasters: 50000, employeeDiscountPiasters: 5000 },
     effectiveMerchandisePiasters: 45000,
@@ -207,6 +207,7 @@ test("manager report composes effective revenue, retained batch costs, returns a
   });
   expect(report.body.refunds[0]).toMatchObject({
     returnId,
+    reference: draft.body.reference,
     source: { kind: "physical_sale", id: saleId },
     originalBranchId: branchId,
     handlingBranchId: branchId,

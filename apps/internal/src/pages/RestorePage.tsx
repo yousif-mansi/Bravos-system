@@ -10,6 +10,7 @@ import {
 import { accountGeneration } from "../account-session.ts";
 import { EmptyState } from "../ui/EmptyState.tsx";
 import { PageLoading } from "../ui/PageLoading.tsx";
+import { useRevealFeedback } from "../ui/useRevealFeedback.ts";
 import { ApiError } from "../api.ts";
 import {
   acknowledgePreRestoreBackup,
@@ -81,6 +82,9 @@ export default function RestorePage({
   const controllerRef = useRef<AbortController | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const selectedIdRef = useRef<string | null>(null);
+  const previewFeedback = useRevealFeedback<HTMLElement>();
+  const [refreshing, setRefreshing] = useState(false);
+  const refreshingRef = useRef(false);
 
   useEffect(() => {
     selectedIdRef.current = selected?.id ?? null;
@@ -234,6 +238,19 @@ export default function RestorePage({
     }
   }
 
+  async function refreshExplicitly() {
+    if (refreshingRef.current || busy) return;
+    refreshingRef.current = true;
+    setRefreshing(true);
+    setError("");
+    const token = lifecycle.current;
+    try { await refresh(selected?.id); }
+    finally {
+      refreshingRef.current = false;
+      if (lifecycle.current === token) setRefreshing(false);
+    }
+  }
+
   async function stage(event: FormEvent) {
     event.preventDefault();
     if (busy || !archive) return;
@@ -270,6 +287,7 @@ export default function RestorePage({
           if (stillCurrent(staffId, epoch, token)) {
             setMarker(attached);
             setSelected(existing);
+            previewFeedback.reveal();
             setNotice("تم العثور على معاينة العملية السابقة دون إنشاء عملية مكررة.");
           }
           return;
@@ -290,6 +308,7 @@ export default function RestorePage({
         });
         setMarker(attached);
         setSelected(created);
+        previewFeedback.reveal();
         setDownloadedSha256(null);
         setNotice("تم فك النسخة والتحقق منها في قاعدة معزولة. راجع الفروق والأجهزة قبل التفعيل.");
         await refresh(created.id);
@@ -309,8 +328,10 @@ export default function RestorePage({
             /* keep the operation identity for the next explicit retry */
           }
         }
+        if (!stillCurrent(staffId, epoch, token)) return;
         if (recovered) {
           setSelected(recovered);
+          previewFeedback.reveal();
           setMarker(attachRestorePreview(staffId, {
             operationId: recovered.operationId,
             previewId: recovered.id,
@@ -591,7 +612,9 @@ export default function RestorePage({
       {selected ? (
         <RestorePreview
           preview={selected}
-          busy={Boolean(busy)}
+          busy={Boolean(busy) || refreshing}
+          refreshing={refreshing}
+          feedback={previewFeedback}
           downloadedSha256={downloadedSha256}
           confirmationFingerprint={confirmationFingerprint}
           confirmedConsequences={confirmedConsequences}
@@ -601,7 +624,7 @@ export default function RestorePage({
           onActivate={() => void activate()}
           onFingerprint={setConfirmationFingerprint}
           onConfirmed={setConfirmedConsequences}
-          onRefresh={() => void refresh(selected.id)}
+          onRefresh={() => void refreshExplicitly()}
         />
       ) : null}
 
@@ -633,7 +656,7 @@ export default function RestorePage({
           <h2 id="restore-history-title">سجل المعاينات</h2>
           <div className="restore-history">
             {previews.map((preview) => (
-              <button className="restore-history-item" type="button" key={preview.id} onClick={() => setSelected(preview)}>
+              <button className="restore-history-item" type="button" key={preview.id} disabled={Boolean(busy) || refreshing} onClick={() => { setSelected(preview); previewFeedback.reveal(); }}>
                 <span>{statusLabel(preview.status)}</span>
                 <bdi>{preview.backupId}</bdi>
                 <span>{formatDate(preview.createdAt)}</span>
@@ -649,6 +672,8 @@ export default function RestorePage({
 function RestorePreview(props: {
   preview: RestorePreviewDto;
   busy: boolean;
+  refreshing: boolean;
+  feedback: ReturnType<typeof useRevealFeedback<HTMLElement>>;
   downloadedSha256: string | null;
   confirmationFingerprint: string;
   confirmedConsequences: boolean;
@@ -663,10 +688,10 @@ function RestorePreview(props: {
   const { preview } = props;
   const active = preview.status === "staged" || preview.status === "paused" || preview.status === "ready";
   return (
-    <section className="card restore-preview" aria-label="تفاصيل معاينة الاستعادة">
+    <section ref={props.feedback.regionRef} className={`card restore-preview reveal-feedback${props.feedback.highlighted ? " is-highlighted" : ""}`} aria-label="تفاصيل معاينة الاستعادة">
       <div className="restore-preview-heading">
-        <div><h2>معاينة النسخة</h2><p className="muted">الحالة: {statusLabel(preview.status)}</p></div>
-        <button className="secondary" type="button" disabled={props.busy} onClick={props.onRefresh}>تحديث الحالة</button>
+        <div><h2 ref={props.feedback.headingRef} tabIndex={-1}>معاينة النسخة</h2><p className="muted">الحالة: {statusLabel(preview.status)}</p></div>
+        <button className="secondary" type="button" disabled={props.busy} onClick={props.onRefresh}>{props.refreshing ? "جارٍ تحديث الحالة…" : "تحديث الحالة"}</button>
       </div>
       <dl className="restore-metadata">
         <div><dt>معرّف النسخة</dt><dd><bdi>{preview.backupId}</bdi></dd></div>

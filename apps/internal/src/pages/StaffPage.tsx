@@ -10,6 +10,7 @@ import {
   setStaffGrants,
 } from "../api.ts";
 import { EmptyState } from "../ui/EmptyState.tsx";
+import { useRevealFeedback } from "../ui/useRevealFeedback.ts";
 
 type GrantDraft = {
   assigned: boolean;
@@ -36,16 +37,21 @@ export default function StaffPage({
   const [resettingId, setResettingId] = useState<string | null>(null);
   const [resetPassword, setResetPassword] = useState("");
   const [pendingAction, setPendingAction] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [loadRevision, setLoadRevision] = useState(0);
 
   async function refresh() {
     setStaff(await listStaff());
   }
 
   useEffect(() => {
+    setLoading(true); setLoadFailed(false); setError("");
     void refresh().catch((caught: unknown) => {
       setError(caught instanceof ApiError ? caught.messageAr : "تعذر تحميل الموظفين.");
-    });
-  }, []);
+      setLoadFailed(true);
+    }).finally(() => setLoading(false));
+  }, [loadRevision]);
 
   async function onCreate(event: FormEvent) {
     event.preventDefault();
@@ -79,6 +85,8 @@ export default function StaffPage({
       </header>
       {error ? <div className="error" role="alert">{error}</div> : null}
       {notice ? <div className="notice" role="status">{notice}</div> : null}
+      {loading ? <p role="status">جارٍ تحميل الموظفين…</p> : null}
+      {loadFailed ? <button className="secondary" type="button" disabled={loading} onClick={() => setLoadRevision((current) => current + 1)}>إعادة تحميل الموظفين</button> : null}
       <div className="grid two">
         <form className="card" aria-label="إنشاء حساب موظف" onSubmit={(event) => void onCreate(event)}>
           <h2>إنشاء حساب موظف</h2>
@@ -96,6 +104,7 @@ export default function StaffPage({
           </div>
           <GrantEditor
             idPrefix="create"
+            disabled={pendingCreate}
             branches={branches}
             value={createGrants}
             onChange={setCreateGrants}
@@ -108,7 +117,7 @@ export default function StaffPage({
         </form>
         <section className="card">
           <h2>الحسابات</h2>
-          {staff.length === 0 ? (
+          {!loading && !loadFailed && staff.length === 0 ? (
             <EmptyState title="لسه مفيش موظفين" message="أنشئ أول حساب من النموذج جنب القائمة." />
           ) : (
             <div className="staff-list">
@@ -205,6 +214,7 @@ function StaffCard({
 }) {
   const initial = useMemo(() => draftsFromAccount(branches, account), [account, branches]);
   const [drafts, setDrafts] = useState(initial);
+  const resetFeedback = useRevealFeedback<HTMLFormElement>();
   useEffect(() => {
     setDrafts(initial);
   }, [initial]);
@@ -221,6 +231,7 @@ function StaffCard({
         <>
           <GrantEditor
             idPrefix={`edit-${account.id}`}
+            disabled={Boolean(pendingAction)}
             branches={branches}
             value={drafts}
             onChange={setDrafts}
@@ -229,31 +240,37 @@ function StaffCard({
             <button
               type="button"
               className="secondary"
-              disabled={pendingAction === `grants-${account.id}`}
+              disabled={Boolean(pendingAction)}
+              aria-busy={pendingAction === `grants-${account.id}`}
               onClick={() => void onSaveGrants(account.id, toGrantPayload(branches, drafts))}
             >
-              حفظ الفروع
+              {pendingAction === `grants-${account.id}` ? "جارٍ حفظ الفروع…" : "حفظ الفروع"}
             </button>
-            <button type="button" className="secondary" onClick={() => onToggleReset(account.id)}>
+            <button type="button" className="secondary" disabled={Boolean(pendingAction)} aria-expanded={resettingId === account.id} onClick={() => { onToggleReset(account.id); if (resettingId !== account.id) resetFeedback.reveal(); else resetFeedback.clearHighlight(); }}>
               إعادة تعيين كلمة المرور
             </button>
             <button
               type="button"
               className="danger"
-              disabled={pendingAction === `disable-${account.id}` || account.disabled}
+              disabled={Boolean(pendingAction) || account.disabled}
+              aria-busy={pendingAction === `disable-${account.id}`}
               onClick={() => void onDisable(account.id)}
             >
-              تعطيل
+              {pendingAction === `disable-${account.id}` ? "جارٍ تعطيل الحساب…" : "تعطيل"}
             </button>
           </div>
           {resettingId === account.id ? (
             <form
-              className="reset-form"
+              ref={resetFeedback.regionRef}
+              className={`reset-form reveal-feedback${resetFeedback.highlighted ? " is-highlighted" : ""}`}
+              aria-label={`إعادة تعيين كلمة مرور ${account.displayName}`}
+              aria-busy={pendingAction === `reset-${account.id}`}
               onSubmit={(event) => {
                 event.preventDefault();
                 void onReset(account.id);
               }}
             >
+              <h3 ref={resetFeedback.headingRef} tabIndex={-1}>إعادة تعيين كلمة مرور {account.displayName}</h3>
               <div className="field">
                 <label htmlFor={`reset-${account.id}`}>كلمة المرور الجديدة</label>
                 <input
@@ -263,14 +280,15 @@ function StaffCard({
                   value={resetPassword}
                   onChange={(event) => onResetPasswordChange(event.target.value)}
                   required
+                  disabled={Boolean(pendingAction)}
                 />
               </div>
               <div className="form-actions">
-                <button type="button" className="secondary" onClick={() => onToggleReset(account.id)}>
+                <button type="button" className="secondary" disabled={Boolean(pendingAction)} onClick={() => { onToggleReset(account.id); resetFeedback.clearHighlight(); }}>
                   إلغاء
                 </button>
                 <button type="submit" disabled={pendingAction === `reset-${account.id}`}>
-                  حفظ كلمة المرور
+                  {pendingAction === `reset-${account.id}` ? "جارٍ حفظ كلمة المرور…" : "حفظ كلمة المرور"}
                 </button>
               </div>
             </form>
@@ -283,17 +301,19 @@ function StaffCard({
 
 function GrantEditor({
   idPrefix,
+  disabled = false,
   branches,
   value,
   onChange,
 }: {
   idPrefix: string;
+  disabled?: boolean;
   branches: BranchDto[];
   value: Record<string, GrantDraft>;
   onChange: (next: Record<string, GrantDraft>) => void;
 }) {
   return (
-    <fieldset className="grant-editor">
+    <fieldset className="grant-editor" disabled={disabled}>
       <legend>الفروع والصلاحيات</legend>
       {branches.map((branch) => {
         const draft = value[branch.id] ?? { assigned: false, cashier: false, orderRepresentative: false };

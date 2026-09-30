@@ -4,6 +4,7 @@ import type {
   ReturnExchangeQuoteDto,
   ReturnListPageDto,
   ReturnSourceDto,
+  ReturnSourcePageDto,
 } from "@bravos/contracts";
 import { request, type SaleCorrectionWrite } from "./api.ts";
 
@@ -28,11 +29,26 @@ export function listReturnSources(search: ReturnSourceSearch = {}) {
   return request<ReturnSourceDto[]>(`/api/internal/returns/sources${suffix}`);
 }
 
+export function listReturnSourcesPage(search: ReturnSourceSearch = {}, page: { limit?: number; cursor?: string } = {}) {
+  const query = new URLSearchParams();
+  if (search.reference) query.set("reference", search.reference);
+  if (search.phone) query.set("phone", search.phone);
+  if (search.date) query.set("date", search.date);
+  if (search.branchId) query.set("branchId", search.branchId);
+  if (search.amountPiasters !== undefined) query.set("amountPiasters", String(search.amountPiasters));
+  if (search.channel) query.set("channel", search.channel);
+  if (page.limit !== undefined) query.set("limit", String(page.limit));
+  if (page.cursor) query.set("cursor", page.cursor);
+  const suffix = query.size ? `?${query.toString()}` : "";
+  return request<ReturnSourcePageDto>(`/api/internal/returns/sources-page${suffix}`);
+}
+
 export function createReturnDraft(input: {
   returnId: string;
   operationId: string;
   source: { kind: "physical_sale" | "delivered_online_order"; id: string };
   handlingBranchId: string;
+  reason?: string | null;
   authorizedRefund: { merchandisePiasters: number; checkoutChargePiasters: number };
   lines: Array<{ sourceLineId: string; quantity: number; sellableQuantity: number }>;
 }) {
@@ -42,6 +58,7 @@ export function createReturnDraft(input: {
 export function updateReturnDraft(returnId: string, input: {
   expectedRevision: number;
   handlingBranchId: string;
+  reason?: string | null;
   authorizedRefund: { merchandisePiasters: number; checkoutChargePiasters: number };
   lines: Array<{ sourceLineId: string; quantity: number; sellableQuantity: number }>;
 }) {

@@ -1,4 +1,4 @@
-import { type FormEvent, useEffect, useState } from "react";
+import { type FormEvent, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import type {
   ReturnCorrectionDetailDto,
@@ -17,6 +17,8 @@ import {
   type ReturnCorrectionWrite,
 } from "../returns-api.ts";
 import { egpInputToPiasters, formatEgpFromPiasters, piastersToEgpInput } from "../money.ts";
+import { accountGeneration } from "../account-session.ts";
+import { useRevealFeedback } from "../ui/useRevealFeedback.ts";
 import {
   assignCorrectionAttempt,
   clearCorrectionAttempt,
@@ -46,6 +48,11 @@ export default function CorrectionsPage({ workspace }: { workspace: WorkspaceDto
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [loadingDetails, setLoadingDetails] = useState(false);
+  const [failedLoad, setFailedLoad] = useState<{ target: "sale" | "return"; id: string } | null>(null);
+  const detailFeedback = useRevealFeedback<HTMLElement>();
+  const loadVersion = useRef(0);
+  useEffect(() => () => { loadVersion.current += 1; }, [workspace.staff.id]);
   const [uncertainAttempt, setUncertainAttempt] = useState<CorrectionAttempt | null>(() => readCorrectionAttempt(workspace.staff.id));
 
   useEffect(() => {
@@ -66,20 +73,29 @@ export default function CorrectionsPage({ workspace }: { workspace: WorkspaceDto
   async function load(event: FormEvent) {
     event.preventDefault();
     if (!recordId.trim()) return setError("أدخل مرجع البيع أو الإرجاع.");
-    await loadRecord(target, recordId.trim());
+    await loadRecord(target, recordId.trim(), true);
   }
 
-  async function loadRecord(nextTarget: "sale" | "return", id: string) {
+  async function loadRecord(nextTarget: "sale" | "return", id: string, reveal = false) {
+    const version = ++loadVersion.current;
+    const epoch = accountGeneration();
+    const stillCurrent = () => version === loadVersion.current && epoch === accountGeneration();
     setBusy(true);
+    setLoadingDetails(true);
+    setFailedLoad(null);
     setError("");
     setNotice("");
     try {
       const value = nextTarget === "sale" ? await getSaleCorrection(id) : await getReturnCorrection(id);
+      if (!stillCurrent()) return;
       select(value);
+      if (reveal) detailFeedback.reveal();
     } catch (caught) {
+      if (!stillCurrent()) return;
+      setFailedLoad({ target: nextTarget, id });
       showError(caught);
     } finally {
-      setBusy(false);
+      if (version === loadVersion.current) { setBusy(false); setLoadingDetails(false); }
     }
   }
 
@@ -231,21 +247,23 @@ export default function CorrectionsPage({ workspace }: { workspace: WorkspaceDto
       </header>
       {error ? <div className="error" role="alert">{error}</div> : null}
       {notice ? <div className="notice" role="status">{notice}</div> : null}
+      {loadingDetails ? <p role="status">جارٍ تحميل تفاصيل التسجيل…</p> : null}
+      {failedLoad ? <button type="button" disabled={busy} onClick={() => void loadRecord(failedLoad.target, failedLoad.id, true)}>إعادة تحميل تفاصيل التسجيل</button> : null}
       {uncertainAttempt ? <div className="notice" data-testid="pending-correction-attempt"><p>توجد عملية تصحيح لم يصل تأكيد نتيجتها. ستُعاد بنفس البيانات ومعرّف العملية.</p><button type="button" disabled={busy} onClick={() => void retryCorrectionAttempt()}>إعادة محاولة التصحيح السابق نفسه</button></div> : null}
 
       <section className="card">
         <h2>فتح التسجيل الأصلي</h2>
         <form aria-label="فتح تسجيل للتصحيح" className="grid two" onSubmit={(event) => void load(event)}>
-          <div className="field"><label htmlFor="correction-target">نوع التسجيل</label><select id="correction-target" value={target} onChange={(event) => { setTarget(event.target.value as "sale" | "return"); setDetail(null); }}><option value="sale">بيع فرع مكتمل</option><option value="return">إرجاع مرحّل</option></select></div>
-          <div className="field"><label htmlFor="correction-record">مرجع التسجيل</label><input id="correction-record" value={recordId} onChange={(event) => setRecordId(event.target.value)} /></div>
-          <button type="submit" disabled={busy}>فتح التفاصيل</button>
+          <div className="field"><label htmlFor="correction-target">نوع التسجيل</label><select id="correction-target" disabled={busy} value={target} onChange={(event) => { setTarget(event.target.value as "sale" | "return"); setDetail(null); setFailedLoad(null); }}><option value="sale">بيع فرع مكتمل</option><option value="return">إرجاع مرحّل</option></select></div>
+          <div className="field"><label htmlFor="correction-record">مرجع التسجيل</label><input id="correction-record" disabled={busy} value={recordId} onChange={(event) => { setRecordId(event.target.value); setFailedLoad(null); }} /></div>
+          <button type="submit" disabled={busy}>{loadingDetails ? "جارٍ فتح التفاصيل…" : "فتح التفاصيل"}</button>
         </form>
       </section>
 
       {detail ? (
         <>
-          <section className="card" data-testid="correction-details">
-            <h2>الأصل والقيمة المستخدمة حالياً</h2>
+          <section ref={detailFeedback.regionRef} className={`card reveal-feedback${detailFeedback.highlighted ? " is-highlighted" : ""}`} data-testid="correction-details">
+            <h2 ref={detailFeedback.headingRef} tabIndex={-1}>الأصل والقيمة المستخدمة حالياً</h2>
             <p>المرجع: {detail.reference}</p>
             {detail.targetType === "return" ? <p>مصدر الشراء: {detail.source.kind === "delivered_online_order" ? "طلب أونلاين مُسلّم" : "بيع فرع مكتمل"}</p> : null}
             <p>القيمة الأصلية المسجلة: {formatEgpFromPiasters(originalAmount ?? 0)}</p>

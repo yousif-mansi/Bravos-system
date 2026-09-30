@@ -56,7 +56,7 @@ test("apply, down the latest migration, and reapply works with multiple migratio
       "031_sale_payments.sql",
       "032_catalog_online_variants.sql",
       "033_human_references.sql",
-      "034_order_recognition_branch.sql",
+      "034_order_recognition_branch.sql", "035_return_reason.sql",
     ]);
     expect(await listAppliedMigrations(pool)).toEqual(first);
     expect(await tableNames(pool)).toEqual(
@@ -419,7 +419,7 @@ test("008 down expands counted unit ranges into one legacy row per ordinal", asy
       "031_sale_payments.sql",
       "032_catalog_online_variants.sql",
       "033_human_references.sql",
-      "034_order_recognition_branch.sql",
+      "034_order_recognition_branch.sql", "035_return_reason.sql",
     ]);
     const restored = await pool.query<{ unit_index: number; quantity: number; paid_piasters: number }>(
       `SELECT unit_index, quantity, paid_piasters FROM sales_sale_unit ORDER BY unit_index`,
@@ -463,7 +463,7 @@ test("029 refuses to discard restore history or retained sales during rollback",
     expect(await constraintDeferrable(pool, "expense_operation_expense_fk")).toBe(false);
     expect(await applyMigrations(pool)).toEqual([
       "029_restore.sql", "030_branch_inventory.sql", "031_sale_payments.sql",
-      "032_catalog_online_variants.sql", "033_human_references.sql", "034_order_recognition_branch.sql",
+      "032_catalog_online_variants.sql", "033_human_references.sql", "034_order_recognition_branch.sql", "035_return_reason.sql",
     ]);
     expect(await unguardedBusinessTables(pool)).toEqual([]);
     expect(await constraintDeferrable(pool, "expense_operation_expense_fk")).toBe(true);
@@ -497,7 +497,7 @@ test("028 refuses to discard retained analytics events during rollback", async (
     expect(await applyMigrations(pool)).toEqual([
       "028_aggregate_analytics.sql", "029_restore.sql", "030_branch_inventory.sql",
       "031_sale_payments.sql", "032_catalog_online_variants.sql", "033_human_references.sql",
-      "034_order_recognition_branch.sql",
+      "034_order_recognition_branch.sql", "035_return_reason.sql",
     ]);
   } finally {
     await pool.end();
@@ -564,7 +564,7 @@ test("020 backfills each legacy till from its latest snapshot without inventing 
       "031_sale_payments.sql",
       "032_catalog_online_variants.sql",
       "033_human_references.sql",
-      "034_order_recognition_branch.sql",
+      "034_order_recognition_branch.sql", "035_return_reason.sql",
     ]);
     const knownTills = await pool.query<{
       device_id: string;

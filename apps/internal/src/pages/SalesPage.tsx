@@ -6,6 +6,7 @@ import { ApiError, getSale, listOnlineOrders, listSales } from "../api.ts";
 import { pos, saleFromOffline } from "../pos.ts";
 import { formatEgpFromPiasters } from "../money.ts";
 import { EmptyState } from "../ui/EmptyState.tsx";
+import { useRevealFeedback } from "../ui/useRevealFeedback.ts";
 import { SaleSummary } from "./SaleSummary.tsx";
 
 export default function SalesPage({
@@ -22,15 +23,29 @@ export default function SalesPage({
   const [confirmedOrders, setConfirmedOrders] = useState<OnlineOrderDto[]>([]);
   const [selected, setSelected] = useState<SaleDto | ManagerSaleDto | null>(null);
   const generationRef = useRef(accountGeneration());
+  const detailRequest = useRef(0);
+  const detailFeedback = useRevealFeedback<HTMLDivElement>();
+  const [loading, setLoading] = useState(true);
+  const [loadingSaleId, setLoadingSaleId] = useState<string | null>(null);
+  const [failedSaleId, setFailedSaleId] = useState<string | null>(null);
+  const [notice, setNotice] = useState("");
+  const [reloadRevision, setReloadRevision] = useState(0);
   const canSeeCosts = workspace.staff.role === "manager" && workspace.capabilities.manageInventory;
 
   useEffect(() => {
     return subscribeAccount((payload) => {
       generationRef.current = payload.generation;
+      detailRequest.current += 1;
+      setLoading(false);
+      setLoadingSaleId(null);
+      setFailedSaleId(null);
+      setNotice("");
       if (payload.staffId !== workspace.staff.id) {
         setSales([]);
         setConfirmedOrders([]);
         setSelected(null);
+      } else {
+        setReloadRevision((current) => current + 1);
       }
     });
   }, [workspace.staff.id]);
@@ -46,6 +61,11 @@ export default function SalesPage({
     setConfirmedOrders([]);
     setSelected(null);
     setError("");
+    setLoading(true);
+    detailRequest.current += 1;
+    setLoadingSaleId(null);
+    setFailedSaleId(null);
+    setNotice("");
     void (async () => {
       const [localResult, remoteResult, requestedResult, ordersResult] = await Promise.allSettled([
         pos.listCompleted(staffId),
@@ -69,6 +89,7 @@ export default function SalesPage({
       }
       const rows = [...byId.values()];
       setSales(rows);
+      setLoading(false);
       if (ordersResult.status === "fulfilled" && role === "manager") {
         setConfirmedOrders(ordersResult.value.filter((order) => order.confirmedAt !== null));
       }
@@ -80,38 +101,56 @@ export default function SalesPage({
       if (requestedSaleId && requestedResult.status === "rejected") {
         const caught = requestedResult.reason;
         setError(caught instanceof ApiError ? caught.messageAr : "تعذر فتح البيع المطلوب.");
-      } else if (remoteResult.status === "rejected" && local.length === 0 && !requestedSaleId) {
+      } else if (remoteResult.status === "rejected" && !requestedSaleId) {
         const caught = remoteResult.reason;
         setError(caught instanceof ApiError ? caught.messageAr : "تعذر تحميل المبيعات.");
+        if (local.length) setNotice("نعرض المبيعات المحفوظة على هذا الجهاز حتى يعود الاتصال.");
+      } else if (ordersResult.status === "rejected" && role === "manager") {
+        setError("تعذر تحميل المبيعات الإلكترونية. أعد محاولة التحميل.");
       }
     })();
     return () => {
       cancelled = true;
+      detailRequest.current += 1;
     };
-  }, [requestedSaleId, workspace.staff.id, workspace.staff.role]);
+  }, [requestedSaleId, workspace.staff.id, workspace.staff.role, reloadRevision]);
 
   async function openSale(id: string) {
     const generation = generationRef.current;
+    const request = ++detailRequest.current;
+    const stillCurrent = () => generationRef.current === generation && detailRequest.current === request;
+    setError("");
+    setNotice("");
+    setFailedSaleId(null);
+    setLoadingSaleId(id);
     const local = sales.find((sale) => sale.id === id);
     if (local && !local.recordedAt) {
       setSelected(local);
+      setLoadingSaleId(null);
+      detailFeedback.reveal();
       return;
     }
     try {
       const detail = await getSale(id);
-      if (generationRef.current !== generation) {
+      if (!stillCurrent()) {
         return;
       }
       setSelected(detail);
+      detailFeedback.reveal();
     } catch (caught) {
-      if (generationRef.current !== generation) {
+      if (!stillCurrent()) {
         return;
       }
+      setFailedSaleId(id);
+      setError(caught instanceof ApiError ? caught.messageAr : "تعذر تحميل البيع.");
       if (local) {
         setSelected(local);
+        setNotice("نعرض التفاصيل المحفوظة على هذا الجهاز. أعد المحاولة لتحديثها.");
+        detailFeedback.reveal();
         return;
       }
-      setError(caught instanceof ApiError ? caught.messageAr : "تعذر تحميل البيع.");
+    } finally {
+      if (stillCurrent()) setLoadingSaleId(null);
     }
   }
 
@@ -126,16 +165,20 @@ export default function SalesPage({
         ) : null}
       </header>
       {error ? <div className="error" role="alert">{error}</div> : null}
+      {notice ? <p className="notice" role="status">{notice}</p> : null}
+      {error ? <button type="button" className="secondary" disabled={loading || Boolean(loadingSaleId)} onClick={() => failedSaleId ? void openSale(failedSaleId) : setReloadRevision((current) => current + 1)}>{failedSaleId ? "إعادة محاولة فتح البيع" : "إعادة تحميل المبيعات"}</button> : null}
+      {loading ? <p role="status">جارٍ تحميل المبيعات…</p> : null}
+      {loadingSaleId ? <p role="status">جارٍ فتح تفاصيل البيع…</p> : null}
       <div className="grid two">
         <section className="card">
           <h2>مبيعات الفروع</h2>
-          {sales.length === 0 ? (
+          {!loading && sales.length === 0 ? (
             <EmptyState title="مفيش مبيعات تظهر" message="أول ما تبيع، العملية هتظهر هنا." />
           ) : (
             <ul data-testid="sale-list">
               {sales.map((sale) => (
                 <li key={sale.id}>
-                  <button type="button" className="secondary" onClick={() => void openSale(sale.id)}>
+                  <button type="button" className="secondary" aria-pressed={selected?.id === sale.id} aria-busy={loadingSaleId === sale.id} disabled={loadingSaleId === sale.id} onClick={() => void openSale(sale.id)}>
                     {sale.reference ?? "بيع غير مزامن"} — {sale.soldByDisplayName} — {sale.branch.nameAr} — {formatEgpFromPiasters(sale.finalTotalPiasters)}
                     {sale.recordedAt ? "" : " — غير مزامن"}
                   </button>
@@ -163,7 +206,8 @@ export default function SalesPage({
           </section>
         ) : null}
         {selected ? (
-          <div>
+          <div ref={detailFeedback.regionRef} className={`reveal-feedback${detailFeedback.highlighted ? " is-highlighted" : ""}`} data-testid="sale-detail-region" aria-busy={Boolean(loadingSaleId)}>
+            <h2 ref={detailFeedback.headingRef} tabIndex={-1}>بيع {selected.reference ?? "غير مزامن"}</h2>
             <SaleSummary sale={selected} />
             {managerSale ? <Link className="button secondary" to={`/corrections?target=sale&id=${selected.id}`}>تصحيح تسجيل هذا البيع</Link> : null}
             {managerSale ? (

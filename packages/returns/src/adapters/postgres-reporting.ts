@@ -29,7 +29,7 @@ export function createPostgresReturnReportingFactsReader(queryable: Queryable): 
     },
     async listPostedFactsPage(input) {
       const headers = await queryable.query<{
-        id: string; posted_at: Date; source_sale_id: string | null; source_online_order_id: string | null;
+        id: string; reference: string; posted_at: Date; source_sale_id: string | null; source_online_order_id: string | null;
         handling_branch_id: string; authorized_refund_piasters: number | string;
         authorized_merchandise_refund_piasters: number | string;
         authorized_checkout_charge_refund_piasters: number | string; refund_paid_piasters: number | string;
@@ -37,7 +37,7 @@ export function createPostgresReturnReportingFactsReader(queryable: Queryable): 
         cash_collected_piasters: number | string | null; cash_refund_paid_piasters: number | string | null;
         exchange_completed_at: Date | null;
       }>(
-        `SELECT r.id,r.posted_at,r.source_sale_id,r.source_online_order_id,r.handling_branch_id,
+        `SELECT r.id,r.reference,r.posted_at,r.source_sale_id,r.source_online_order_id,r.handling_branch_id,
                 r.authorized_refund_piasters,r.authorized_merchandise_refund_piasters,
                 r.authorized_checkout_charge_refund_piasters,r.refund_paid_piasters,
                 exchange.replacement_sale_id,exchange.credit_applied_piasters,
@@ -98,6 +98,7 @@ export function createPostgresReturnReportingFactsReader(queryable: Queryable): 
         }
         return {
           returnId: row.id,
+          reference: row.reference,
           postedAt: row.posted_at,
           source,
           channel: source.kind === "physical_sale" ? "physical" : "online",

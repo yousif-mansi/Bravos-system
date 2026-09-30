@@ -101,22 +101,61 @@ input[type="checkbox"], input[type="radio"] {
   cursor: pointer;
 }
 input[type="checkbox"] {
+  appearance: none;
   accent-color: var(--checkbox-checked);
+  border: 2px solid var(--text-secondary);
+  border-radius: 4px;
+  background-color: var(--surface);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: 16px 16px;
+  flex-shrink: 0;
+}
+input[type="checkbox"]:checked,
+input[type="checkbox"]:indeterminate {
+  background-color: var(--checkbox-checked);
+  border-color: var(--checkbox-checked);
+}
+input[type="checkbox"]:checked {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3 8l3 3 7-7' fill='none' stroke='white' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+input[type="checkbox"]:indeterminate {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3 8h10' fill='none' stroke='white' stroke-width='2.5' stroke-linecap='round'/%3E%3C/svg%3E");
 }
 input[type="radio"] {
-  accent-color: var(--brand-accent);
+  accent-color: var(--checkbox-checked);
 }
-label:has(> input[type="checkbox"]:checked) {
+label:has(> input[type="checkbox"]), label:has(> input[type="radio"]) {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+label:has(> input[type="checkbox"]:checked), label:has(> input[type="checkbox"]:indeterminate), label:has(> input[type="radio"]:checked) {
   color: var(--checkbox-checked);
   font-weight: 700;
 }
 label:has(> input[type="checkbox"]:disabled) {
-  opacity: 0.6;
+  color: var(--muted);
   cursor: not-allowed;
 }
 input[type="checkbox"]:disabled, input[type="radio"]:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 3px;
+}
+@media (forced-colors: active) {
+  input[type="checkbox"], input[type="checkbox"]:checked, input[type="checkbox"]:indeterminate {
+    appearance: auto;
+    background-image: none;
+    forced-color-adjust: auto;
+  }
+  label:has(> input[type="checkbox"]:checked), label:has(> input[type="radio"]:checked) {
+    color: CanvasText;
+  }
 }
 
 .reveal-feedback {

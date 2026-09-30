@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-test("manager corrects a receipt and sees original and effective Arabic details", async ({ page }) => {
+test("manager sees concise receipt facts and expands correction audit after a safe retry", async ({ page }) => {
   await page.goto("http://127.0.0.1:5174/login");
   await page.getByLabel("اسم الدخول").fill("owner");
   await page.getByLabel("كلمة المرور").fill("e2e-owner-pass");
@@ -33,14 +33,17 @@ test("manager corrects a receipt and sees original and effective Arabic details"
   const receiptCard = page.getByTestId("receipt-list").getByText("RC-E2E").locator("..");
   await receiptCard.getByRole("button", { name: "عرض التفاصيل" }).click();
   const details = page.getByTestId("receipt-details");
-  await expect(details).toContainText("الأصل: 2 × 100 ج.م.");
-  await expect(details).toContainText("الفعلي: 2 × 100 ج.م.");
+  await expect(details.getByText("الكمية المستلمة: 2 — تكلفة شراء الوحدة: 100 ج.م.", { exact: true })).toHaveCount(1);
+  await expect(details).toContainText("المتبقي بالمخزون بكل الفروع: 2");
+  await expect(details.locator("details")).toHaveCount(0);
   await details.getByRole("button", { name: "تصحيح الإذن" }).click();
 
   const correction = page.getByRole("form", { name: "تصحيح إذن الاستلام" });
+  await expect(correction.getByRole("heading", { name: "تصحيح إذن الاستلام" })).toBeFocused();
+  await expect(correction).toHaveClass(/is-highlighted/);
   await correction.getByLabel("سبب التصحيح").fill("تصحيح فاتورة المورد");
-  await correction.getByLabel("الكمية الفعالة").fill("2");
-  await correction.getByLabel("تكلفة الشراء الفعالة بالجنيه").fill("140");
+  await correction.getByLabel("الكمية", { exact: true }).fill("2");
+  await correction.getByLabel("تكلفة الشراء بالجنيه").fill("140");
   const correctionOperationIds: string[] = [];
   let dropFirstCorrectionResponse = true;
   await page.route("**/api/internal/receiving/receipts/*/corrections", async (route) => {
@@ -66,14 +69,23 @@ test("manager corrects a receipt and sees original and effective Arabic details"
   await expect(page.getByRole("status")).toContainText("تم حفظ تصحيح إذن الاستلام.");
   expect(correctionOperationIds).toHaveLength(2);
   expect(new Set(correctionOperationIds).size).toBe(1);
-  await expect(details).toContainText("الأصل: 2 × 100 ج.م.");
-  await expect(details).toContainText("الفعلي: 2 × 140 ج.م.");
+  await expect(details.getByText("الكمية المستلمة: 2 — تكلفة شراء الوحدة: 140 ج.م.", { exact: true })).toHaveCount(1);
+  const audit = details.locator("details");
+  await expect(audit).not.toHaveAttribute("open", "");
+  await expect(audit.getByText("قبل التصحيح: 2 × 100 ج.م.")).not.toBeVisible();
+  await audit.locator("summary").click();
+  await expect(audit.getByText("عند تسجيل الإذن: 2 × 100 ج.م.")).toBeVisible();
+  await expect(audit.getByText("قبل التصحيح: 2 × 100 ج.م.")).toBeVisible();
+  await expect(audit.getByText("بعد التصحيح: 2 × 140 ج.م.")).toBeVisible();
   await expect(details).toContainText("تصحيح فاتورة المورد");
   await expect(details.getByText("التصحيح 1: تصحيح فاتورة المورد")).toHaveCount(1);
-  await expect(details).toContainText("مالك برافوس");
+  await expect(audit.getByText(/نفّذه مالك برافوس — .+/)).toBeVisible();
   const batch = page.getByTestId("batch-list").getByText("RC-E2E").locator("..");
-  await expect(batch).toContainText("تكلفة الشراء الأصلية: 100 ج.م.");
-  await expect(batch).toContainText("التكلفة الفعالة: 140 ج.م.");
+  await expect(batch.getByText("تكلفة شراء الوحدة: 140 ج.م.", { exact: true })).toHaveCount(1);
+  await expect(batch).toContainText("المتبقي بالمخزون: 2");
+  await expect(batch).toContainText("أبشواي: 2");
+  await expect(batch).not.toContainText("الأصلية");
+  await expect(batch).not.toContainText("الفعالة");
 });
 
 test("manager receives separate cost batches and cashier sees their branch quantity without costs", async ({
@@ -125,10 +137,14 @@ test("manager receives separate cost batches and cashier sees their branch quant
   await costs.nth(1).fill("140");
   await form.getByRole("button", { name: "حفظ الاستلام" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ إذن الاستلام.");
-  await expect(page.getByTestId("receipt-details")).toContainText("10 × 100 ج.م.");
-  await expect(page.getByTestId("receipt-details")).toContainText("10 × 140 ج.م.");
-  await expect(page.getByTestId("batch-list")).toContainText("تكلفة الشراء الأصلية: 100 ج.م.");
-  await expect(page.getByTestId("batch-list")).toContainText("تكلفة الشراء الأصلية: 140 ج.م.");
+  await expect(page.getByTestId("receipt-details")).toContainText("الكمية المستلمة: 10 — تكلفة شراء الوحدة: 100 ج.م.");
+  await expect(page.getByTestId("receipt-details")).toContainText("الكمية المستلمة: 10 — تكلفة شراء الوحدة: 140 ج.م.");
+  const costBatches = page.getByTestId("batch-list").locator("article").filter({ hasText: "PT-E2E" });
+  await expect(costBatches).toHaveCount(2);
+  await expect(costBatches.getByText("تكلفة شراء الوحدة: 100 ج.م.", { exact: true })).toHaveCount(1);
+  await expect(costBatches.getByText("تكلفة شراء الوحدة: 140 ج.م.", { exact: true })).toHaveCount(1);
+  await expect(costBatches.getByText("المتبقي بالمخزون: 10", { exact: true })).toHaveCount(2);
+  await expect(costBatches.getByText(/الأصلية|الفعالة/)).toHaveCount(0);
   const lowStockRows = page.getByTestId("low-stock-list").locator("article").filter({ hasText: "PT-E2E" });
   await expect(lowStockRows).toHaveCount(1);
   await expect(lowStockRows).toContainText("الفرع: الفيوم — المتاح: 0");
@@ -303,13 +319,13 @@ test("lost response then edit, reload and check result keep a single receiving e
     await checkResult.click();
   }
   await expect(page.getByRole("status")).toContainText("تم العثور على إذن الاستلام المحفوظ.");
-  await expect(page.getByTestId("receipt-details")).toContainText("5 × 90 ج.م.");
+  await expect(page.getByTestId("receipt-details")).toContainText("الكمية المستلمة: 5 — تكلفة شراء الوحدة: 90 ج.م.");
 
   await page.getByRole("link", { name: "العودة لمساحة العمل" }).click();
   await expect(page.getByRole("heading", { name: "مساحة العمل" })).toBeVisible();
   await page.getByRole("link", { name: "استلام المخزون" }).click();
   await expect(page.getByRole("heading", { name: "استلام المخزون", exact: true })).toBeVisible();
-  await expect(page.getByTestId("receipt-details")).toContainText("5 × 90 ج.م.");
+  await expect(page.getByTestId("receipt-details")).toContainText("الكمية المستلمة: 5 — تكلفة شراء الوحدة: 90 ج.م.");
 
   expect(new Set(operationIds).size).toBe(1);
   const receipts = await staffApi(page, "GET", "/api/internal/receiving/receipts");
@@ -608,7 +624,7 @@ test("pending receiving identity survives closing the page and reopening a fresh
     await checkResult.click();
   }
   await expect(next.getByRole("status")).toContainText("تم العثور على إذن الاستلام المحفوظ.");
-  await expect(next.getByTestId("receipt-details")).toContainText("7 × 30 ج.م.");
+  await expect(next.getByTestId("receipt-details")).toContainText("الكمية المستلمة: 7 — تكلفة شراء الوحدة: 30 ج.م.");
 
   const receipts = await staffApi(next, "GET", "/api/internal/receiving/receipts");
   const matching = receipts.body.filter((receipt: { lines: Array<{ variantId: string }> }) =>
@@ -735,7 +751,7 @@ test("an already-open second tab cannot overwrite or clear another tab's uncerta
     await checkResult.click();
   }
   await expect(reopened.getByRole("status")).toContainText("تم العثور على إذن الاستلام المحفوظ.");
-  await expect(reopened.getByTestId("receipt-details")).toContainText("5 × 70 ج.م.");
+  await expect(reopened.getByTestId("receipt-details")).toContainText("الكمية المستلمة: 5 — تكلفة شراء الوحدة: 70 ج.م.");
 
   const batches = await staffApi(reopened, "GET", "/api/internal/inventory/batches");
   const receivedA = batches.body.filter((batch: { variantId: string }) => batch.variantId === variantA);
@@ -845,7 +861,7 @@ test("tab A keeps its frozen operation after tab B recovers and clears the share
 
   await formA.getByRole("button", { name: /حفظ الاستلام|إعادة المحاولة/ }).click();
   await expect(page.getByRole("status")).toContainText(/تم حفظ إذن الاستلام|تم العثور على إذن الاستلام المحفوظ/);
-  await expect(page.getByTestId("receipt-details")).toContainText("6 × 45 ج.م.");
+  await expect(page.getByTestId("receipt-details")).toContainText("الكمية المستلمة: 6 — تكلفة شراء الوحدة: 45 ج.م.");
   expect(new Set(operationIds).size).toBe(1);
   expect(operationIds.every((id) => id === originalId)).toBe(true);
 

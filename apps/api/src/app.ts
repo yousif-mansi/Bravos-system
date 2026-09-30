@@ -64,6 +64,7 @@ import {
 } from "@bravos/sales";
 import {
   createPostgresPriceSnapshotStore,
+  createPostgresPhysicalSaleSourceCandidateReader,
   createPostgresPricingQuoteReader,
   createPostgresSaleStore,
   createPostgresStockReconciliationSales,
@@ -419,7 +420,7 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
         },
       },
       variants: { getVariants: (ids) => catalogStore.getVariants(ids) },
-      returns: createPostgresReturnsStore(pool),
+      returns: createPostgresReturnsStore(pool, createPostgresPhysicalSaleSourceCandidateReader(pool)),
       onlineSources: onlineOrderStore,
       inventoryReads: inventoryStore,
       corrections: createPostgresReturnCorrectionStateReader(pool),
@@ -441,6 +442,7 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
           inventory: inventoryTransaction,
           restore: createPostgresRestoreRuntimeReader(client),
         }),
+        createPostgresPhysicalSaleSourceCandidateReader,
       ),
       clock: { now: config.businessClock ?? (() => new Date()) },
     });
@@ -1561,6 +1563,10 @@ async function registerRoutes(
   app.get("/api/internal/expenses/:expenseId", async (request, reply) => {
     const params = request.params as { expenseId: string };
     return handle(reply, async () => expenses.get(await verifiedAuth(identity, request), params.expenseId));
+  });
+
+  app.get("/api/internal/returns/sources-page", async (request, reply) => {
+    return handle(reply, async () => returns.listSourcesPage(await verifiedAuth(identity, request), request.query));
   });
 
   app.get("/api/internal/returns/sources", async (request, reply) => {

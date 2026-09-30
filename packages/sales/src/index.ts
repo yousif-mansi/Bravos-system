@@ -35,6 +35,8 @@ export type {
   SaleStore,
   SaleRecord,
   PhysicalSaleReportingReader,
+  PhysicalSaleSourceSearch,
+  PhysicalSaleSourceCandidateReader,
   SalesActorPort,
   SalesUnitOfWork,
   VerifiedAuth,

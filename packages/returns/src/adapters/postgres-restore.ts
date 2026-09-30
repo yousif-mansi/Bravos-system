@@ -19,6 +19,22 @@ type RestoreTableName = (typeof TABLE_NAMES)[number];
 export function createPostgresReturnsRestorePort(queryable: Queryable) {
   return {
     tableNames: TABLE_NAMES,
+    async upgradeReasonlessRestoreRows(rows: Array<Record<string, unknown>>) {
+      // Only the authenticated 034 profile may call this bridge. Validate the exact
+      // old shape before adding the one nullable field introduced by 035.
+      const columns = await queryable.query<{ column_name: string }>(
+        "SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='returns_return'",
+      );
+      const expected = columns.rows.map((row) => row.column_name).filter((name) => name !== "reason").sort();
+      if (!columns.rows.some((row) => row.column_name === "reason")) throw restoreDataError("Return reason schema is missing.");
+      return rows.map((row) => {
+        const keys = Object.keys(row).sort();
+        if (keys.length !== expected.length || keys.some((key, index) => key !== expected[index])) {
+          throw restoreDataError("Legacy return row does not match the 034 profile.");
+        }
+        return { ...row, reason: null };
+      });
+    },
     async clearRestoreTable(tableName: string): Promise<void> {
       await queryable.query(`DELETE FROM ${restoreTable(tableName)}`);
     },

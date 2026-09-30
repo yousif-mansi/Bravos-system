@@ -187,8 +187,19 @@ export function createPostgresRestoreStore(input: {
     async stageAndPause(stageInput) {
       const replay = await getPreviewByOperation(pool, stageInput.operationId);
       if (replay) return { value: await dto(assertReplay(replay, stageInput.payloadFingerprint)), created: false };
-      await assertSupportedSchema(pool, stageInput.archive.manifest.schemaVersion);
-      const archiveTables = flattenData(stageInput.archive.data);
+      const upgradeReasonless = await assertSupportedSchema(pool, stageInput.archive.manifest.schemaVersion);
+      // Uploaded bytes and section hashes were authenticated before this boundary.
+      // Retain their manifest/checksum as source provenance; stage the exact target
+      // rows and let the existing preview fingerprint protect their reconciliation.
+      const archive = upgradeReasonless ? {
+        manifest: stageInput.archive.manifest,
+        data: { ...stageInput.archive.data, returns: { ...stageInput.archive.data.returns,
+          returns_return: await factories.features(pool).returns.upgradeReasonlessRestoreRows(
+            stageInput.archive.data.returns.returns_return ?? [],
+          ).catch((error: unknown) => { throw asDataError(error, "سجل المرتجع لا يطابق إصدار النسخة القديم."); }),
+        } },
+      } : stageInput.archive;
+      const archiveTables = flattenData(archive.data);
       assertArchiveTables(archiveTables, factories.features(pool));
       assertCrossFeatureLinks(archiveTables);
 
@@ -224,7 +235,7 @@ export function createPostgresRestoreStore(input: {
       try {
         // Writers that saw the database before the pause committed finish before the checkpoint is taken.
         await control(async () => undefined);
-        await createStage(databaseUrl, stageName, stageInput.archive, factories);
+        await createStage(databaseUrl, stageName, archive, factories);
         await pool.query("UPDATE restore_preview SET status = 'paused' WHERE id = $1 AND status = 'staged'", [stageInput.id]);
         return { value: await dto(await mustGet(pool, stageInput.id)), created: true };
       } catch (error) {
@@ -614,7 +625,10 @@ async function refreshReadiness(client: PoolClient, previewId: string, features:
     await client.query("UPDATE restore_preview SET status = 'paused', preview_fingerprint = NULL WHERE id = $1", [previewId]);
     return;
   }
+  const targetSchema = (await client.query<{ id: string }>("SELECT id FROM schema_migrations ORDER BY id DESC LIMIT 1")).rows[0]?.id;
   const fingerprint = sha256(JSON.stringify({
+    sourceSchema: row.archive_schema_version,
+    targetSchema,
     archiveSha256: row.archive_sha256,
     preRestoreArchiveSha256: row.pre_restore_archive_sha256,
     expectedGeneration: Number(row.expected_generation),
@@ -797,12 +811,14 @@ async function failuresOf(work: Array<Promise<unknown>>): Promise<unknown[]> {
   return results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
 }
 
-// The staged archive must have this server's exact schema. Even authenticated older archives
-// can no longer be reinterpreted after inventory and reference semantics changed.
+// Keep exact schema compatibility except the named 034 -> 035 nullable-reason
+// bridge. Central stock, references, payment and generation semantics are unchanged
+// in that one profile; all other mismatches still fail.
 async function assertSupportedSchema(queryable: Queryable, schemaVersion: string) {
   const result = await queryable.query<{ id: string }>("SELECT id FROM schema_migrations ORDER BY id DESC LIMIT 1");
   const latest = result.rows[0]?.id;
-  if (schemaVersion === latest) return;
+  if (schemaVersion === latest) return false;
+  if (latest === "035_return_reason.sql" && schemaVersion === "034_order_recognition_branch.sql") return true;
   throw new RestoreValidationError("إصدار مخطط النسخة لا يطابق إصدار هذا الخادم. استخدم نسخة من الإصدار نفسه أو حدّث الخادم أولاً.");
 }
 

@@ -65,21 +65,47 @@ test("receiving, split sale and authorized sales view form one connected workflo
   await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
   await expect(page.getByTestId("accepted-prices")).toContainText("الإجمالي");
   await checkout.getByRole("radio", { name: "دفع مقسّم" }).check();
+  await expect(checkout.getByRole("radio", { name: "دفع مقسّم" })).toBeChecked();
+  await expect(checkout.getByRole("radio", { name: "نقداً بالكامل" })).not.toBeChecked();
+  await expect(checkout.getByRole("radio", { name: /إلكترونياً بالكامل/ })).not.toBeChecked();
+  await expect(checkout.getByRole("radio", { name: "دفع مقسّم" })).toHaveCSS("accent-color", /rgb\((22, 128, 82|38, 162, 105)\)/);
   await checkout.getByLabel("المبلغ النقدي بالجنيه").fill("400");
   await checkout.getByLabel("المبلغ الإلكتروني بالجنيه").fill("350");
   await expect(page.getByTestId("payment-remaining")).toContainText("100");
+  await expect(page.getByTestId("payment-remaining")).toHaveText("المتبقي: 100 ج.م.");
+  const completedPayments: Array<{ method: string; cashPiasters: number; onlinePiasters: number }> = [];
+  await page.route("**/api/internal/sales", async (route) => {
+    const url = new URL(route.request().url());
+    if (route.request().method() === "POST" && url.pathname === "/api/internal/sales") {
+      completedPayments.push(route.request().postDataJSON().payment);
+    }
+    await route.continue();
+  });
   await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("alert")).toContainText("أدخل مبلغ النقد والدفع الإلكتروني");
+  expect(completedPayments).toHaveLength(0);
+  await checkout.getByLabel("المبلغ الإلكتروني بالجنيه").fill("450.25");
+  await expect(page.getByTestId("payment-remaining")).toHaveText("المبلغ الزائد: 0.25 ج.م.");
+  await checkout.getByRole("button", { name: "إتمام البيع" }).click();
+  await expect(page.getByRole("alert")).toContainText("أدخل مبلغ النقد والدفع الإلكتروني");
+  expect(completedPayments).toHaveLength(0);
+  await expect(page.getByTestId("sale-details")).toHaveCount(0);
   await checkout.getByLabel("المبلغ الإلكتروني بالجنيه").fill("450");
   await expect(page.getByTestId("payment-remaining")).toContainText("0");
+  await expect(page.getByTestId("payment-remaining")).toHaveText("المتبقي: 0 ج.م.");
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
+  await expect.poll(() => completedPayments.length).toBe(1);
+  expect(completedPayments).toEqual([{ method: "split", cashPiasters: 40000, onlinePiasters: 45000 }]);
+  await page.unroute("**/api/internal/sales");
   await expect(page.getByTestId("sale-details")).toContainText("كاشير تجريبي");
   await expect(page.getByTestId("sale-details")).toContainText("أبشواي");
   await expect(page.getByTestId("sale-details")).toContainText("بدون اسم زبون");
   await expect(page.getByText(/تكلفة|ربح|شراء/)).toHaveCount(0);
   const splitSales = await staffApi(page, "GET", "/api/internal/sales");
+  expect(splitSales.body.filter((sale: { lines: Array<{ variant: { product: { code: string } } }> }) =>
+    sale.lines.some((line) => line.variant.product.code === "POS-E2E"))).toHaveLength(1);
   expect(splitSales.body.find((sale: { lines: Array<{ variant: { product: { code: string } } }> }) =>
     sale.lines.some((line) => line.variant.product.code === "POS-E2E"))?.payment).toEqual({
     method: "split", cashPiasters: 40000, onlinePiasters: 45000,

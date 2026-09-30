@@ -90,6 +90,8 @@ export default function OffersPage({
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [loaded, setLoaded] = useState(false);
+  const [loadFailed, setLoadFailed] = useState(false);
   const editFeedback = useRevealFeedback<HTMLFormElement>();
 
   const productByCategory = useMemo(() => {
@@ -108,6 +110,7 @@ export default function OffersPage({
 
   async function refresh() {
     setPending(true);
+    setLoadFailed(false);
     setError("");
     try {
       const [offerRows, productRows, categoryRows] = await Promise.all([
@@ -116,7 +119,9 @@ export default function OffersPage({
       setOffers(offerRows);
       setProducts(productRows);
       setCategories(categoryRows);
+      setLoaded(true);
     } catch (caught) {
+      setLoadFailed(true);
       setError(caught instanceof ApiError ? caught.messageAr : "تعذر تحميل العروض.");
     } finally {
       setPending(false);
@@ -282,6 +287,8 @@ export default function OffersPage({
       setPending(false);
     }
   }
+
+  if (!loaded) return <main className="shell"><header className="page-hero"><h1>العروض التلقائية</h1></header><section className="card">{loadFailed ? <><p className="error" role="alert">{error}</p><button type="button" disabled={pending} onClick={() => void refresh()}>إعادة تحميل العروض</button></> : <p role="status">جارٍ تحميل العروض…</p>}</section></main>;
 
   return (
     <main className="shell">

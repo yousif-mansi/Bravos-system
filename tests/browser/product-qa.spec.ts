@@ -67,7 +67,7 @@ test("native form constraints expose invalid fields and clear when corrected", a
   await expect(page.getByRole("heading", { name: "اختيار الفرع النشط" })).toBeVisible();
 });
 
-test("branch checkboxes retain native checked and disabled appearance in both themes", async ({ page }, testInfo) => {
+test("branch checkboxes show green and white checked, mixed, disabled and keyboard states in both themes", async ({ page }, testInfo) => {
   await manager(page);
   await page.getByRole("link", { name: "الموظفون", exact: true }).click();
   const form = page.getByRole("form", { name: "إنشاء حساب موظف" });
@@ -78,15 +78,36 @@ test("branch checkboxes retain native checked and disabled appearance in both th
     await assigned.uncheck();
     await expect(cashier).toBeDisabled();
     await expect(cashier).toHaveCSS("opacity", "0.5");
-    await expect(assigned).toHaveCSS("appearance", "auto");
+    await expect(assigned).toHaveCSS("appearance", "none");
     await expect(assigned).not.toBeChecked();
+    await expect(assigned).toHaveCSS("background-image", "none");
     await form.screenshot({ path: testInfo.outputPath(`checkbox-${theme}-unchecked.png`) });
     await assigned.check();
     await cashier.check();
     await expect(cashier).toBeChecked();
     await expect(cashier).toHaveCSS("opacity", "1");
+    await expect(assigned).toHaveCSS("background-color", theme === "dark" ? "rgb(38, 162, 105)" : "rgb(22, 128, 82)");
+    await expect(assigned).toHaveCSS("background-image", /stroke='white'/);
     await form.screenshot({ path: testInfo.outputPath(`checkbox-${theme}-checked.png`) });
+    await page.getByLabel("كلمة المرور", { exact: true }).focus();
+    await page.keyboard.press("Tab");
+    await expect(assigned).toBeFocused();
+    await expect(assigned).toHaveCSS("outline-style", "solid");
+    await expect(assigned).toHaveCSS("outline-width", "3px");
+    await form.screenshot({ path: testInfo.outputPath(`checkbox-${theme}-focused.png`) });
+    await assigned.evaluate((element: HTMLInputElement) => { element.indeterminate = true; });
+    await expect(assigned).toHaveJSProperty("indeterminate", true);
+    await expect(assigned).toHaveCSS("background-image", /M3(?: |%20)8h10/);
+    await expect(assigned).toHaveCSS("background-image", /stroke='white'/);
+    await form.screenshot({ path: testInfo.outputPath(`checkbox-${theme}-mixed.png`) });
+    await assigned.evaluate((element: HTMLInputElement) => { element.indeterminate = false; });
   }
+  await page.emulateMedia({ forcedColors: "active" });
+  await expect(assigned).toHaveCSS("appearance", "auto");
+  await expect(assigned).toHaveCSS("background-image", "none");
+  await expect(assigned).toBeChecked();
+  await expect(assigned).toBeFocused();
+  await form.screenshot({ path: testInfo.outputPath("checkbox-forced-colors.png") });
 });
 
 test("existing backup password validation identifies the rejected field", async ({ page }) => {

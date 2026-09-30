@@ -259,7 +259,7 @@ export function createPostgresOnlineOrderStore(queryable: Queryable): OnlineOrde
              requested_merchandise_total_piasters,requested_delivery_fee_piasters,requested_final_total_piasters,
              requested_applied_automatic_offer,requested_applied_coupon,submitted_at
            ) VALUES (
-             $1,$2,$3,$4,concat('BRV-',lpad(nextval('online_order_reference_number_seq')::text,6,'0')),
+             $1,$2,$3,$4,bravos_human_reference('BRV-',nextval('online_order_reference_number_seq')),
              'pending',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20::jsonb,$21::jsonb,$22
            ) RETURNING reference`,
           [
@@ -306,6 +306,7 @@ export function createPostgresOnlineOrderStore(queryable: Queryable): OnlineOrde
         id: string;
         reference: string;
         delivered_at: Date;
+        received_at_key: string;
         return_deadline_at: Date;
         confirmed_quote_json: OnlineOrderAgreementQuoteDto;
       }>(
@@ -335,27 +336,27 @@ export function createPostgresOnlineOrderStore(queryable: Queryable): OnlineOrde
           OR order_row.id::text ILIKE '%' || $${values.length} || '%')`);
       }
       if (search.phone) {
-        values.push(search.phone.replace(/\D/g, ""));
-        where.push(`(regexp_replace(order_row.primary_phone, '[^0-9]', '', 'g') LIKE '%' || $${values.length} || '%'
-          OR regexp_replace(COALESCE(order_row.alternate_phone, ''), '[^0-9]', '', 'g') LIKE '%' || $${values.length} || '%')`);
+        values.push(search.phone);
+        where.push(`(regexp_replace(translate(order_row.primary_phone, '٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹', '01234567890123456789'), '[^0-9]', '', 'g') LIKE '%' || $${values.length} || '%'
+          OR regexp_replace(translate(COALESCE(order_row.alternate_phone, ''), '٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹', '01234567890123456789'), '[^0-9]', '', 'g') LIKE '%' || $${values.length} || '%')`);
       }
       if (search.date) {
         values.push(search.date);
         where.push(`(event.occurred_at AT TIME ZONE 'Africa/Cairo')::date = $${values.length}::date`);
       }
-      if (search.item) {
-        values.push(search.item);
-        where.push(`EXISTS (
-          SELECT 1 FROM jsonb_array_elements(confirmation.confirmed_quote_json -> 'lines') line
-          WHERE line ->> 'productNameAr' ILIKE '%' || $${values.length} || '%'
-             OR line ->> 'sizeNameAr' ILIKE '%' || $${values.length} || '%'
-             OR line ->> 'colorNameAr' ILIKE '%' || $${values.length} || '%'
-        )`);
-      }
       if (search.amountPiasters !== undefined) {
         values.push(search.amountPiasters);
         where.push(`(confirmation.confirmed_quote_json ->> 'finalTotalPiasters')::bigint = $${values.length}::bigint`);
       }
+      if (search.branchId) {
+        values.push(search.branchId);
+        where.push(`confirmation.fulfillment_branch_id=$${values.length}::uuid`);
+      }
+      if (search.after) {
+        values.push(search.after.receivedAt, search.after.id, search.after.channel === "physical" ? 1 : 0);
+        where.push(`(event.occurred_at,order_row.id,0) < ($${values.length - 2}::timestamptz,$${values.length - 1}::uuid,$${values.length}::int)`);
+      }
+      values.push(search.limit ?? 100);
       const result = await queryable.query<{
         id: string;
         reference: string;
@@ -363,12 +364,14 @@ export function createPostgresOnlineOrderStore(queryable: Queryable): OnlineOrde
         primary_phone: string;
         fulfillment_branch_id: string | null;
         delivered_at: Date;
+        received_at_key: string;
         return_deadline_at: Date;
         confirmed_quote_json: OnlineOrderAgreementQuoteDto;
       }>(
         `SELECT order_row.id,order_row.reference,order_row.customer_name,order_row.primary_phone,
                 confirmation.fulfillment_branch_id,
                 event.occurred_at AS delivered_at,
+                to_char(event.occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS received_at_key,
                 ((event.occurred_at AT TIME ZONE 'Africa/Cairo') + interval '14 days')
                   AT TIME ZONE 'Africa/Cairo' AS return_deadline_at,
                 confirmation.confirmed_quote_json
@@ -376,7 +379,7 @@ export function createPostgresOnlineOrderStore(queryable: Queryable): OnlineOrde
          JOIN online_order_confirmation confirmation ON confirmation.order_id=order_row.id
          JOIN online_order_fulfillment_event event ON event.order_id=order_row.id
          WHERE ${where.join(" AND ")}
-         ORDER BY event.occurred_at DESC,order_row.id DESC LIMIT 100`,
+         ORDER BY event.occurred_at DESC,order_row.id DESC LIMIT $${values.length}`,
         values,
       );
       return result.rows.map((row) => ({
@@ -386,6 +389,7 @@ export function createPostgresOnlineOrderStore(queryable: Queryable): OnlineOrde
         customerName: row.customer_name,
         primaryPhone: row.primary_phone,
         customerReceivedAt: row.delivered_at,
+        receivedAtKey: row.received_at_key,
         returnDeadlineAt: row.return_deadline_at,
         confirmedQuote: row.confirmed_quote_json,
       }));
@@ -398,12 +402,14 @@ export function createPostgresOnlineOrderStore(queryable: Queryable): OnlineOrde
         primary_phone: string;
         fulfillment_branch_id: string | null;
         delivered_at: Date;
+        received_at_key: string;
         return_deadline_at: Date;
         confirmed_quote_json: OnlineOrderAgreementQuoteDto;
       }>(
         `SELECT order_row.id,order_row.reference,order_row.customer_name,order_row.primary_phone,
                 confirmation.fulfillment_branch_id,
                 event.occurred_at AS delivered_at,
+                to_char(event.occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS received_at_key,
                 ((event.occurred_at AT TIME ZONE 'Africa/Cairo') + interval '14 days')
                   AT TIME ZONE 'Africa/Cairo' AS return_deadline_at,
                 confirmation.confirmed_quote_json
@@ -423,6 +429,7 @@ export function createPostgresOnlineOrderStore(queryable: Queryable): OnlineOrde
         customerName: row.customer_name,
         primaryPhone: row.primary_phone,
         customerReceivedAt: row.delivered_at,
+        receivedAtKey: row.received_at_key,
         returnDeadlineAt: row.return_deadline_at,
         confirmedQuote: row.confirmed_quote_json,
       } : null;

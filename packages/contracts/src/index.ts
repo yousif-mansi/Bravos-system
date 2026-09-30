@@ -871,6 +871,11 @@ export type ReturnRefundBreakdownDto = {
   totalPiasters: number;
 };
 
+export type ReturnSourcePageDto = {
+  items: ReturnSourceDto[];
+  nextCursor: string | null;
+};
+
 export type ReturnSourceDto = {
   source: ReturnSourceKeyDto;
   /** Compatibility alias present only for physical-sale sources. */
@@ -968,6 +973,7 @@ export type ReturnExchangeQuoteDto = {
 };
 
 export type ReturnDto = {
+  reason: string | null;
   id: string;
   reference: string;
   operationId: string;
@@ -1005,6 +1011,8 @@ export type ReturnDto = {
 };
 
 export type ReturnListItemDto = {
+  reason: string | null;
+  products: Array<{ nameAr: string; sizeNameAr: string; colorNameAr: string; quantity: number }>;
   id: string;
   reference: string;
   customerName: string | null;
@@ -1482,6 +1490,7 @@ export type ReportCompletedSaleDto = {
 };
 
 export type ReportRefundDto = {
+  reference: string;
   returnId: string;
   postedAt: string;
   source: ReturnSourceKeyDto;
