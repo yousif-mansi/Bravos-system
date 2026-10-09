@@ -539,6 +539,10 @@
     box-shadow: 0 -12px 28px #00000030;
   }
 
+  .page:has(.copy a:focus-visible, .chapters :focus-visible, .gallery :focus-visible) .mobileBar {
+    position: static;
+  }
+
   .mobileSelection {
     display: grid;
     align-content: center;

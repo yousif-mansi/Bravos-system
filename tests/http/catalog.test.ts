@@ -376,6 +376,8 @@ test("cashier lookup selects an explicit variant, ignores website visibility, an
   expect(found.body).toMatchObject({
     code: "TS-001",
     nameAr: "تيشيرت أساسي",
+    categoryId: seed.categoryId,
+    categoryNameAr: "تيشيرتات",
   });
   expect(found.body.variants).toHaveLength(1);
   expect(found.body.variants[0]).toEqual({
@@ -391,11 +393,11 @@ test("cashier lookup selects an explicit variant, ignores website visibility, an
   expect(found.body).not.toHaveProperty("cost");
   expect(JSON.stringify(found.body)).not.toMatch(/cost|profit|purchase|batch|inventoryValue/i);
   const keys = Object.keys(found.body).sort();
-  expect(keys).toEqual(["categoryId", "code", "descriptionAr", "id", "nameAr", "variants"]);
+  expect(keys).toEqual(["categoryId", "categoryNameAr", "code", "descriptionAr", "id", "nameAr", "variants"]);
   expect(found.body.categoryId).toBe(seed.categoryId);
 });
 
-test("cashier POS snapshot lists selling prices and availability without cost data", async () => {
+test("cashier POS snapshots retain readable categories, selling prices and availability without cost data", async () => {
   const manager = await signIn("owner", "owner-pass-1");
   await api(manager, "POST", "/api/internal/active-branch", { branchId: abshwayId });
   const seed = await seedTaxonomy(manager);
@@ -424,6 +426,8 @@ test("cashier POS snapshot lists selling prices and availability without cost da
   expect(snapshot.body[0]).toMatchObject({
     code: "TS-001",
     nameAr: "تيشيرت أساسي",
+    categoryId: seed.categoryId,
+    categoryNameAr: "تيشيرتات",
   });
   expect(snapshot.body[0].variants[0]).toEqual({
     id: variantId,
@@ -433,6 +437,33 @@ test("cashier POS snapshot lists selling prices and availability without cost da
     availableQuantity: 4,
   });
   expect(JSON.stringify(snapshot.body)).not.toMatch(/cost|profit|purchase|batch|inventoryValue|unitCost/i);
+
+  const cachedSnapshot = await api(cashier, "POST", "/api/internal/sales/pos-snapshots", {
+    deviceId: crypto.randomUUID(),
+  });
+  expect(cachedSnapshot.status).toBe(201);
+  expect(cachedSnapshot.body.products).toHaveLength(1);
+  expect(cachedSnapshot.body.products[0]).toMatchObject({
+    code: "TS-001",
+    nameAr: "تيشيرت أساسي",
+    categoryId: seed.categoryId,
+    categoryNameAr: "تيشيرتات",
+  });
+  expect(Object.keys(cachedSnapshot.body.products[0]).sort()).toEqual([
+    "categoryId", "categoryNameAr", "code", "descriptionAr", "id", "nameAr", "variants",
+  ]);
+  expect(cachedSnapshot.body.products[0].variants).toEqual([{
+    id: variantId,
+    size: { id: seed.sizeId, nameAr: "L" },
+    color: { id: seed.colorId, nameAr: "أسود" },
+    sellingPricePiasters: 25000,
+    availableQuantity: 4,
+  }]);
+  expect(JSON.stringify(cachedSnapshot.body)).not.toMatch(/cost|profit|purchase|batch|inventoryValue|unitCost/i);
+
+  const categories = await api(cashier, "GET", "/api/internal/catalog/categories");
+  expect(categories.status).toBe(403);
+  expect(categories.body.error.code).toBe("FORBIDDEN");
 
   const batches = await api(cashier, "GET", "/api/internal/inventory/batches");
   expect(batches.status).toBe(403);

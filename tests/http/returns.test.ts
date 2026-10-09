@@ -2,7 +2,7 @@ import { mkdtemp } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterAll, beforeAll, beforeEach, expect, test } from "vitest";
+import { afterAll, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { buildApp, type BuiltApp } from "../../apps/api/src/app.ts";
 import { ensureOwner } from "../../apps/api/src/bootstrap.ts";
 import { startPostgresCluster, type PostgresCluster } from "@bravos/testkit";
@@ -272,61 +272,79 @@ test("repeated replacement lines share one quantity limit and shortage rolls bac
 });
 
 test("a free reward suggests zero while the manager may authorize exchange credit without repricing its retained sibling", async () => {
-  const manager = await signIn("owner", "owner-pass-1");
-  await api(manager, "POST", "/api/internal/active-branch", { branchId: abshwayId });
-  const rewarded = await seedProduct(manager, [30000, 20000]);
-  const replacement = await seedProduct(manager, [40000]);
-  await receive(manager, rewarded.variantIds[0]!, 1, 12000);
-  await receive(manager, rewarded.variantIds[1]!, 1, 8000);
-  await receive(manager, replacement.variantIds[0]!, 1, 15000);
-  await api(manager, "POST", "/api/internal/pricing/offers", {
-    nameAr: "مكافأة مجانية",
-    discountType: "buy_x_get_y",
-    percentageBasisPoints: null,
-    fixedDiscountPiasters: null,
-    bundlePricePiasters: null,
-    bundleItems: [],
-    buyQuantity: 1,
-    rewardQuantity: 1,
-    rewardPercentageBasisPoints: 10000,
-    buyProductIds: [rewarded.productId],
-    buyCategoryIds: [],
-    rewardProductIds: [rewarded.productId],
-    rewardCategoryIds: [],
-    startsOn: "2026-09-01", endsOn: "2026-09-30", active: true, allowCoupon: true,
-    productIds: [], categoryIds: [],
-  });
-  const originalSale = await sale(manager, {
-    occurredAt: "2026-09-10T12:00:00.000Z",
-    lines: rewarded.variantIds.map((variantId) => ({ variantId, quantity: 1 })),
-  });
-  const originalSource = (await api(manager, "GET", `/api/internal/returns/sources?reference=${originalSale.body.id}`)).body[0];
-  const freeLine = originalSource.lines.find((line: { remainingSuggestedPiasters: number }) => line.remainingSuggestedPiasters === 0);
-  const retainedLine = originalSource.lines.find((line: { saleLineId: string }) => line.saleLineId !== freeLine.saleLineId);
-  expect(freeLine).toMatchObject({ remainingSuggestedPiasters: 0, availablePaidRanges: [{ quantity: 1, paidUnitPiasters: 0 }] });
-  expect(retainedLine.remainingSuggestedPiasters).toBe(30000);
-  const draft = await api(manager, "POST", "/api/internal/returns", {
-    returnId: crypto.randomUUID(), operationId: crypto.randomUUID(), sourceSaleId: originalSale.body.id,
-    handlingBranchId: abshwayId, authorizedRefundPiasters: 28000,
-    lines: [{ sourceSaleLineId: freeLine.saleLineId, quantity: 1, sellableQuantity: 1 }],
-  });
-  expect(draft.body).toMatchObject({ suggestedRefundPiasters: 0, authorizedRefundPiasters: 28000 });
-  const quote = await exchangeQuote(manager, draft.body.id, draft.body.revision, [
-    { variantId: replacement.variantIds[0], quantity: 1 },
-  ]);
-  const exchanged = await api(manager, "POST", `/api/internal/returns/${draft.body.id}/exchange`, {
-    ...quote.body.settlement,
-    receivedAndInspected: true, expectedRevision: draft.body.revision, cashRefundStatus: "owed",
-    quoteId: quote.body.id,
-  });
-  expect(exchanged.status).toBe(201);
-  expect(exchanged.body.exchange).toMatchObject({
-    replacementMerchandisePiasters: 40000,
-    creditAppliedPiasters: 28000,
-    cashCollectedPiasters: 12000,
-  });
-  const after = (await api(manager, "GET", `/api/internal/returns/sources?reference=${originalSale.body.id}`)).body[0];
-  expect(after.lines.find((line: { saleLineId: string }) => line.saleLineId === retainedLine.saleLineId).remainingSuggestedPiasters).toBe(30000);
+  // Connected-sale pricing uses Date; align it with the fixed return business clock.
+  vi.useFakeTimers({ toFake: ["Date"], now: NOW });
+  try {
+    const manager = await signIn("owner", "owner-pass-1");
+    await api(manager, "POST", "/api/internal/active-branch", { branchId: abshwayId });
+    const rewarded = await seedProduct(manager, [30000, 20000]);
+    const replacement = await seedProduct(manager, [40000]);
+    await receive(manager, rewarded.variantIds[0]!, 1, 12000);
+    await receive(manager, rewarded.variantIds[1]!, 1, 8000);
+    await receive(manager, replacement.variantIds[0]!, 1, 15000);
+    const offer = await api(manager, "POST", "/api/internal/pricing/offers", {
+      nameAr: "مكافأة مجانية",
+      discountType: "buy_x_get_y",
+      percentageBasisPoints: null,
+      fixedDiscountPiasters: null,
+      bundlePricePiasters: null,
+      bundleItems: [],
+      buyQuantity: 1,
+      rewardQuantity: 1,
+      rewardPercentageBasisPoints: 10000,
+      buyProductIds: [rewarded.productId],
+      buyCategoryIds: [],
+      rewardProductIds: [rewarded.productId],
+      rewardCategoryIds: [],
+      startsOn: "2026-09-01", endsOn: "2026-09-30", active: true, allowCoupon: true,
+      productIds: [], categoryIds: [],
+    });
+    expect(offer.status).toBe(201);
+    const originalSale = await sale(manager, {
+      occurredAt: "2026-09-10T12:00:00.000Z",
+      lines: rewarded.variantIds.map((variantId) => ({ variantId, quantity: 1 })),
+    });
+    expect(originalSale.body).toMatchObject({
+      appliedAutomaticOffer: { id: offer.body.id, discountType: "buy_x_get_y" },
+      automaticOfferDiscountPiasters: 20000,
+      finalTotalPiasters: 30000,
+    });
+    expect(originalSale.body.lines.flatMap((line: { units: Array<{ quantity: number; paidPiasters: number }> }) =>
+      line.units.map((unit) => ({ quantity: unit.quantity, paidPiasters: unit.paidPiasters })),
+    ).sort((left: { paidPiasters: number }, right: { paidPiasters: number }) => left.paidPiasters - right.paidPiasters)).toEqual([
+      { quantity: 1, paidPiasters: 0 },
+      { quantity: 1, paidPiasters: 30000 },
+    ]);
+    const originalSource = (await api(manager, "GET", `/api/internal/returns/sources?reference=${originalSale.body.id}`)).body[0];
+    const freeLine = originalSource.lines.find((line: { remainingSuggestedPiasters: number }) => line.remainingSuggestedPiasters === 0);
+    const retainedLine = originalSource.lines.find((line: { saleLineId: string }) => line.saleLineId !== freeLine.saleLineId);
+    expect(freeLine).toMatchObject({ remainingSuggestedPiasters: 0, availablePaidRanges: [{ quantity: 1, paidUnitPiasters: 0 }] });
+    expect(retainedLine.remainingSuggestedPiasters).toBe(30000);
+    const draft = await api(manager, "POST", "/api/internal/returns", {
+      returnId: crypto.randomUUID(), operationId: crypto.randomUUID(), sourceSaleId: originalSale.body.id,
+      handlingBranchId: abshwayId, authorizedRefundPiasters: 28000,
+      lines: [{ sourceSaleLineId: freeLine.saleLineId, quantity: 1, sellableQuantity: 1 }],
+    });
+    expect(draft.body).toMatchObject({ suggestedRefundPiasters: 0, authorizedRefundPiasters: 28000 });
+    const quote = await exchangeQuote(manager, draft.body.id, draft.body.revision, [
+      { variantId: replacement.variantIds[0], quantity: 1 },
+    ]);
+    const exchanged = await api(manager, "POST", `/api/internal/returns/${draft.body.id}/exchange`, {
+      ...quote.body.settlement,
+      receivedAndInspected: true, expectedRevision: draft.body.revision, cashRefundStatus: "owed",
+      quoteId: quote.body.id,
+    });
+    expect(exchanged.status).toBe(201);
+    expect(exchanged.body.exchange).toMatchObject({
+      replacementMerchandisePiasters: 40000,
+      creditAppliedPiasters: 28000,
+      cashCollectedPiasters: 12000,
+    });
+    const after = (await api(manager, "GET", `/api/internal/returns/sources?reference=${originalSale.body.id}`)).body[0];
+    expect(after.lines.find((line: { saleLineId: string }) => line.saleLineId === retainedLine.saleLineId).remainingSuggestedPiasters).toBe(30000);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test("simultaneous identical exchange settlement creates one linked sale and replays the same outcome", async () => {

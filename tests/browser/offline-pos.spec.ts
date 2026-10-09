@@ -246,8 +246,30 @@ test("sign-out preserves queued sales and another cashier cannot read or submit 
   expect(original?.soldByDisplayName).toBe("كاشير تجريبي");
   const lookupForm = page.getByRole("form", { name: "البحث برمز المنتج" });
   await lookupForm.getByRole("textbox", { name: "رمز المنتج" }).fill(seed.code);
-  await lookupForm.getByRole("button", { name: "بحث" }).click();
-  await expect(lookupForm.getByRole("button", { name: "جارٍ البحث…" })).toBeVisible();
+  let releaseLookup: () => void = () => undefined;
+  const heldLookup = new Promise<void>((resolve) => {
+    releaseLookup = resolve;
+  });
+  let markLookupStarted: () => void = () => undefined;
+  const lookupStarted = new Promise<void>((resolve) => {
+    markLookupStarted = resolve;
+  });
+  await page.route("**/api/internal/catalog/lookup**", async (route) => {
+    const url = new URL(route.request().url());
+    if (route.request().method() === "GET" && url.pathname === "/api/internal/catalog/lookup" && url.searchParams.get("code") === seed.code) {
+      markLookupStarted();
+      await heldLookup;
+    }
+    await route.continue();
+  });
+  try {
+    await lookupForm.getByRole("button", { name: "بحث" }).click();
+    await lookupStarted;
+    await expect(lookupForm.getByRole("button", { name: "جارٍ البحث…" })).toBeVisible();
+  } finally {
+    releaseLookup();
+    await page.unroute("**/api/internal/catalog/lookup**");
+  }
   await expect(lookupForm.getByRole("button", { name: "بحث" })).toBeEnabled();
   const again = page.getByTestId("lookup-result");
   await expect(again).toContainText(seed.nameAr);

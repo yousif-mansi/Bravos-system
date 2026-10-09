@@ -12,22 +12,12 @@ import type {
 } from "@bravos/contracts/public";
 import { useCart } from "../cart/cart-provider";
 import { formatEgp } from "../public-catalog";
+import { type CheckoutFields, useCheckoutDraft } from "./checkout-draft";
 import styles from "./checkout.module.css";
 
 const CHECKOUT_STORAGE_KEY = "bravos-guest-checkout-v1";
 const CHECKOUT_STORAGE_VERSION = 1;
 const CHECKOUT_LOCK = "bravos-guest-checkout-submit";
-
-type CheckoutFields = {
-  customerName: string;
-  primaryPhone: string;
-  deliveryAreaId: string;
-  detailedAddress: string;
-  alternatePhone: string;
-  landmark: string;
-  notes: string;
-  couponCode: string;
-};
 
 type StoredAttempt = {
   version: typeof CHECKOUT_STORAGE_VERSION;
@@ -44,20 +34,9 @@ type StoredAttempt = {
 type ApiError = { error?: { code?: string; messageAr?: string } };
 type OrderingState = "loading" | "enabled" | "disabled" | "unavailable";
 
-const EMPTY_FIELDS: CheckoutFields = {
-  customerName: "",
-  primaryPhone: "",
-  deliveryAreaId: "",
-  detailedAddress: "",
-  alternatePhone: "",
-  landmark: "",
-  notes: "",
-  couponCode: "",
-};
-
 export default function CheckoutPage() {
   const cart = useCart();
-  const [fields, setFields] = useState(EMPTY_FIELDS);
+  const { fields, setFields, clearDraft } = useCheckoutDraft();
   const [orderingState, setOrderingState] = useState<OrderingState>("loading");
   const [areas, setAreas] = useState<PublicDeliveryAreaDto[]>([]);
   const [areasLoading, setAreasLoading] = useState(true);
@@ -69,6 +48,7 @@ export default function CheckoutPage() {
   const [result, setResult] = useState<PublicOrderSubmissionDto | null>(null);
   const [message, setMessage] = useState("");
   const [messageKind, setMessageKind] = useState<"status" | "error">("status");
+  const [stockRepair, setStockRepair] = useState(false);
   const [storageBlocked, setStorageBlocked] = useState(false);
   const [unresolved, setUnresolved] = useState(false);
   const [hasPendingAttempt, setHasPendingAttempt] = useState(false);
@@ -195,7 +175,7 @@ export default function CheckoutPage() {
       });
       const body = await response.json() as CheckoutQuoteDto | ApiError;
       if (!response.ok) {
-        showMessage(apiMessage(body, "تعذر حساب السعر الحالي."), "error");
+        showMessage(apiMessage(body, "تعذر حساب السعر الحالي."), "error", isStockRejection((body as ApiError).error?.code));
         return;
       }
       if (requestedKey !== currentInputKeyRef.current) {
@@ -344,7 +324,7 @@ export default function CheckoutPage() {
       if (code === "QUOTE_STALE") {
         showMessage("تغيّر السعر أو رسوم التوصيل منذ مراجعتك. راجع السعر الجديد ثم أرسل الطلب مرة أخرى.", "error");
       } else {
-        showMessage(apiMessage(body, "تعذر إرسال الطلب. راجع البيانات وحاول مرة أخرى."), "error");
+        showMessage(apiMessage(body, "تعذر إرسال الطلب. راجع البيانات وحاول مرة أخرى."), "error", isStockRejection(code));
       }
     } catch {
       setUnresolved(true);
@@ -363,6 +343,7 @@ export default function CheckoutPage() {
       }
     }
     setResult(accepted);
+    clearDraft();
     setStorageBlocked(false);
     setUnresolved(false);
     setHasPendingAttempt(false);
@@ -370,9 +351,10 @@ export default function CheckoutPage() {
     setMessage("");
   }
 
-  function showMessage(value: string, kind: "status" | "error") {
+  function showMessage(value: string, kind: "status" | "error", needsStockRepair = false) {
     setMessage(value);
     setMessageKind(kind);
+    setStockRepair(needsStockRepair);
   }
 
   const intro = (
@@ -393,7 +375,7 @@ export default function CheckoutPage() {
         <p className="eyebrow">طلب توصيل نقداً عند الاستلام</p>
         <h1>تم استلام طلبك</h1>
         <p className="order-reference">رقم الطلب: <strong>{result.reference}</strong></p>
-        <p role="status" className={`success ${styles.pendingNotice}`}>الطلب قيد المراجعة، ولم تُحجز القطع حتى الآن.</p>
+        <p role="status" className={`success ${styles.pendingNotice}`}>استلمنا طلبك للمراجعة. إرسال الطلب لا يحجز القطع؛ تأكيده يتم عبر واتساب.</p>
         <p>سيتواصل معك ممثل برافوس عبر واتساب لتأكيد الطلب والتأكد من توفر القطع.</p>
         <p className="success-total">الإجمالي النقدي عند الاستلام الذي راجعته: <strong>{formatEgp(result.quote.finalTotalPiasters)}</strong></p>
         <Link className="button-link" href="/">العودة إلى المتجر</Link>
@@ -435,13 +417,18 @@ export default function CheckoutPage() {
   }
 
   const cartValid = cart.items.every((item) => item.orderable && item.quantity <= item.knownAvailableQuantity);
+  const areasMissing = !areasLoading && !areasError && areas.length === 0;
 
   return (
     <main id="main-content" className={`checkout-page ${styles.page}`}>
       {intro}
+      {!cartValid ? <div className={styles.repairNotice} role="alert"><strong>عدّل السلة قبل إتمام الطلب</strong><p>بعض الاختيارات أو الكميات غير متوفرة. ارجع إلى السلة لتقليل الكمية أو إزالة الاختيار غير المتوفر.</p><Link className={styles.editCartLink} href="/cart">تعديل السلة</Link></div> : null}
+      {stockRepair && message ? <div className={`checkout-message error-message ${styles.repairNotice}`} role="alert"><strong>{message}</strong><p>تعذر توفير اختيارات السلة كاملة معاً. ارجع إلى السلة لتحديث توفر المنتجات وتقليل الكميات أو إزالة أحد الاختيارات، ثم راجع السعر من جديد.</p><Link className={styles.editCartLink} href="/cart">تعديل السلة</Link></div> : null}
+      {areasMissing ? <div className={styles.repairNotice} role="alert"><strong>لا توجد مناطق توصيل متاحة حالياً</strong><p>لا يمكن مراجعة السعر أو إرسال الطلب قبل إتاحة منطقة توصيل. احتفظنا باختياراتك في السلة.</p><Link className={styles.editCartLink} href="/cart">العودة إلى السلة</Link></div> : null}
       <div className={`checkout-layout ${styles.layout}`}>
         <form className={`checkout-form ${styles.form}`} aria-label="بيانات طلب التوصيل" onSubmit={(event) => void submit(event)} onInvalidCapture={markInvalidField} onChange={clearCorrectedField}>
-          <fieldset disabled={submitting || storageBlocked || unresolved}>
+          <div className={styles.mobileContext} aria-label="ملخص الطلب المبدئي"><strong>{cart.itemCount} قطع · مجموع المنتجات المبدئي {formatEgp(cart.items.reduce((sum, item) => sum + item.unitPricePiasters * item.quantity, 0))}</strong><p>قبل الخصومات ورسوم التوصيل. يظهر الإجمالي النهائي بعد مراجعة السعر.</p><Link className={styles.editCartLink} href="/cart">تعديل السلة</Link></div>
+          <fieldset disabled={!cartValid || areasMissing || submitting || storageBlocked || unresolved}>
             <legend>بيانات التواصل والتوصيل</legend>
             <p className={styles.sectionHint}>البيانات المطلوبة للتواصل معك وتوصيل الطلب</p>
             <div className={`checkout-fields ${styles.fields}`}>
@@ -459,7 +446,14 @@ export default function CheckoutPage() {
               </label>
               <label className={`checkout-field checkout-wide ${styles.field}`}>
                 <span>العنوان بالتفصيل <span className={styles.requiredTag} aria-hidden="true">مطلوب</span></span>
-                <textarea name="detailedAddress" required rows={3} autoComplete="street-address" value={fields.detailedAddress} aria-invalid={invalidFields.includes("detailedAddress") || undefined} aria-describedby={invalidFields.includes("detailedAddress") ? "detailedAddress-error" : undefined} onChange={(event) => setField("detailedAddress", event.target.value)} />
+                <textarea name="detailedAddress" required rows={3} autoComplete="street-address" value={fields.detailedAddress} aria-invalid={invalidFields.includes("detailedAddress") || undefined} aria-describedby={invalidFields.includes("detailedAddress") ? "detailedAddress-error" : undefined} onChange={(event) => setField("detailedAddress", event.target.value)} onFocus={(event) => {
+                  if (window.innerWidth > 900) return;
+                  const address = event.currentTarget;
+                  const bounds = address.getBoundingClientRect();
+                  if (bounds.top < 0 || bounds.bottom > window.innerHeight) {
+                    address.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "instant" });
+                  }
+                }} />
                 {invalidFields.includes("detailedAddress") ? <small id="detailedAddress-error" className={styles.fieldError}>اكتب العنوان بالتفصيل.</small> : null}
               </label>
             </div>
@@ -473,26 +467,26 @@ export default function CheckoutPage() {
               </label>
             </div>
           </fieldset>
-          <fieldset disabled={submitting || storageBlocked || unresolved}>
+          <fieldset disabled={!cartValid || areasMissing || submitting || storageBlocked || unresolved}>
             <legend>الكوبون ومراجعة السعر</legend>
             <label className={`checkout-field coupon-field ${styles.field}`}>
               <span>كود الكوبون (اختياري)</span>
               <input value={fields.couponCode} autoCapitalize="characters" onChange={(event) => setField("couponCode", event.target.value)} />
             </label>
             <p className={styles.reviewHint}>رسوم التوصيل والخصومات والإجمالي النهائي تظهر بعد مراجعة السعر.</p>
-            <button type="button" className="secondary-action review-price" disabled={!cartValid || !fields.deliveryAreaId || quoting} onClick={() => void reviewPrice()}>
+            <button type="button" className="secondary-action review-price" disabled={!cartValid || areasLoading || areasError || areasMissing || !fields.deliveryAreaId || quoting} onClick={() => void reviewPrice()}>
               {quoting ? "لحظات... نراجع السعر" : quote ? "مراجعة السعر من جديد" : "مراجعة السعر"}
             </button>
           </fieldset>
           {quoting ? <p aria-live="polite" className={styles.processNotice}>لحظات... نراجع السعر ورسوم التوصيل الحالية.</p> : null}
           {quote && quoteKey === currentInputKey ? <PriceReview quote={quote} /> : null}
-          {message ? <p className={messageKind === "error" ? "checkout-message error-message" : "checkout-message"} role={messageKind === "error" ? "alert" : "status"}>{message}</p> : null}
+          {message && !stockRepair ? <p className={messageKind === "error" ? "checkout-message error-message" : "checkout-message"} role={messageKind === "error" ? "alert" : "status"}>{message}</p> : null}
           {submitting ? <p aria-live="polite" className={styles.processNotice}>لحظات... نتحقق من نتيجة إرسال نفس الطلب. يُرجى الانتظار.</p> : null}
           {unresolved && !submitting ? <div className={styles.uncertainNotice}><strong>نتيجة الإرسال غير مؤكدة</strong><p>احتفظنا بنفس محاولة الطلب. استخدم التحقق أدناه قبل أي طلب جديد.</p></div> : null}
           {unresolved && !storageBlocked ? <button type="button" className="secondary-action" disabled={submitting} onClick={() => void recoverStoredAttempt()}>التحقق من نفس الطلب</button> : null}
           {storageBlocked ? <p className="recovery-help">لا يمكن بدء إرسال جديد بأمان من هذه الصفحة. لم نمسح أي بيانات محفوظة؛ تواصل مع برافوس عبر الروابط أسفل الصفحة قبل بدء طلب آخر.</p> : null}
           {quote && quoteKey === currentInputKey ? (
-            <button type="submit" className="submit-order" disabled={submitting || !cartValid || storageBlocked || unresolved}>
+            <button type="submit" className="submit-order" disabled={submitting || !cartValid || areasLoading || areasError || areasMissing || storageBlocked || unresolved}>
               {submitting ? "لحظات... نتحقق من نفس الطلب" : "إرسال طلب التوصيل"}
             </button>
           ) : null}
@@ -582,6 +576,10 @@ function optionalValue<Key extends string>(key: Key, value: string): { [Property
 
 function apiMessage(body: CheckoutQuoteDto | PublicOrderSubmissionDto | ApiError, fallback: string) {
   return "error" in body && body.error?.messageAr ? body.error.messageAr : fallback;
+}
+
+function isStockRejection(code: string | undefined) {
+  return code === "INSUFFICIENT_STOCK" || code === "VARIANT_NOT_ORDERABLE";
 }
 
 function isDefiniteRejection(status: number, code: string | undefined) {

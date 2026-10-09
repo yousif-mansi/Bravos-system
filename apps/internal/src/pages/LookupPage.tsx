@@ -1,4 +1,4 @@
-import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CashierProductLookupDto, CashierVariantDto, PosPriceSnapshotDto, SaleDto, SalePaymentDto, StockPauseDto, WorkspaceDto } from "@bravos/contracts";
 import { SaleSummary } from "./SaleSummary.tsx";
 import { ApiError, acceptOfflineSale, completeSale, getStockPause, getWorkspace, issuePosSnapshot, lookupProductByCode, lookupSaleOperation, prepareSale } from "../api.ts";
@@ -9,16 +9,20 @@ import {
   cacheIssuedSnapshot,
   completedPayload,
   offlineFromQuote,
+  notifyPosStockChange,
   pos,
   PosStorageError,
   saleFromOffline,
   syncOutcomeMessage,
+  subscribePosStockChanges,
 } from "../pos.ts";
 import { mergeVariantQuantities, SalesValidationError } from "@bravos/sales/browser";
 import { accountGeneration, subscribeAccount } from "../account-session.ts";
 import { getRestorePause } from "../restore-api.ts";
 import { isNetworkFailure } from "../session.ts";
 import { EmptyState } from "../ui/EmptyState.tsx";
+import { ProductBrowser } from "./pos/ProductBrowser.tsx";
+import "./pos/pos-workspace.css";
 import {
   createPendingSale,
   digestSalePayload,
@@ -90,6 +94,9 @@ export default function LookupPage({
   const [notice, setNotice] = useState("");
   const [pending, setPending] = useState("");
   const [product, setProduct] = useState<CashierProductLookupDto | null>(null);
+  const [browseProducts, setBrowseProducts] = useState<CashierProductLookupDto[]>([]);
+  const [browseLoading, setBrowseLoading] = useState(true);
+  const [browseMessage, setBrowseMessage] = useState("");
   const [sizeId, setSizeId] = useState("");
   const [colorId, setColorId] = useState("");
   const [cart, setCart] = useState<CartLine[]>([]);
@@ -128,11 +135,131 @@ export default function LookupPage({
   const quoteOriginRef = useRef<"server" | "snapshot" | null>(null);
   const quoteSnapshotRef = useRef<PosPriceSnapshotDto | null>(null);
   const quoteCachedRef = useRef<Map<string, number> | null>(null);
+  const browseRequestRef = useRef(0);
+  const browseMountedRef = useRef(false);
+  const browseNetworkRef = useRef(0);
+  const browsePendingLocalRef = useRef(false);
+  const browseAuthorizationBlockedRef = useRef(false);
+  const browseFingerprintRef = useRef("");
+  const contextKey = `${workspace.staff.id}:${workspace.activeBranch?.id ?? ""}`;
+  const contextRef = useRef(contextKey);
+  const sizeInputRef = useRef<HTMLSelectElement>(null);
+  contextRef.current = contextKey;
   cartRef.current = cart;
+
+  const refreshBrowse = useCallback(async (connected = false): Promise<void> => {
+    if (browseNetworkRef.current) {
+      if (!connected) browsePendingLocalRef.current = true;
+      return;
+    }
+    if ((!connected || !navigator.onLine) && browseAuthorizationBlockedRef.current) return;
+    const staffId = workspace.staff.id;
+    const branchId = workspace.activeBranch?.id;
+    const capturedContext = `${staffId}:${branchId ?? ""}`;
+    const epoch = accountGeneration();
+    const request = ++browseRequestRef.current;
+    const stillCurrent = () => browseMountedRef.current && contextRef.current === capturedContext &&
+      accountGeneration() === epoch && browseRequestRef.current === request;
+    if (!branchId || !stillCurrent()) return;
+    browseNetworkRef.current = connected && navigator.onLine ? request : 0;
+    try {
+      if (connected && navigator.onLine) {
+        const deviceId = await pos.deviceId();
+        if (!stillCurrent()) return;
+        const snapshot = await issuePosSnapshot(deviceId, await pos.listPendingOperationIds());
+        if (!stillCurrent() || snapshot.staffId !== staffId || snapshot.branch.id !== branchId) return;
+        browseAuthorizationBlockedRef.current = false;
+        await cacheIssuedSnapshot(staffId, snapshot);
+        if (!stillCurrent()) return;
+        setStockPause(snapshot.stockPause);
+        setBrowseMessage("");
+      }
+      const snapshot = await pos.loadSnapshot(staffId);
+      if (!stillCurrent()) return;
+      if (!snapshot || snapshot.staffId !== staffId || snapshot.branch.id !== branchId) {
+        setBrowseProducts([]);
+        setBrowseMessage("قائمة الأصناف غير جاهزة. يمكنك البحث برمز المنتج عند الاتصال.");
+        return;
+      }
+      // A saved sale adds an operation; acknowledgements update the overlaid snapshot.
+      // Unchanged local reads avoid one stock-cache read and effects query per variant.
+      const pendingIds = await pos.listPendingOperationIds();
+      if (!stillCurrent()) return;
+      const fingerprint = JSON.stringify([snapshot.snapshotId, snapshot.stockVersion, snapshot.products,
+        snapshot.includedOperationIds, pendingIds.sort()]);
+      if (browseFingerprintRef.current === fingerprint) return;
+      const quantities: Record<string, number> = {};
+      await Promise.all(snapshot.products.flatMap((item) => item.variants.map(async (variant) => {
+        quantities[variant.id] = await pos.availableQuantity(branchId, variant.id, variant.availableQuantity);
+      })));
+      if (!stillCurrent()) return;
+      browseFingerprintRef.current = fingerprint;
+      setBrowseProducts(snapshot.products);
+      setEffectiveByVariant(quantities);
+      setProduct((current) => snapshot.products.find((item) => item.id === current?.id) ?? current);
+    } catch (caught) {
+      if (!stillCurrent()) return;
+      if (caught instanceof ApiError && (caught.status === 401 || caught.status === 403)) {
+        browseAuthorizationBlockedRef.current = true;
+        browseFingerprintRef.current = "";
+        setBrowseProducts([]);
+        setProduct(null);
+        setEffectiveByVariant({});
+        setBrowseMessage(caught.messageAr);
+      } else if (connected) {
+        // Keep the last staff-scoped list; the next local read can use its stock overlays.
+        setBrowseMessage("تعذر تحديث القائمة. الأسعار والكميات المعروضة حسب آخر تحديث محفوظ.");
+      }
+    } finally {
+      const current = stillCurrent();
+      if (current) setBrowseLoading(false);
+      if (browseNetworkRef.current === request) {
+        browseNetworkRef.current = 0;
+        if (current && browsePendingLocalRef.current) {
+          browsePendingLocalRef.current = false;
+          void refreshBrowse();
+        }
+      }
+    }
+  }, [workspace.staff.id, workspace.activeBranch?.id]);
+
+  useEffect(() => {
+    browseMountedRef.current = true;
+    browseNetworkRef.current = 0;
+    browsePendingLocalRef.current = false;
+    browseAuthorizationBlockedRef.current = false;
+    browseFingerprintRef.current = "";
+    setBrowseMessage("");
+    setBrowseProducts([]);
+    setProduct(null);
+    setSizeId("");
+    setColorId("");
+    setEffectiveByVariant({});
+    setBrowseLoading(true);
+    const refreshConnected = () => void refreshBrowse(true);
+    void refreshBrowse().then(() => refreshBrowse(true));
+    const unsubscribeStock = subscribePosStockChanges((change) => {
+      if (change.staffId === workspace.staff.id && change.branchId === workspace.activeBranch?.id) void refreshBrowse();
+    });
+    window.addEventListener("focus", refreshConnected);
+    window.addEventListener("online", refreshConnected);
+    return () => {
+      browseMountedRef.current = false;
+      browsePendingLocalRef.current = false;
+      ++browseRequestRef.current;
+      unsubscribeStock();
+      window.removeEventListener("focus", refreshConnected);
+      window.removeEventListener("online", refreshConnected);
+    };
+  }, [refreshBrowse]);
 
   useEffect(() => {
     return subscribeAccount((payload) => {
       if (payload.staffId !== workspace.staff.id) {
+        browseAuthorizationBlockedRef.current = true;
+        setBrowseProducts([]);
+        setProduct(null);
+        setEffectiveByVariant({});
         setCart([]);
         setQuote(null);
         setCompleted(null);
@@ -363,46 +490,25 @@ export default function LookupPage({
     };
   }, [workspace.staff.id]);
 
-  useEffect(() => {
-    let cancelled = false;
-    const epoch = accountGeneration();
-    const staffId = workspace.staff.id;
-    void (async () => {
-      if (!navigator.onLine) {
-        return;
-      }
-      try {
-        const deviceId = await pos.deviceId();
-        if (cancelled || accountGeneration() !== epoch) {
-          return;
-        }
-        const snapshot = await issuePosSnapshot(deviceId, await pos.listPendingOperationIds());
-        if (cancelled || accountGeneration() !== epoch) {
-          return;
-        }
-        await cacheIssuedSnapshot(staffId, snapshot);
-        setStockPause(snapshot.stockPause);
-      } catch {
-        /* keep last issued snapshot */
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [workspace.staff.id]);
-
   async function withLocalAvailability(found: CashierProductLookupDto): Promise<CashierProductLookupDto> {
     if (!workspace.activeBranch) throw new SalesValidationError("اختر فرع البيع أولاً.");
+    const capturedContext = contextKey;
+    const epoch = accountGeneration();
     const next: Record<string, number> = {};
     for (const variant of found.variants) {
       next[variant.id] = await pos.availableQuantity(workspace.activeBranch.id, variant.id, variant.availableQuantity);
     }
-    setEffectiveByVariant(next);
+    if (browseMountedRef.current && contextRef.current === capturedContext && accountGeneration() === epoch) {
+      setEffectiveByVariant((current) => ({ ...current, ...next }));
+    }
     return found;
   }
 
   async function onSearch(event: FormEvent) {
     event.preventDefault();
+    const capturedContext = contextKey;
+    const epoch = accountGeneration();
+    const stillCurrent = () => browseMountedRef.current && contextRef.current === capturedContext && accountGeneration() === epoch;
     setError("");
     setPending("search");
     try {
@@ -413,21 +519,27 @@ export default function LookupPage({
         if (!isNetworkFailure(caught)) {
           throw caught;
         }
-        found = await pos.lookupProduct(workspace.staff.id, code);
+        const snapshot = await pos.loadSnapshot(workspace.staff.id);
+        found = snapshot?.staffId === workspace.staff.id && snapshot.branch.id === workspace.activeBranch?.id
+          ? snapshot.products.find((item) => item.code === code.trim())
+          : null;
         if (!found) {
           throw new ApiError(404, "NOT_FOUND", "المنتج غير موجود.");
         }
       }
-      setProduct(await withLocalAvailability(found));
+      await withLocalAvailability(found);
+      if (!stillCurrent()) return;
+      setProduct(found);
       setSizeId("");
       setColorId("");
     } catch (caught) {
+      if (!stillCurrent()) return;
       setProduct(null);
       setSizeId("");
       setColorId("");
       setError(caught instanceof ApiError ? caught.messageAr : "تعذر البحث عن المنتج.");
     } finally {
-      setPending("");
+      if (stillCurrent()) setPending("");
     }
   }
 
@@ -457,7 +569,7 @@ export default function LookupPage({
 
   const selected = product?.variants.find((variant) => variant.size.id === sizeId && variant.color.id === colorId) ?? null;
   const selectedEffective =
-    selected ? (effectiveByVariant[selected.id] ?? selected.availableQuantity) : 0;
+    selected ? Math.max(0, effectiveByVariant[selected.id] ?? selected.availableQuantity) : 0;
 
   function addSelected() {
     if (!product || !selected) {
@@ -600,11 +712,7 @@ export default function LookupPage({
     quoteOriginRef.current = null;
     quoteSnapshotRef.current = null;
     quoteCachedRef.current = null;
-    if (product) {
-      void withLocalAvailability(product).then((next) => {
-        setProduct(next);
-      });
-    }
+    void refreshBrowse();
   }
 
   async function assertLocalCartStock(lines: CartLine[]) {
@@ -728,6 +836,7 @@ export default function LookupPage({
         }),
         quoteCachedRef.current ?? cachedQuantitiesFromCart(cart),
       );
+      notifyPosStockChange({ staffId: recorded.staffId, branchId: recorded.branch.id });
       return saleFromOffline(recorded);
     }
     if (pinnedQuote && origin === "snapshot" && pinnedSnapshot) {
@@ -746,6 +855,7 @@ export default function LookupPage({
         }),
         quoteCachedRef.current ?? cachedQuantitiesFromSnapshot(pinnedSnapshot),
       );
+      notifyPosStockChange({ staffId: recorded.staffId, branchId: recorded.branch.id });
       return saleFromOffline(recorded);
     }
     throw new PosStorageError("لم تكتمل جاهزية نقطة البيع دون اتصال بعد.");
@@ -763,6 +873,7 @@ export default function LookupPage({
           ? await acceptOfflineSale(await acceptedPayload(local))
           : await completeSale(await completedPayload(local));
       await applySyncedSale(local, synced);
+      await refreshBrowse();
     } catch (caught) {
       setError(`${syncOutcomeMessage(caught)} البيع المكتمل محفوظ محلياً وسيظل ضمن المبيعات غير المرسلة.`);
     }
@@ -872,6 +983,26 @@ export default function LookupPage({
       setPending("");
       setError("أكد الأسعار بعد تعديل السلة قبل إتمام البيع.");
       return;
+    }
+    const editablePending = pendingSaleRef.current;
+    if (kind === "prepare" && !editablePending?.physicallyCompleted &&
+      (!editablePending || editablePending.phase === "prepared" || editablePending.phase === "rejected")) {
+      // A known local shortage is an editable validation failure, before any
+      // uncertain command is persisted or sent. Existing uncertain/paid records stay frozen.
+      try {
+        await assertLocalCartStock(cart);
+      } catch (caught) {
+        inFlightRef.current = false;
+        setPending("");
+        setError(caught instanceof SalesValidationError || caught instanceof PosStorageError
+          ? caught.message : "تعذر التحقق من الكمية المتاحة. أعد المحاولة.");
+        return;
+      }
+      if (accountGeneration() !== generation || revisionEpochRef.current !== epoch) {
+        inFlightRef.current = false;
+        setPending("");
+        return;
+      }
     }
     let local = pendingSaleRef.current;
     if (local && kind === "prepare" && local.phase === "rejected") {
@@ -1261,11 +1392,16 @@ export default function LookupPage({
   const paymentBalancePiasters = quote && paymentMethod === "split"
     ? quote.finalTotalPiasters - (egpInputToPiasters(cashEgp) ?? 0) - (egpInputToPiasters(onlineEgp) ?? 0)
     : 0;
+  const cartUnitCount = cart.reduce((sum, line) => sum + line.quantity, 0);
+  const cartListedTotal = cart.reduce((sum, line) => sum + line.variant.sellingPricePiasters * line.quantity, 0);
+  const checkoutHasDetails = cart.length > 0 || Boolean(quote) || Boolean(pendingSale);
+  const selectedCartQuantity = selected ? cart.filter((line) => line.variant.id === selected.id).reduce((sum, line) => sum + line.quantity, 0) : 0;
 
   return (
-    <main className="shell">
+    <main className="shell pos-workspace">
       <header className="page-hero">
         <h1>نقطة البيع<span className="sr-only"> البحث عن منتج</span></h1>
+        <p className="pos-branch-context">أصناف ومخزون {workspace.activeBranch?.nameAr}</p>
       </header>
       {error ? <div className="error" role="alert">{error}</div> : null}
       {stockPause ? (
@@ -1279,24 +1415,27 @@ export default function LookupPage({
         </div>
       ) : null}
       {notice ? <div className="notice" role="status">{notice}</div> : null}
-      <form className="card" aria-label="البحث برمز المنتج" onSubmit={(event) => void onSearch(event)}>
+      <div className="pos-layout">
+      <div className="pos-discovery">
+      <form className="card pos-scanner" aria-label="البحث برمز المنتج" onSubmit={(event) => void onSearch(event)}>
         <div className="field">
           <label htmlFor="lookupCode">رمز المنتج</label>
-          <input id="lookupCode" value={code} onChange={(event) => setCode(event.target.value)} required />
+          <input id="lookupCode" value={code} onChange={(event) => setCode(event.target.value)} placeholder="الكود الكامل للبحث المباشر" required />
         </div>
         <button type="submit" disabled={Boolean(pending)}>
           {pending === "search" ? "جارٍ البحث…" : "بحث"}
         </button>
       </form>
       {product ? (
-        <section className="card" data-testid="lookup-result">
+        <section className="card pos-selection" data-testid="lookup-result">
           <h2>{product.nameAr}</h2>
           <p className="muted">رمز المنتج: {product.code}</p>
-          {product.descriptionAr ? <p>{product.descriptionAr}</p> : null}
+          <div className="pos-variant-fields">
           <div className="field">
             <label htmlFor="lookupSize">المقاس</label>
             <select
               id="lookupSize"
+              ref={sizeInputRef}
               value={sizeId}
               onChange={(event) => {
                 setSizeId(event.target.value);
@@ -1318,14 +1457,22 @@ export default function LookupPage({
               ))}
             </select>
           </div>
+          </div>
+          <div className="pos-pairs" role="group" aria-label="اختيارات الصنف المتاحة">
+            {product.variants.map((variant) => <button key={variant.id} type="button" aria-pressed={selected?.id === variant.id} onClick={() => { setSizeId(variant.size.id); setColorId(variant.color.id); }}>
+              {variant.size.nameAr} / {variant.color.nameAr}{(effectiveByVariant[variant.id] ?? variant.availableQuantity) <= 0 ? " — غير متوفر" : ""}
+            </button>)}
+          </div>
           {selected ? (
-            <div data-testid="selected-variant">
+            <div className="pos-selected-summary" data-testid="selected-variant">
+              <div>
               <p>سعر البيع: {formatEgpFromPiasters(selected.sellingPricePiasters)}</p>
               <p data-testid="available-quantity">الكمية المتاحة: {selectedEffective}</p>
+              </div>
               {selectedEffective === 0 ? (
                 <p className="muted">غير متوفر في المخزون حتى يتم الاستلام.</p>
               ) : (
-                <button type="button" disabled={formLocked || Boolean(stockPause) || Boolean(restorePause)} onClick={addSelected}>إضافة إلى السلة</button>
+                <button type="button" disabled={formLocked || Boolean(stockPause) || Boolean(restorePause) || selectedCartQuantity >= selectedEffective} onClick={addSelected}>إضافة إلى السلة</button>
               )}
             </div>
           ) : (
@@ -1333,32 +1480,43 @@ export default function LookupPage({
           )}
         </section>
       ) : null}
+      <ProductBrowser key={contextKey} products={browseProducts} quantities={effectiveByVariant} selectedId={product?.id} loading={browseLoading} message={browseMessage} onRetry={() => void refreshBrowse(true)} onSelect={(item) => {
+        setProduct(item);
+        setSizeId("");
+        setColorId("");
+        window.requestAnimationFrame(() => {
+          sizeInputRef.current?.focus({ preventScroll: true });
+          sizeInputRef.current?.closest("section")?.scrollIntoView({ block: "nearest", behavior: "instant" });
+        });
+      }} />
+      </div>
 
       <form
-        className="card"
+        className="card pos-checkout"
         aria-label="إتمام البيع"
         onSubmit={(event) => {
           event.preventDefault();
           void submit(handedOver || pendingSale?.physicallyCompleted ? "complete" : "prepare");
         }}
       >
-        <h2>سلة البيع</h2>
+        <div className="pos-section-heading pos-checkout-heading"><h2>سلة البيع</h2><span className="muted">{cartUnitCount} قطعة</span></div>
+        <div className="pos-checkout-body">
         {cart.length === 0 ? (
-          <EmptyState title="السلة فاضية" message="ابحث بالكود وضيف الصنف." />
+          <EmptyState title="السلة فاضية" message="اختر صنفاً من القائمة وحدد المقاس واللون." />
         ) : (
-          <ul data-testid="sale-cart">
+          <ul className="pos-cart" data-testid="sale-cart">
             {cart.map((line) => (
               <li key={line.key}>
-                <p>
-                  {line.product.code} — {line.product.nameAr} / {line.variant.size.nameAr} / {line.variant.color.nameAr}
-                </p>
-                <p>سعر الوحدة: {formatEgpFromPiasters(line.variant.sellingPricePiasters)}</p>
+                <div><p className="pos-cart-name">{line.product.nameAr}</p>
+                <p className="pos-cart-meta">{line.product.code} · {line.variant.size.nameAr} / {line.variant.color.nameAr}</p>
+                <p className="pos-cart-meta">سعر الوحدة: {formatEgpFromPiasters(line.variant.sellingPricePiasters)}</p></div>
                 <div className="field">
                   <label htmlFor={`qty-${line.key}`}>الكمية</label>
                   <input
                     id={`qty-${line.key}`}
                     type="number"
                     min={1}
+                    max={effectiveByVariant[line.variant.id] ?? line.variant.availableQuantity}
                     value={line.quantity}
                     disabled={formLocked}
                     onChange={(event) => updateQuantity(line.key, Number(event.target.value))}
@@ -1371,6 +1529,7 @@ export default function LookupPage({
             ))}
           </ul>
         )}
+        {checkoutHasDetails ? <div className="pos-checkout-fields">
         <div className="field">
           <label htmlFor="customerName">اسم الزبون (اختياري)</label>
           <input id="customerName" value={customerName} disabled={formLocked} onChange={(event) => { if (beginCartRevision()) setCustomerName(event.target.value); }} />
@@ -1387,12 +1546,13 @@ export default function LookupPage({
           <label htmlFor="discountEgp">خصم الموظف بالجنيه</label>
           <input id="discountEgp" value={discountEgp} disabled={formLocked} onChange={(event) => { if (beginCartRevision()) setDiscountEgp(event.target.value); }} />
         </div>
-        <div className="field">
+        <div className="field pos-field-wide">
           <label htmlFor="discountReason">سبب الخصم (اختياري)</label>
           <input id="discountReason" value={discountReason} disabled={formLocked} onChange={(event) => { if (beginCartRevision()) setDiscountReason(event.target.value); }} />
         </div>
+        </div> : null}
         {quote ? (
-          <section data-testid="accepted-prices">
+          <section className="pos-accepted-prices" data-testid="accepted-prices">
             <h3>الأسعار المقبولة</h3>
             <p>الأصلي: {formatEgpFromPiasters(quote.originalTotalPiasters)}</p>
             {quote.appliedAutomaticOffer ? (
@@ -1408,7 +1568,7 @@ export default function LookupPage({
           </section>
         ) : null}
         {quote ? (
-          <fieldset className="field" disabled={formLocked}>
+          <fieldset className="field pos-payment" disabled={formLocked}>
             <legend>طريقة الدفع</legend>
             <label><input type="radio" name="payment-method" value="cash" checked={paymentMethod === "cash"} onChange={() => setPaymentMethod("cash")} /> نقداً بالكامل</label>
             <label><input type="radio" name="payment-method" value="online" checked={paymentMethod === "online"} onChange={() => setPaymentMethod("online")} /> إلكترونياً بالكامل (محفظة أو إنستا باي)</label>
@@ -1425,7 +1585,11 @@ export default function LookupPage({
             </p>
           </fieldset>
         ) : null}
-        <div className="field">
+        </div>
+        <div className="pos-checkout-footer">
+        <p className="pos-cart-total"><span>{quote ? "الإجمالي المقبول" : "إجمالي الأصناف"}</span><strong>{formatEgpFromPiasters(quote?.finalTotalPiasters ?? cartListedTotal)}</strong></p>
+        {!quote && cart.length > 0 ? <p className="pos-total-note">قبل العروض والكوبون وخصم الموظف. اقبل الأسعار لمعرفة المبلغ المستحق.</p> : null}
+        {checkoutHasDetails ? <div className="field pos-handover">
           <label htmlFor="handedOver">
             <input
               id="handedOver"
@@ -1436,7 +1600,7 @@ export default function LookupPage({
             />
             {" "}استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة
           </label>
-        </div>
+        </div> : null}
         <div className="actions">
           <button type="button" disabled={Boolean(stockPause) || Boolean(restorePause) || Boolean(pending) || cart.length === 0 || formLocked} onClick={() => void submit("prepare")}>
             {pending === "prepare" ? "جارٍ قبول الأسعار…" : "قبول الأسعار"}
@@ -1446,7 +1610,7 @@ export default function LookupPage({
               إلغاء عرض السعر
             </button>
           ) : null}
-          <button type="button" disabled={((Boolean(stockPause) || Boolean(restorePause)) && !handedOver && !pendingSale?.physicallyCompleted) || Boolean(pending) || revisionBlock || (!quote && !pendingSale?.physicallyCompleted)} onClick={() => void submit("complete")}>
+          <button type="button" className="pos-complete" disabled={((Boolean(stockPause) || Boolean(restorePause)) && !handedOver && !pendingSale?.physicallyCompleted) || Boolean(pending) || revisionBlock || (!quote && !pendingSale?.physicallyCompleted)} onClick={() => void submit("complete")}>
             {pending === "complete" ? "جارٍ الحفظ…" : "إتمام البيع"}
           </button>
           {pendingSale ? (
@@ -1471,7 +1635,9 @@ export default function LookupPage({
             </button>
           ) : null}
         </div>
+        </div>
       </form>
+      </div>
 
       {completed ? <SaleSummary sale={completed} /> : null}
     </main>

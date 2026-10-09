@@ -442,6 +442,7 @@ export type CashierVariantDto = {
 export type CashierProductLookupDto = {
   id: string;
   categoryId?: string;
+  categoryNameAr?: string;
   code: string;
   nameAr: string;
   descriptionAr: string;

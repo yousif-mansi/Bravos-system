@@ -284,6 +284,21 @@
   min-height: 44px;
 }
 
+.repairNotice {
+  padding: var(--space-4);
+  margin-block-end: var(--space-6);
+  border-inline-start: 3px solid var(--store-error);
+  background: var(--store-surface);
+}
+
+.repairNotice p {
+  margin-block: var(--space-2);
+}
+
+.mobileContext {
+  display: none;
+}
+
 .summary article strong,
 .summary article small {
   overflow-wrap: anywhere;
@@ -327,6 +342,19 @@
 }
 
 @media (max-width: 900px) {
+  .mobileContext {
+    display: block;
+    padding: var(--space-4);
+    background: var(--store-surface);
+    border-block-start: 2px solid var(--store-accent);
+  }
+
+  .mobileContext p {
+    margin-block: var(--space-2) 0;
+    color: var(--store-muted);
+    font-size: .875rem;
+  }
+
   .layout {
     gap: var(--space-6);
     grid-template-columns: minmax(0, 1fr);

@@ -876,8 +876,9 @@ test("cashier lookup uses active branch availability and selling prices without 
   const stocked = await api(cashier, "GET", `/api/internal/catalog/lookup?code=${encodeURIComponent("TS-001")}`);
   expect(stocked.body.variants[0].availableQuantity).toBe(12);
   expect(JSON.stringify(found.body)).not.toMatch(/cost|profit|purchase|batch|inventoryValue|6500/i);
-  expect(Object.keys(found.body).sort()).toEqual(["categoryId", "code", "descriptionAr", "id", "nameAr", "variants"]);
+  expect(Object.keys(found.body).sort()).toEqual(["categoryId", "categoryNameAr", "code", "descriptionAr", "id", "nameAr", "variants"]);
   expect(found.body.categoryId).toBe(seed.categoryId);
+  expect(found.body.categoryNameAr).toBe("تيشيرتات");
 
   const receipts = await api(cashier, "GET", "/api/internal/receiving/receipts");
   expect(receipts.status).toBe(403);

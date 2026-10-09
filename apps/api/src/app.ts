@@ -434,7 +434,7 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
       }))),
       uow: createPostgresReturnsUnitOfWork(
         pool,
-        createInventoryTransaction,
+        (client) => createInventoryTransaction(client, config.businessClock ? { now: config.businessClock } : undefined),
         createPostgresOnlineOrderStore,
         createPostgresReturnCorrectionStateReader,
         (client, inventoryTransaction) => createExchangeReplacementSaleWriter({

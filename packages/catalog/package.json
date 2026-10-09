@@ -14,7 +14,7 @@
     "@bravos/contracts": "workspace:*",
     "@bravos/identity": "workspace:*",
     "pg": "8.16.3",
-    "sharp": "0.35.4"
+    "sharp": "0.35.5"
   },
   "devDependencies": {
     "@types/node": "22.18.6",

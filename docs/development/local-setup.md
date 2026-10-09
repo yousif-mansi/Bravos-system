@@ -4,19 +4,31 @@ Verified local runtimes at implementation: Node 22.13.1, pnpm 10.34.5 (installed
 
 A PATH `pnpm` wrapper may be a different major version or a different Node runtime. Nested scripts (`pnpm test:browser` webServers, `pnpm --filter …`) inherit PATH, so the session must prepend the pinned copies before any workspace command. Corepack auto-pin is disabled so those nested calls cannot switch the package manager.
 
-Supported Node is `>=22.13.1 <23`. No global pnpm install is required.
+The October 9, 2026 security refresh selects Node 22.23.3 and raises supported Node to `>=22.23.3 <23`. The earlier Node 22.13.1 observation above remains historical evidence. Node 22.23.3 includes the [July Node 22 security fixes](https://nodejs.org/en/blog/release/v22.23.2) and the subsequent [September patch](https://nodejs.org/en/blog/release/v22.23.3). No global Node replacement or pnpm install is required.
 
 ## Clean clone (PowerShell)
 
-Run these in the repository root. Adjust `$node` if Node 22 is not at the default Windows location.
+Run these in the repository root. First download the official Windows x64 portable Node archive, verify its SHA-256 from the [Node 22.23.3 release checksums](https://nodejs.org/en/blog/release/v22.23.3), and extract it into the ignored local tools directory. For another operating system, use its official archive and checksum, then adjust `$node` below.
 
 ```powershell
-$node = "C:\Program Files\nodejs\node.exe"
+New-Item -ItemType Directory -Force .local\tools\downloads | Out-Null
+$nodeArchive = ".local\tools\downloads\node-v22.23.3-win-x64.zip"
+Invoke-WebRequest "https://nodejs.org/dist/v22.23.3/node-v22.23.3-win-x64.zip" -OutFile $nodeArchive
+$expectedNodeHash = "2b0ff57b049cda1bbcea2240eec20467018713c1efe1f7360c2681859b90ed71"
+if ((Get-FileHash -LiteralPath $nodeArchive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expectedNodeHash) {
+  throw "Portable Node archive checksum mismatch."
+}
+Expand-Archive -LiteralPath $nodeArchive -DestinationPath .local\tools
+```
+
+```powershell
+$node = (Resolve-Path ".local\tools\node-v22.23.3-win-x64\node.exe").Path
 $nodeDir = Split-Path $node
 $env:COREPACK_ENABLE_AUTO_PIN = "0"
 
-# 1. Confirm Node 22
+# 1. Confirm the selected Node 22 patch
 & $node -v
+if ((& $node -v) -ne "v22.23.3") { throw "Expected Node 22.23.3." }
 
 # 2. Install the pinned pnpm into the ignored local prefix (not globally)
 New-Item -ItemType Directory -Force .local\tools | Out-Null
@@ -36,7 +48,7 @@ pnpm exec playwright install chromium
 pnpm setup:local
 ```
 
-After step 3, `pnpm` must report `10.34.5` and `node` must remain the Node 22 binary. `.local/tools` and `.local/tarballs` are local caches and must not be committed. `pnpm-lock.yaml` is the portable lockfile.
+After step 3, `pnpm` must report `10.34.5` and `node` must report `v22.23.3`. `scripts/pinned-env.ts` keeps child processes on the running Node executable's directory. `.local/tools` and `.local/tarballs` are local caches and must not be committed. `pnpm-lock.yaml` is the portable lockfile.
 
 ## Start the three processes
 

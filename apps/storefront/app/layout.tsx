@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import localFont from "next/font/local";
 import { CartProvider } from "./cart/cart-provider";
+import { CheckoutDraftProvider } from "./checkout/checkout-draft";
 import { StoreFooter } from "./components/store-footer";
 import { StoreHeader } from "./components/store-header";
 import { getPublicContacts } from "./public-catalog";
@@ -37,14 +38,16 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
     <html lang="ar" dir="rtl" data-scroll-behavior="smooth" className={`${commerce.variable} ${editorial.variable} ${display.variable}`}>
       <body>
         <CartProvider>
-          <StorefrontVisitAnalytics />
-          <a className="skip-link" href="#main-content">انتقل إلى المحتوى</a>
-          <div className="store-shell">
-            {process.env.NODE_ENV !== "production" && process.env.BRAVOS_STOREFRONT_DEMO === "1" ? <p className="demo-notice" role="status">معاينة تجريبية — المنتجات والطلبات هنا للاختبار فقط</p> : null}
-            <StoreHeader />
-            {children}
-            <StoreFooter contactLinks={contactLinks} />
-          </div>
+          <CheckoutDraftProvider>
+            <StorefrontVisitAnalytics />
+            <a className="skip-link" href="#main-content">انتقل إلى المحتوى</a>
+            <div className="store-shell">
+              {process.env.NODE_ENV !== "production" && process.env.BRAVOS_STOREFRONT_DEMO === "1" ? <p className="demo-notice" role="status">معاينة تجريبية — المنتجات والطلبات هنا للاختبار فقط</p> : null}
+              <StoreHeader />
+              {children}
+              <StoreFooter contactLinks={contactLinks} />
+            </div>
+          </CheckoutDraftProvider>
         </CartProvider>
       </body>
     </html>

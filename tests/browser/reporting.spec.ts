@@ -75,6 +75,7 @@ test("manager filters a connected report and follows its real sale and Return pr
 
   const receipt = await staffApi<ReceiptDto>(page, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
+    branchId: workspace.body.activeBranch.id,
     receiptDate: today,
     lines: [
       { variantId: expensiveVariant.id, quantity: 2, unitCostPiasters: 15_000 },
@@ -105,6 +106,7 @@ test("manager filters a connected report and follows its real sale and Return pr
     ],
   });
   expect(sale.status).toBe(201);
+  if (!sale.body.reference) throw new Error("Expected a readable sale reference.");
   expect(sale.body).toMatchObject({
     id: saleId,
     originalTotalPiasters: 50_000,
@@ -161,7 +163,7 @@ test("manager filters a connected report and follows its real sale and Return pr
   });
   expect(correctedExpense.status).toBe(201);
 
-  await page.getByRole("link", { name: "التقارير" }).click();
+  await page.getByRole("link", { name: "التقارير", exact: true }).click();
   await expect(page.getByRole("heading", { name: "تقارير الإدارة" })).toBeVisible();
   await expect(page.getByTestId("report-summary")).toBeVisible();
 
@@ -244,7 +246,9 @@ test("manager filters a connected report and follows its real sale and Return pr
   await expect(employeeRow).toContainText("280 ج.م.");
   await expect(employeeRow).toContainText("20 ج.م.");
 
-  const saleCard = page.getByTestId("report-sale").filter({ hasText: saleId });
+  const saleCard = page.getByTestId("report-sale").filter({
+    has: page.locator(`a[href="/sales?saleId=${saleId}"]`),
+  });
   await expect(saleCard).toContainText(employeeName);
   await expect(saleCard).toContainText("الأصلي: 500 ج.م.");
   await expect(saleCard).toContainText("خصم الموظف: 50 ج.م.");
@@ -255,7 +259,9 @@ test("manager filters a connected report and follows its real sale and Return pr
   await expect(saleCard.getByRole("link", { name: "فتح سجل المبيعات" }))
     .toHaveAttribute("href", `/sales?saleId=${saleId}`);
 
-  const refundCard = page.getByTestId("report-refund").filter({ hasText: returnId });
+  const refundCard = page.getByTestId("report-refund").filter({
+    has: page.locator(`a[href="/returns?returnId=${returnId}"]`),
+  });
   await expect(refundCard).toContainText(`القناة الأصلية: الفروع`);
   await expect(refundCard).toContainText(`الفرع الأصلي: ${branchName}`);
   await expect(refundCard).toContainText(`فرع المعالجة: ${branchName}`);
@@ -273,9 +279,9 @@ test("manager filters a connected report and follows its real sale and Return pr
   await expect(expenses).toContainText("20 ج.م.");
   await expect(expenses).toContainText(correctionReason);
   const bestSeller = page.getByTestId("best-sellers").getByRole("listitem").filter({ hasText: productCode });
-  await expect(bestSeller).toContainText("مباع فعلياً قبل المرتجعات: 2");
+  await expect(bestSeller).toContainText("وحدات البيع بعد الإلغاء وقبل المرتجعات: 2");
   await expect(bestSeller).toContainText("مرتجع: 1");
-  await expect(page.getByTestId("inventory-valuation")).toContainText("لقطة المخزون الحالية الآن");
+  await expect(page.getByTestId("inventory-valuation")).toContainText("لقطة إجمالية للمخزون الحالي");
 
   const persistedReportIdentifiers = await page.evaluate(async (needles) => {
     const storageText = (storage: Storage) => Array.from(
@@ -340,15 +346,16 @@ test("manager filters a connected report and follows its real sale and Return pr
   });
   await expect(page.getByRole("region", { name: "الفترة المعروضة" })).toContainText(today);
 
-  await page.getByTestId("report-sale").filter({ hasText: saleId })
-    .getByRole("link", { name: "فتح سجل المبيعات" }).click();
+  await page.getByTestId("report-sale").filter({
+    has: page.locator(`a[href="/sales?saleId=${saleId}"]`),
+  }).getByRole("link", { name: "فتح سجل المبيعات" }).click();
   await expect(page).toHaveURL(new RegExp(`/sales\\?saleId=${saleId}$`));
   await expect(page.getByTestId("sale-details")).toContainText(employeeName);
   await expect(page.getByTestId("sale-details")).toContainText("الإجمالي: 450 ج.م.");
   await expect(page.getByTestId("sale-details")).toContainText(discountReason);
 
   await page.goto(`${internalOrigin}/returns?returnId=${returnId}`);
-  await expect(page.getByTestId("return-details")).toContainText(saleId);
+  await expect(page.getByTestId("return-details")).toContainText(sale.body.reference);
   await expect(page.getByTestId("return-details")).toContainText("280 ج.م.");
 });
 

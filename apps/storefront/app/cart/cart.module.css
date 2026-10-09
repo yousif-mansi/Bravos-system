@@ -131,7 +131,9 @@
 }
 
 .productLink {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
   text-decoration: none;
   text-underline-offset: 4px;
 }
@@ -373,6 +375,12 @@
 
 .reservationNote {
   margin-block: 16px 0;
+}
+
+.continueShopping {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
 }
 
 @media (max-width: 900px) {

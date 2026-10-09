@@ -34,4 +34,5 @@
   .confidence { gap: 32px; }
   .steps { text-align: center; }
 }
+@media (max-width: 360px) { .display { font-size: clamp(32px, 10vw, 36px); } }
 @media (prefers-reduced-motion: reduce) { .arrival { animation: none; } .categoryGrid a { transition: none; } }

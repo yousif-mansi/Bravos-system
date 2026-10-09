@@ -68,11 +68,19 @@ test("storefront route presentation remains reachable across supported widths an
         expect(label?.height, "variant radio has a full-size label target").toBeGreaterThanOrEqual(44);
       }
       if (route.name === "checkout" || route.name === "not-found") {
-        const recoveryLink = route.name === "checkout"
+        const recoveryLinks = route.name === "checkout"
           ? page.getByRole("link", { name: "تعديل السلة" })
           : page.getByRole("link", { name: "العودة إلى المنتجات" });
-        const box = await recoveryLink.boundingBox();
-        expect(box?.height, `${route.name} recovery link at ${width}px`).toBeGreaterThanOrEqual(44);
+        let visibleRecoveryLinks = 0;
+        for (const recoveryLink of await recoveryLinks.all()) {
+          if (!await recoveryLink.isVisible()) continue;
+          visibleRecoveryLinks += 1;
+          const box = await recoveryLink.boundingBox();
+          expect(box, `${route.name} recovery link ${visibleRecoveryLinks} at ${width}px`).not.toBeNull();
+          expect(box!.width, `${route.name} recovery link ${visibleRecoveryLinks} width at ${width}px`).toBeGreaterThanOrEqual(44);
+          expect(box!.height, `${route.name} recovery link ${visibleRecoveryLinks} height at ${width}px`).toBeGreaterThanOrEqual(44);
+        }
+        expect(visibleRecoveryLinks, `${route.name} has a visible recovery link at ${width}px`).toBeGreaterThanOrEqual(1);
       }
       if (width === 320 || width === 390 || width === 1440) await page.screenshot({ path: testInfo.outputPath(`${route.name}-${width}.png`), fullPage: true });
     }
@@ -167,7 +175,7 @@ test("storefront route presentation remains reachable across supported widths an
   await expect(page.getByRole("region", { name: "تفاصيل السعر" })).toContainText("رسوم التوصيل");
   await checkout.getByRole("button", { name: "إرسال طلب التوصيل" }).click();
   await expect(page.getByRole("heading", { name: "تم استلام طلبك" })).toBeVisible();
-  await expect(page.getByRole("status")).toContainText("قيد المراجعة");
+  await expect(page.getByRole("status")).toHaveText("استلمنا طلبك للمراجعة. إرسال الطلب لا يحجز القطع؛ تأكيده يتم عبر واتساب.");
   findings.push({ route: "customer-journey", cartAdditionEvents: cartEvents.length, orderStatus: "pending" });
   console.log(JSON.stringify(findings, null, 2));
 });
