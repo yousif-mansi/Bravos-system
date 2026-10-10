@@ -37,6 +37,28 @@ Archives contain no credentials. Staff whose IDs survive keep their existing pas
 - A connected sale that was prepared after the archive, then completed only after a restore into a fresh database, cannot be recovered automatically: its accepted prices are not on the server. The manager re-enters it. The retained row has no dismiss action, so it stays listed as pending.
 - Staging databases of cancelled or activated previews are dropped. If the API stops mid-restore, drop leftover `bravos_restore_stage_*` databases manually.
 
+## Failed-release recovery
+
+A failed release has no down-migration command. Two recoveries stay distinct:
+
+1. **Externally verified PostgreSQL recovery.** Before a release changes an existing database, the operator already holds a verified external PostgreSQL backup, a separate encrypted business-data archive, and a separate media copy. Abandoning the release means a database administrator restores that verified backup with the host's own procedure, onto a target the owner names. This guide has no drop, restore, or overwrite command. Those steps need the actual host, the verified backup, and an explicit owner decision.
+2. **Application merge restore.** **استعادة البيانات** loads a version 1 archive, pauses writes, stages another database, and merges the archive with the live checkpoint. Activation on a database that already has business data keeps live-only rows and blocks conflicting keys. It does not replace the live database with the archive. The pre-restore checkpoint cannot undo an activation in place: loading that checkpoint into the same database merges again. To leave an activated database, use the external PostgreSQL backup on a fresh target, or a reviewed fresh-database load. Do not run a second merge to reverse the first activation.
+
+Leave every box unchecked until the owner executes it. Do not treat this list as a completed drill.
+
+- [ ] The owner names the failed release and the decision: abandon it, or repair forward.
+- [ ] Record the source and build that started, and the identity of the last known good backup.
+- [ ] Confirm an externally verified PostgreSQL backup exists and was checked before this incident. If it does not, stop and preserve the current files. Do not invent a backup.
+- [ ] Confirm the separate encrypted business archive and the separate media copy. Keep their passwords outside this record.
+- [ ] Stop stock-changing work. Preserve unsynchronized till queues. Do not clear a browser queue to make the database look calm.
+- [ ] Choose one path only after the owner decides:
+  - External recovery of the verified PostgreSQL backup, using the host procedure once the owner supplies the host and the backup location.
+  - Application merge restore only when the owner intends to merge a business archive with current live data, not to undo an activation.
+  - Fresh-database load when the target has only the first-run owner and default settings. The archive is then loaded as it is.
+- [ ] After a fresh target: the owner uses owner recovery, resets staff passwords, and recovers each retained or queued sale once.
+- [ ] Restore missing product images from the separate media copy and confirm the referenced files open.
+- [ ] Record the evidence, the named incident owner, and the time. Sign-off stays with the owner.
+
 ## Operator handoff
 
 Use [the Arabic operator guide](../operator-handover.md) for staff responsibilities and [release rehearsal](../release-rehearsal.md) for process configuration, protected owner recovery and release commands. Save the encrypted archive and checkpoint outside the browser, with their passwords kept separately. Neither download contains image binaries, unsent browser queues, service secrets or staff credentials. Restore missing product images from a separate copy of `BRAVOS_PRODUCT_MEDIA_DIR`; image references alone do not recreate the files.

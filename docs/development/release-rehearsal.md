@@ -18,7 +18,7 @@ pnpm release:migrate apply
 pnpm release:migrate status
 ```
 
-The commands take a PostgreSQL advisory lock. API startup and `release:bootstrap-owner` also apply pending migrations under the same lock and refuse the same drift, so run `status` first and start only one API process during a release. They compare the ordered migration identifiers in `schema_migrations` with this artifact and reject unknown, missing or out-of-order identifiers. They do not claim to verify SQL file-content checksums. There is intentionally no release rollback command; restore a verified database backup after a failed release decision rather than running development down migrations against business data.
+The commands take a PostgreSQL advisory lock. API startup and `release:bootstrap-owner` also apply pending migrations under the same lock and refuse the same drift, so run `status` first and start only one API process during a release. They compare the ordered migration identifiers in `schema_migrations` with this artifact and reject unknown, missing or out-of-order identifiers. They do not claim to verify SQL file-content checksums. There is intentionally no release rollback command. After a failed release decision, follow the [failed-release recovery checklist](backups/restore.md#failed-release-recovery): an externally verified PostgreSQL backup and the application's merge restore are different procedures. Do not run development down migrations against business data.
 
 For a fresh database, create one owner exactly once. Put the password alone in an absolute temporary file. The command restricts and verifies the file before reading it, refuses if any owner already exists, and does not print the password:
 
@@ -44,6 +44,28 @@ Readiness requires successful responses from the API on port 3010, the staff app
 With public ordering still closed, sign in through the staff app, verify imported stock, costs, permissions, configuration, recovery ownership and essential internal workflows. After the explicit internal-launch sign-off, stop the supervisor, set `BRAVOS_PUBLIC_ORDERING_ENABLED=true`, restart it, and verify a real guest quote and order. Do not toggle the gate while an order response is unresolved; checkout preserves the operation identity and retries the same request when service returns.
 
 For an actual hosted launch, run the built services under an operator-owned service manager with the release root as its working directory, `NODE_ENV=production`, HTTPS at the public and internal origins, secure cookies, a reverse proxy, durable external PostgreSQL/media paths, retained logs and verified backup/restore. Leave `BRAVOS_LOOPBACK_REHEARSAL` unset. Do not use `release:rehearse` for that launch. Domain and hosting selection remain deferred.
+
+## Availability checks
+
+`GET /api/public/health` returns `{ ok: true, application: "bravos-public" }` when the API process can answer. That is API liveness. It does not query PostgreSQL, and it does not prove staff or storefront availability, the protected recovery path, media, backups, or that a quote, order, sale, or stock movement works. The three-port check in this loopback rehearsal is a separate local process check. Neither check is a hosted monitor.
+
+An unexpected feature failure still returns the generic Arabic 500, `CONFLICT` / «تعذر إكمال العملية.». The API writes one local `api.unexpected_failure` line with the static category `unexpected_operation_failure`, the generated request id (`req-…`), and the static route template. It does not write the raw URL, query, exception message, stack, body, headers, cookies, or customer data. Known client errors stay out of that line. Fastify request logging stays off. Pool and process-lifecycle errors are separate existing logs. This line is not a hosted alert.
+
+Future checks below are host-neutral and not implemented. Intervals, retention, alert destinations, and the hosting topology are deferred owner inputs. This guide does not choose a provider, network layout, port map, or alert channel.
+
+| Check | What the operator confirms | Deferred owner input |
+| --- | --- | --- |
+| API availability | The API process answers its liveness check | Host, interval, alert destination |
+| Staff availability | The staff entry URL answers | Host, interval, alert destination |
+| Public availability | The public store entry URL answers | Host, interval, alert destination |
+| PostgreSQL | The database accepts the agreed operator check | Host, credential owner, interval |
+| Protected recovery path | The recovery directory exists, stays restricted to the operator account, and does not overlap media | Path and accountable owner |
+| Disk and media | The media volume has free space and the media directory can be read | Path and free-space threshold |
+| Retained service and proxy logs | Service and proxy logs remain available for an incident | Retention period and location |
+| Backup and media age | The newest verified business backup and the separate media copy are within the agreed age | Age limit and storage destination |
+| Incident ownership | A named primary and a named backup owner respond to incidents | Names, assigned before launch |
+
+Record a real pilot in the blank [operator acceptance record](operator-pilot-acceptance.md). Empty fields are not a pass.
 
 ## Configuration reference
 
@@ -71,7 +93,7 @@ Sign-in attempts are limited to three per ten seconds for each client address. T
 
 ## Restore procedure
 
-Follow [staged restore](backups/restore.md). In short: keep the pre-restore checkpoint password separate from the archive password, pause at a quiet time, make every known till synchronize and confirm the pause, download and verify the checkpoint, review conflicts and newer activity, then activate with the fingerprint. After activation every staff member signs in again; after a restore into a fresh database the owner uses owner recovery and then resets staff passwords. Recover retained sales from the restore page. Restore product images from the separate media copy.
+Follow [staged restore](backups/restore.md). In short: keep the pre-restore checkpoint password separate from the archive password, pause at a quiet time, make every known till synchronize and confirm the pause, download and verify the checkpoint, review conflicts and newer activity, then activate with the fingerprint. After activation every staff member signs in again; after a restore into a fresh database the owner uses owner recovery and then resets staff passwords. Recover retained sales from the restore page. Restore product images from the separate media copy. A failed release uses the [failed-release recovery checklist](backups/restore.md#failed-release-recovery). The application merge cannot undo an activation in place.
 
 ## Internal-before-public rollout
 

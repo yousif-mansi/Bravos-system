@@ -1899,6 +1899,13 @@ function sendError(reply: FastifyReply, error: unknown) {
   if (error instanceof NotFoundError) {
     return reply.status(404).send(errorBody(error.code, error.message));
   }
+  const requestId = reply.request.id;
+  const routeTemplate = reply.request.routeOptions.url;
+  console.error("api.unexpected_failure", {
+    category: "unexpected_operation_failure",
+    requestId: typeof requestId === "string" ? requestId : "unavailable",
+    routeTemplate: typeof routeTemplate === "string" && routeTemplate.length > 0 ? routeTemplate : "unmatched",
+  });
   return reply.status(500).send(errorBody("CONFLICT", "تعذر إكمال العملية."));
 }
 
