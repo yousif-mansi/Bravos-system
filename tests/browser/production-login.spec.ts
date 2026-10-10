@@ -71,7 +71,7 @@ test("production login does not request staff-management until that route is vis
 
   await page.getByRole("link", { name: "العودة لمساحة العمل" }).click();
   await page.getByRole("link", { name: "استلام المخزون" }).click();
-  await expect(page.getByRole("heading", { name: "استلام المخزون" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "استلام المخزون", exact: true })).toBeVisible();
   expect(chunkRequests(requested, "receiving-stock").length).toBeGreaterThan(0);
   expect(chunkRequests(requested, "cashier-sales"), "receiving route must not download cashier-sales").toEqual([]);
 

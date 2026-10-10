@@ -311,7 +311,16 @@ test("rebase storage failure leaves the sale unacknowledged and not shown as syn
   const listedDuringFailure = await staffApi(page, "GET", "/api/internal/sales");
   expect(listedDuringFailure.body.some((sale: { id: string }) => sale.id === before.sales[0]?.id)).toBe(true);
   await restoreAckTransactionAbort(page);
-  await page.getByTestId("retry-sync").click();
+  const visibleRetry = page.locator("button.secondary[data-testid='retry-sync']");
+  await expect.poll(async () => {
+    const pending = (await readPrivacyState(page)).sales.filter((sale) => sale.syncStatus === "pending").length;
+    if (pending === 0) return "acknowledged";
+    if (await visibleRetry.count() > 0 && await visibleRetry.isEnabled()) {
+      await visibleRetry.click();
+      return "retried";
+    }
+    return "waiting";
+  }, { timeout: 30_000 }).not.toBe("waiting");
   await expect.poll(async () => (await readPrivacyState(page)).sales.filter((sale) => sale.syncStatus === "pending").length).toBe(0);
   const restored = await readPrivacyState(page);
   expect(restored.sales[0]?.syncStatus).toBe("acknowledged");

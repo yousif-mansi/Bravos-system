@@ -189,12 +189,13 @@ async function submitConfirmAndDeliver(page: Page, deliveryAreaId: string, varia
     expectedRevision: confirmed.body.revision,
   });
   await page.waitForTimeout(1_100);
+  const customerReceivedAt = new Date().toISOString();
   const delivered = await staffApi(page, "POST", `/api/internal/online-orders/${submitted.body.orderId}/deliver`, {
     operationId: crypto.randomUUID(),
     expectedRevision: shipped.body.result.revision,
-    customerReceivedAt: currentCairoDateTime(),
+    customerReceivedAt,
   });
-  expect(delivered.status).toBe(201);
+  expect(delivered.status, JSON.stringify({ customerReceivedAt, body: delivered.body })).toBe(201);
   return { orderId: submitted.body.orderId as string, reference: submitted.body.reference as string };
 }
 
@@ -231,19 +232,4 @@ function cairoDate() {
     month: "2-digit",
     day: "2-digit",
   }).format(new Date());
-}
-
-function currentCairoDateTime() {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Africa/Cairo",
-    hourCycle: "h23",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  }).formatToParts(new Date());
-  const value = (type: string) => parts.find((part) => part.type === type)?.value;
-  return `${value("year")}-${value("month")}-${value("day")}T${value("hour")}:${value("minute")}:${value("second")}`;
 }

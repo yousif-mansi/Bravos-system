@@ -36,8 +36,8 @@ test("manager creates an offer and the connected cashier keeps its accepted valu
   await offerForm.getByLabel("اسم العرض").fill("خمسون جنيهاً للمتصفح");
   await offerForm.getByLabel("نوع الخصم").selectOption("fixed");
   await offerForm.getByLabel("الخصم بالجنيه").fill("50");
-  await offerForm.getByLabel("من تاريخ (القاهرة)").fill(cairoDate());
-  await offerForm.getByLabel("إلى تاريخ (القاهرة)").fill(cairoDate());
+  await offerForm.getByLabel("من تاريخ").fill(cairoDate());
+  await offerForm.getByLabel("إلى تاريخ").fill(cairoDate());
   await offerForm.getByRole("checkbox", { name: /عروض متصفح تلقائية/ }).check();
   await offerForm.getByRole("checkbox", { name: "مفعل", exact: true }).check();
   await offerForm.getByRole("button", { name: "حفظ العرض" }).click();

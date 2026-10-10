@@ -163,6 +163,45 @@ test(`keyboard at ${width}px reaches gallery, cart recovery actions and checkout
 });
 }
 
+test("more than forty real category links can be tabbed through to search", async ({ page }) => {
+  test.setTimeout(180_000);
+  await page.goto(`${INTERNAL}/login`);
+  await page.getByLabel("اسم الدخول").fill("owner");
+  await page.getByLabel("كلمة المرور").fill("e2e-owner-pass");
+  await page.getByRole("button", { name: "دخول" }).click();
+  await page.getByRole("button", { name: "أبشواي" }).click();
+  const suffix = crypto.randomUUID().slice(0, 8);
+  // Public category links are categories of published products, not empty taxonomy rows.
+  const size = await create<{ id: string }>(page, "/api/internal/catalog/sizes", { nameAr: `مقاس عبور ${suffix}` });
+  const color = await create<{ id: string }>(page, "/api/internal/catalog/colors", { nameAr: `لون عبور ${suffix}` });
+  for (let index = 0; index < 41; index += 1) {
+    const padded = String(index + 1).padStart(2, "0");
+    const category = await create<{ id: string }>(page, "/api/internal/catalog/categories", {
+      nameAr: `تصنيف عبور ${suffix} ${padded}`,
+    });
+    await create(page, "/api/internal/catalog/products", {
+      code: `CROSS-${suffix}-${padded}`,
+      nameAr: `قطعة عبور ${suffix} ${padded}`,
+      descriptionAr: "",
+      categoryId: category.id,
+      defaultSellingPricePiasters: 20_000,
+      publication: "available",
+      imageRefs: [],
+      sizeGuideAr: null,
+      variants: [{ sizeId: size.id, colorId: color.id, sellingPricePiastersOverride: null }],
+    });
+  }
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto(`${STORE}/`);
+  const links = page.getByRole("navigation", { name: "اكتشف تصنيفات المتجر" }).getByRole("link");
+  expect(await links.count(), "rendered category links").toBeGreaterThan(40);
+  const search = page.getByRole("textbox", { name: "ابحث عن منتج" });
+  await expect(search).toBeVisible();
+  const trace = await tabTo(page, search);
+  expect(trace.categoryLinks, "real Tab presses through category links before search").toBeGreaterThan(40);
+  await expect(search).toBeFocused();
+});
+
 test("reduced-motion desktop keyboard gallery preserves focus and leaves purchase content visible", async ({ page }, testInfo) => {
   const fixture = await seedProduct(page);
   await page.setViewportSize({ width: 1440, height: 1200 });
@@ -202,16 +241,52 @@ test("reduced-motion desktop keyboard gallery preserves focus and leaves purchas
 });
 
 // Advance with real Tab presses, without programmatic focus or a fixed DOM order.
-// Every traversed target must be visible, indicated and unobscured; a trap fails the bound.
+// The bound is the number of currently rendered tabbable controls. Repeating a focused
+// element means the cycle ended before the target.
 async function tabTo(page: Page, target: Locator, unavailable?: Locator) {
   await expect(target).toBeVisible();
-  for (let step = 0; step < 40; step += 1) {
+  const bound = await page.evaluate(() => {
+    function tabbable(element: Element) {
+      if (!(element instanceof HTMLElement)) return false;
+      if (element.tabIndex < 0 || element.hasAttribute("disabled") || element.getAttribute("aria-disabled") === "true") return false;
+      if (element.closest("[hidden], [inert]")) return false;
+      if (element instanceof HTMLInputElement && element.type === "hidden") return false;
+      if (element.closest("details:not([open])") && element.tagName !== "SUMMARY") return false;
+      const style = getComputedStyle(element);
+      return style.display !== "none" && style.visibility !== "hidden";
+    }
+    return [...document.querySelectorAll("a[href], button, input, select, textarea, summary, [tabindex]")].filter(tabbable).length;
+  });
+  expect(bound, "rendered tabbable controls").toBeGreaterThan(0);
+  const seen = new Set<string>();
+  let categoryLinks = 0;
+  for (let step = 0; step < bound; step += 1) {
     await page.keyboard.press("Tab");
     if (unavailable) await expect(unavailable).not.toBeFocused();
-    await expectKeyboardFocus(page.locator(":focus").filter({ hasNot: page.locator(":focus") }));
-    if (await target.count() > 0 && await target.evaluate((element) => element === document.activeElement)) return;
+    const focused = page.locator(":focus").filter({ hasNot: page.locator(":focus") });
+    await expectKeyboardFocus(focused);
+    const identity = await focused.evaluate((element) => {
+      const parts: string[] = [];
+      let node: Element | null = element;
+      while (node && node !== document.documentElement) {
+        const parent: HTMLElement | null = node.parentElement;
+        const index = parent ? Array.prototype.indexOf.call(parent.children, node) : 0;
+        parts.push(`${node.tagName}:${index}`);
+        node = parent;
+      }
+      return parts.join(">");
+    });
+    if (seen.has(identity)) {
+      throw new Error(`Focus cycled at ${identity} after ${step + 1} Tab presses before reaching ${target}. Rendered tabbable controls: ${bound}.`);
+    }
+    seen.add(identity);
+    const href = await focused.evaluate((element) => element.getAttribute("href"));
+    if (href?.includes("category=")) categoryLinks += 1;
+    if (await target.count() > 0 && await target.evaluate((element) => element === document.activeElement)) {
+      return { steps: step + 1, categoryLinks };
+    }
   }
-  throw new Error(`Keyboard could not reach ${target} within 40 Tab presses`);
+  throw new Error(`Keyboard could not reach ${target} within ${bound} rendered tabbable controls`);
 }
 
 async function expectKeyboardFocus(target: Locator) {

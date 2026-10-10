@@ -1366,6 +1366,9 @@ test("synchronous double complete keeps a single sale identity", async ({ page }
     }
     await route.continue();
   });
+  const posted = page.waitForResponse((response) => response.request().method() === "POST"
+    && new URL(response.url()).pathname === "/api/internal/sales"
+    && response.status() < 400);
   await checkout.getByRole("button", { name: "إتمام البيع" }).evaluate((element) => {
     if (!(element instanceof HTMLButtonElement)) {
       throw new Error("Completion button is missing.");
@@ -1375,6 +1378,7 @@ test("synchronous double complete keeps a single sale identity", async ({ page }
   });
   await expect(page.getByRole("status")).toContainText(/تم حفظ البيع|تم العثور على البيع المحفوظ/);
   expect(saleIds).toHaveLength(1);
+  expect((await posted).ok()).toBe(true);
   const listed = await staffApi(page, "GET", "/api/internal/sales");
   const doubles = listed.body.filter((sale: {
     id: string;

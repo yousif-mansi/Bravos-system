@@ -36,9 +36,18 @@ test("a paid offline sale crosses restore generations through durable custody an
     await upload.getByLabel("كلمة حماية النسخة المرفوعة").fill(backupPassword);
     await upload.getByLabel("كلمة حماية نسخة البيانات الحالية", { exact: true }).fill(checkpointPassword);
     await upload.getByLabel("تأكيد كلمة حماية نسخة البيانات الحالية").fill(checkpointPassword);
+    const previewCreated = manager.waitForResponse((response) => (
+      new URL(response.url()).pathname === "/api/internal/restore/previews"
+      && response.request().method() === "POST"
+    ));
     await upload.getByRole("button", { name: "فك النسخة وإنشاء المعاينة" }).click();
-    await expect(manager.getByTestId("restore-differences")).toBeVisible({ timeout: 30_000 });
+    const previewResponse = await previewCreated;
+    expect(previewResponse.ok(), `${previewResponse.status()} ${await previewResponse.text()}`).toBe(true);
+    await expect(manager.getByTestId("restore-differences")).toBeVisible();
     await expect(manager.getByTestId("restore-validation-summary")).toContainText("تحقق الروابط وأعداد السجلات");
+    // The differences panel is rendered while the preview is still staged. Acknowledgement
+    // is rejected until the server marks that same preview paused or ready.
+    await expect(manager.getByRole("region", { name: "تفاصيل معاينة الاستعادة" }).getByText(/الحالة: (متوقفة للمراجعة|جاهزة للتفعيل)/)).toBeVisible({ timeout: 30_000 });
     await expect(upload.getByLabel("كلمة حماية النسخة المرفوعة")).toHaveCount(0);
 
     const managerTill = await managerContext.newPage();
@@ -97,7 +106,13 @@ test("a paid offline sale crosses restore generations through durable custody an
     await manager.goto(`${BASE_URL}/restore`);
     const recover = manager.getByRole("button", { name: "استعادة البيع مرة واحدة" });
     await expect(recover).toHaveCount(1, { timeout: 30_000 });
+    const recovery = manager.waitForResponse(
+      (response) => response.url().includes("/api/internal/sales/recover") && response.request().method() === "POST",
+      { timeout: 15_000 },
+    );
     await recover.click();
+    const recoveryResponse = await recovery;
+    expect(recoveryResponse.ok(), `${recoveryResponse.status()} ${await recoveryResponse.text()}`).toBe(true);
     await expect(manager.getByRole("status")).toContainText("تمت استعادة البيع المتأخر مرة واحدة");
     await expect(manager.getByRole("button", { name: "استعادة البيع مرة واحدة" })).toHaveCount(0);
 
@@ -209,8 +224,22 @@ async function acknowledgePausedTill(page: Page) {
   await expect(page.getByTestId("restore-pause")).toBeVisible({ timeout: 30_000 });
   const acknowledge = page.getByTestId("acknowledge-restore-pause");
   await expect(acknowledge).toBeEnabled({ timeout: 30_000 });
+  const responsePromise = page.waitForResponse(
+    (response) => response.url().includes("/api/internal/restore/previews/") && response.url().endsWith("/acknowledgements") && response.request().method() === "POST" && response.ok(),
+    { timeout: 15_000 },
+  );
   await acknowledge.click();
-  await expect(page.getByTestId("restore-pause-acknowledged")).toBeVisible();
+  let responseInfo = "no successful acknowledgement POST";
+  try {
+    const response = await responsePromise;
+    responseInfo = `${response.status()} ${await response.text()}`;
+  } catch (error) {
+    const alerts = (await page.getByRole("alert").allInnerTexts()).join(" | ");
+    const enabled = await acknowledge.isEnabled().catch(() => false);
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`${responseInfo}; enabled=${enabled}; alerts=${alerts}; ${message}`);
+  }
+  await expect(page.getByTestId("restore-pause-acknowledged"), responseInfo).toBeVisible();
 }
 
 async function createBackup(page: Page, password: string) {

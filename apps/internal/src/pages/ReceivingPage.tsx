@@ -174,8 +174,12 @@ export default function ReceivingPage({
   } | null>(null);
   const correctionAttemptRef = useRef<{ digest: string; operationId: string } | null>(null);
   const correctionInFlightRef = useRef(false);
+  // A page-load read can resolve after the cashier has already saved a category, size, or color.
+  // That older payload must not replace the lists the form is using.
+  const taxonomyRevisionRef = useRef(0);
 
   async function refresh() {
+    const taxonomyRevision = taxonomyRevisionRef.current;
     const [nextProducts, nextReceipts, nextBatches, nextLowStock, nextSettings, nextCategories, nextSizes, nextColors] = await Promise.all([
       listProducts(),
       listReceipts(),
@@ -191,10 +195,11 @@ export default function ReceivingPage({
     setBatches(nextBatches);
     setLowStock(nextLowStock);
     setSettings(nextSettings);
+    setThresholdInput(String(nextSettings.lowStockThreshold));
+    if (taxonomyRevision !== taxonomyRevisionRef.current) return;
     setCategories(nextCategories);
     setSizes(nextSizes);
     setColors(nextColors);
-    setThresholdInput(String(nextSettings.lowStockThreshold));
   }
 
   useEffect(() => {
@@ -445,17 +450,20 @@ export default function ReceivingPage({
     try {
       if (kind === "category") {
         const created = await createCategory({ nameAr: categoryName, ...(categoryParentId ? { parentId: categoryParentId } : {}) });
+        taxonomyRevisionRef.current += 1;
         setCategories(await listCategories());
         setCategoryName("");
         setCategoryParentId("");
         setNewInventoryProduct((current) => ({ ...current, categoryId: created.id }));
       } else if (kind === "size") {
         const created = await createSize(sizeName);
+        taxonomyRevisionRef.current += 1;
         setSizes(await listSizes());
         setSizeName("");
         setNewInventoryProduct((current) => ({ ...current, variants: current.variants.map((row, index) => index === 0 && !row.sizeId ? { ...row, sizeId: created.id } : row) }));
       } else {
         const created = await createColor(colorName);
+        taxonomyRevisionRef.current += 1;
         setColors(await listColors());
         setColorName("");
         setNewInventoryProduct((current) => ({ ...current, variants: current.variants.map((row, index) => index === 0 && !row.colorId ? { ...row, colorId: created.id } : row) }));

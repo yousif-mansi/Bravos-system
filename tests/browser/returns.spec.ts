@@ -216,8 +216,8 @@ test("manager completes an exchange from Return details and sees only the actual
     discountType: "percentage",
     percentageBasisPoints: 2000,
     fixedDiscountPiasters: null,
-    startsOn: "2026-09-01",
-    endsOn: "2026-09-30",
+    startsOn: cairoDate(),
+    endsOn: cairoDate(),
     active: true,
     allowCoupon: true,
     productIds: [product.body.id],
@@ -262,6 +262,15 @@ test("manager completes an exchange from Return details and sees only the actual
   const replacementSale = await staffApi(page, "GET", `/api/internal/sales/${replacementSaleId}`);
   expect(replacementSale.body).toMatchObject({ finalTotalPiasters: 32000, exchangeCreditAppliedPiasters: 28000, cashReceivedPiasters: 4000 });
 });
+
+function cairoDate() {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Africa/Cairo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+}
 
 async function staffApi(page: Page, method: "GET" | "POST", url: string, payload?: unknown) {
   const response = await page.request.fetch(`http://127.0.0.1:5174${url}`, {
