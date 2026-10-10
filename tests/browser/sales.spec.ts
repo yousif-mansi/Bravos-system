@@ -379,7 +379,7 @@ test("an unpaid price quote can be abandoned without recording a sale", async ({
   expect(recorded).toHaveLength(0);
 });
 
-test("lost complete before send recovers the prepared sale after stock is taken", async ({ page }) => {
+test("lost complete before send recovers the prepared sale after stock is taken", async ({ page, browser }) => {
   await page.goto("http://127.0.0.1:5174/login");
   await page.getByLabel("اسم الدخول").fill("owner");
   await page.getByLabel("كلمة المرور").fill("e2e-owner-pass");
@@ -416,13 +416,24 @@ test("lost complete before send recovers the prepared sale after stock is taken"
   await page.getByLabel("المقاس").selectOption({ label: "مقاس قبل الإرسال" });
   await page.getByLabel("اللون").selectOption({ label: "لون قبل الإرسال" });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
+  let releaseUpload = false;
+  const blockedUploads: Array<{ saleId: string; operationId: string }> = [];
+  const releasedUploads: Array<{ saleId: string; operationId: string; status: number }> = [];
   await page.route("**/api/internal/sales", async (route) => {
     const url = new URL(route.request().url());
-    if (route.request().method() === "POST" && url.pathname === "/api/internal/sales") {
+    if (route.request().method() !== "POST" || url.pathname !== "/api/internal/sales") {
+      await route.continue();
+      return;
+    }
+    const payload = route.request().postDataJSON() as { saleId: string; operationId: string };
+    if (!releaseUpload) {
+      blockedUploads.push({ saleId: payload.saleId, operationId: payload.operationId });
       await route.abort("connectionreset");
       return;
     }
-    await route.continue();
+    const response = await route.fetch();
+    releasedUploads.push({ saleId: payload.saleId, operationId: payload.operationId, status: response.status() });
+    await route.fulfill({ response });
   });
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
@@ -430,41 +441,138 @@ test("lost complete before send recovers the prepared sale after stock is taken"
   await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
-  await page.unroute("**/api/internal/sales");
-  await page.getByRole("button", { name: "تسجيل الخروج" }).click();
-  await page.getByLabel("اسم الدخول").fill("owner");
-  await page.getByLabel("كلمة المرور").fill("e2e-owner-pass");
-  await page.getByRole("button", { name: "دخول" }).click();
-  await page.getByRole("button", { name: "أبشواي" }).click();
-  await expect(page.getByTestId("active-branch")).toContainText("أبشواي");
-  const competing = await staffApi(page, "POST", "/api/internal/sales", {
-    saleId: crypto.randomUUID(),
-    operationId: crypto.randomUUID(),
-    physicallyCompleted: true,
-    employeeDiscountPiasters: 0,
-    lines: [{ variantId, quantity: 1 }],
+  await expect.poll(() => blockedUploads.length).toBeGreaterThan(0);
+  await expect(page.getByRole("alert").filter({ hasText: "تعذر مزامنة المبيعات" })).toBeVisible();
+  const localSales = await page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open("bravos-pos");
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const rows = await new Promise<Array<{
+      id: string;
+      operationId: string;
+      soldByStaffId: string;
+      soldByDisplayName: string;
+      branch: { id: string };
+      finalTotalPiasters: number;
+      payment?: { method: string; cashPiasters: number; onlinePiasters: number };
+      physicallyCompleted: boolean;
+    }>>((resolve, reject) => {
+      const request = db.transaction("sales", "readonly").objectStore("sales").getAll();
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    db.close();
+    return rows;
   });
-  expect(competing.status).toBe(201);
-  await page.getByRole("button", { name: "تسجيل الخروج" }).click();
-  await page.getByLabel("اسم الدخول").fill("cashier");
-  await page.getByLabel("كلمة المرور").fill("e2e-cashier-pass");
-  await page.getByRole("button", { name: "دخول" }).click();
-  await page.getByRole("button", { name: "أبشواي" }).click();
-  await expect(page.getByTestId("active-branch")).toBeVisible();
-  await expect
-    .poll(async () => {
+  const local = localSales.find((sale) => sale.id === blockedUploads[0]?.saleId);
+  if (!local) throw new Error("The physically completed sale must stay durable while its upload is blocked.");
+  expect(blockedUploads.every((upload) => upload.saleId === local.id && upload.operationId === local.operationId)).toBe(true);
+  expect(local.physicallyCompleted).toBe(true);
+  expect(local.finalTotalPiasters).toBe(22000);
+  expect(local.payment).toEqual({ method: "cash", cashPiasters: 22000, onlinePiasters: 0 });
+  const managerContext = await browser.newContext({ locale: "ar-EG" });
+  try {
+    const managerPage = await managerContext.newPage();
+    await managerPage.goto("http://127.0.0.1:5174/login");
+    await managerPage.getByLabel("اسم الدخول").fill("owner");
+    await managerPage.getByLabel("كلمة المرور").fill("e2e-owner-pass");
+    await managerPage.getByRole("button", { name: "دخول" }).click();
+    await managerPage.getByRole("button", { name: "أبشواي" }).click();
+    await expect(managerPage.getByTestId("active-branch")).toContainText("أبشواي");
+    const competingSaleId = crypto.randomUUID();
+    const competingOperationId = crypto.randomUUID();
+    const competing = await staffApi(managerPage, "POST", "/api/internal/sales", {
+      saleId: competingSaleId,
+      operationId: competingOperationId,
+      physicallyCompleted: true,
+      employeeDiscountPiasters: 0,
+      lines: [{ variantId, quantity: 1 }],
+    });
+    expect(competing.status, JSON.stringify(competing.body)).toBe(201);
+    await test.info().attach("competing-sale-response", {
+      body: JSON.stringify(competing.body, null, 2),
+      contentType: "application/json",
+    });
+    expect(competing.body).toMatchObject({
+      id: competingSaleId,
+      operationId: competingOperationId,
+      physicallyCompleted: true,
+      finalTotalPiasters: 22000,
+      lines: [expect.objectContaining({ variantId, quantity: 1, allocatedQuantity: 1, unallocatedQuantity: 0 })],
+    });
+    const held = await staffApi(page, "GET", "/api/internal/sales");
+    expect(held.body.filter((sale: { lines: Array<{ variant: { product: { code: string } } }> }) =>
+      sale.lines.some((line) => line.variant.product.code === "BEFORE-E2E"),
+    )).toHaveLength(0);
+    const managerHeld = await staffApi(managerPage, "GET", "/api/internal/sales");
+    expect(managerHeld.body.filter((sale: { id: string }) => sale.id === competingSaleId || sale.id === local.id)).toHaveLength(1);
+    releaseUpload = true;
+    await page.evaluate(() => window.dispatchEvent(new Event("online")));
+    await expect.poll(() => releasedUploads.filter((upload) => upload.status === 201).length).toBe(1);
+    expect(releasedUploads.every((upload) => upload.saleId === local.id && upload.operationId === local.operationId)).toBe(true);
+    expect(releasedUploads.every((upload) => upload.status === 200 || upload.status === 201)).toBe(true);
+    const matchesBefore = (sale: { lines: Array<{ variant: { product: { code: string } } }> }) =>
+      sale.lines.some((line) => line.variant.product.code === "BEFORE-E2E");
+    await expect.poll(async () => {
       const listed = await staffApi(page, "GET", "/api/internal/sales");
-      return listed.body.filter((sale: { lines: Array<{ variant: { product: { code: string } } }> }) =>
-        sale.lines.some((line) => line.variant.product.code === "BEFORE-E2E"),
-      ).length;
-    })
-    .toBe(1);
-  const listed = await staffApi(page, "GET", "/api/internal/sales");
-  const recovered = listed.body.filter((sale: { lines: Array<{ variant: { product: { code: string } } }> }) =>
-    sale.lines.some((line) => line.variant.product.code === "BEFORE-E2E"),
-  );
-  expect(recovered[0].discrepancy.unallocatedQuantity).toBe(1);
-  expect(recovered[0].lines[0].paidPiasters).toBe(22000);
+      return listed.body.filter(matchesBefore).length;
+    }).toBe(1);
+    const listed = await staffApi(page, "GET", "/api/internal/sales");
+    const recovered = listed.body.filter(matchesBefore);
+    expect(recovered).toHaveLength(1);
+    expect(recovered[0]).toMatchObject({
+      id: local.id,
+      operationId: local.operationId,
+      soldByStaffId: local.soldByStaffId,
+      soldByDisplayName: local.soldByDisplayName,
+      branch: { id: local.branch.id },
+      physicallyCompleted: true,
+      finalTotalPiasters: 22000,
+      payment: { method: "cash", cashPiasters: 22000, onlinePiasters: 0 },
+      discrepancy: { unallocatedQuantity: 1 },
+      lines: [expect.objectContaining({
+        variantId,
+        quantity: 1,
+        paidPiasters: 22000,
+        allocatedQuantity: 0,
+        unallocatedQuantity: 1,
+      })],
+    });
+    const managerListed = await staffApi(managerPage, "GET", "/api/internal/sales");
+    const both = managerListed.body.filter(matchesBefore);
+    expect(both.map((sale: { id: string }) => sale.id).sort()).toEqual([local.id, competingSaleId].sort());
+    const originalOnServer = both.find((sale: { id: string }) => sale.id === local.id);
+    const competingOnServer = both.find((sale: { id: string }) => sale.id === competingSaleId);
+    expect(originalOnServer.operationId).toBe(local.operationId);
+    expect(competingOnServer.operationId).toBe(competingOperationId);
+    expect(originalOnServer.allocations).toEqual([]);
+    expect(competingOnServer.allocations.map((allocation: { quantity: number }) => allocation.quantity)).toEqual([1]);
+    expect(originalOnServer.lines[0].unallocatedQuantity).toBe(1);
+    expect(competingOnServer.lines[0].unallocatedQuantity).toBe(0);
+    const batches = await staffApi(managerPage, "GET", "/api/internal/inventory/batches");
+    const remaining = batches.body
+      .filter((batch: { variantId: string }) => batch.variantId === variantId)
+      .reduce((sum: number, batch: { remainingQuantity: number }) => sum + batch.remainingQuantity, 0);
+    expect(remaining).toBe(0);
+    const lookupAfter = await staffApi(page, "GET", `/api/internal/catalog/lookup?code=${encodeURIComponent("BEFORE-E2E")}`);
+    expect(lookupAfter.body.variants[0].availableQuantity).toBe(0);
+    await page.getByRole("button", { name: "تسجيل الخروج" }).click();
+    await page.getByLabel("اسم الدخول").fill("cashier");
+    await page.getByLabel("كلمة المرور").fill("e2e-cashier-pass");
+    await page.getByRole("button", { name: "دخول" }).click();
+    await page.getByRole("button", { name: "أبشواي" }).click();
+    await expect(page.getByTestId("active-branch")).toBeVisible();
+    const cashierAgain = await staffApi(page, "GET", "/api/internal/sales");
+    const ownSales = cashierAgain.body.filter(matchesBefore);
+    expect(ownSales).toHaveLength(1);
+    expect(ownSales[0].id).toBe(local.id);
+    expect(ownSales[0].operationId).toBe(local.operationId);
+    expect(ownSales[0].discrepancy.unallocatedQuantity).toBe(1);
+  } finally {
+    await managerContext.close();
+  }
 });
 
 test("check result completes a physically paid preparation instead of accepting an unpaid quote", async ({ page }) => {
@@ -1377,8 +1485,8 @@ test("synchronous double complete keeps a single sale identity", async ({ page }
     element.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
   });
   await expect(page.getByRole("status")).toContainText(/تم حفظ البيع|تم العثور على البيع المحفوظ/);
-  expect(saleIds).toHaveLength(1);
   expect((await posted).ok()).toBe(true);
+  expect(saleIds).toHaveLength(1);
   const listed = await staffApi(page, "GET", "/api/internal/sales");
   const doubles = listed.body.filter((sale: {
     id: string;
