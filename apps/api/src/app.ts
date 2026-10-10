@@ -144,7 +144,7 @@ import {
   type OpeningImportServices,
   type OpeningImportTemplateName,
 } from "@bravos/opening-import";
-import { createPostgresOpeningImportStore } from "@bravos/opening-import/node";
+import { createPostgresOpeningImportReportingReader, createPostgresOpeningImportStore } from "@bravos/opening-import/node";
 import { createPostgresOpeningCatalogTransaction } from "@bravos/catalog/node";
 import { createPostgresOpeningReceivingTransaction } from "@bravos/receiving/node";
 import { createPostgresOpeningExpenseTransaction } from "@bravos/expenses/node";
@@ -539,6 +539,7 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
         orders: createPostgresOnlineOrderReportingReader(client),
         returns: createPostgresReturnReportingFactsReader(client),
         purchases: createPostgresPurchaseReportingReader(client),
+        openingImports: createPostgresOpeningImportReportingReader(client),
         expenses: createPostgresExpenseReportingReader(client),
         catalog: createPostgresCatalogReportingReader(client),
       })),

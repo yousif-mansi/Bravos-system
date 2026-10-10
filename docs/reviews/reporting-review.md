@@ -58,3 +58,5 @@ Evidence: ignored `.scratch/claude-ticket23/` (`root-23-*` logs and the candidat
 The accompanying Windows testkit repair was independently verified by the lane: embedded PostgreSQL uses synchronous I/O on Windows, shutdown checks IPv4/IPv6 listener closure, repeated stop and same-port restart work, and temporary/persistent directory handling remains correct. Evidence: `.scratch/sol-implementation/15-pg-lifecycle-sync.log`. This does not test PostgreSQL's asynchronous worker I/O path on Windows.
 
 The unrelated user edit in `docs/reviews/bravos-v1-grok-review.md` is preserved and excluded.
+
+On 2026-10-10 the owner decided to show accepted CSV opening stock separately from purchases. That decision and its local evidence are in [opening-stock-reporting-2026-10-10.md](opening-stock-reporting-2026-10-10.md). The table above remains the historical ticket 23 record.

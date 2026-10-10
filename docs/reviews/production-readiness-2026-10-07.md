@@ -99,6 +99,8 @@ The historical release review's five calendar-dependent reporting failures are n
 
 Opening CSV batches retain their source dates, but the receiving audit receipt is dated on import acceptance and currently enters that period's purchases total. The owner has been asked whether opening value should be excluded from purchases. **No answer is recorded: behavior remains unchanged.** Do not silently exclude it, backdate the audit or reinterpret opening stock. Source: `packages/opening-import/src/application/coordinator.ts` and `packages/receiving/src/adapters/postgres-reporting.ts`.
 
+The paragraph above is the 7 October historical record. On 2026-10-10 the owner answered: show opening stock separately. Accepted opening-import stock is reported apart from purchases, without backdating the acceptance audit or changing FIFO. See [opening-stock-reporting-2026-10-10.md](opening-stock-reporting-2026-10-10.md).
+
 ## Completion boundary
 
 This report remains preliminary until runtime evidence, source preservation and coordinating-agent review are recorded. Passing the engineering gates can establish a bounded reviewed candidate; it cannot establish representative content approval, real hardware, production performance, hosted recovery or client launch acceptance.

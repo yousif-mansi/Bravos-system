@@ -68,6 +68,10 @@ export type OpeningImportTransaction = {
   orders: { inspectOpeningConfiguration(rows: Array<{ nameAr: string; line: number }>): Promise<{ state: unknown; settings: { unreachableWaitHours: number; minimumContactAttempts: number }; errors: OpeningImportLineErrorDto[] }>; insertOpeningConfiguration(input: { areas: Array<{ id: string; nameAr: string; feePiasters: number; active: boolean }>; settings: { unreachableWaitHours: number; minimumContactAttempts: number } | null; actorStaffId: string; at: Date }): Promise<void> };
 };
 
+export type OpeningImportReportingReader = {
+  acceptedStockOperationIds(operationIds: readonly string[]): Promise<ReadonlySet<string>>;
+};
+
 export type OpeningImportServices = {
   authorizeTemplate(auth: VerifiedAuth | null): Promise<void>;
   preview(auth: VerifiedAuth | null, input: unknown): Promise<{ value: OpeningImportPreviewDto; created: boolean }>;

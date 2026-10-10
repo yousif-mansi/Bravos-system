@@ -2,4 +2,10 @@ export type { OpeningImportAcceptRequest, OpeningImportPreviewDto, OpeningImport
 export { OpeningImportConflictError, OpeningImportStaleError, OpeningImportValidationError } from "./domain/errors.ts";
 export { createOpeningImportServices } from "./application/opening-import.ts";
 export { OPENING_IMPORT_TEMPLATES, type OpeningImportTemplateName } from "./domain/templates.ts";
-export type { OpeningImportActorPort, OpeningImportServices, OpeningImportStore, VerifiedAuth } from "./application/ports.ts";
+export type {
+  OpeningImportActorPort,
+  OpeningImportReportingReader,
+  OpeningImportServices,
+  OpeningImportStore,
+  VerifiedAuth,
+} from "./application/ports.ts";

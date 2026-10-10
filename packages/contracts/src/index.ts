@@ -1620,6 +1620,7 @@ export type ManagementReportDto = {
     totalCompletedSales: number;
     totalRefunds: number;
     totalPurchases: number;
+    totalOpeningReceipts: number;
     totalExpenses: number;
     hasMore: boolean;
   };
@@ -1637,6 +1638,7 @@ export type ManagementReportDto = {
     effectiveExpensesPiasters: number;
     operatingProfitPiasters: number | null;
     purchaseCostPiasters: number;
+    openingStockCostPiasters: number;
     costsIncomplete: boolean;
     unresolvedCostQuantity: number;
   };
@@ -1646,6 +1648,7 @@ export type ManagementReportDto = {
   completedSales: ReportCompletedSaleDto[];
   refunds: ReportRefundDto[];
   purchases: { totalPiasters: number; receipts: ReportPurchaseReceiptDto[] };
+  openingStock: { totalPiasters: number; receipts: ReportPurchaseReceiptDto[] };
   expenses: { totalPiasters: number; items: ReportExpenseDto[] };
   bestSellers: ReportBestSellerDto[];
   inventory: {

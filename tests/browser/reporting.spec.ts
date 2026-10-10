@@ -6,6 +6,7 @@ import type {
   ExpenseDto,
   ManagementReportDto,
   ManagerProductDto,
+  OpeningImportPreviewDto,
   ReceiptDto,
   ReturnDto,
   ReturnSourceDto,
@@ -378,6 +379,120 @@ test("cashier cannot discover or request management reporting", async ({ page })
   expect(forbidden.status()).toBe(403);
   expect(await forbidden.json()).toMatchObject({ error: { code: "FORBIDDEN" } });
 });
+
+test("manager sees accepted opening stock apart from purchases", async ({ page }) => {
+  const today = cairoDate(new Date());
+  const suffix = crypto.randomUUID().slice(0, 8);
+  const reason = `تصحيح كمية المخزون الافتتاحي ${suffix}`;
+  await signIn(page, "owner", "e2e-owner-pass");
+  const workspace = await staffApi<WorkspaceDto>(page, "GET", "/api/internal/workspace");
+  expect(workspace.status).toBe(200);
+  const abshway = workspace.body.authorizedBranches.find((branch) => branch.code === "abshway");
+  const fayoum = workspace.body.authorizedBranches.find((branch) => branch.code === "fayoum");
+  if (!abshway || !fayoum || !workspace.body.staff) throw new Error("Expected both seeded branches.");
+
+  const operationId = crypto.randomUUID();
+  const preview = await staffApi<OpeningImportPreviewDto>(page, "POST", "/api/internal/opening-import/previews", {
+    operationId,
+    files: {
+      catalog: [
+        "record_type,key,name_ar,parent_key,product_code,description_ar,category_key,default_price_egp,publication,image_refs,size_guide_ar,product_key,size_key,color_key,price_override_egp",
+        `category,shirts-${suffix},قمصان,,,,,,,,,,,,`,
+        `size,l-${suffix},كبير,,,,,,,,,,,,`,
+        `color,black-${suffix},أسود,,,,,,,,,,,,`,
+        `product,osp-${suffix},قميص افتتاح ${suffix},,OS-${suffix},قطن,shirts-${suffix},500.00,hidden,,,,,,`,
+        `variant,osv-${suffix},,,,,,,,,,osp-${suffix},l-${suffix},black-${suffix},`,
+      ].join("\n"),
+      stock: [
+        "batch_key,branch_code,variant_key,quantity,unit_cost_egp,receipt_date,batch_order",
+        `old-${suffix},abshway,osv-${suffix},2,200.00,2026-08-01,1`,
+        `new-${suffix},fayoum,osv-${suffix},3,240.00,2026-09-01,2`,
+      ].join("\n"),
+      configuration: openingConfiguration(),
+    },
+  });
+  expect(preview.status, JSON.stringify(preview.body)).toBe(201);
+  const accepted = await staffApi<OpeningImportPreviewDto>(page, "POST", `/api/internal/opening-import/previews/${preview.body.id}/accept`, {
+    operationId,
+    previewFingerprint: preview.body.previewFingerprint,
+  });
+  expect(accepted.status, JSON.stringify(accepted.body)).toBe(201);
+
+  const products = await staffApi<ManagerProductDto[]>(page, "GET", "/api/internal/catalog/products");
+  const product = products.body.find((item) => item.code === `OS-${suffix}`);
+  const variantId = product?.variants[0]?.id;
+  if (!variantId) throw new Error("Expected the opening-import variant.");
+  const purchase = await staffApi<ReceiptDto>(page, "POST", "/api/internal/receiving/receipts", {
+    operationId: crypto.randomUUID(),
+    branchId: abshway.id,
+    receiptDate: today,
+    lines: [{ variantId, quantity: 1, unitCostPiasters: 7_500 }],
+  });
+  expect(purchase.status, JSON.stringify(purchase.body)).toBe(201);
+  const receipts = await staffApi<ReceiptDto[]>(page, "GET", "/api/internal/receiving/receipts");
+  const openingReceipt = receipts.body.find((receipt) => receipt.operationId === operationId && receipt.branchId === abshway.id);
+  if (!openingReceipt) throw new Error("Expected the Abshway opening receipt.");
+  const corrected = await staffApi<ReceiptDto>(page, "POST", `/api/internal/receiving/receipts/${openingReceipt.id}/corrections`, {
+    operationId: crypto.randomUUID(),
+    expectedRevision: 0,
+    reason,
+    lines: [{ lineId: openingReceipt.lines[0]?.id, quantity: 1, unitCostPiasters: 20_000 }],
+  });
+  expect(corrected.status, JSON.stringify(corrected.body)).toBe(201);
+
+  const reportResponse = page.waitForResponse((response) => (
+    new URL(response.url()).pathname === "/api/internal/reports/management" && response.status() === 200
+  ));
+  await page.getByRole("link", { name: "التقارير", exact: true }).click();
+  const report = await (await reportResponse).json() as ManagementReportDto;
+  expect(report.summary.openingStockCostPiasters).toBe(92_000);
+  expect(report.summary.effectiveExpensesPiasters).not.toBe(report.summary.openingStockCostPiasters);
+  expect(report.openingStock.totalPiasters).toBe(92_000);
+  expect(report.openingStock.receipts.map((receipt) => receipt.receiptId)).toEqual(expect.arrayContaining([openingReceipt.id]));
+  expect(report.purchases.receipts.map((receipt) => receipt.receiptId)).toContain(purchase.body.id);
+  expect(report.purchases.receipts.map((receipt) => receipt.receiptId)).not.toContain(openingReceipt.id);
+  expect(report.summary.purchaseCostPiasters).toBe(report.purchases.totalPiasters);
+  expect(report.summary.effectiveExpensesPiasters).not.toBe(92_000);
+
+  const opening = page.getByTestId("opening-stock");
+  await expect(opening).toContainText("هذا رصيد بداية الاستيراد لكل الفروع، وليس عملية شراء جديدة ولا مصروفاً تشغيلياً.");
+  await expect(opening).toContainText("لا يتغير بفلتر الفرع أو الموظف أو قناة البيع.");
+  await expect(opening.getByTestId("opening-stock-total")).toHaveText("920 ج.م.");
+  await expect(opening).toContainText("720 ج.م.");
+  await expect(opening).toContainText(reason);
+  await expect(page.getByTestId("report-summary").locator(".report-metric").filter({ hasText: "قيمة المخزون الافتتاحي في الفترة" })).toContainText("920 ج.م.");
+  await expect(page.getByText("مخزون افتتاحي").first()).toBeVisible();
+  const purchases = page.getByRole("heading", { name: "المشتريات", exact: true }).locator("..");
+  await expect(purchases).toContainText("المخزون الافتتاحي المستورد ظاهر في قسمه ولا يُحسب هنا.");
+  await expect(purchases).toContainText("75 ج.م.");
+  await expect(purchases.locator(".expense-total")).not.toHaveText("920 ج.م.");
+
+  const filters = page.getByRole("form", { name: "فلاتر التقارير" });
+  await filters.getByLabel("الفرع").selectOption(fayoum.id);
+  await filters.getByLabel("القناة").selectOption("physical");
+  await expect(filters.locator(`option[value="${workspace.body.staff.id}"]`)).toHaveCount(1);
+  await filters.getByLabel("الموظف").selectOption(workspace.body.staff.id);
+  const filteredResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === "/api/internal/reports/management"
+      && url.searchParams.get("branchId") === fayoum.id
+      && url.searchParams.get("employeeId") === workspace.body.staff.id;
+  });
+  await filters.getByRole("button", { name: "عرض التقرير" }).click();
+  const filtered = await (await filteredResponse).json() as ManagementReportDto;
+  expect(filtered.openingStock.totalPiasters).toBe(92_000);
+  expect(filtered.summary.purchaseCostPiasters).toBe(report.summary.purchaseCostPiasters);
+  expect(filtered.summary.openingStockCostPiasters).toBe(92_000);
+  await expect(page.getByTestId("opening-stock-total")).toHaveText("920 ج.م.");
+});
+
+function openingConfiguration() {
+  const headers = ["record_type", "key", "name_ar", "value", "variant_key", "fee_egp", "active", "discount_type", "percentage", "amount_egp", "starts_on", "ends_on", "allow_combination", "usage_limit", "product_keys", "category_keys", "buy_quantity", "reward_quantity", "reward_percentage", "bundle_total_egp", "offer_key", "required_quantity", "buy_product_keys", "buy_category_keys", "reward_product_keys", "reward_category_keys"];
+  return [
+    headers.join(","),
+    ["inventory_default_threshold", "default", "", "3", ...headers.slice(4).map(() => "")].join(","),
+  ].join("\n");
+}
 
 async function expectMetric(container: Locator, label: string, value: string) {
   await expect(container.locator(".report-metric").filter({ hasText: label })).toContainText(value);
