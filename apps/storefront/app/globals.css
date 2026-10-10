@@ -200,6 +200,12 @@ button[aria-busy="true"] { cursor: progress; }
   button, .button-link { transition: none; }
 }
 
+@media (max-width: 1023px) {
+  html:has([aria-label="إضافة المنتج إلى السلة"]) {
+    scroll-padding-bottom: 10rem;
+  }
+}
+
 /* Shared dark shell; commerce routes retain their scoped layout ownership. */
 body { background-image: radial-gradient(ellipse at 15% 0%, rgba(217,197,162,.055), transparent 42%); }
 .store-shell { isolation: isolate; }

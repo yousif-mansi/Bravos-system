@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { writeFile } from "node:fs/promises";
+import { expectTargetSize, tabTo } from "./support/storefront-a11y";
 
 const PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
@@ -274,7 +275,11 @@ test("cart preserves every saved selection through a slow failed availability re
     expect(await savedCartItems(page)).toEqual(savedBefore);
 
     failureGate.release();
-    await expect(page.locator(".cart-status")).toHaveText("تعذر التحقق من المخزون الآن. أعد المحاولة قبل متابعة الطلب.");
+    const failedStatus = page.locator(".cart-status");
+    await expect(failedStatus).toHaveAttribute("role", "status");
+    await expect(failedStatus).toHaveText("تعذر التحقق من المخزون الآن. أعد المحاولة قبل متابعة الطلب.");
+    await expect(lines.first().locator("output")).toHaveAttribute("aria-live", "polite");
+    await expect(lines.nth(1).locator("output")).toHaveAttribute("aria-live", "polite");
     const refresh = summary.getByRole("button", { name: "تحديث بيانات المنتجات" });
     await expect(refresh).toBeEnabled();
     await expect(refresh).toHaveAttribute("aria-busy", "false");
@@ -301,12 +306,14 @@ test("cart preserves every saved selection through a slow failed availability re
     });
     expect(sale.status).toBe(201);
     await page.unroute(`**${productPath}`);
+    await expectTargetSize(refresh);
+    await tabTo(page, refresh);
     const retryResponse = page.waitForResponse((response) => new URL(response.url()).pathname === productPath && response.request().method() === "GET");
-    await refresh.focus();
-    await expect(refresh).toBeFocused();
-    await refresh.press("Enter");
+    await page.keyboard.press("Enter");
     expect((await retryResponse).status()).toBe(200);
-    await expect(page.locator(".cart-status")).toHaveText("تم تحديث بيانات المنتجات. راجع التغييرات والتنبيهات قبل المتابعة.");
+    const recoveredStatus = page.locator(".cart-status");
+    await expect(recoveredStatus).toHaveAttribute("role", "status");
+    await expect(recoveredStatus).toHaveText("تم تحديث بيانات المنتجات. راجع التغييرات والتنبيهات قبل المتابعة.");
     await expect(refresh).toBeEnabled();
     await expect(lines).toHaveCount(2);
     await expect(lines.first().locator("output")).toHaveText("2");
@@ -376,7 +383,9 @@ test("cart replaces failed media with an Arabic fallback and shows a later repla
     await expect(line.locator("output")).toHaveText("2");
     await expect(line.getByRole("button", { name: "تقليل الكمية" })).toBeEnabled();
     await expect(line.getByRole("button", { name: "زيادة الكمية" })).toBeEnabled();
-    await expect(line.getByRole("button", { name: "حذف", exact: true })).toBeEnabled();
+    const remove = line.getByRole("button", { name: "حذف", exact: true });
+    await expect(remove).toBeEnabled();
+    await expectTargetSize(remove);
     expect(await savedCartItems(page)).toEqual(savedBefore);
     expect(await hasNoHorizontalOverflow(page)).toBe(true);
     await page.screenshot({ path: testInfo.outputPath("cart-image-fallback-phone-390.png"), fullPage: true });
@@ -388,8 +397,11 @@ test("cart replaces failed media with an Arabic fallback and shows a later repla
       variants: [{ sizeId: taxonomy.sizeId, colorId: taxonomy.colorId, sellingPricePiastersOverride: null }],
     });
     expect(updated.status).toBe(200);
+    const refreshMedia = page.getByRole("button", { name: "تحديث بيانات المنتجات" });
+    await expectTargetSize(refreshMedia);
+    await tabTo(page, refreshMedia);
     const replacementResponse = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/public/catalog/media/${imageRefs[1]}`);
-    await page.getByRole("button", { name: "تحديث بيانات المنتجات" }).click();
+    await page.keyboard.press("Enter");
     expect((await replacementResponse).status()).toBe(200);
     await expect(line.locator("img")).toHaveAttribute("src", mediaSrc(imageRefs[1]));
     await expect(line.locator("img")).toHaveAttribute("alt", "");

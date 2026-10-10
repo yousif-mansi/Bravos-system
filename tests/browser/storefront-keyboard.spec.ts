@@ -1,5 +1,5 @@
-import { expect, test, type Locator, type Page } from "@playwright/test";
-import { writeFile } from "node:fs/promises";
+import { expect, test, type Page } from "@playwright/test";
+import { expectKeyboardFocus, expectTargetSize, tabTo } from "./support/storefront-a11y";
 
 const STORE = "http://127.0.0.1:3001";
 const INTERNAL = "http://127.0.0.1:5174";
@@ -8,6 +8,7 @@ type SeedProduct = { id: string; nameAr: string; variants: Array<{ id: string; s
 
 for (const width of [320, 390, 768]) {
 test(`keyboard at ${width}px reaches gallery, cart recovery actions and checkout fields`, async ({ page }, testInfo) => {
+  test.setTimeout(240_000);
   const fixture = await seedProduct(page);
   await page.setViewportSize({ width, height: 844 });
   if (width === 320) {
@@ -51,6 +52,7 @@ test(`keyboard at ${width}px reaches gallery, cart recovery actions and checkout
   await page.keyboard.press("Enter");
   await expect(gallery.getByRole("button", { name: "عرض الصورة 2 من 3" })).toHaveAttribute("aria-current", "true");
   await expect(gallery.getByRole("img")).toHaveAccessibleName(`${fixture.product.nameAr} — صورة 2`);
+  await expect(gallery.getByText("الصورة 2 من 3")).toHaveAttribute("aria-live", "polite");
 
   const panel = page.getByRole("region", { name: "اختر المقاس واللون" });
   const first = panel.getByRole("radio", { name: new RegExp(fixture.firstSize) });
@@ -102,6 +104,7 @@ test(`keyboard at ${width}px reaches gallery, cart recovery actions and checkout
   await page.reload();
   await expect(line).toHaveCount(1);
   await expect(line.locator("output")).toHaveText("1");
+  await expect(line.locator("output")).toHaveAttribute("aria-live", "polite");
   await expect(line).toContainText(fixture.lastSize);
 
   const productLink = line.getByRole("link", { name: fixture.product.nameAr });
@@ -113,6 +116,53 @@ test(`keyboard at ${width}px reaches gallery, cart recovery actions and checkout
   await page.keyboard.press("Enter");
   await expect(refresh).toBeEnabled();
   await expect(line.locator("output")).toHaveText("1");
+  if (width === 390) {
+    const workspace = await page.request.get(`${INTERNAL}/api/internal/workspace`);
+    expect(workspace.status()).toBe(200);
+    const branchId = (await workspace.json()).activeBranch.id as string;
+    const firstVariantId = fixture.product.variants.find((variant) => variant.size.nameAr === fixture.firstSize)!.id;
+    const lastVariantId = fixture.product.variants.find((variant) => variant.size.nameAr === fixture.lastSize)!.id;
+    await create(page, "/api/internal/receiving/receipts", {
+      operationId: crypto.randomUUID(), branchId,
+      receiptDate: new Intl.DateTimeFormat("en-CA", { timeZone: "Africa/Cairo", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date()),
+      lines: [
+        { variantId: lastVariantId, quantity: 1, unitCostPiasters: 10_000 },
+        { variantId: firstVariantId, quantity: 1, unitCostPiasters: 10_000 },
+      ],
+    });
+    await tabTo(page, refresh);
+    await page.keyboard.press("Enter");
+    await expect(line.locator("output")).toHaveText("1");
+    const increase = line.getByRole("button", { name: "زيادة الكمية" });
+    await tabTo(page, increase);
+    await expect(increase).toHaveAccessibleName("زيادة الكمية");
+    await expectTargetSize(increase);
+    await page.keyboard.press("Enter");
+    await expect(line.locator("output")).toHaveText("2");
+    await tabTo(page, productLink);
+    await page.keyboard.press("Enter");
+    await expect(page).toHaveURL(new RegExp(`/products/${fixture.product.id}$`));
+    const mobileAdd = page.getByLabel("إضافة المنتج إلى السلة", { exact: true }).getByRole("button", { name: "أضف إلى السلة", exact: true });
+    await tabTo(page, mobileAdd);
+    await page.keyboard.press("Enter");
+    await expect(page.getByRole("status")).toContainText("تمت إضافة الاختيار إلى السلة");
+    const addedCart = page.getByLabel("إضافة المنتج إلى السلة", { exact: true }).getByRole("link", { name: "تمت الإضافة · عرض السلة" });
+    await tabTo(page, addedCart);
+    await page.keyboard.press("Enter");
+    await expect(page).toHaveURL(`${STORE}/cart`);
+    const extra = page.getByRole("article").filter({ hasText: fixture.firstSize });
+    const kept = page.getByRole("article").filter({ hasText: fixture.lastSize });
+    await expect(extra).toHaveCount(1);
+    await expect(kept.locator("output")).toHaveText("2");
+    const removeExtra = extra.getByRole("button", { name: "حذف", exact: true });
+    await tabTo(page, removeExtra);
+    await expect(removeExtra).toHaveAccessibleName("حذف");
+    await expectTargetSize(removeExtra);
+    await page.keyboard.press("Enter");
+    await expect(extra).toHaveCount(0);
+    await expect(kept).toHaveCount(1);
+    await expect(kept.locator("output")).toHaveText("2");
+  }
   const continueShopping = summary.getByRole("link", { name: "متابعة التسوق" });
   await tabTo(page, continueShopping);
   await expectTargetSize(continueShopping);
@@ -125,6 +175,37 @@ test(`keyboard at ${width}px reaches gallery, cart recovery actions and checkout
   await page.keyboard.press("Enter");
   await expect(page).toHaveURL(/q=/);
   await expect(page.locator("a.product-card").filter({ hasText: fixture.product.nameAr })).toHaveCount(1);
+  if (width === 390) {
+    // Client navigation updates the URL while a hidden busy select is still in the tree.
+    // Tab only after the visible accessible control is enabled and shows the settled value.
+    const sort = page.getByRole("combobox", { name: "ترتيب المنتجات" });
+    await expect(sort).toBeVisible();
+    await expect(sort).toBeEnabled();
+    await expect(sort).toHaveAttribute("aria-busy", "false");
+    await expect(sort).toHaveValue("default");
+    await tabTo(page, sort);
+    await expect(sort).toHaveAccessibleName("ترتيب المنتجات");
+    await page.keyboard.press("ArrowDown");
+    await expect(page).toHaveURL(/sort=name/);
+    await expect(sort).toBeVisible();
+    await expect(sort).toBeEnabled();
+    await expect(sort).toHaveAttribute("aria-busy", "false");
+    await expect(sort).toHaveValue("name");
+    if (!await sort.evaluate((element) => element === document.activeElement)) await tabTo(page, sort);
+    await page.keyboard.press("ArrowDown");
+    await expect(page).toHaveURL(/sort=price-asc/);
+    await expect(sort).toBeVisible();
+    await expect(sort).toBeEnabled();
+    await expect(sort).toHaveAttribute("aria-busy", "false");
+    await expect(sort).toHaveValue("price-asc");
+    const removeSearch = page.getByRole("link", { name: `إزالة البحث: ${fixture.product.nameAr}` });
+    await tabTo(page, removeSearch);
+    await expect(removeSearch).toHaveAccessibleName(`إزالة البحث: ${fixture.product.nameAr}`);
+    await expectTargetSize(removeSearch);
+    await page.keyboard.press("Enter");
+    await expect(page).not.toHaveURL(/[?&]q=/);
+    await expect(page).toHaveURL(/sort=price-asc/);
+  }
   await tabTo(page, page.getByRole("banner").locator('a[href="/cart"]'));
   await page.keyboard.press("Enter");
   await expect(page).toHaveURL(`${STORE}/cart`);
@@ -135,29 +216,100 @@ test(`keyboard at ${width}px reaches gallery, cart recovery actions and checkout
 
   const form = page.getByRole("form", { name: "بيانات طلب التوصيل" });
   const name = form.getByRole("textbox", { name: "الاسم" });
-  await tabTo(page, name);
-  await page.keyboard.type("عميل لوحة المفاتيح");
-  await expect(name).toHaveValue("عميل لوحة المفاتيح");
   const phone = form.getByRole("textbox", { name: "رقم الموبايل الأساسي" });
-  await page.keyboard.press("Tab");
-  await expectKeyboardFocus(phone);
-  await page.keyboard.type("01012345678");
-  await expect(phone).toHaveValue("01012345678");
   const area = form.getByRole("combobox", { name: "منطقة التوصيل" });
-  await page.keyboard.press("Tab");
-  await expectKeyboardFocus(area);
-  await page.keyboard.press("Home");
-  const options = await area.locator("option").count();
-  for (let index = 0; index < options && await area.inputValue() !== fixture.areaId; index += 1) {
-    await page.keyboard.press("ArrowDown");
-  }
-  await expect(area).toHaveValue(fixture.areaId);
   const address = form.getByRole("textbox", { name: "العنوان بالتفصيل" });
-  await page.keyboard.press("Tab");
-  await expectKeyboardFocus(address);
-  await page.keyboard.type("الفيوم، شارع الاختبار بجوار BRAVOS 2026");
-  await expect(address).toHaveValue("الفيوم، شارع الاختبار بجوار BRAVOS 2026");
-  await expect(form.getByRole("button", { name: "مراجعة السعر", exact: true })).toBeEnabled();
+  const addressValue = width === 390
+    ? `الفيوم، شارع الجامعة الطويل بجوار مكتبة BRAVOS Classic ${fixture.product.nameAr}، مبنى 12، الدور الثالث، شقة 4، البوابة الخضراء 2026`
+    : "الفيوم، شارع الاختبار بجوار BRAVOS 2026";
+  await tabTo(page, name);
+  await expect(name).toHaveAccessibleName("الاسم");
+  if (width === 390) {
+    let orderPosts = 0;
+    page.on("request", (request) => {
+      if (request.method() === "POST" && request.url().endsWith("/api/public/checkout/orders")) orderPosts += 1;
+    });
+    await tabTo(page, area);
+    await page.keyboard.press("Home");
+    const options = await area.locator("option").count();
+    for (let index = 0; index < options && await area.inputValue() !== fixture.areaId; index += 1) {
+      await page.keyboard.press("ArrowDown");
+    }
+    await expect(area).toHaveValue(fixture.areaId);
+    const review = form.getByRole("button", { name: "مراجعة السعر", exact: true });
+    await tabTo(page, review);
+    const quoteResponse = page.waitForResponse((response) => response.request().method() === "POST"
+      && response.url().endsWith("/api/public/checkout/quote") && response.ok());
+    await page.keyboard.press("Enter");
+    const quote = await (await quoteResponse).json() as { lines: Array<{ productId: string; quantity: number }>; deliveryFeePiasters: number };
+    expect(quote.lines).toHaveLength(1);
+    expect(quote.lines[0]).toMatchObject({ productId: fixture.product.id, quantity: 2 });
+    expect(quote.deliveryFeePiasters).toBe(2500);
+    const quoteStatus = form.getByRole("status").filter({ hasText: "تم تحديث السعر من المخزون والإعدادات الحالية." });
+    await expect(quoteStatus).toBeVisible();
+    await expect(page.getByRole("region", { name: "تفاصيل السعر" })).toContainText("الإجمالي عند الاستلام");
+    const submit = form.getByRole("button", { name: "إرسال طلب التوصيل" });
+    await tabTo(page, submit);
+    await page.keyboard.press("Enter");
+    await expectKeyboardFocus(name);
+    await expect(name).toHaveAttribute("aria-invalid", "true");
+    await expect(name).toHaveAttribute("aria-describedby", "customerName-error");
+    await expect(page.locator("#customerName-error")).toHaveText("أكمل هذا الحقل.");
+    expect(orderPosts).toBe(0);
+    await page.keyboard.type("عميل لوحة المفاتيح");
+    await expect(name).toHaveValue("عميل لوحة المفاتيح");
+    await expect(name).not.toHaveAttribute("aria-invalid", "true");
+    await expect(page.locator("#customerName-error")).toHaveCount(0);
+    await page.keyboard.press("Tab");
+    await expectKeyboardFocus(phone);
+    await page.keyboard.type("01012345678");
+    await expect(phone).toHaveValue("01012345678");
+    await tabTo(page, submit);
+    await page.keyboard.press("Enter");
+    await expectKeyboardFocus(address);
+    await expect(address).toHaveAttribute("aria-invalid", "true");
+    await expect(address).toHaveAttribute("aria-describedby", "detailedAddress-error");
+    await expect(page.locator("#detailedAddress-error")).toHaveText("اكتب العنوان بالتفصيل.");
+    expect(orderPosts).toBe(0);
+    await page.keyboard.type(addressValue);
+    await expect(address).toHaveValue(addressValue);
+    await expect(address).not.toHaveAttribute("aria-invalid", "true");
+    await expect(page.locator("#detailedAddress-error")).toHaveCount(0);
+    await tabTo(page, submit);
+    const orderResponse = page.waitForResponse((response) => response.request().method() === "POST"
+      && response.url().endsWith("/api/public/checkout/orders"));
+    await page.keyboard.press("Enter");
+    const order = await orderResponse;
+    expect(order.status()).toBe(201);
+    expect(orderPosts).toBe(1);
+    await expect(page.getByRole("heading", { name: "تم استلام طلبك" })).toBeVisible();
+    const acknowledgment = page.getByRole("status");
+    await expect(acknowledgment).toHaveText("استلمنا طلبك للمراجعة. إرسال الطلب لا يحجز القطع؛ تأكيده يتم عبر واتساب.");
+    const returnLink = page.getByRole("link", { name: "العودة إلى المتجر" });
+    await tabTo(page, returnLink);
+    await expect(returnLink).toHaveAccessibleName("العودة إلى المتجر");
+    await expectTargetSize(returnLink);
+  } else {
+    await page.keyboard.type("عميل لوحة المفاتيح");
+    await expect(name).toHaveValue("عميل لوحة المفاتيح");
+    await page.keyboard.press("Tab");
+    await expectKeyboardFocus(phone);
+    await page.keyboard.type("01012345678");
+    await expect(phone).toHaveValue("01012345678");
+    await page.keyboard.press("Tab");
+    await expectKeyboardFocus(area);
+    await page.keyboard.press("Home");
+    const options = await area.locator("option").count();
+    for (let index = 0; index < options && await area.inputValue() !== fixture.areaId; index += 1) {
+      await page.keyboard.press("ArrowDown");
+    }
+    await expect(area).toHaveValue(fixture.areaId);
+    await page.keyboard.press("Tab");
+    await expectKeyboardFocus(address);
+    await page.keyboard.type(addressValue);
+    await expect(address).toHaveValue(addressValue);
+    await expect(form.getByRole("button", { name: "مراجعة السعر", exact: true })).toBeEnabled();
+  }
   await page.screenshot({ path: testInfo.outputPath(`checkout-keyboard-address-${width}.png`) });
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
 });
@@ -193,8 +345,10 @@ test("more than forty real category links can be tabbed through to search", asyn
   }
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto(`${STORE}/`);
-  const links = page.getByRole("navigation", { name: "اكتشف تصنيفات المتجر" }).getByRole("link");
-  expect(await links.count(), "rendered category links").toBeGreaterThan(40);
+  const navigation = page.getByRole("navigation", { name: "اكتشف تصنيفات المتجر" });
+  await expect(navigation).toBeVisible();
+  const links = navigation.getByRole("link");
+  await expect.poll(async () => links.count(), { message: "rendered category links" }).toBeGreaterThan(40);
   const search = page.getByRole("textbox", { name: "ابحث عن منتج" });
   await expect(search).toBeVisible();
   const trace = await tabTo(page, search);
@@ -240,109 +394,6 @@ test("reduced-motion desktop keyboard gallery preserves focus and leaves purchas
   await page.screenshot({ path: testInfo.outputPath("desktop-reduced-motion-variant-focus.png") });
 });
 
-// Advance with real Tab presses, without programmatic focus or a fixed DOM order.
-// The bound is the number of currently rendered tabbable controls. Repeating a focused
-// element means the cycle ended before the target.
-async function tabTo(page: Page, target: Locator, unavailable?: Locator) {
-  await expect(target).toBeVisible();
-  const bound = await page.evaluate(() => {
-    function tabbable(element: Element) {
-      if (!(element instanceof HTMLElement)) return false;
-      if (element.tabIndex < 0 || element.hasAttribute("disabled") || element.getAttribute("aria-disabled") === "true") return false;
-      if (element.closest("[hidden], [inert]")) return false;
-      if (element instanceof HTMLInputElement && element.type === "hidden") return false;
-      if (element.closest("details:not([open])") && element.tagName !== "SUMMARY") return false;
-      const style = getComputedStyle(element);
-      return style.display !== "none" && style.visibility !== "hidden";
-    }
-    return [...document.querySelectorAll("a[href], button, input, select, textarea, summary, [tabindex]")].filter(tabbable).length;
-  });
-  expect(bound, "rendered tabbable controls").toBeGreaterThan(0);
-  const seen = new Set<string>();
-  let categoryLinks = 0;
-  for (let step = 0; step < bound; step += 1) {
-    await page.keyboard.press("Tab");
-    if (unavailable) await expect(unavailable).not.toBeFocused();
-    const focused = page.locator(":focus").filter({ hasNot: page.locator(":focus") });
-    await expectKeyboardFocus(focused);
-    const identity = await focused.evaluate((element) => {
-      const parts: string[] = [];
-      let node: Element | null = element;
-      while (node && node !== document.documentElement) {
-        const parent: HTMLElement | null = node.parentElement;
-        const index = parent ? Array.prototype.indexOf.call(parent.children, node) : 0;
-        parts.push(`${node.tagName}:${index}`);
-        node = parent;
-      }
-      return parts.join(">");
-    });
-    if (seen.has(identity)) {
-      throw new Error(`Focus cycled at ${identity} after ${step + 1} Tab presses before reaching ${target}. Rendered tabbable controls: ${bound}.`);
-    }
-    seen.add(identity);
-    const href = await focused.evaluate((element) => element.getAttribute("href"));
-    if (href?.includes("category=")) categoryLinks += 1;
-    if (await target.count() > 0 && await target.evaluate((element) => element === document.activeElement)) {
-      return { steps: step + 1, categoryLinks };
-    }
-  }
-  throw new Error(`Keyboard could not reach ${target} within ${bound} rendered tabbable controls`);
-}
-
-async function expectKeyboardFocus(target: Locator) {
-  await expect(target).toBeFocused();
-  await expect(target).toBeVisible();
-  await expect(target).toBeInViewport();
-  await expect.poll(() => target.evaluate((element) => {
-    const indicator = element.matches('input[type="radio"]') ? element.closest("label")! : element;
-    const style = getComputedStyle(indicator);
-    return style.outlineStyle !== "none" && parseFloat(style.outlineWidth) > 0;
-  }), "keyboard focus has a visible indicator").toBe(true);
-  let geometry: unknown;
-  try {
-    await expect.poll(async () => {
-      geometry = await target.evaluate((element) => {
-        const box = element.getBoundingClientRect();
-        const centerX = box.x + box.width / 2;
-        const centerY = box.y + box.height / 2;
-        const hit = document.elementFromPoint(centerX, centerY);
-        const style = getComputedStyle(element);
-        const rootStyle = getComputedStyle(document.documentElement);
-        const bar = document.querySelector('[aria-label="إضافة المنتج إلى السلة"]');
-        return {
-          unobscured: centerX >= 0 && centerX < innerWidth && centerY >= 0 && centerY < innerHeight
-            && Boolean(hit && (element === hit || element.contains(hit))),
-          tag: element.tagName,
-          publicText: element.textContent?.trim().slice(0, 120),
-          bounds: box.toJSON(),
-          center: { x: centerX, y: centerY },
-          hitTag: hit?.tagName ?? null,
-          hitPublicText: hit?.textContent?.trim().slice(0, 120) ?? null,
-          viewport: { width: innerWidth, height: innerHeight, scrollY },
-          rootScrollPadding: { start: rootStyle.scrollPaddingBlockStart, end: rootStyle.scrollPaddingBlockEnd },
-          computedScrollMargin: { start: style.scrollMarginBlockStart, end: style.scrollMarginBlockEnd },
-          mobileBar: bar ? { bounds: bar.getBoundingClientRect().toJSON(), visibility: getComputedStyle(bar).visibility } : null,
-        };
-      });
-      return geometry;
-    }, "keyboard focus is inside the viewport and unobscured").toMatchObject({ unobscured: true });
-  } catch (error) {
-    await target.page().screenshot({ path: test.info().outputPath("focus-obstruction.png") });
-    const geometryPath = test.info().outputPath("focus-obstruction.json");
-    await writeFile(geometryPath, JSON.stringify(geometry, null, 2));
-    await test.info().attach("focus-obstruction.json", {
-      path: geometryPath, contentType: "application/json",
-    });
-    throw error;
-  }
-}
-
-async function expectTargetSize(target: Locator) {
-  const bounds = await target.boundingBox();
-  expect(bounds).not.toBeNull();
-  expect(bounds!.width).toBeGreaterThanOrEqual(44);
-  expect(bounds!.height).toBeGreaterThanOrEqual(44);
-}
 
 async function seedProduct(page: Page) {
   await page.goto(`${INTERNAL}/login`);

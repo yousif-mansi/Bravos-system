@@ -55,6 +55,14 @@ export function CollectionControls({ query, categoryId, categories, sort }: Prop
             aria-current={category.id === categoryId ? "page" : undefined}
             href={collectionHref({ query, categoryId: category.id, sort })}
             key={category.id}
+            onFocus={(event) => {
+              const link = event.currentTarget;
+              const rail = link.parentElement?.getBoundingClientRect();
+              const box = link.getBoundingClientRect();
+              if (!rail || box.left < rail.left || box.right > rail.right) {
+                link.scrollIntoView({ block: "nearest", inline: "center" });
+              }
+            }}
           >
             {category.nameAr}
           </Link>

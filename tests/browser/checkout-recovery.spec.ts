@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import type { CheckoutQuoteDto } from "@bravos/contracts/public";
+import { expectTargetSize, tabTo } from "./support/storefront-a11y";
 
 const STORE = "http://127.0.0.1:3001";
 const STAFF = "http://127.0.0.1:5174";
@@ -56,6 +57,7 @@ test("a delayed failed price review preserves the checkout and keyboard retry ne
   await form.getByRole("button", { name: "مراجعة السعر", exact: true }).click();
   try {
     await expect(calculating).toBeVisible();
+    await expect(calculating).toHaveAttribute("aria-live", "polite");
     await expect(form.getByRole("button", { name: "لحظات... نراجع السعر", exact: true })).toBeDisabled();
     await expect(submit).toHaveCount(0);
     expect(await storedAttempt(page)).toBeNull();
@@ -78,10 +80,10 @@ test("a delayed failed price review preserves the checkout and keyboard retry ne
   expect((await staffApi(page, "PATCH", `/api/internal/catalog/products/${seeded.productId}`, {
     ...seeded.productWrite, defaultSellingPricePiasters: 35000,
   })).status).toBe(200);
+  await expectTargetSize(retry);
+  await tabTo(page, retry);
   const quoteResponse = page.waitForResponse((response) => response.request().method() === "POST"
     && response.url().endsWith("/api/public/checkout/quote") && response.status() === 200);
-  await retry.focus();
-  await expect(retry).toBeFocused();
   await page.keyboard.press("Enter");
   const quote = await (await quoteResponse).json() as CheckoutQuoteDto;
   expect(quote.lines.map(({ productId, quantity }) => ({ productId, quantity }))).toEqual(expect.arrayContaining([
@@ -136,8 +138,11 @@ test("delivery areas retry preserves customer fields and reviewed lines use the 
   await page.goto(`${STORE}/checkout`);
   const form = checkout(page);
   await form.getByRole("textbox", { name: "الاسم", exact: true }).fill("عميل إعادة المناطق");
-  await expect(form.getByRole("alert")).toContainText("تعذر تحميل مناطق التوصيل");
-  await form.getByRole("button", { name: "إعادة تحميل مناطق التوصيل" }).click();
+  await expect(form.getByRole("alert")).toHaveText("تعذر تحميل مناطق التوصيل. بياناتك محفوظة في هذه الصفحة؛ أعد المحاولة.");
+  const reloadAreas = form.getByRole("button", { name: "إعادة تحميل مناطق التوصيل" });
+  await expectTargetSize(reloadAreas);
+  await tabTo(page, reloadAreas);
+  await page.keyboard.press("Enter");
   await expect(form.getByRole("combobox", { name: /^منطقة التوصيل/ })).toBeEnabled();
   await expect(form.getByRole("textbox", { name: "الاسم", exact: true })).toHaveValue("عميل إعادة المناطق");
   expect((await staffApi(page, "PATCH", `/api/internal/catalog/products/${seeded.productId}`, {

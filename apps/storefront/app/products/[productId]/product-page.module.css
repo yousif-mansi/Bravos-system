@@ -530,7 +530,8 @@
     align-items: center;
     gap: .3rem 1rem;
     grid-column: 1 / -1;
-    position: sticky;
+    position: fixed;
+    inset-inline: 0;
     bottom: 0;
     z-index: 5;
     padding: .75rem 1rem calc(.75rem + env(safe-area-inset-bottom, 0px));
