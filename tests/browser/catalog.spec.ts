@@ -199,7 +199,17 @@ test("manager renames taxonomy, selects an inventory SKU, and keeps existing ima
   await expect(newPair.getByRole("checkbox", { name: "عرض هذه التركيبة" })).not.toBeChecked();
   await newPair.getByRole("checkbox", { name: "عرض هذه التركيبة" }).check();
   await extendedForm.getByLabel("حالة الموقع").selectOption("available");
+  const savedPublication = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return response.request().method() === "PATCH"
+      && url.pathname === `/api/internal/catalog/products/${product.id}`;
+  });
   await extendedForm.getByRole("button", { name: "حفظ التعديل" }).click();
+  const saved = await savedPublication;
+  const savedBody = await saved.json() as { publication?: string };
+  expect(saved.status(), JSON.stringify(savedBody)).toBe(200);
+  expect(savedBody.publication, JSON.stringify(savedBody)).toBe("available");
+  await expect(page.getByRole("status")).toContainText("تم تحديث المنتج.");
   const published = await page.request.get(`http://127.0.0.1:5174/api/public/catalog/products/${product.id}`);
   expect(published.status()).toBe(200);
   const publishedBody = await published.json();

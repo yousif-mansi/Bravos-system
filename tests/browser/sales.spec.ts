@@ -1243,17 +1243,57 @@ test("blocked tab recovers the other tab's sale then continues its own cart", as
   await searchAndAdd(page2);
   await page2.getByRole("form", { name: "إتمام البيع" }).getByLabel("الكمية").fill("2");
   await searchAndAdd(page);
-  const completedIds: string[] = [];
+  const completedAttempts: Array<{ saleId: string; operationId: string; quantity: number }> = [];
   await page.route("**/api/internal/sales", async (route) => {
     const url = new URL(route.request().url());
     if (route.request().method() !== "POST" || url.pathname !== "/api/internal/sales") {
       await route.continue();
       return;
     }
-    const payload = route.request().postDataJSON() as { saleId: string; lines: Array<{ quantity: number }> };
-    completedIds.push(payload.saleId);
+    const payload = route.request().postDataJSON() as { saleId: string; operationId: string; lines: Array<{ quantity: number }> };
+    completedAttempts.push({
+      saleId: payload.saleId,
+      operationId: payload.operationId,
+      quantity: payload.lines[0]?.quantity ?? 0,
+    });
     expect(payload.lines[0]?.quantity).toBe(1);
     await route.abort("connectionreset");
+  });
+  let releaseRecovery = false;
+  const blockedRecoveryAttempts: typeof completedAttempts = [];
+  const recoveredIds: string[] = [];
+  const recoveredReplies: Array<{ status: number; body: SaleDto & { acknowledgement: { acknowledgedOperationIds: string[] } } }> = [];
+  let recoveredA: OfflineCompletedSale | undefined;
+  await page2.route("**/api/internal/sales", async (route) => {
+    const url = new URL(route.request().url());
+    if (route.request().method() !== "POST" || url.pathname !== "/api/internal/sales") {
+      await route.continue();
+      return;
+    }
+    const payload = route.request().postDataJSON() as {
+      saleId: string;
+      operationId: string;
+      payment: SalePaymentDto;
+      lines: Array<{ quantity: number }>;
+    };
+    if (!releaseRecovery) {
+      blockedRecoveryAttempts.push({
+        saleId: payload.saleId,
+        operationId: payload.operationId,
+        quantity: payload.lines[0]?.quantity ?? 0,
+      });
+      expect(payload.lines[0]?.quantity).toBe(1);
+      await route.abort("connectionreset");
+      return;
+    }
+    if (!recoveredA) throw new Error("Recovery was released before the durable sale was read.");
+    recoveredIds.push(payload.saleId);
+    expect(payload.saleId).toBe(recoveredA.id);
+    expect(payload.operationId).toBe(recoveredA.operationId);
+    expect(payload.payment).toEqual(recoveredA.payment);
+    const response = await route.fetch();
+    recoveredReplies.push({ status: response.status(), body: await response.json() });
+    await route.fulfill({ response });
   });
   const checkoutA = page.getByRole("form", { name: "إتمام البيع" });
   await checkoutA.getByRole("button", { name: "قبول الأسعار" }).click();
@@ -1261,11 +1301,16 @@ test("blocked tab recovers the other tab's sale then continues its own cart", as
   await checkoutA.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkoutA.getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
-  await expect.poll(() => completedIds.length).toBe(1);
+  await expect.poll(() => completedAttempts.length).toBeGreaterThan(0);
+  const completedIds = [completedAttempts[0]!.saleId];
+  expect(completedAttempts.every((attempt) => (
+    attempt.saleId === completedIds[0]
+    && attempt.operationId === completedAttempts[0]!.operationId
+    && attempt.quantity === 1
+  ))).toBe(true);
   const checkoutB = page2.getByRole("form", { name: "إتمام البيع" });
   await expect(checkoutB.getByLabel("الكمية")).toHaveValue("2");
   await expect(page2.getByTestId("sale-details")).toHaveCount(0);
-  await page.unroute("**/api/internal/sales");
   await expect
     .poll(async () => {
       const rows = await page2.evaluate(async () => {
@@ -1304,27 +1349,43 @@ test("blocked tab recovers the other tab's sale then continues its own cart", as
     return all;
   });
   const savedA = await readCompletedSales();
-  const recoveredA = savedA.find((sale) => sale.id === completedIds[0]);
+  recoveredA = savedA.find((sale) => sale.id === completedIds[0]);
   if (!recoveredA) throw new Error("The completed sale must remain durable before recovery.");
-  expect(recoveredA?.lines[0]?.quantity).toBe(1);
+  expect(recoveredA.lines[0]?.quantity).toBe(1);
+  expect(recoveredA.operationId).toBe(completedAttempts[0]!.operationId);
   expect(recoveredA.payment).toEqual({ method: "cash", cashPiasters: 15000, onlinePiasters: 0 });
-  const recoveredIds: string[] = [];
-  const recoveredReplies: Array<{ status: number; body: SaleDto & { acknowledgement: { acknowledgedOperationIds: string[] } } }> = [];
-  await page2.route("**/api/internal/sales", async (route) => {
-    const url = new URL(route.request().url());
-    if (route.request().method() === "POST" && url.pathname === "/api/internal/sales") {
-      const payload = route.request().postDataJSON() as { saleId: string; operationId: string; payment: SalePaymentDto };
-      recoveredIds.push(payload.saleId);
-      expect(payload.saleId).toBe(recoveredA?.id);
-      expect(payload.operationId).toBe(recoveredA?.operationId);
-      expect(payload.payment).toEqual(recoveredA.payment);
-      const response = await route.fetch();
-      recoveredReplies.push({ status: response.status(), body: await response.json() });
-      await route.fulfill({ response });
-      return;
-    }
-    await route.continue();
+  const pendingEffects = await page2.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open("bravos-pos");
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const tx = db.transaction("effects", "readonly");
+    const all = await new Promise<Array<{ id: string; operationId: string; variantId: string; quantity: number }>>((resolve, reject) => {
+      const req = tx.objectStore("effects").getAll();
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    db.close();
+    return all;
   });
+  expect(pendingEffects.filter((effect) => effect.operationId === recoveredA.operationId)).toEqual([
+    expect.objectContaining({
+      id: `${recoveredA.operationId}:${variantId}`,
+      operationId: recoveredA.operationId,
+      variantId,
+      quantity: 1,
+    }),
+  ]);
+  expect(pendingEffects.filter((effect) => effect.variantId === variantId).map((effect) => effect.quantity)).toEqual([1]);
+  const listedBefore = await staffApi(page2, "GET", "/api/internal/sales");
+  expect(listedBefore.status).toBe(200);
+  expect(listedBefore.body.filter((sale: { id: string }) => sale.id === completedIds[0])).toHaveLength(0);
+  expect(recoveredIds).toEqual([]);
+  for (const attempt of blockedRecoveryAttempts) {
+    expect(attempt).toEqual({ saleId: recoveredA.id, operationId: recoveredA.operationId, quantity: 1 });
+  }
+  releaseRecovery = true;
   await page2.evaluate(() => window.dispatchEvent(new Event("online")));
   await expect
     .poll(async () => {
@@ -1341,7 +1402,7 @@ test("blocked tab recovers the other tab's sale then continues its own cart", as
     finalTotalPiasters: recoveredA.finalTotalPiasters,
     lines: [expect.objectContaining({ variantId, quantity: 1, paidPiasters: 15000 })],
   });
-  expect(recoveredReplies[0]!.body.acknowledgement.acknowledgedOperationIds).toContain(recoveredA.operationId);
+  expect(recoveredReplies[0]!.body.acknowledgement.acknowledgedOperationIds.filter((id) => id === recoveredA.operationId)).toEqual([recoveredA.operationId]);
   await expect(checkoutB.getByLabel("الكمية")).toHaveValue("2");
   await page2.unroute("**/api/internal/sales");
   const bPrepareIds: string[] = [];

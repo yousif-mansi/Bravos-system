@@ -137,7 +137,7 @@ test("a new local sale during an outstanding ack rebases newer stock first witho
   ]);
   expect(afterFirstCapture.effects).toHaveLength(1);
   expect(afterFirstCapture.stockCache.version).toBe(baselineVersion);
-  await addAndPrice(page, seed, { customerName: "زبون ثان", customerPhone: "01017000002" });
+  await addAndPrice(page, seed, { customerName: "زبون ثان", customerPhone: "01017000002", waitForLookupResponse: true });
   await page.getByRole("form", { name: "إتمام البيع" }).getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await page.getByRole("form", { name: "إتمام البيع" }).getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
@@ -205,7 +205,7 @@ test("an older acknowledgement that is not in the newer proof still rebases with
   await expect.poll(() => captured.length).toBe(1);
   expect(captured[0]?.saleId).toBe(saleB?.id);
   expect(captured[0]?.pendingOperationIds).toEqual([saleB?.operationId]);
-  await addAndPrice(page, seed, { customerPhone: "01017500001" });
+  await addAndPrice(page, seed, { customerPhone: "01017500001", waitForLookupResponse: true });
   await page.getByRole("form", { name: "إتمام البيع" }).getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await page.getByRole("form", { name: "إتمام البيع" }).getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
@@ -220,7 +220,7 @@ test("an older acknowledgement that is not in the newer proof still rebases with
   expect(committedB?.includedOperationIds).not.toContain(saleA?.operationId);
   expect(committedB?.stockVersion).toBeGreaterThan(committedA?.stockVersion ?? 0);
   expect(availabilityOf(committedB, seed.variantId)).toBe(2);
-  await addAndPrice(page, seed, { customerPhone: "01017500003" });
+  await addAndPrice(page, seed, { customerPhone: "01017500003", waitForLookupResponse: true });
   await page.getByRole("form", { name: "إتمام البيع" }).getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await page.getByRole("form", { name: "إتمام البيع" }).getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
@@ -589,7 +589,7 @@ test("account recovery preserves accepted and connected sales across revoke, exp
   await page.unroute("**/api/internal/sales/prepare");
   await page.getByRole("link", { name: "العودة لمساحة العمل" }).click();
   await page.getByRole("link", { name: "البحث عن منتج" }).click();
-  await addAndPrice(page, seed);
+  await addAndPrice(page, seed, { waitForLookupResponse: true });
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await expect(page.getByTestId("accepted-prices")).toBeVisible();
   await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();

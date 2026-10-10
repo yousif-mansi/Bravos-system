@@ -390,6 +390,10 @@ test("manager sees accepted opening stock apart from purchases", async ({ page }
   const abshway = workspace.body.authorizedBranches.find((branch) => branch.code === "abshway");
   const fayoum = workspace.body.authorizedBranches.find((branch) => branch.code === "fayoum");
   if (!abshway || !fayoum || !workspace.body.staff) throw new Error("Expected both seeded branches.");
+  const baseline = await staffApi<ManagementReportDto>(page, "GET", "/api/internal/reports/management?period=today");
+  expect(baseline.status, JSON.stringify(baseline.body)).toBe(200);
+  const baselineOpening = baseline.body.summary.openingStockCostPiasters;
+  const baselinePurchase = baseline.body.summary.purchaseCostPiasters;
 
   const operationId = crypto.randomUUID();
   const preview = await staffApi<OpeningImportPreviewDto>(page, "POST", "/api/internal/opening-import/previews", {
@@ -397,9 +401,9 @@ test("manager sees accepted opening stock apart from purchases", async ({ page }
     files: {
       catalog: [
         "record_type,key,name_ar,parent_key,product_code,description_ar,category_key,default_price_egp,publication,image_refs,size_guide_ar,product_key,size_key,color_key,price_override_egp",
-        `category,shirts-${suffix},قمصان,,,,,,,,,,,,`,
-        `size,l-${suffix},كبير,,,,,,,,,,,,`,
-        `color,black-${suffix},أسود,,,,,,,,,,,,`,
+        `category,shirts-${suffix},قمصان ${suffix},,,,,,,,,,,,`,
+        `size,l-${suffix},كبير ${suffix},,,,,,,,,,,,`,
+        `color,black-${suffix},أسود ${suffix},,,,,,,,,,,,`,
         `product,osp-${suffix},قميص افتتاح ${suffix},,OS-${suffix},قطن,shirts-${suffix},500.00,hidden,,,,,,`,
         `variant,osv-${suffix},,,,,,,,,,osp-${suffix},l-${suffix},black-${suffix},`,
       ].join("\n"),
@@ -412,6 +416,8 @@ test("manager sees accepted opening stock apart from purchases", async ({ page }
     },
   });
   expect(preview.status, JSON.stringify(preview.body)).toBe(201);
+  expect(preview.body.status, previewErrorDiagnostics(preview.body)).toBe("ready");
+  expect(preview.body.errors, previewErrorDiagnostics(preview.body)).toEqual([]);
   const accepted = await staffApi<OpeningImportPreviewDto>(page, "POST", `/api/internal/opening-import/previews/${preview.body.id}/accept`, {
     operationId,
     previewFingerprint: preview.body.previewFingerprint,
@@ -430,8 +436,10 @@ test("manager sees accepted opening stock apart from purchases", async ({ page }
   });
   expect(purchase.status, JSON.stringify(purchase.body)).toBe(201);
   const receipts = await staffApi<ReceiptDto[]>(page, "GET", "/api/internal/receiving/receipts");
-  const openingReceipt = receipts.body.find((receipt) => receipt.operationId === operationId && receipt.branchId === abshway.id);
-  if (!openingReceipt) throw new Error("Expected the Abshway opening receipt.");
+  const openingReceipts = receipts.body.filter((receipt) => receipt.operationId === operationId);
+  const openingReceipt = openingReceipts.find((receipt) => receipt.branchId === abshway.id);
+  const fayoumOpening = openingReceipts.find((receipt) => receipt.branchId === fayoum.id);
+  if (!openingReceipt || !fayoumOpening) throw new Error("Expected both opening receipts for this import.");
   const corrected = await staffApi<ReceiptDto>(page, "POST", `/api/internal/receiving/receipts/${openingReceipt.id}/corrections`, {
     operationId: crypto.randomUUID(),
     expectedRevision: 0,
@@ -439,33 +447,80 @@ test("manager sees accepted opening stock apart from purchases", async ({ page }
     lines: [{ lineId: openingReceipt.lines[0]?.id, quantity: 1, unitCostPiasters: 20_000 }],
   });
   expect(corrected.status, JSON.stringify(corrected.body)).toBe(201);
+  expect(corrected.body.lines[0]).toMatchObject({ effectiveQuantity: 1, effectiveUnitCostPiasters: 20_000 });
+  const fayoumLine = fayoumOpening.lines[0];
+  if (!fayoumLine) throw new Error("Expected the Fayoum opening line.");
+  expect(fayoumLine).toMatchObject({ effectiveQuantity: 3, effectiveUnitCostPiasters: 24_000 });
+  expect(fayoumLine.effectiveQuantity * fayoumLine.effectiveUnitCostPiasters).toBe(72_000);
+  expect(purchase.body.lines[0]).toMatchObject({ effectiveQuantity: 1, effectiveUnitCostPiasters: 7_500 });
+  const expectedOpening = baselineOpening + 92_000;
+  const expectedPurchase = baselinePurchase + 7_500;
+  const linked = await linkedReportReceipts(page, [openingReceipt.id, fayoumOpening.id, purchase.body.id]);
+  expect(linked.missing, JSON.stringify({ missing: linked.missing, opening: [...linked.opening.keys()], purchases: [...linked.purchases.keys()] })).toEqual([]);
+  expect(linked.opening.get(openingReceipt.id)?.effectiveCostPiasters).toBe(20_000);
+  expect(linked.opening.get(fayoumOpening.id)?.effectiveCostPiasters).toBe(72_000);
+  expect(linked.purchases.get(purchase.body.id)?.effectiveCostPiasters).toBe(7_500);
+  expect(linked.purchases.has(openingReceipt.id)).toBe(false);
+  expect(linked.purchases.has(fayoumOpening.id)).toBe(false);
+  expect(linked.opening.has(purchase.body.id)).toBe(false);
 
   const reportResponse = page.waitForResponse((response) => (
     new URL(response.url()).pathname === "/api/internal/reports/management" && response.status() === 200
   ));
   await page.getByRole("link", { name: "التقارير", exact: true }).click();
   const report = await (await reportResponse).json() as ManagementReportDto;
-  expect(report.summary.openingStockCostPiasters).toBe(92_000);
+  expect(report.summary.openingStockCostPiasters).toBe(expectedOpening);
+  expect(report.summary.openingStockCostPiasters - baselineOpening).toBe(92_000);
   expect(report.summary.effectiveExpensesPiasters).not.toBe(report.summary.openingStockCostPiasters);
-  expect(report.openingStock.totalPiasters).toBe(92_000);
-  expect(report.openingStock.receipts.map((receipt) => receipt.receiptId)).toEqual(expect.arrayContaining([openingReceipt.id]));
-  expect(report.purchases.receipts.map((receipt) => receipt.receiptId)).toContain(purchase.body.id);
-  expect(report.purchases.receipts.map((receipt) => receipt.receiptId)).not.toContain(openingReceipt.id);
+  expect(report.openingStock.totalPiasters).toBe(expectedOpening);
+  expect(report.summary.purchaseCostPiasters).toBe(expectedPurchase);
+  expect(report.summary.purchaseCostPiasters - baselinePurchase).toBe(7_500);
   expect(report.summary.purchaseCostPiasters).toBe(report.purchases.totalPiasters);
-  expect(report.summary.effectiveExpensesPiasters).not.toBe(92_000);
+  expect(report.summary.effectiveExpensesPiasters).not.toBe(expectedOpening);
 
   const opening = page.getByTestId("opening-stock");
   await expect(opening).toContainText("هذا رصيد بداية الاستيراد لكل الفروع، وليس عملية شراء جديدة ولا مصروفاً تشغيلياً.");
   await expect(opening).toContainText("لا يتغير بفلتر الفرع أو الموظف أو قناة البيع.");
-  await expect(opening.getByTestId("opening-stock-total")).toHaveText("920 ج.م.");
-  await expect(opening).toContainText("720 ج.م.");
-  await expect(opening).toContainText(reason);
-  await expect(page.getByTestId("report-summary").locator(".report-metric").filter({ hasText: "قيمة المخزون الافتتاحي في الفترة" })).toContainText("920 ج.م.");
+  await expect(opening.getByTestId("opening-stock-total")).toHaveText(egp(expectedOpening));
+  await expect(page.getByTestId("report-summary").locator(".report-metric").filter({ hasText: "قيمة المخزون الافتتاحي في الفترة" })).toContainText(egp(expectedOpening));
   await expect(page.getByText("مخزون افتتاحي").first()).toBeVisible();
   const purchases = page.getByRole("heading", { name: "المشتريات", exact: true }).locator("..");
   await expect(purchases).toContainText("المخزون الافتتاحي المستورد ظاهر في قسمه ولا يُحسب هنا.");
-  await expect(purchases).toContainText("75 ج.م.");
-  await expect(purchases.locator(".expense-total")).not.toHaveText("920 ج.م.");
+  await expect(purchases.locator(".expense-total")).toHaveText(egp(expectedPurchase));
+  await expect(purchases.locator(".expense-total")).not.toHaveText(egp(expectedOpening));
+  const productName = `قميص افتتاح ${suffix}`;
+  let sawCorrectedOpening = false;
+  let sawFayoumOpening = false;
+  let sawDistinctPurchase = false;
+  for (let step = 0; step < 40; step += 1) {
+    const correctedRow = opening.locator("ul.report-plain-list > li").filter({ hasText: reason });
+    if (await correctedRow.count()) {
+      await expect(correctedRow).toContainText(productName);
+      await expect(correctedRow).toContainText(/(?:^|\D)200 ج\.م\./);
+      sawCorrectedOpening = true;
+    }
+    const fayoumRow = opening.locator("ul.report-plain-list > li").filter({ hasText: productName }).filter({ hasText: /(?:^|\D)720 ج\.م\./ });
+    if (await fayoumRow.count()) {
+      await expect(fayoumRow.first()).toContainText("3 قطعة");
+      sawFayoumOpening = true;
+    }
+    const purchaseRow = purchases.locator("ul.report-plain-list > li").filter({ hasText: productName }).filter({ hasText: /(?:^|\D)75 ج\.م\./ });
+    if (await purchaseRow.count()) {
+      await expect(purchaseRow.first()).toContainText("1 قطعة");
+      sawDistinctPurchase = true;
+    }
+    if (sawCorrectedOpening && sawFayoumOpening && sawDistinctPurchase) break;
+    const next = page.getByRole("button", { name: "الصفحة التالية" });
+    if (!(await next.isEnabled())) break;
+    const nextReport = page.waitForResponse((response) => (
+      new URL(response.url()).pathname === "/api/internal/reports/management" && response.status() === 200
+    ));
+    await next.click();
+    await nextReport;
+  }
+  expect(sawCorrectedOpening, "corrected opening receipt visible with its reason and 200 EGP cost").toBe(true);
+  expect(sawFayoumOpening, "Fayoum opening receipt visible with its 720 EGP cost").toBe(true);
+  expect(sawDistinctPurchase, "distinct purchase visible with its 75 EGP cost").toBe(true);
 
   const filters = page.getByRole("form", { name: "فلاتر التقارير" });
   await filters.getByLabel("الفرع").selectOption(fayoum.id);
@@ -480,11 +535,54 @@ test("manager sees accepted opening stock apart from purchases", async ({ page }
   });
   await filters.getByRole("button", { name: "عرض التقرير" }).click();
   const filtered = await (await filteredResponse).json() as ManagementReportDto;
-  expect(filtered.openingStock.totalPiasters).toBe(92_000);
+  expect(filtered.openingStock.totalPiasters).toBe(expectedOpening);
   expect(filtered.summary.purchaseCostPiasters).toBe(report.summary.purchaseCostPiasters);
-  expect(filtered.summary.openingStockCostPiasters).toBe(92_000);
-  await expect(page.getByTestId("opening-stock-total")).toHaveText("920 ج.م.");
+  expect(filtered.summary.purchaseCostPiasters).toBe(expectedPurchase);
+  expect(filtered.summary.openingStockCostPiasters).toBe(expectedOpening);
+  await expect(page.getByTestId("opening-stock-total")).toHaveText(egp(expectedOpening));
 });
+
+function previewErrorDiagnostics(preview: OpeningImportPreviewDto) {
+  const errors = preview.errors.map((error) => (
+    `${error.file}:${error.line}:${error.column ?? ""}:${error.code}:${error.messageAr}`
+  ));
+  return [`status=${preview.status}`, ...errors].join("\n");
+}
+
+function egp(piasters: number) {
+  const pounds = Math.trunc(piasters / 100);
+  const fraction = Math.abs(piasters % 100);
+  const amount = fraction === 0 ? String(pounds) : `${pounds}.${fraction.toString().padStart(2, "0")}`;
+  return `${amount} ج.م.`;
+}
+
+async function linkedReportReceipts(page: Page, receiptIds: string[]) {
+  const opening = new Map<string, ManagementReportDto["openingStock"]["receipts"][number]>();
+  const purchases = new Map<string, ManagementReportDto["purchases"]["receipts"][number]>();
+  const wanted = new Set(receiptIds);
+  let detailPage = 1;
+  let hasMore = true;
+  while (wanted.size > 0 && hasMore) {
+    const response = await staffApi<ManagementReportDto>(
+      page,
+      "GET",
+      `/api/internal/reports/management?period=today&detailPage=${detailPage}&detailPageSize=100`,
+    );
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    for (const receipt of response.body.openingStock.receipts) {
+      if (wanted.has(receipt.receiptId)) opening.set(receipt.receiptId, receipt);
+    }
+    for (const receipt of response.body.purchases.receipts) {
+      if (wanted.has(receipt.receiptId)) purchases.set(receipt.receiptId, receipt);
+    }
+    for (const id of [...wanted]) {
+      if (opening.has(id) || purchases.has(id)) wanted.delete(id);
+    }
+    hasMore = response.body.pageInfo.hasMore;
+    detailPage += 1;
+  }
+  return { opening, purchases, missing: [...wanted] };
+}
 
 function openingConfiguration() {
   const headers = ["record_type", "key", "name_ar", "value", "variant_key", "fee_egp", "active", "discount_type", "percentage", "amount_egp", "starts_on", "ends_on", "allow_combination", "usage_limit", "product_keys", "category_keys", "buy_quantity", "reward_quantity", "reward_percentage", "bundle_total_egp", "offer_key", "required_quantity", "buy_product_keys", "buy_category_keys", "reward_product_keys", "reward_category_keys"];
