@@ -7,6 +7,10 @@ const API = "http://127.0.0.1:5174";
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 const ACKNOWLEDGMENT = "استلمنا طلبك للمراجعة. إرسال الطلب لا يحجز القطع؛ تأكيده يتم عبر واتساب.";
 
+function fixtureCollectionCard(page: Page, productName: string, productId: string) {
+  return page.getByRole("link", { name: productName }).and(page.locator(`a.product-card[href="/products/${productId}"]`));
+}
+
 test("storefront route presentation remains reachable across supported widths and zoom equivalent", async ({ page }, testInfo) => {
   test.setTimeout(360_000);
   await signInManager(page);
@@ -103,7 +107,11 @@ test("storefront route presentation remains reachable across supported widths an
         await expectTargetSize(chip);
         await expectTargetSize(clearAll);
         await expectTargetSize(selectedCategory);
-        await expect(page.locator("a.product-card").filter({ hasText: productName })).toBeVisible();
+        const card = fixtureCollectionCard(page, productName, product.body.id);
+        await expect(card).toHaveCount(1);
+        await expect(card).toBeVisible();
+        await expect(card).toHaveAttribute("href", `/products/${product.body.id}`);
+        await expect(card.getByRole("heading", { name: productName, exact: true })).toHaveText(productName);
       }
       if (route.name === "product") {
         await expect(page.getByRole("heading", { name: productName })).toBeVisible();

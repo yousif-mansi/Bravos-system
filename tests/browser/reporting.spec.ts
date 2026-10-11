@@ -510,13 +510,19 @@ test("manager sees accepted opening stock apart from purchases", async ({ page }
       sawDistinctPurchase = true;
     }
     if (sawCorrectedOpening && sawFayoumOpening && sawDistinctPurchase) break;
-    const next = page.getByRole("button", { name: "الصفحة التالية" });
+    // Opening stock has no pager. Both detail pagers share one page, so follow only the nav after this section.
+    const next = page.getByTestId("opening-stock")
+      .locator("xpath=following-sibling::nav[@aria-label='صفحات تفاصيل التقرير']")
+      .getByRole("button", { name: "الصفحة التالية" });
+    await expect(next).toHaveCount(1);
     if (!(await next.isEnabled())) break;
     const nextReport = page.waitForResponse((response) => (
       new URL(response.url()).pathname === "/api/internal/reports/management" && response.status() === 200
     ));
     await next.click();
-    await nextReport;
+    const nextPage = await (await nextReport).json() as ManagementReportDto;
+    await expect(next.locator("xpath=ancestor::nav[1]"))
+      .toContainText(`صفحة التفاصيل ${nextPage.pageInfo.page} ·`);
   }
   expect(sawCorrectedOpening, "corrected opening receipt visible with its reason and 200 EGP cost").toBe(true);
   expect(sawFayoumOpening, "Fayoum opening receipt visible with its 720 EGP cost").toBe(true);
