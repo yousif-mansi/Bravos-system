@@ -148,9 +148,21 @@ test("hiding a sparse variant pair refreshes it unavailable in the cart while PO
   });
   expect(edited.status).toBe(200);
   await page.reload();
-  await expect(panel.getByRole("radio")).toHaveCount(1);
+  // A Windows streamed reload can keep a second checked input outside the accessibility tree.
+  // The commerce surface is the one accessible, enabled group. Its radio cardinality stays exact.
+  const surface = panel.getByRole("group", { name: "تركيبات المقاس واللون" });
+  await expect(surface).toHaveCount(1);
+  const choice = surface.getByRole("radio");
+  await expect(choice).toHaveCount(1);
+  await expect(choice).toBeVisible();
+  await expect(choice).toBeEnabled();
+  await expect(choice).toBeChecked();
+  await expect(choice).toHaveValue(visible.id);
   await expect(panel.locator(`input[value="${hidden.id}"]`)).toHaveCount(0);
-  await expect(panel.locator(`input[value="${visible.id}"]`)).toBeVisible();
+  const add = panel.getByRole("button", { name: "أضف إلى السلة" });
+  await expect(add).toHaveCount(1);
+  await expect(add).toBeVisible();
+  await expect(add).toBeEnabled();
   await page.goto(`${STORE}/cart`);
   await expect(page.locator(".cart-line")).toHaveCount(1);
   await expect(page.locator(".cart-line [role=alert]")).toContainText("هذا الاختيار غير متوفر حالياً");

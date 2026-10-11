@@ -145,6 +145,7 @@ test("storefront route presentation remains reachable across supported widths an
       expect(geometry.scrollWidth, `${route.name} at ${width}px must not overflow horizontally`).toBeLessThanOrEqual(width);
       expect(geometry.violations, `${route.name} at ${width}px text, controls, and sticky surfaces`).toEqual([]);
       expect(geometry.skipTop, "unfocused skip link stays offscreen").toBeLessThan(0);
+      if (route.name === "arrival") await revealFixtureFilterLink(page, categoryName, width);
       if (width === 320 || width === 390 || width === 1440) await page.screenshot({ path: testInfo.outputPath(`${route.name}-${width}.png`), fullPage: true });
     }
   }
@@ -327,9 +328,12 @@ function presentationProbe({ marker, address, width }: { marker: string; address
   for (const element of markerNodes) {
     const box = element.getBoundingClientRect();
     const style = getComputedStyle(element);
-    if (box.left < -1 || box.right > innerWidth + 1) {
+    const railClip = filterRailClip(element, box);
+    if (!railClip.viewportOverflowIsClip && (box.left < -1 || box.right > innerWidth + 1)) {
       violations.push({ kind: "outside-viewport", text: clip(element), detail: `${Math.round(box.left)}..${Math.round(box.right)} in ${innerWidth}` });
     }
+    // A link scrolled fully out of the category rail is not visible content. Keep wrap checks for anything still shown.
+    if (railClip.fullyHidden) continue;
     const clips = style.overflowX === "hidden" || style.overflowX === "clip";
     if ((clips || element instanceof HTMLTextAreaElement) && element.scrollWidth > element.clientWidth + 1) {
       violations.push({ kind: "clipped-text", text: clip(element), detail: `${element.scrollWidth} > ${element.clientWidth}` });
@@ -414,6 +418,98 @@ function presentationProbe({ marker, address, width }: { marker: string; address
   function clip(element: Element) {
     return (element.textContent || "").trim().replace(/\s+/g, " ").slice(0, 80);
   }
+
+  // CollectionControls renders nav "تصفية حسب التصنيف" with overflow-x auto. Focus scrolls a clipped link into that rail.
+  function filterRailClip(element: HTMLElement, box: DOMRect) {
+    const rail = element.closest<HTMLElement>("nav[aria-label='تصفية حسب التصنيف']");
+    const none = { viewportOverflowIsClip: false, fullyHidden: false };
+    if (!rail || rail === element) return none;
+    const overflowX = getComputedStyle(rail).overflowX;
+    if (overflowX !== "auto" && overflowX !== "scroll") return none;
+    const railBox = rail.getBoundingClientRect();
+    if (railBox.width <= 0 || railBox.left < -1 || railBox.right > innerWidth + 1) return none;
+    const extendsOutsideRail = box.left < railBox.left - 1 || box.right > railBox.right + 1;
+    const visibleLeft = Math.max(box.left, railBox.left);
+    const visibleRight = Math.min(box.right, railBox.right);
+    const fullyHidden = visibleRight - visibleLeft <= 1;
+    const overflowsViewport = box.left < -1 || box.right > innerWidth + 1;
+    const visibleSliceLeft = Math.max(box.left, 0);
+    const visibleSliceRight = Math.min(box.right, innerWidth);
+    const sliceInsideRail = visibleSliceRight - visibleSliceLeft <= 1
+      || (visibleSliceLeft >= railBox.left - 1 && visibleSliceRight <= railBox.right + 1);
+    return {
+      viewportOverflowIsClip: overflowsViewport && extendsOutsideRail && sliceInsideRail,
+      fullyHidden,
+    };
+  }
+}
+
+async function revealFixtureFilterLink(page: Page, categoryName: string, width: number) {
+  const rail = page.getByRole("navigation", { name: "تصفية حسب التصنيف" });
+  const link = rail.getByRole("link", { name: categoryName, exact: true });
+  await expect(link, `${width}px fixture filter link`).toHaveCount(1);
+  await expect(link).toBeVisible();
+  const bound = await page.evaluate(() => document.querySelectorAll("a[href], button, input, select, textarea, summary, [tabindex]").length);
+  expect(bound, "rendered tabbable controls").toBeGreaterThan(0);
+  let presses = 0;
+  for (let attempt = 0; attempt < bound + 8; attempt += 1) {
+    await page.keyboard.press("Tab");
+    const focusKind = await page.evaluate(() => {
+      const overlay = (start: EventTarget | null) => {
+        let node: Node | null = start instanceof Node ? start : null;
+        while (node) {
+          if (node instanceof Element && (node.id === "next-logo" || node.id === "devtools-indicator" || node.classList.contains("nextjs-toast") || node.tagName === "NEXTJS-PORTAL" || (node.getAttribute("aria-label") ?? "").includes("Next.js Dev Tools"))) return true;
+          const root = node.getRootNode();
+          if (root instanceof ShadowRoot && root.host && root.host !== node) {
+            node = root.host;
+            continue;
+          }
+          node = node.parentNode;
+        }
+        return false;
+      };
+      const node = document.activeElement;
+      if (!node || node === document.body || node === document.documentElement) return "none";
+      return overlay(node) ? "overlay" : "product";
+    });
+    if (focusKind !== "product") continue;
+    presses += 1;
+    if (await link.evaluate((element) => element === document.activeElement)) break;
+  }
+  await expect(link, `${width}px fixture filter link is reachable by Tab`).toBeFocused();
+  expect(presses, `${width}px Tab presses before the fixture filter link`).toBeGreaterThan(0);
+  await expect.poll(async () => link.evaluate((element) => {
+    const scroller = element.closest("nav");
+    const box = element.getBoundingClientRect();
+    const railBox = scroller?.getBoundingClientRect();
+    const centerX = box.left + box.width / 2;
+    const centerY = box.top + box.height / 2;
+    const hit = document.elementFromPoint(centerX, centerY);
+    const overflowX = scroller ? getComputedStyle(scroller).overflowX : "";
+    const fullyInsideRail = Boolean(railBox)
+      && box.left >= railBox!.left - 1 && box.right <= railBox!.right + 1
+      && box.top >= railBox!.top - 1 && box.bottom <= railBox!.bottom + 1;
+    const fullyInsideViewport = box.left >= -1 && box.right <= innerWidth + 1 && box.top >= -1 && box.bottom <= innerHeight + 1;
+    const unobscured = centerX >= 0 && centerX < innerWidth && centerY >= 0 && centerY < innerHeight
+      && Boolean(hit && (hit === element || element.contains(hit)));
+    return {
+      overflowX,
+      fullyInsideRail,
+      fullyInsideViewport,
+      unobscured,
+      reachable: document.activeElement === element,
+      fitsTarget: box.width >= 44 && box.height >= 44,
+      width: Math.round(box.width),
+      height: Math.round(box.height),
+    };
+  }), `${width}px focused fixture filter link is fully revealed`).toMatchObject({
+    overflowX: expect.stringMatching(/^(auto|scroll)$/),
+    fullyInsideRail: true,
+    fullyInsideViewport: true,
+    unobscured: true,
+    reachable: true,
+    fitsTarget: true,
+  });
 }
 
 async function signInManager(page: Page) {
