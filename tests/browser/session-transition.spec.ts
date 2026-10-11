@@ -53,22 +53,43 @@ test("explicit logout survives a same-account session refresh and preserves a co
 
 test("a delayed old-account logout cannot sign out a newer real cashier login in another tab", async ({ page, context }) => {
   const original = await queueOwnerSale(page);
-  // Expire only the server cookie so the other tab can perform a real fresh login.
-  // The first tab still owns its cached workspace when its logout starts.
-  const expired = await staffApi(page, "POST", "/api/auth/sign-out", {});
-  expect(expired.status).toBe(200);
+  const phase = { name: "queued-owner-sale", proof: null as Awaited<ReturnType<typeof raceProof>> | null };
+  async function enter(name: string) {
+    phase.name = name;
+    if (page.isClosed()) return;
+    try {
+      phase.proof = await raceProof(page);
+    } catch {
+      /* proof is best-effort and must not replace the phase error */
+    }
+  }
   let oldSignOutPosts = 0;
   page.on("request", (request) => {
     if (new URL(request.url()).pathname === "/api/auth/sign-out" && request.method() === "POST") oldSignOutPosts += 1;
   });
   await installLogoutRace(page, "hold");
+  await enter("logout-hold-installed");
   const newer = await context.newPage();
   try {
-    await page.getByRole("button", { name: "تسجيل الخروج" }).click();
-    await expect.poll(async () => (await raceProof(page)).started).toBe(true);
+    const logoutButton = page.getByRole("button", { name: "تسجيل الخروج" });
+    await expect(logoutButton, "old tab still shows explicit logout before the held sign-out starts").toBeVisible();
+    await logoutButton.click();
+    await expect.poll(
+      async () => (await raceProof(page)).started,
+      { message: "held markSignedOut must start before the server cookie is expired" },
+    ).toBe(true);
+    await enter("old-logout-held");
+    // Expire only the server cookie so the other tab can perform a real fresh login.
+    // The first tab already owns its in-flight held logout against the cached workspace.
+    // Expiring first can let a 401 workspace clear unmount AppShell before the
+    // click reaches markSignedOut. Establish the intended held operation first.
+    const expired = await staffApi(page, "POST", "/api/auth/sign-out", {});
+    expect(expired.status).toBe(200);
+    await enter("server-cookie-expired-after-hold");
     await newer.goto("http://127.0.0.1:5174/login");
     await signIn(newer, "cashier-b", "e2e-cashier-b-pass");
     await expect(newer.getByTestId("offline-ready")).toBeVisible({ timeout: 30_000 });
+    await enter("newer-cashier-offline-ready");
     const workspace = await staffApi(newer, "GET", "/api/internal/workspace");
     const staffId = workspace.body.staff.id as string;
     expect(workspace.body.staff.displayName).toBe("كاشير ثان");
@@ -81,10 +102,12 @@ test("a delayed old-account logout cannot sign out a newer real cashier login in
         return account.accountGeneration();
       }, accountPath);
     }).toBeGreaterThan((await raceProof(page)).generationBefore!);
+    await enter("newer-account-generation-advanced");
     const beforeRelease = await readLocalState(newer);
     await page.evaluate(() => window.__bravosLogoutRace?.release?.());
     await expect.poll(async () => (await raceProof(page)).finished).toBe(true);
     const proof = await raceProof(page);
+    await enter("old-logout-finished");
     await test.info().attach("newer-account-real-CAS-proof", {
       body: JSON.stringify(proof, null, 2), contentType: "application/json",
     });
@@ -105,9 +128,15 @@ test("a delayed old-account logout cannot sign out a newer real cashier login in
     const server = await staffApi(newer, "GET", "/api/internal/workspace");
     expect(server.status).toBe(200);
     expect(server.body.staff.id).toBe(staffId);
+  } catch (error) {
+    await test.info().attach("logout-race-phase", {
+      body: JSON.stringify({ phase: phase.name, oldSignOutPosts, proof: phase.proof }, null, 2),
+      contentType: "application/json",
+    });
+    throw error;
   } finally {
     await restoreLogoutRace(page);
-    await newer.close();
+    if (!newer.isClosed()) await newer.close();
   }
 });
 
@@ -163,7 +192,16 @@ async function raceProof(page: Page) {
 }
 
 async function restoreLogoutRace(page: Page) {
-  await page.evaluate(() => { window.__bravosLogoutRace?.restore(); delete window.__bravosLogoutRace; });
+  if (page.isClosed()) return;
+  try {
+    await page.evaluate(() => { window.__bravosLogoutRace?.restore(); delete window.__bravosLogoutRace; });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (page.isClosed() || /Target page, context or browser has been closed|Execution context was destroyed|Target closed/i.test(message)) {
+      return;
+    }
+    throw error;
+  }
 }
 
 async function queueOwnerSale(page: Page) {
