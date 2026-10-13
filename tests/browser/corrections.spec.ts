@@ -22,8 +22,10 @@ test("manager corrects a posted Return in Arabic and the Returns payment uses th
     variants: [{ sizeId: size.body.id, colorId: color.body.id, sellingPricePiastersOverride: null }],
   });
   const variantId = product.body.variants[0].id;
+  const workspace = await staffApi(page, "GET", "/api/internal/workspace");
   await staffApi(page, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
+    branchId: workspace.body.activeBranch.id,
     receiptDate: "2026-09-01",
     lines: [{ variantId, quantity: 1, unitCostPiasters: 5000 }],
   });
@@ -69,7 +71,7 @@ test("manager corrects a posted Return in Arabic and the Returns payment uses th
 
   await page.getByRole("link", { name: "مساحة العمل" }).click();
   await page.getByRole("link", { name: "المرتجعات" }).click();
-  await page.locator(".return-history").getByRole("button", { name: new RegExp(sale.body.id) }).click();
+  await page.locator(".return-history").getByRole("button", { name: new RegExp(draft.body.reference) }).click();
   const details = page.getByTestId("return-details");
   await expect(details).toContainText("المعتمد حالياً: 80 ج.م.");
   await expect(details).toContainText("المعتمد الأصلي المحفوظ: 100 ج.م.");
@@ -85,6 +87,7 @@ async function staffApi(page: Page, method: "GET" | "POST", url: string, payload
     headers: { origin: "http://127.0.0.1:5174", ...(payload ? { "content-type": "application/json" } : {}) },
     data: payload,
   });
-  expect(response.status(), `${method} ${url}`).toBeLessThan(400);
-  return { status: response.status(), body: await response.json() };
+  const text = await response.text();
+  expect(response.status(), `${method} ${url} ${text}`).toBeLessThan(400);
+  return { status: response.status(), body: text ? JSON.parse(text) : null };
 }

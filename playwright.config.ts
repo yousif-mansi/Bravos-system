@@ -45,7 +45,10 @@ export default defineConfig({
       timeout: 180_000,
       stdout: "pipe",
       stderr: "pipe",
-      env: pinnedProcessEnv({ BRAVOS_API_ORIGIN: "http://127.0.0.1:3011" }),
+      env: pinnedProcessEnv({
+        BRAVOS_API_ORIGIN: "http://127.0.0.1:3011",
+        BRAVOS_NEXT_DIST_DIR: ".next-e2e",
+      }),
     },
   ],
 });

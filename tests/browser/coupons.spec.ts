@@ -12,8 +12,8 @@ test("manager creates a coupon and cashier can apply, remove, reapply, and compl
   await form.getByLabel("كود الكوبون").fill("browser50");
   await form.getByLabel("حد الاستخدام").fill("5");
   await form.getByLabel("الخصم بالجنيه").fill("50");
-  await form.getByLabel("من تاريخ (القاهرة)").fill(ACTIVE_START);
-  await form.getByLabel("إلى تاريخ (القاهرة)").fill(ACTIVE_END);
+  await form.getByLabel("من تاريخ").fill(ACTIVE_START);
+  await form.getByLabel("إلى تاريخ").fill(ACTIVE_END);
   await form.getByRole("checkbox", { name: /COUPON-E2E/ }).check();
   await form.getByRole("checkbox", { name: "مفعل", exact: true }).check();
   await form.getByRole("button", { name: "حفظ الكوبون" }).click();

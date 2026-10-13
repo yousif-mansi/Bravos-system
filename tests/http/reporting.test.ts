@@ -109,6 +109,7 @@ test("manager report composes effective revenue, retained batch costs, returns a
     expectedRevision: draft.body.revision,
   });
   expect(posted.status, JSON.stringify(posted.body)).toBe(201);
+  expect(posted.body.postedAt).toBe(NOW.toISOString());
   const paid = await api(manager, "POST", `/api/internal/returns/${returnId}/refund`, {
     operationId: crypto.randomUUID(),
     status: "paid",
@@ -557,6 +558,7 @@ test("protected confirmed and in-transit stock stays out of available value whil
     receivedAndInspected: true,
   });
   expect(posted.status, JSON.stringify(posted.body)).toBe(201);
+  expect(posted.body.postedAt).toBe(NOW.toISOString());
 
   const report = await api(manager, "GET", "/api/internal/reports/management?period=month&month=2026-09&channel=online");
   expect(report.status, JSON.stringify(report.body)).toBe(200);

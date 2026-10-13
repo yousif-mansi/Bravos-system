@@ -43,6 +43,12 @@ try {
       "027_online_returns.sql",
       "028_aggregate_analytics.sql",
       "029_restore.sql",
+      "030_branch_inventory.sql",
+      "031_sale_payments.sql",
+      "032_catalog_online_variants.sql",
+      "033_human_references.sql",
+      "034_order_recognition_branch.sql",
+      "035_return_reason.sql",
     ];
     if (first.join(",") !== expectedMigrations.join(",") || afterApply.join(",") !== first.join(",")) {
       throw new Error(`Scratch apply did not record multiple migrations: ${first.join(",")}`);
@@ -307,6 +313,7 @@ async function assertCurrentBatchStorage(pool: Pool, present: boolean): Promise<
     "public_analytics_event",
     "restore_preview", "restore_runtime", "restore_preview_till", "restore_activation",
     "sales_restore_deferred_completion",
+    "inventory_batch_balance",
   ]) {
     if (tables.includes(table) !== present) throw new Error(`Expected ${table} presence=${present}.`);
   }
@@ -325,14 +332,69 @@ async function assertCurrentBatchStorage(pool: Pool, present: boolean): Promise<
     ["sales_pos_snapshot", "restore_generation"],
     ["sales_sale", "source_restore_generation"],
     ["inventory_known_till", "restore_generation"],
+    ["inventory_batch_balance", "batch_id"],
+    ["inventory_batch_balance", "branch_id"],
+    ["inventory_batch_balance", "remaining_quantity"],
+    ["inventory_movement", "branch_id"],
+    ["inventory_allocation", "branch_id"],
+    ["inventory_discrepancy", "branch_id"],
+    ["receiving_receipt", "branch_id"],
+    ["inventory_protected_order", "branch_id"],
+    ["inventory_order_disposition", "branch_id"],
+    ["inventory_stock_correction", "branch_id"],
+    ["inventory_stock_reconciliation", "branch_id"],
+    ["sales_sale", "payment_method"],
+    ["sales_sale", "online_received_piasters"],
+    ["catalog_product_variant", "online_visible"],
+    ["catalog_product", "edit_revision"],
+    ["sales_sale", "reference"],
+    ["returns_return", "reference"],
+    ["online_order_confirmation", "fulfillment_branch_id"],
+    ["online_order_failed_return_inspection", "receiving_branch_id"],
+    ["online_order", "pre_shipment_stock_disposition"],
+    ["returns_return", "reason"],
   ] as const) {
     if (await columnExists(pool, table, column) !== present) {
       throw new Error(`Expected ${table}.${column} presence=${present}.`);
     }
   }
-  for (const constraint of ["returns_return_source_exact", "returns_return_line_source_exact"]) {
+  for (const constraint of [
+    "returns_return_source_exact", "returns_return_line_source_exact",
+    "inventory_batch_balance_pkey", "inventory_batch_balance_remaining_quantity_check",
+    "inventory_movement_batch_branch_fk", "inventory_allocation_batch_branch_fk",
+    "inventory_discrepancy_operation_branch_variant", "receiving_receipt_operation_branch_unique",
+    "sales_sale_settlement_matches_total", "sales_sale_payment_method", "sales_sale_online_received_nonnegative",
+    "catalog_product_edit_revision_positive", "sales_sale_reference_unique", "returns_return_reference_unique",
+    "online_order_pre_shipment_stock_disposition_check", "returns_return_reason_check",
+  ]) {
     if (await constraintExists(pool, constraint) !== present) {
       throw new Error(`Expected ${constraint} presence=${present}.`);
+    }
+  }
+  if (tables.includes("inventory_batch") && await columnExists(pool, "inventory_batch", "remaining_quantity") !== !present) {
+    throw new Error(`Expected legacy central inventory quantity presence=${!present}.`);
+  }
+  const sequences = await pool.query<{ sequencename: string }>(
+    "SELECT sequencename FROM pg_sequences WHERE schemaname = 'public'",
+  );
+  for (const sequence of ["sales_sale_reference_number_seq", "returns_return_reference_number_seq"]) {
+    if (sequences.rows.some((row) => row.sequencename === sequence) !== present) {
+      throw new Error(`Expected ${sequence} presence=${present}.`);
+    }
+  }
+  if (present) {
+    const references = await pool.query<{ sale: string; returned: string }>(
+      "SELECT bravos_human_reference('POS-', 1) AS sale, bravos_human_reference('RET-', 1000000) AS returned",
+    );
+    if (references.rows[0]?.sale !== "POS-000001" || references.rows[0]?.returned !== "RET-1000000") {
+      throw new Error("Scratch apply did not preserve readable references or numbers longer than six digits from migration 033.");
+    }
+    const reason = await pool.query<{ data_type: string; is_nullable: string }>(
+      `SELECT data_type, is_nullable FROM information_schema.columns
+       WHERE table_schema = 'public' AND table_name = 'returns_return' AND column_name = 'reason'`,
+    );
+    if (reason.rows[0]?.data_type !== "text" || reason.rows[0]?.is_nullable !== "YES") {
+      throw new Error("Scratch apply did not preserve the nullable text return reason from migration 035.");
     }
   }
 }

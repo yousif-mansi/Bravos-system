@@ -296,7 +296,9 @@ async function verifyWindowsPath(target: string): Promise<void> {
 async function runWindowsAcl(target: string, kind: "directory" | "file"): Promise<void> {
   try {
     const env = { ...process.env };
-    delete env.PSModulePath;
+    for (const key of Object.keys(env)) {
+      if (key.toLowerCase() === "psmodulepath") delete env[key];
+    }
     env.BRAVOS_OPERATOR_RECOVERY_PATH = target;
     env.BRAVOS_OPERATOR_RECOVERY_KIND = kind;
     await execFileAsync("powershell.exe", [

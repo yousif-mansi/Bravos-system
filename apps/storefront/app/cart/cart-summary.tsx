@@ -28,6 +28,7 @@ export function CartSummary({ itemCount, merchandiseTotal, checking, canCheckout
       <button type="button" className={`secondary-action ${styles.refreshButton}`} disabled={checking} aria-busy={checking} onClick={onRefresh}>
         {checking ? "جارٍ تحديث المنتجات..." : "تحديث بيانات المنتجات"}
       </button>
+      <Link className={styles.continueShopping} href="/#catalog-title">متابعة التسوق</Link>
       <p className={styles.reservationNote}>الدفع نقداً عند الاستلام. نراجع توفر السلة كاملة عند مراجعة السعر، ثم يؤكد ممثل برافوس الطلب عبر واتساب. السلة لا تحجز القطع.</p>
     </aside>
   );

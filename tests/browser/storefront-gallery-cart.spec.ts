@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { writeFile } from "node:fs/promises";
+import { expectTargetSize, tabTo } from "./support/storefront-a11y";
 
 const PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
@@ -217,6 +218,233 @@ test("cart keeps variant details and edited quantities through reload and a late
   expect(await hasNoHorizontalOverflow(page)).toBe(true);
 });
 
+test("cart preserves every saved selection through a slow failed availability read and a real retry", async ({ page }, testInfo) => {
+  await signInManager(page);
+  const suffix = crypto.randomUUID().slice(0, 8);
+  const taxonomy = await seedTaxonomy(page, `retry-${suffix}`);
+  const first = await createProduct(page, taxonomy, `CART-RETRY-A-${suffix}`, `قميص إعادة المحاولة ${suffix}`, []);
+  const second = await createProduct(page, taxonomy, `CART-RETRY-B-${suffix}`, `بنطال إعادة المحاولة ${suffix}`, []);
+  await receiveCartStock(page, [
+    { variantId: first.variants[0].id, quantity: 3 },
+    { variantId: second.variants[0].id, quantity: 2 },
+  ]);
+  const day = cairoDate();
+  const analyticsUrl = `http://127.0.0.1:5174/api/internal/analytics?from=${day}&to=${day}`;
+  const beforeAnalytics = await page.request.get(analyticsUrl);
+  expect(beforeAnalytics.status()).toBe(200);
+  const beforeCount = (await beforeAnalytics.json()).metrics.successfulCartAdditions.count as number;
+  const additionOperationIds = new Set<string>();
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/api/public/analytics/events" && request.method() === "POST") {
+      const event = request.postDataJSON() as { eventType: string; operationId: string };
+      if (event.eventType === "cart_addition") additionOperationIds.add(event.operationId);
+    }
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await addProductToCart(page, first.id, 2);
+  await addProductToCart(page, second.id, 1);
+  await expect.poll(() => additionOperationIds.size).toBe(2);
+  await expect.poll(async () => (await (await page.request.get(analyticsUrl)).json()).metrics.successfulCartAdditions.count).toBe(beforeCount + 2);
+  const savedBefore = await savedCartItems(page);
+  expect(savedBefore.map((item: { variantId: string; quantity: number }) => ({ variantId: item.variantId, quantity: item.quantity }))).toEqual([
+    { variantId: first.variants[0].id, quantity: 2 },
+    { variantId: second.variants[0].id, quantity: 1 },
+  ]);
+
+  const failureGate = controlledGate();
+  let interceptedReads = 0;
+  const productPath = `/api/public/catalog/products/${first.id}`;
+  await page.route(`**${productPath}`, async (route) => {
+    if (route.request().method() !== "GET") return route.continue();
+    interceptedReads += 1;
+    await failureGate.wait;
+    await route.fulfill({ status: 502, contentType: "application/json", body: JSON.stringify({ error: "Temporary availability failure" }) });
+  });
+  try {
+    await page.goto("http://127.0.0.1:3001/cart");
+    await expect.poll(() => interceptedReads).toBe(1);
+    const lines = page.locator(".cart-line");
+    const summary = page.getByRole("complementary", { name: "ملخص السلة" });
+    await expect(page.locator(".cart-status")).toHaveText("لحظات... نراجع بيانات المنتجات والأسعار.");
+    const pendingRefresh = summary.getByRole("button", { name: "جارٍ تحديث المنتجات..." });
+    await expect(pendingRefresh).toBeDisabled();
+    await expect(pendingRefresh).toHaveAttribute("aria-busy", "true");
+    await expect(lines).toHaveCount(2);
+    await expect(lines.first().locator("output")).toHaveText("2");
+    await expect(lines.nth(1).locator("output")).toHaveText("1");
+    expect(await savedCartItems(page)).toEqual(savedBefore);
+
+    failureGate.release();
+    const failedStatus = page.locator(".cart-status");
+    await expect(failedStatus).toHaveAttribute("role", "status");
+    await expect(failedStatus).toHaveText("تعذر التحقق من المخزون الآن. أعد المحاولة قبل متابعة الطلب.");
+    await expect(lines.first().locator("output")).toHaveAttribute("aria-live", "polite");
+    await expect(lines.nth(1).locator("output")).toHaveAttribute("aria-live", "polite");
+    const refresh = summary.getByRole("button", { name: "تحديث بيانات المنتجات" });
+    await expect(refresh).toBeEnabled();
+    await expect(refresh).toHaveAttribute("aria-busy", "false");
+    await expect(lines).toHaveCount(2);
+    await expect(lines.first().locator("output")).toHaveText("2");
+    await expect(lines.nth(1).locator("output")).toHaveText("1");
+    await expect(lines.getByRole("alert")).toHaveCount(0);
+    await expect(summary.getByText("عدّل الاختيارات غير المتوفرة قبل إتمام الطلب.")).toHaveCount(0);
+    expect(await savedCartItems(page)).toEqual(savedBefore);
+
+    expect(await hasNoHorizontalOverflow(page)).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath("cart-read-failed-phone-390.png"), fullPage: true });
+
+    const repriced = await staffApi(page, "PATCH", `/api/internal/catalog/products/${first.id}`, {
+      code: first.code, nameAr: first.nameAr, descriptionAr: first.descriptionAr,
+      categoryId: taxonomy.categoryId, defaultSellingPricePiasters: 28_000,
+      publication: "available", imageRefs: [], sizeGuideAr: null,
+      variants: [{ sizeId: taxonomy.sizeId, colorId: taxonomy.colorId, sellingPricePiastersOverride: null }],
+    });
+    expect(repriced.status).toBe(200);
+    const sale = await staffApi(page, "POST", "/api/internal/sales", {
+      saleId: crypto.randomUUID(), operationId: crypto.randomUUID(), employeeDiscountPiasters: 0,
+      lines: [{ variantId: second.variants[0].id, quantity: 2 }], physicallyCompleted: true,
+    });
+    expect(sale.status).toBe(201);
+    await page.unroute(`**${productPath}`);
+    await expectTargetSize(refresh);
+    await tabTo(page, refresh);
+    const retryResponse = page.waitForResponse((response) => new URL(response.url()).pathname === productPath && response.request().method() === "GET");
+    await page.keyboard.press("Enter");
+    expect((await retryResponse).status()).toBe(200);
+    const recoveredStatus = page.locator(".cart-status");
+    await expect(recoveredStatus).toHaveAttribute("role", "status");
+    await expect(recoveredStatus).toHaveText("تم تحديث بيانات المنتجات. راجع التغييرات والتنبيهات قبل المتابعة.");
+    await expect(refresh).toBeEnabled();
+    await expect(lines).toHaveCount(2);
+    await expect(lines.first().locator("output")).toHaveText("2");
+    await expect(lines.nth(1).locator("output")).toHaveText("1");
+    await expect(lines.first()).toContainText(`سعر القطعة ${money(28_000)}`);
+    await expect(lines.nth(1).getByRole("alert")).toContainText("غير متوفر");
+    await expect(summary).toContainText(`مجموع مبدئي${money(81_000)}`);
+    const savedAfter = await savedCartItems(page);
+    expect(savedAfter).toEqual([
+      { ...savedBefore[0], unitPricePiasters: 28_000 },
+      { ...savedBefore[1], knownAvailableQuantity: 0, orderable: false },
+    ]);
+    expect(additionOperationIds.size).toBe(2);
+    const afterAnalytics = await page.request.get(analyticsUrl);
+    expect(afterAnalytics.status()).toBe(200);
+    expect((await afterAnalytics.json()).metrics.successfulCartAdditions.count).toBe(beforeCount + 2);
+    expect(await hasNoHorizontalOverflow(page)).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath("cart-read-recovered-phone-390.png"), fullPage: true });
+  } finally {
+    failureGate.release();
+    await page.unroute(`**${productPath}`);
+  }
+});
+
+test("cart replaces failed media with an Arabic fallback and shows a later replacement image", async ({ page }, testInfo) => {
+  await signInManager(page);
+  const suffix = crypto.randomUUID().slice(0, 8);
+  const taxonomy = await seedTaxonomy(page, `media-${suffix}`);
+  const imageRefs: string[] = [];
+  for (let index = 0; index < 2; index += 1) {
+    const uploaded = await staffApi(page, "POST", "/api/internal/catalog/media", {
+      fileName: `cart-media-${suffix}-${index}.png`, contentType: "image/png", base64: PNG.toString("base64"),
+    });
+    expect(uploaded.status).toBe(201);
+    imageRefs.push(uploaded.body.ref as string);
+  }
+  const product = await createProduct(page, taxonomy, `CART-MEDIA-${suffix}`, `قميص الصورة ${suffix}`, [imageRefs[0]]);
+  await receiveCartStock(page, [{ variantId: product.variants[0].id, quantity: 3 }]);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await addProductToCart(page, product.id, 2);
+  const savedBefore = await savedCartItems(page);
+  const mediaGate = controlledGate();
+  let requested = false;
+  await page.route(`**/api/public/catalog/media/${imageRefs[0]}`, async (route) => {
+    requested = true;
+    await mediaGate.wait;
+    await route.fulfill({ status: 404, body: "" });
+  });
+  try {
+    await page.goto("http://127.0.0.1:3001/cart", { waitUntil: "domcontentloaded" });
+    const line = page.locator(".cart-line");
+    await expect(line).toHaveCount(1);
+    await expect.poll(() => requested).toBe(true);
+    const image = line.locator("img");
+    await expect(image).toHaveAttribute("alt", "");
+    await expect(image).toHaveAttribute("src", mediaSrc(imageRefs[0]));
+    const photo = line.locator(":scope > div").first();
+    const beforeFailure = await photo.boundingBox();
+    mediaGate.release();
+    await expect(line.getByText("هذه الصورة غير متاحة حالياً")).toBeVisible();
+    await expect(line.locator("img")).toHaveCount(0);
+    const afterFailure = await photo.boundingBox();
+    expect(beforeFailure).not.toBeNull();
+    expect(afterFailure).not.toBeNull();
+    expect(afterFailure?.width).toBe(beforeFailure?.width);
+    expect(afterFailure?.height).toBe(beforeFailure?.height);
+    await expect(line.locator("output")).toHaveText("2");
+    await expect(line.getByRole("button", { name: "تقليل الكمية" })).toBeEnabled();
+    await expect(line.getByRole("button", { name: "زيادة الكمية" })).toBeEnabled();
+    const remove = line.getByRole("button", { name: "حذف", exact: true });
+    await expect(remove).toBeEnabled();
+    await expectTargetSize(remove);
+    expect(await savedCartItems(page)).toEqual(savedBefore);
+    expect(await hasNoHorizontalOverflow(page)).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath("cart-image-fallback-phone-390.png"), fullPage: true });
+
+    const updated = await staffApi(page, "PATCH", `/api/internal/catalog/products/${product.id}`, {
+      code: product.code, nameAr: product.nameAr, descriptionAr: product.descriptionAr,
+      categoryId: taxonomy.categoryId, defaultSellingPricePiasters: 25_000,
+      publication: "available", imageRefs: [imageRefs[1]], sizeGuideAr: null,
+      variants: [{ sizeId: taxonomy.sizeId, colorId: taxonomy.colorId, sellingPricePiastersOverride: null }],
+    });
+    expect(updated.status).toBe(200);
+    const refreshMedia = page.getByRole("button", { name: "تحديث بيانات المنتجات" });
+    await expectTargetSize(refreshMedia);
+    await tabTo(page, refreshMedia);
+    const replacementResponse = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/public/catalog/media/${imageRefs[1]}`);
+    await page.keyboard.press("Enter");
+    expect((await replacementResponse).status()).toBe(200);
+    await expect(line.locator("img")).toHaveAttribute("src", mediaSrc(imageRefs[1]));
+    await expect(line.locator("img")).toHaveAttribute("alt", "");
+    await expect.poll(() => line.locator("img").evaluate((element) => (element as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
+    await expect(line.getByText("هذه الصورة غير متاحة حالياً")).toHaveCount(0);
+    await expect(line.locator("output")).toHaveText("2");
+    expect(await savedCartItems(page)).toEqual([{ ...savedBefore[0], imageRef: imageRefs[1] }]);
+    expect(await hasNoHorizontalOverflow(page)).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath("cart-image-replaced-phone-390.png"), fullPage: true });
+  } finally {
+    mediaGate.release();
+    await page.unroute(`**/api/public/catalog/media/${imageRefs[0]}`);
+  }
+});
+
+async function receiveCartStock(page: Page, lines: Array<{ variantId: string; quantity: number }>) {
+  const workspace = await page.request.get("http://127.0.0.1:5174/api/internal/workspace");
+  expect(workspace.status()).toBe(200);
+  const received = await staffApi(page, "POST", "/api/internal/receiving/receipts", {
+    operationId: crypto.randomUUID(), branchId: (await workspace.json()).activeBranch.id, receiptDate: cairoDate(),
+    lines: lines.map((line) => ({ ...line, unitCostPiasters: 10_000 })),
+  });
+  expect(received.status).toBe(201);
+}
+
+async function addProductToCart(page: Page, productId: string, quantity: number) {
+  await page.goto(`http://127.0.0.1:3001/products/${productId}`);
+  const panel = page.locator(".purchase-panel");
+  await panel.getByLabel("الكمية").fill(String(quantity));
+  await panel.getByRole("button", { name: "أضف إلى السلة", exact: true }).click();
+  await expect(panel.getByRole("status")).toContainText("تمت إضافة الاختيار إلى السلة");
+}
+
+async function savedCartItems(page: Page) {
+  return page.evaluate(() => JSON.parse(localStorage.getItem("bravos-guest-cart-v1") ?? "null").items);
+}
+
+function controlledGate() {
+  let release!: () => void;
+  const wait = new Promise<void>((resolve) => { release = resolve; });
+  return { wait, release };
+}
+
 async function signInManager(page: Page) {
   await page.goto("http://127.0.0.1:5174/login");
   await page.getByLabel("اسم الدخول").fill("owner");
@@ -227,8 +455,8 @@ async function signInManager(page: Page) {
 
 async function seedTaxonomy(page: Page, suffix: string) {
   const category = await staffApi(page, "POST", "/api/internal/catalog/categories", { nameAr: `تصنيف ${suffix}` });
-  const size = await staffApi(page, "POST", "/api/internal/catalog/sizes", { nameAr: `M ${suffix === "cart" ? "للسلة" : "للمعرض"}` });
-  const color = await staffApi(page, "POST", "/api/internal/catalog/colors", { nameAr: suffix === "cart" ? "أسود للسلة" : "أسود للمعرض" });
+  const size = await staffApi(page, "POST", "/api/internal/catalog/sizes", { nameAr: `M ${suffix === "cart" ? "للسلة" : suffix === "gallery" ? "للمعرض" : suffix}` });
+  const color = await staffApi(page, "POST", "/api/internal/catalog/colors", { nameAr: suffix === "cart" ? "أسود للسلة" : suffix === "gallery" ? "أسود للمعرض" : `أسود ${suffix}` });
   expect(category.status).toBe(201);
   expect(size.status).toBe(201);
   expect(color.status).toBe(201);

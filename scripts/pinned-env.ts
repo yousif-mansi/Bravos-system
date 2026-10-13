@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const pnpmBin = path.join(root, ".local", "tools", "node_modules", ".bin");
-const nodeDir = "C:\\Program Files\\nodejs";
+const nodeDir = path.dirname(process.execPath);
 
 export function workspaceRoot(): string {
   return root;

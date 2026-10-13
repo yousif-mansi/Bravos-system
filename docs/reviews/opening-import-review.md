@@ -24,3 +24,5 @@ Initial HTTP and browser missing-feature red evidence was observed. All affected
 The final Standards and Spec reviews have no residual actionable findings. Root passed typecheck across 19 workspace projects, all 180 HTTP tests, production builds/bundle separation, architecture checks, migrations 001–026 and zero-advisory audit. All 89 browser scenarios passed across the 87/89 full run and repaired 2/2 existing-sales recheck; both opening-import scenarios passed in the full run. See [the fulfillment review](order-fulfillment-review.md#root-acceptance) for the exact test-only repair, Windows harness lifecycle evidence and limitations. Final logs: `.scratch/sol-implementation/root-tickets-21-25-results.json` and `root-sales-route-fix.log`.
 
 The unrelated `bravos-v1-grok-review.md` edit remains protected and excluded from implementation staging.
+
+On 2026-10-10, accepted opening-import stock is reported apart from ordinary purchases while acceptance dates and CSV batch dates stay as described above. See [opening-stock-reporting-2026-10-10.md](opening-stock-reporting-2026-10-10.md). The verification paragraphs above remain the historical opening-import record.

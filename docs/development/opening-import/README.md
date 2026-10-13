@@ -17,7 +17,9 @@ Keys identify rows within the import and are normalized case-insensitively. The 
 
 ## Opening stock rows
 
-Every row requires `batch_key`, `variant_key`, `quantity`, `unit_cost_egp`, `receipt_date`, and `batch_order`. Separate rows remain separate FIFO cost batches. FIFO order is the receipt date, then the declared batch order, then the stable batch identity. Batch order must be unique per variant. Acceptance creates one receiving record labeled by its Cairo acceptance date; it is an opening-import audit record, not a claim that the historical batches were received together. Each inventory batch keeps its own supplied receipt date and declared FIFO order for costing and later corrections.
+Every row requires `batch_key`, `branch_code`, `variant_key`, `quantity`, `unit_cost_egp`, `receipt_date`, and `batch_order`. Separate rows remain separate FIFO cost batches. FIFO order is the receipt date, then the declared batch order, then the stable batch identity. Batch order must be unique per variant. Acceptance creates one receiving record for each branch represented in the stock rows, labeled by its Cairo acceptance date. These are opening-import audit records, not a claim that the historical batches were received together. Each inventory batch keeps its own supplied receipt date and declared FIFO order for costing and later corrections.
+
+Management reports show accepted opening-import stock apart from ordinary purchases. The report date on those receipts is the Cairo acceptance date. Batch dates and FIFO order stay on the CSV values. Opening value is an opening balance: it is neither a new purchase nor an operating expense, and it does not change sales, profit, inventory quantities, or FIFO. Purchase and opening totals cover every branch and ignore the sales branch, employee, and channel filters. A configuration-only accepted import, or an unaccepted preview, does not classify a later ordinary receipt as opening stock.
 
 ## Configuration rows
 

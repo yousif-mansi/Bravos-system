@@ -18,6 +18,43 @@ const store = createDexiePosStore();
 export const pos: OfflinePosServices = createOfflinePosServices(store);
 export { PosStorageError };
 
+type PosStockChange = { staffId: string; branchId: string };
+const stockListeners = new Set<(change: PosStockChange) => void>();
+let stockChannel: BroadcastChannel | null = null;
+let stockTransportStarted = false;
+
+function deliverStockChange(change: PosStockChange) {
+  for (const listener of stockListeners) {
+    try { listener(change); } catch { /* UI refresh cannot change a persisted sale's outcome. */ }
+  }
+}
+
+function startStockTransport() {
+  if (stockTransportStarted) return;
+  stockTransportStarted = true;
+  if (typeof BroadcastChannel === "undefined") return;
+  try {
+    stockChannel = new BroadcastChannel("bravos-pos-stock");
+    stockChannel.addEventListener("message", (event: MessageEvent<PosStockChange>) => {
+      const change = event.data;
+      if (change && typeof change.staffId === "string" && typeof change.branchId === "string") deliverStockChange(change);
+    });
+  } catch { /* Same-tab refresh and focus refresh remain available. */ }
+}
+
+export function notifyPosStockChange(change: PosStockChange): void {
+  startStockTransport();
+  deliverStockChange(change);
+  try { stockChannel?.postMessage({ staffId: change.staffId, branchId: change.branchId }); }
+  catch { /* Notifications supplement the already persisted stock state. */ }
+}
+
+export function subscribePosStockChanges(listener: (change: PosStockChange) => void): () => void {
+  startStockTransport();
+  stockListeners.add(listener);
+  return () => { stockListeners.delete(listener); };
+}
+
 export function saleFromOffline(record: OfflineCompletedSale): SaleDto {
   return {
     id: record.id,
@@ -144,6 +181,7 @@ export async function readPosReadiness(staffId: string): Promise<Omit<PosReadine
 
 export async function cacheIssuedSnapshot(staffId: string, snapshot: PosPriceSnapshotDto): Promise<void> {
   await pos.saveSnapshot(staffId, snapshot);
+  notifyPosStockChange({ staffId, branchId: snapshot.branch.id });
 }
 
 export function syncOutcomeMessage(error: unknown): string {
@@ -199,6 +237,7 @@ export async function applySyncedSale(local: OfflineCompletedSale, synced: Synce
       },
     ],
   });
+  notifyPosStockChange({ staffId: local.staffId, branchId: local.branch.id });
 }
 
 export async function pendingOperationIds(): Promise<string[]> {

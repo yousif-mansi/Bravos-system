@@ -24,6 +24,9 @@ export default async function Page({ searchParams }: PageProps) {
   const activeCategory = catalog.categories.find((category) => category.id === categoryId);
   const products = categoryIsWellFormed ? sortCollection(catalog.products, sort) : [];
   const isCollectionView = Boolean(query || categoryId || sort !== "default");
+  const collectionTitle = query
+    ? activeCategory ? `نتائج البحث عن «${query}» في ${activeCategory.nameAr}` : `نتائج البحث عن «${query}»`
+    : activeCategory?.nameAr ?? "كل المنتجات";
 
   return (
     <main id="main-content">
@@ -32,7 +35,7 @@ export default async function Page({ searchParams }: PageProps) {
         <div className="section-heading">
           <div>
             <p className="eyebrow">التشكيلة / اختر تفاصيلك</p>
-            {isCollectionView ? <h1 id="catalog-title" className={styles.collectionTitle}>كل المنتجات</h1> : <h2 id="catalog-title">كل المنتجات</h2>}
+            {isCollectionView ? <h1 id="catalog-title" className={styles.collectionTitle}>{collectionTitle}</h1> : <h2 id="catalog-title">كل المنتجات</h2>}
           </div>
         </div>
         <CollectionControls query={query} categoryId={categoryId} categories={catalog.categories} sort={sort} />

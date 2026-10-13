@@ -10,10 +10,10 @@ Ticket 04 adds connected cash sales on top of staff access, catalog and receivin
 
 ## Local setup
 
-See [docs/development/local-setup.md](docs/development/local-setup.md) for the complete clean-clone sequence. A fresh checkout does not include `.local/tools`. Install Node 22 (`>=22.13.1 <23`), then install the pinned pnpm **locally** with npm (not globally), prepend those directories to PATH, and disable Corepack auto-pin so nested scripts keep the same runtime:
+See [docs/development/local-setup.md](docs/development/local-setup.md) for the complete clean-clone sequence, including the checksum-verified portable Node download. A fresh checkout does not include `.local/tools`. Use Node 22.23.3 (`>=22.23.3 <23`), then install the pinned pnpm **locally** with npm (not globally), prepend those directories to PATH, and disable Corepack auto-pin so nested scripts keep the same runtime:
 
 ```powershell
-$node = "C:\Program Files\nodejs\node.exe"
+$node = (Resolve-Path ".local\tools\node-v22.23.3-win-x64\node.exe").Path
 $nodeDir = Split-Path $node
 $env:COREPACK_ENABLE_AUTO_PIN = "0"
 New-Item -ItemType Directory -Force .local\tools | Out-Null

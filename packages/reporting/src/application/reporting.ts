@@ -70,7 +70,7 @@ async function buildReport(
   const includeOnline = filters.channel !== "physical" && !filters.employeeId;
   const expenseInput = { fromDate: period.fromCairoDate, toDateInclusive: period.toCairoDateInclusive,
     branchId: filters.branchId, employeeId: filters.employeeId };
-  const [physicalCount, onlineCount, purchaseCount, expenseCount, refundCount] = await Promise.all([
+  const [physicalCount, onlineCount, receiptCount, expenseCount, refundCount] = await Promise.all([
     includePhysical ? context.sales.countCompletedFacts({ from: period.from, to: period.to,
       branchId: filters.branchId, employeeId: filters.employeeId }) : Promise.resolve(0),
     includeOnline ? context.orders.countConfirmedFacts({ from: period.from, to: period.to,
@@ -80,7 +80,7 @@ async function buildReport(
     countMatchingReturns(context, period, filters),
   ]);
   const completedCount = checkedAdd(physicalCount, onlineCount);
-  assertExportLimit(page, [completedCount, refundCount, purchaseCount, expenseCount]);
+  assertExportLimit(page, [completedCount, refundCount, receiptCount, expenseCount]);
   const offset = checkedMultiply(page.page - 1, page.pageSize);
   const pageEnd = checkedAdd(offset, page.pageSize);
   const branchById = new Map(branches.map((branch) => [branch.id, branch]));
@@ -89,6 +89,7 @@ async function buildReport(
   const completedSales: ReportCompletedSaleDto[] = [];
   const refunds: ReportRefundDto[] = [];
   const purchaseReceipts: ReportPurchaseReceiptDto[] = [];
+  const openingReceipts: ReportPurchaseReceiptDto[] = [];
   const expenseItems: ReportExpenseDto[] = [];
   const detailBudget = retainedDetailBudget(page.exportMode ? EXPORT_RETAINED_DETAIL_BYTES : HTTP_RETAINED_DETAIL_BYTES);
 
@@ -116,11 +117,19 @@ async function buildReport(
     addReturn(state, item.value, item.sourceSale, item.identities);
   }
   let purchaseIndex = 0;
+  let openingIndex = 0;
   let purchaseTotal = 0;
-  for await (const receipt of purchaseDetailStream(context, period, staffById)) {
-    if (purchaseIndex >= offset && purchaseIndex < pageEnd) { detailBudget.add(receipt); purchaseReceipts.push(receipt); }
-    purchaseIndex = checkedAdd(purchaseIndex, 1);
-    purchaseTotal = checkedAdd(purchaseTotal, receipt.effectiveCostPiasters);
+  let openingTotal = 0;
+  for await (const item of classifiedReceiptStream(context, period, staffById)) {
+    if (item.opening) {
+      if (openingIndex >= offset && openingIndex < pageEnd) { detailBudget.add(item.receipt); openingReceipts.push(item.receipt); }
+      openingIndex = checkedAdd(openingIndex, 1);
+      openingTotal = checkedAdd(openingTotal, item.receipt.effectiveCostPiasters);
+    } else {
+      if (purchaseIndex >= offset && purchaseIndex < pageEnd) { detailBudget.add(item.receipt); purchaseReceipts.push(item.receipt); }
+      purchaseIndex = checkedAdd(purchaseIndex, 1);
+      purchaseTotal = checkedAdd(purchaseTotal, item.receipt.effectiveCostPiasters);
+    }
   }
   let expenseIndex = 0;
   let expenseTotal = 0;
@@ -149,15 +158,16 @@ async function buildReport(
     period: { kind: period.kind, labelAr: period.labelAr, fromCairoDate: period.fromCairoDate,
       toCairoDateInclusive: period.toCairoDateInclusive }, filters,
     pageInfo: { page: page.page, pageSize: page.pageSize, totalCompletedSales: completedCount,
-      totalRefunds: refundCount, totalPurchases: purchaseCount, totalExpenses: expenseCount,
-      hasMore: [completedCount, refundCount, purchaseCount, expenseCount].some((count) => count > pageEnd) },
+      totalRefunds: refundCount, totalPurchases: purchaseIndex, totalOpeningReceipts: openingIndex,
+      totalExpenses: expenseCount,
+      hasMore: [completedCount, refundCount, purchaseIndex, openingIndex, expenseCount].some((count) => count > pageEnd) },
     summary: { completedCount: total.completedCount, grossFinalSalesPiasters: total.grossFinal,
       grossMerchandiseSalesPiasters: total.grossMerchandise, deliveryChargesPiasters: total.deliveryCharges,
       merchandiseRefundPiasters: total.merchandiseRefund, checkoutChargeRefundPiasters: total.checkoutRefund,
       netFinalSalesPiasters: netFinal, netMerchandiseSalesPiasters: netMerchandise,
       knownNetMerchandiseCostPiasters: knownNetCost, merchandiseGrossProfitPiasters: grossProfit,
       effectiveExpensesPiasters: expenseTotal, operatingProfitPiasters: operatingProfit,
-      purchaseCostPiasters: purchaseTotal, costsIncomplete: total.costsIncomplete,
+      purchaseCostPiasters: purchaseTotal, openingStockCostPiasters: openingTotal, costsIncomplete: total.costsIncomplete,
       unresolvedCostQuantity: total.unresolvedCostQuantity },
     byChannel: (["physical", "online"] as const).map((channel) => channelDto(channel,
       required(state.channels.get(channel), "قناة التقرير غير موجودة."))),
@@ -166,6 +176,7 @@ async function buildReport(
     byEmployee: [...state.employees.values()].sort((left, right) => descending(left.grossMerchandiseSalesPiasters, right.grossMerchandiseSalesPiasters)
       || left.displayName.localeCompare(right.displayName, "ar")),
     completedSales, refunds, purchases: { totalPiasters: purchaseTotal, receipts: purchaseReceipts },
+    openingStock: { totalPiasters: openingTotal, receipts: openingReceipts },
     expenses: { totalPiasters: expenseTotal, items: expenseItems },
     bestSellers: [...state.bestSellers.values()].sort((left, right) => descending(left.grossEffectiveSoldQuantity, right.grossEffectiveSoldQuantity)
       || left.productNameAr.localeCompare(right.productNameAr, "ar")),
@@ -372,23 +383,25 @@ async function* returnDetailStream(
   }
 }
 
-async function* purchaseDetailStream(
+async function* classifiedReceiptStream(
   context: ReportingReadContext, period: Period, staff: Map<string, { id: string; displayName: string }>,
-): AsyncGenerator<ReportPurchaseReceiptDto> {
+): AsyncGenerator<{ opening: boolean; receipt: ReportPurchaseReceiptDto }> {
   let after: { receiptDate: string; id: string } | null = null;
   while (true) {
     const facts = await context.purchases.listReceiptFactsPage({ fromDate: period.fromCairoDate,
       toDateInclusive: period.toCairoDateInclusive, limit: READ_PAGE_SIZE, after });
     if (facts.length === 0) return;
-    const [batches, identities] = await Promise.all([
+    const [batches, identities, openingOperationIds] = await Promise.all([
       context.inventory.getBatchStates(unique(facts.flatMap((fact) => fact.receipt.lines.map((line) => line.batchId)))),
       context.catalog.getVariants(unique(facts.flatMap((fact) => fact.receipt.lines.map((line) => line.variantId)))),
+      context.openingImports.acceptedStockOperationIds(unique(facts.map((fact) => fact.receipt.operationId))),
     ]);
     const batchById = new Map(batches.map((batch) => [batch.id, batch]));
     const identityById = new Map(identities.map((identity) => [identity.id, identity]));
     for (const { receipt, corrections } of facts) {
       const states = receipt.lines.map((line) => required(batchById.get(line.batchId), "دفعة الاستلام غير موجودة."));
-      yield { receiptId: receipt.id, receiptDate: receipt.receiptDate, receivedByStaffId: receipt.receivedByStaffId,
+      yield { opening: openingOperationIds.has(receipt.operationId), receipt: {
+        receiptId: receipt.id, receiptDate: receipt.receiptDate, receivedByStaffId: receipt.receivedByStaffId,
         effectiveQuantity: checkedSum(states, (state) => state.effectiveReceivedQuantity),
         effectiveCostPiasters: checkedSum(states, (state) => checkedMultiply(state.effectiveReceivedQuantity, state.effectiveUnitCostPiasters)),
         lines: receipt.lines.map((line) => {
@@ -398,7 +411,7 @@ async function* purchaseDetailStream(
             effectiveCostPiasters: checkedMultiply(state.effectiveReceivedQuantity, state.effectiveUnitCostPiasters) };
         }), corrections: corrections.map((change) => ({ ...change,
           changedByDisplayName: staff.get(change.changedByStaffId)?.displayName ?? change.changedByStaffId,
-          changedAt: change.changedAt.toISOString() })) };
+          changedAt: change.changedAt.toISOString() })) } };
     }
     const last = facts.at(-1)!.receipt;
     after = { receiptDate: last.receiptDate, id: last.id };

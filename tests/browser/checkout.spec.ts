@@ -1,4 +1,10 @@
 import { expect, test, type Page } from "@playwright/test";
+import { readFile, readdir } from "node:fs/promises";
+import path from "node:path";
+import { Pool } from "pg";
+import type { PublicOrderSubmissionDto } from "@bravos/contracts/public";
+
+const acknowledgment = "استلمنا طلبك للمراجعة. إرسال الطلب لا يحجز القطع؛ تأكيده يتم عبر واتساب.";
 
 test("guest reviews configured delivery and discounts while a newer cart item survives the accepted response", async ({ context, page }, testInfo) => {
   await signInManager(page);
@@ -53,9 +59,29 @@ test("guest reviews configured delivery and discounts while a newer cart item su
   await expect(page).toHaveURL(/\/checkout$/);
 
   const checkout = page.getByRole("form", { name: "بيانات طلب التوصيل" });
+  const optionalDetails = optionalDeliveryDetails(checkout);
+  const optionalSummary = optionalDetails.locator("summary");
+  await expect(optionalSummary).toHaveText("تفاصيل إضافية للتوصيل (اختياري)");
+  await expect(optionalDetails).not.toHaveJSProperty("open", true);
+  await expect(checkout.getByLabel("رقم بديل (اختياري)")).toBeAttached();
+  await expect(checkout.getByLabel("رقم بديل (اختياري)")).toBeHidden();
+  await expect(checkout.getByLabel("علامة مميزة (اختياري)")).toBeHidden();
+  await expect(checkout.getByLabel("ملاحظات (اختياري)")).toBeHidden();
+  await page.screenshot({ path: testInfo.outputPath("empty-collapsed-390.png"), fullPage: true });
+  await optionalSummary.click();
+  await expect(optionalDetails).toHaveJSProperty("open", true);
   await expect(checkout.getByLabel("رقم بديل (اختياري)")).toBeVisible();
   await expect(checkout.getByLabel("علامة مميزة (اختياري)")).toBeVisible();
   await expect(checkout.getByLabel("ملاحظات (اختياري)")).toBeVisible();
+  await page.setViewportSize({ width: 320, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await optionalSummary.focus();
+  await page.screenshot({ path: testInfo.outputPath("expanded-focus-320.png"), fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({ path: testInfo.outputPath("empty-expanded-390.png"), fullPage: true });
+  await optionalSummary.click();
+  await expect(optionalDetails).not.toHaveJSProperty("open", true);
+  await expect(checkout.getByLabel("رقم بديل (اختياري)")).toBeHidden();
   await checkout.getByLabel("منطقة التوصيل").selectOption(area.id);
   await checkout.getByLabel("كود الكوبون (اختياري)").fill("guest25");
   await checkout.getByRole("button", { name: "مراجعة السعر" }).click();
@@ -115,7 +141,14 @@ test("guest reviews configured delivery and discounts while a newer cart item su
   page.off("request", watchInvalidSubmit);
   await page.setViewportSize({ width: 1440, height: 900 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await expect(optionalDetails).not.toHaveJSProperty("open", true);
   await page.screenshot({ path: testInfo.outputPath("checkout-quote-desktop-1440.png"), fullPage: true });
+  await page.screenshot({ path: testInfo.outputPath("empty-collapsed-1440.png"), fullPage: true });
+  await optionalSummary.click();
+  await expect(optionalDetails).toHaveJSProperty("open", true);
+  await page.screenshot({ path: testInfo.outputPath("empty-expanded-1440.png"), fullPage: true });
+  await optionalSummary.click();
+  await expect(optionalDetails).not.toHaveJSProperty("open", true);
   await page.setViewportSize({ width: 390, height: 844 });
 
   const operationIds: string[] = [];
@@ -140,7 +173,7 @@ test("guest reviews configured delivery and discounts while a newer cart item su
   await expect(cartLink(recoveryPage)).toContainText("2");
   releaseResponse?.();
   await expect(page.getByRole("heading", { name: "تم استلام طلبك" })).toBeVisible();
-  await expect(page.getByRole("status")).toContainText("قيد المراجعة");
+  await expect(page.getByRole("status")).toHaveText(acknowledgment);
   await expect(page.getByText("سيتواصل معك ممثل برافوس عبر واتساب لتأكيد الطلب")).toBeVisible();
   expect(await recoveryPage.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await expect(cartLink(page)).toContainText("1");
@@ -161,7 +194,40 @@ test("guest reviews configured delivery and discounts while a newer cart item su
   await expect(recoveryPage.getByRole("complementary", { name: "ملخص منتجات الطلب" })).toContainText("NEXT-CHECKOUT-E2E-19");
 });
 
-test("a server error after acceptance reloads the exact request instead of creating a duplicate", async ({ page }) => {
+test("accepted acknowledgment survives staff confirmation and an empty-cart reload", async ({ page }) => {
+  await signInManager(page);
+  const area = await staffApi(page, "POST", "/api/internal/delivery-areas", {
+    nameAr: "منطقة إعادة الإقرار", feePiasters: 2_500, active: true,
+  });
+  expect(area.status).toBe(201);
+  const catalog = await seedCheckoutProduct(page, "ACK-CONFIRMED-E2E", 25_000, 1);
+  await addPublicProduct(page, catalog.productId);
+  await page.goto("http://127.0.0.1:3001/checkout");
+  const checkout = page.getByRole("form", { name: "بيانات طلب التوصيل" });
+  await fillCheckoutCustomer(checkout, area.body.id);
+  await checkout.getByRole("button", { name: "مراجعة السعر" }).click();
+  const submissions: unknown[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "POST" && request.url().endsWith("/api/public/checkout/orders")) submissions.push(request.postDataJSON());
+  });
+  await checkout.getByRole("button", { name: "إرسال طلب التوصيل" }).click();
+  await expect(page.getByRole("heading", { name: "تم استلام طلبك" })).toBeVisible();
+  await expect(page.getByRole("status")).toHaveText(acknowledgment);
+  const accepted = await storedAttempt(page);
+  expect(accepted.status).toBe("accepted");
+  expect(accepted.cartCompleted).toBe(true);
+  await confirmSubmittedOrder(page, accepted.result.orderId);
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "تم استلام طلبك" })).toBeVisible();
+  await expect(page.getByRole("status")).toHaveText(acknowledgment);
+  await expect(page.locator(".order-reference strong")).toHaveText(accepted.result.reference);
+  await expect.poll(() => normalizedText(page.locator(".success-total"))).toContain("275 ج.م.");
+  expect(await storedAttempt(page)).toEqual(accepted);
+  expect(submissions).toEqual([accepted.request]);
+  await expectCartCompletedOnce(page, accepted.request.operationId);
+});
+
+test("a lost acceptance response replays the exact long reference after staff confirmation without a duplicate", async ({ page }, testInfo) => {
   await signInManager(page);
   const area = await staffApi(page, "POST", "/api/internal/delivery-areas", {
     nameAr: "إطسا",
@@ -179,10 +245,18 @@ test("a server error after acceptance reloads the exact request instead of creat
   await checkout.getByLabel("العنوان بالتفصيل").fill("إطسا، شارع المركز");
   await checkout.getByRole("button", { name: "مراجعة السعر" }).click();
 
+  await setNextIsolatedOrderReference();
   let acceptedOperationId = "";
+  let originalAcknowledgment!: PublicOrderSubmissionDto;
+  const submissionRequests: unknown[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "POST" && request.url().endsWith("/api/public/checkout/orders")) submissionRequests.push(request.postDataJSON());
+  });
   await page.route("**/api/public/checkout/orders", async (route) => {
     acceptedOperationId = (route.request().postDataJSON() as { operationId: string }).operationId;
-    await route.fetch();
+    const response = await route.fetch();
+    expect(response.status()).toBe(201);
+    originalAcknowledgment = await response.json();
     await route.fulfill({
       status: 502,
       contentType: "application/json",
@@ -194,19 +268,45 @@ test("a server error after acceptance reloads the exact request instead of creat
   const pending = await page.evaluate(() => JSON.parse(localStorage.getItem("bravos-guest-checkout-v1") ?? "null"));
   expect(pending.status).toBe("pending");
   expect(pending.request.operationId).toBe(acceptedOperationId);
+  expect(originalAcknowledgment.reference).toBe("BRV-1000000");
+  await confirmSubmittedOrder(page, originalAcknowledgment.orderId);
 
   expect((await staffApi(page, "PUT", `/api/internal/delivery-areas/${area.body.id}`, {
     nameAr: "إطسا",
     feePiasters: 9_000,
     active: true,
   })).status).toBe(200);
+  const replayResponse = page.waitForResponse((response) => response.request().method() === "POST"
+    && response.url().endsWith("/api/public/checkout/orders"));
+  await page.setViewportSize({ width: 390, height: 844 });
   await page.reload();
+  const recoveredResponse = await replayResponse;
+  expect(recoveredResponse.status()).toBe(200);
+  expect(await recoveredResponse.json()).toEqual(originalAcknowledgment);
   await expect(page.getByRole("heading", { name: "تم استلام طلبك" })).toBeVisible();
+  await expect(page.getByRole("status")).toHaveText(acknowledgment);
+  await expect(page.locator(".order-reference strong")).toHaveText("BRV-1000000");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath("checkout-recovered-long-reference-phone-390.png"), fullPage: true });
   await expect.poll(() => normalizedText(page.locator(".success-total"))).toContain("275 ج.م.");
   const accepted = await page.evaluate(() => JSON.parse(localStorage.getItem("bravos-guest-checkout-v1") ?? "null"));
   expect(accepted.status).toBe("accepted");
   expect(accepted.request.operationId).toBe(acceptedOperationId);
   expect(accepted.result.quote.deliveryFeePiasters).toBe(2_500);
+  expect(accepted.result).toEqual(originalAcknowledgment);
+  expect(submissionRequests).toEqual([pending.request, pending.request]);
+  await expectCartCompletedOnce(page, acceptedOperationId);
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "تم استلام طلبك" })).toBeVisible();
+  await expect(page.getByRole("status")).toHaveText(acknowledgment);
+  await expect(page.locator(".order-reference strong")).toHaveText("BRV-1000000");
+  expect(await storedAttempt(page)).toEqual(accepted);
+  expect(submissionRequests).toEqual([pending.request, pending.request]);
+  await expectCartCompletedOnce(page, acceptedOperationId);
+  const orders = await staffApi(page, "GET", "/api/internal/online-orders");
+  expect(orders.body.filter((order: { primaryPhone: string }) => order.primaryPhone === pending.request.primaryPhone)).toEqual([
+    expect.objectContaining({ id: originalAcknowledgment.orderId, reference: "BRV-1000000", status: "confirmed" }),
+  ]);
 });
 
 test("changed delivery pricing and a later stock shortage cannot submit an old reviewed total", async ({ page }) => {
@@ -283,6 +383,93 @@ test("closed public ordering keeps the cart and shows the Arabic closure screen"
   await expect(cartLink(page)).toContainText("1");
   await expect(page.getByRole("region", { name: "منتجات السلة" }).getByRole("heading", { name: "قميص CLOSED-ORDERING-E2E-28", exact: true })).toBeVisible();
 });
+
+function optionalDeliveryDetails(form: ReturnType<Page["getByRole"]>) {
+  return form.locator("details").filter({
+    has: form.page().locator("summary", { hasText: "تفاصيل إضافية للتوصيل (اختياري)" }),
+  });
+}
+
+async function fillCheckoutCustomer(checkout: ReturnType<Page["getByRole"]>, areaId: string) {
+  await checkout.getByLabel("الاسم").fill("عميل الإقرار المحفوظ");
+  await checkout.getByLabel("رقم الموبايل الأساسي").fill("01009876543");
+  await checkout.getByLabel("منطقة التوصيل").selectOption(areaId);
+  await checkout.getByLabel("العنوان بالتفصيل").fill("الفيوم، شارع الاختبار");
+}
+
+async function storedAttempt(page: Page) {
+  return page.evaluate(() => JSON.parse(localStorage.getItem("bravos-guest-checkout-v1") ?? "null"));
+}
+
+async function expectCartCompletedOnce(page: Page, operationId: string) {
+  const cart = await page.evaluate(() => JSON.parse(localStorage.getItem("bravos-guest-cart-v1") ?? "null"));
+  expect(cart.items).toEqual([]);
+  expect(cart.completedCheckoutOperationIds).toEqual([operationId]);
+  await expect(cartLink(page)).toContainText("0");
+}
+
+async function confirmSubmittedOrder(page: Page, orderId: string) {
+  const order = await staffApi(page, "GET", `/api/internal/online-orders/${orderId}`);
+  expect(order.status).toBe(200);
+  const agreementQuote = await staffApi(page, "POST", `/api/internal/online-orders/${orderId}/agreement-quotes`, {
+    expectedRevision: order.body.revision,
+    lines: order.body.lines.map(({ variantId, requestedQuantity }: { variantId: string; requestedQuantity: number }) => ({ variantId, quantity: requestedQuantity })),
+  });
+  expect(agreementQuote.status).toBe(201);
+  const agreed = await staffApi(page, "POST", `/api/internal/online-orders/${orderId}/agreed-revisions`, {
+    operationId: crypto.randomUUID(),
+    expectedRevision: agreementQuote.body.orderRevision,
+    quoteId: agreementQuote.body.quoteId,
+    reviewDigest: agreementQuote.body.reviewDigest,
+    customerAgreed: true,
+  });
+  expect(agreed.status).toBe(201);
+  const confirmed = await staffApi(page, "POST", `/api/internal/online-orders/${orderId}/confirm`, {
+    operationId: crypto.randomUUID(),
+    expectedRevision: agreed.body.revision,
+    agreedRevision: agreed.body.agreedRevision.version,
+    itemsLocatedAndSetAside: true,
+    fulfillmentBranchId: (await staffApi(page, "GET", "/api/internal/workspace")).body.activeBranch.id,
+  });
+  expect(confirmed.status).toBe(201);
+  expect(confirmed.body.status).toBe("confirmed");
+}
+
+async function setNextIsolatedOrderReference() {
+  // Only the disposable Playwright cluster is eligible; never use a configured development database.
+  const controlFile = process.env.BRAVOS_E2E_CONTROL_FILE;
+  if (!controlFile || path.dirname(path.resolve(controlFile)) !== path.resolve(".local")) {
+    throw new Error("The isolated Playwright control file is required for reference seeding.");
+  }
+  // Worker config evaluation generates its own unused path. The active stack belongs
+  // to the CLI parent that forked this worker, never to another/stale test run.
+  process.kill(process.ppid, 0);
+  const controlNames = (await readdir(path.resolve(".local"))).filter((name) =>
+    new RegExp(`^e2e-control-${process.ppid}-[a-f0-9]{24}\\.json$`, "u").test(name));
+  if (controlNames.length !== 1) {
+    throw new Error("Expected exactly one isolated control file owned by this Playwright parent.");
+  }
+  const control = JSON.parse(await readFile(path.resolve(".local", controlNames[0]!), "utf8"));
+  expect(control).toMatchObject({ version: 1, apiPort: 3011, databasePort: 55433 });
+  if (!Number.isInteger(control.port) || control.port < 1 || control.port > 65_535
+    || typeof control.token !== "string" || !/^[a-f0-9]{64}$/u.test(control.token)) {
+    throw new Error("Invalid isolated Playwright control contract.");
+  }
+  const liveControl = await fetch(`http://127.0.0.1:${control.port}/`, { signal: AbortSignal.timeout(3_000) });
+  expect(liveControl.status).toBe(404);
+  await liveControl.arrayBuffer();
+  const pool = new Pool({ host: "127.0.0.1", port: control.databasePort, database: "bravos_e2e", user: "bravos", password: "bravos-test" });
+  try {
+    const identity = await pool.query("SELECT current_database() AS database, inet_server_port() AS port");
+    expect(identity.rows[0]).toEqual({ database: "bravos_e2e", port: 55433 });
+    const sequence = await pool.query("SELECT last_value FROM online_order_reference_number_seq");
+    expect(Number(sequence.rows[0].last_value)).toBeLessThan(999_999);
+    // Advance monotonically: later tests continue above this boundary rather than reusing references.
+    await pool.query("SELECT setval('online_order_reference_number_seq',999999,true)");
+  } finally {
+    await pool.end();
+  }
+}
 
 async function signInManager(page: Page) {
   await page.goto("http://127.0.0.1:5174/login");

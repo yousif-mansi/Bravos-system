@@ -202,7 +202,10 @@ export function createPostgresInventoryStore(queryable: Queryable): InventoryRea
   };
 }
 
-export function createInventoryTransaction(client: PoolClient): InventoryTransaction {
+export function createInventoryTransaction(
+  client: PoolClient,
+  returnOperationClock?: { now(): Date },
+): InventoryTransaction {
   return {
     async openingImportState(variantIds) {
       const [version, settings, thresholds] = await Promise.all([
@@ -293,10 +296,10 @@ export function createInventoryTransaction(client: PoolClient): InventoryTransac
     async claimReturnOperation(input) {
       const inserted = await client.query<OperationRow>(
         `INSERT INTO inventory_operation (id, kind, payload_fingerprint, actor_staff_id, recorded_at)
-         VALUES ($1, 'return', $2, $3, now())
+         VALUES ($1, 'return', $2, $3, COALESCE($4::timestamptz, now()))
          ON CONFLICT (id) DO NOTHING
          RETURNING id, payload_fingerprint, recorded_at`,
-        [input.operationId, input.payloadFingerprint, input.actorStaffId],
+        [input.operationId, input.payloadFingerprint, input.actorStaffId, returnOperationClock?.now() ?? null],
       );
       const created = inserted.rows[0];
       if (created) {

@@ -76,6 +76,8 @@ function detailRows(
     + report.refunds.reduce((sum, refund) => sum + refund.corrections.length + refund.refundCashEvents.length, 0)
     + report.purchases.receipts.length
     + report.purchases.receipts.reduce((sum, receipt) => sum + receipt.lines.length + receipt.corrections.length, 0)
+    + report.openingStock.receipts.length
+    + report.openingStock.receipts.reduce((sum, receipt) => sum + receipt.lines.length + receipt.corrections.length, 0)
     + report.expenses.items.length
     + report.expenses.items.reduce((sum, expense) => sum + expense.corrections.length, 0)
     + report.bestSellers.length

@@ -4,6 +4,7 @@ import type { ExpenseReportingReader } from "@bravos/expenses";
 import type { AuthenticatedStaff, VerifiedAuth } from "@bravos/identity";
 import type { InventoryReadStore } from "@bravos/inventory";
 import type { OnlineOrderReportingReader } from "@bravos/online-orders";
+import type { OpeningImportReportingReader } from "@bravos/opening-import";
 import type { PurchaseReportingReader } from "@bravos/receiving";
 import type { ReturnReportingFactsReader } from "@bravos/returns";
 import type { PhysicalSaleReportingReader } from "@bravos/sales";
@@ -33,6 +34,7 @@ export type ReportingReadContext = {
   orders: OnlineOrderReportingReader;
   returns: ReturnReportingFactsReader;
   purchases: PurchaseReportingReader;
+  openingImports: OpeningImportReportingReader;
   expenses: ExpenseReportingReader;
   catalog: ReportingCatalogReader;
 };

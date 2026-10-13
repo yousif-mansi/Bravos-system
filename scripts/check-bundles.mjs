@@ -120,7 +120,9 @@ for (const file of staticGraph) {
   if (source.includes("إنشاء حساب موظف") || source.includes("StaffPage")) {
     throw new Error(`${path.relative(internalDist, file)} should not include staff management for the initial login route.`);
   }
-  if (source.includes("إنشاء منتج") || source.includes("CatalogPage") || source.includes("LookupPage") || source.includes("البحث برمز المنتج") || source.includes("إذن استلام جديد") || source.includes("دفعات التكلفة") || source.includes("سلة البيع") || source.includes("SalesPage") || source.includes("ExpensePage") || source.includes("مصروف جديد") || source.includes("OffersPage") || source.includes("عرض جديد") || source.includes("ReturnsPage") || source.includes("اختيار البيع الأصلي") || source.includes("CorrectionsPage") || source.includes("الإلغاء وحده لا يعيد بضاعة") || source.includes("StorefrontSettingsPage") || source.includes("إعداد روابط التواصل في المتجر")) {
+  // Vite's lazy preload table names CSS assets after their page without embedding the screen.
+  const screenSource = source.replace(/(["'])assets\/[A-Za-z0-9_.-]+\.css\1/g, "");
+  if (screenSource.includes("إنشاء منتج") || screenSource.includes("CatalogPage") || screenSource.includes("LookupPage") || screenSource.includes("البحث برمز المنتج") || screenSource.includes("إذن استلام جديد") || screenSource.includes("دفعات التكلفة") || screenSource.includes("سلة البيع") || screenSource.includes("SalesPage") || screenSource.includes("ExpensePage") || screenSource.includes("مصروف جديد") || screenSource.includes("OffersPage") || screenSource.includes("عرض جديد") || screenSource.includes("ReturnsPage") || screenSource.includes("اختيار البيع الأصلي") || screenSource.includes("CorrectionsPage") || screenSource.includes("الإلغاء وحده لا يعيد بضاعة") || screenSource.includes("StorefrontSettingsPage") || screenSource.includes("إعداد روابط التواصل في المتجر")) {
     throw new Error(`${path.relative(internalDist, file)} should not include optional operational screens for the initial login route.`);
   }
   if (path.basename(file).includes("staff-management")) {
@@ -276,7 +278,8 @@ if (swSource.includes("unitCostPiasters") || swSource.includes("inventoryValue")
   throw new Error("Service worker precache contains restricted cost data.");
 }
 
-const storefrontFiles = await collect(storefrontNext, /\.(js|html)$/);
+await verifyStorefrontProductionBuild();
+const storefrontFiles = await collect(storefrontNext, /\.(js|html)$/, [], new Set([path.join(storefrontNext, "dev")]));
 if (storefrontFiles.length === 0) {
   throw new Error("Public storefront production build is missing.");
 }
@@ -343,7 +346,35 @@ function dynamicImportSpecifiers(source) {
   return [...source.matchAll(/\bimport\(\s*["'](\.[^"']+)["']\s*\)/g)].map((match) => match[1]);
 }
 
-async function collect(dir, pattern, acc = []) {
+async function verifyStorefrontProductionBuild() {
+  let buildId;
+  let manifest;
+  try {
+    buildId = (await readFile(path.join(storefrontNext, "BUILD_ID"), "utf8")).trim();
+    manifest = JSON.parse(await readFile(path.join(storefrontNext, "build-manifest.json"), "utf8"));
+  } catch (cause) {
+    throw new Error("Public storefront production build metadata is missing or unreadable.", { cause });
+  }
+  const buildManifest = `static/${buildId}/_buildManifest.js`;
+  if (!/^[A-Za-z0-9_-]+$/.test(buildId)
+    || !Array.isArray(manifest?.devFiles) || manifest.devFiles.length !== 0
+    || !Array.isArray(manifest?.rootMainFiles) || manifest.rootMainFiles.length === 0
+    || !Array.isArray(manifest?.lowPriorityFiles) || !manifest.lowPriorityFiles.includes(buildManifest)) {
+    throw new Error("Public storefront production build metadata is invalid.");
+  }
+  for (const asset of [...manifest.rootMainFiles, buildManifest]) {
+    if (typeof asset !== "string" || !asset.startsWith("static/") || !asset.endsWith(".js")
+      || asset.includes("\\") || path.posix.normalize(asset) !== asset) {
+      throw new Error("Public storefront production build metadata has an invalid JavaScript asset path.");
+    }
+    const info = await stat(path.join(storefrontNext, asset)).catch(() => null);
+    if (!info?.isFile()) {
+      throw new Error(`Public storefront production build references a missing JavaScript asset: ${asset}`);
+    }
+  }
+}
+
+async function collect(dir, pattern, acc = [], excludedDirs = new Set()) {
   let entries = [];
   try {
     entries = await readdir(dir);
@@ -352,9 +383,10 @@ async function collect(dir, pattern, acc = []) {
   }
   for (const entry of entries) {
     const full = path.join(dir, entry);
+    if (excludedDirs.has(full)) continue;
     const info = await stat(full);
     if (info.isDirectory()) {
-      await collect(full, pattern, acc);
+      await collect(full, pattern, acc, excludedDirs);
     } else if (pattern.test(entry)) {
       acc.push(full);
     }

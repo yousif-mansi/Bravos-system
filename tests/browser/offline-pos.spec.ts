@@ -101,16 +101,26 @@ test("two tabs cannot sell the same remaining cached unit", async ({ context }) 
   await page.getByRole("form", { name: "إتمام البيع" }).getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   await page2.getByRole("form", { name: "إتمام البيع" }).getByRole("button", { name: "إتمام البيع" }).click();
-  await expect(page2.getByRole("alert")).toContainText("الكمية المتاحة غير كافية.");
+  const shortage = page2.getByRole("alert").filter({ hasText: "الكمية المتاحة غير كافية." });
+  const syncFailure = page2.getByRole("alert").filter({ hasText: "تعذر مزامنة المبيعات" });
+  await expect(shortage).toContainText("الكمية المتاحة غير كافية.");
+  await expect(syncFailure).toBeVisible();
   await expect(page2.getByRole("status").filter({ hasText: "تم حفظ البيع." })).toHaveCount(0);
   await expect(page2.getByTestId("sale-cart")).toContainText(seed.code);
   await expect(page2.getByRole("button", { name: "إعادة المحاولة" })).toBeVisible();
   const state = await readPosState(page);
   expect(state.sales).toHaveLength(1);
-  expect(state.sales[0]?.lines[0]?.quantity).toBe(1);
+  const saved = state.sales[0];
+  expect(saved?.lines[0]?.quantity).toBe(1);
+  expect(saved?.finalTotalPiasters).toBe(15000);
+  expect(saved?.id).toBeTruthy();
+  expect(saved?.operationId).toBeTruthy();
   expect(state.effects).toHaveLength(1);
-  expect(state.effects[0]?.quantity).toBe(1);
-  expect(state.sales[0]?.finalTotalPiasters).toBe(15000);
+  expect(state.effects[0]).toMatchObject({
+    id: `${saved?.operationId}:${state.effects[0]?.variantId}`,
+    operationId: saved?.operationId,
+    quantity: 1,
+  });
 });
 
 test("storage failure does not claim a saved sale", async ({ page }) => {
@@ -246,8 +256,30 @@ test("sign-out preserves queued sales and another cashier cannot read or submit 
   expect(original?.soldByDisplayName).toBe("كاشير تجريبي");
   const lookupForm = page.getByRole("form", { name: "البحث برمز المنتج" });
   await lookupForm.getByRole("textbox", { name: "رمز المنتج" }).fill(seed.code);
-  await lookupForm.getByRole("button", { name: "بحث" }).click();
-  await expect(lookupForm.getByRole("button", { name: "جارٍ البحث…" })).toBeVisible();
+  let releaseLookup: () => void = () => undefined;
+  const heldLookup = new Promise<void>((resolve) => {
+    releaseLookup = resolve;
+  });
+  let markLookupStarted: () => void = () => undefined;
+  const lookupStarted = new Promise<void>((resolve) => {
+    markLookupStarted = resolve;
+  });
+  await page.route("**/api/internal/catalog/lookup**", async (route) => {
+    const url = new URL(route.request().url());
+    if (route.request().method() === "GET" && url.pathname === "/api/internal/catalog/lookup" && url.searchParams.get("code") === seed.code) {
+      markLookupStarted();
+      await heldLookup;
+    }
+    await route.continue();
+  });
+  try {
+    await lookupForm.getByRole("button", { name: "بحث" }).click();
+    await lookupStarted;
+    await expect(lookupForm.getByRole("button", { name: "جارٍ البحث…" })).toBeVisible();
+  } finally {
+    releaseLookup();
+    await page.unroute("**/api/internal/catalog/lookup**");
+  }
   await expect(lookupForm.getByRole("button", { name: "بحث" })).toBeEnabled();
   const again = page.getByTestId("lookup-result");
   await expect(again).toContainText(seed.nameAr);
@@ -1448,7 +1480,7 @@ async function readPosState(page: Page) {
       branch: { code: string };
       lines: Array<{ quantity: number }>;
     }>("sales");
-    const effects = await all<{ quantity: number; variantId: string }>("effects");
+    const effects = await all<{ id: string; operationId: string; quantity: number; variantId: string }>("effects");
     const pending = await all<{ saleId: string; operationId: string; staffId: string }>("pending");
     const legacyPending = await all<{ saleId: string; operationId: string; staffId: string }>("legacyPending");
     db.close();

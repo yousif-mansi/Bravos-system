@@ -2,7 +2,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { deflateSync } from "node:zlib";
-import { afterAll, beforeAll, beforeEach, expect, test } from "vitest";
+import { afterAll, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { buildApp, type BuiltApp } from "../../apps/api/src/app.ts";
 import { ensureOwner } from "../../apps/api/src/bootstrap.ts";
 import { applyMigrations } from "@bravos/persistence";
@@ -376,6 +376,8 @@ test("cashier lookup selects an explicit variant, ignores website visibility, an
   expect(found.body).toMatchObject({
     code: "TS-001",
     nameAr: "تيشيرت أساسي",
+    categoryId: seed.categoryId,
+    categoryNameAr: "تيشيرتات",
   });
   expect(found.body.variants).toHaveLength(1);
   expect(found.body.variants[0]).toEqual({
@@ -391,11 +393,11 @@ test("cashier lookup selects an explicit variant, ignores website visibility, an
   expect(found.body).not.toHaveProperty("cost");
   expect(JSON.stringify(found.body)).not.toMatch(/cost|profit|purchase|batch|inventoryValue/i);
   const keys = Object.keys(found.body).sort();
-  expect(keys).toEqual(["categoryId", "code", "descriptionAr", "id", "nameAr", "variants"]);
+  expect(keys).toEqual(["categoryId", "categoryNameAr", "code", "descriptionAr", "id", "nameAr", "variants"]);
   expect(found.body.categoryId).toBe(seed.categoryId);
 });
 
-test("cashier POS snapshot lists selling prices and availability without cost data", async () => {
+test("cashier POS snapshots retain readable categories, selling prices and availability without cost data", async () => {
   const manager = await signIn("owner", "owner-pass-1");
   await api(manager, "POST", "/api/internal/active-branch", { branchId: abshwayId });
   const seed = await seedTaxonomy(manager);
@@ -424,6 +426,8 @@ test("cashier POS snapshot lists selling prices and availability without cost da
   expect(snapshot.body[0]).toMatchObject({
     code: "TS-001",
     nameAr: "تيشيرت أساسي",
+    categoryId: seed.categoryId,
+    categoryNameAr: "تيشيرتات",
   });
   expect(snapshot.body[0].variants[0]).toEqual({
     id: variantId,
@@ -433,6 +437,33 @@ test("cashier POS snapshot lists selling prices and availability without cost da
     availableQuantity: 4,
   });
   expect(JSON.stringify(snapshot.body)).not.toMatch(/cost|profit|purchase|batch|inventoryValue|unitCost/i);
+
+  const cachedSnapshot = await api(cashier, "POST", "/api/internal/sales/pos-snapshots", {
+    deviceId: crypto.randomUUID(),
+  });
+  expect(cachedSnapshot.status).toBe(201);
+  expect(cachedSnapshot.body.products).toHaveLength(1);
+  expect(cachedSnapshot.body.products[0]).toMatchObject({
+    code: "TS-001",
+    nameAr: "تيشيرت أساسي",
+    categoryId: seed.categoryId,
+    categoryNameAr: "تيشيرتات",
+  });
+  expect(Object.keys(cachedSnapshot.body.products[0]).sort()).toEqual([
+    "categoryId", "categoryNameAr", "code", "descriptionAr", "id", "nameAr", "variants",
+  ]);
+  expect(cachedSnapshot.body.products[0].variants).toEqual([{
+    id: variantId,
+    size: { id: seed.sizeId, nameAr: "L" },
+    color: { id: seed.colorId, nameAr: "أسود" },
+    sellingPricePiasters: 25000,
+    availableQuantity: 4,
+  }]);
+  expect(JSON.stringify(cachedSnapshot.body)).not.toMatch(/cost|profit|purchase|batch|inventoryValue|unitCost/i);
+
+  const categories = await api(cashier, "GET", "/api/internal/catalog/categories");
+  expect(categories.status).toBe(403);
+  expect(categories.body.error.code).toBe("FORBIDDEN");
 
   const batches = await api(cashier, "GET", "/api/internal/inventory/batches");
   expect(batches.status).toBe(403);
@@ -840,6 +871,100 @@ test("public catalog exposes safe live variant availability across restocking an
   expect(pos.status).toBe(200);
   expect(pos.body.variants.find((variant: { id: string }) => variant.id === stockedVariant.id).availableQuantity).toBe(3);
   expect(pos.body).not.toHaveProperty("publication");
+});
+
+const UNEXPECTED_OPERATION_SQL = `DO $bravos_diag$
+BEGIN
+  RAISE EXCEPTION 'HOSTILE-PG-MESSAGE-SENTINEL postgres://operator:HOSTILE-PASSWORD-SENTINEL@db.internal/bravos'
+    USING DETAIL = 'HOSTILE-PG-DETAIL-SENTINEL',
+          HINT = 'HOSTILE-PG-HINT-SENTINEL';
+END
+$bravos_diag$;`;
+
+const DIAGNOSTIC_SENTINELS = [
+  "HOSTILE-REQUEST-ID-SENTINEL",
+  "HOSTILE-QUERY-SENTINEL",
+  "HOSTILE-PATH-PARAM-SENTINEL",
+  "HOSTILE-TOKEN-SENTINEL",
+  "HOSTILE-COOKIE-SENTINEL",
+  "HOSTILE-PG-MESSAGE-SENTINEL",
+  "HOSTILE-PG-DETAIL-SENTINEL",
+  "HOSTILE-PG-HINT-SENTINEL",
+  "HOSTILE-PASSWORD-SENTINEL",
+  "postgres://operator:HOSTILE-PASSWORD-SENTINEL@db.internal/bravos",
+];
+
+test("unexpected catalog failure keeps the generic 500 and one sanitized diagnostic", async () => {
+  const observedRequestIds: string[] = [];
+  built.app.addHook("onRequest", async (request) => {
+    observedRequestIds.push(request.id);
+  });
+  const originalGetPublicProduct = built.catalog.getPublicProduct.bind(built.catalog);
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    built.catalog.getPublicProduct = async (productId: unknown) => {
+      await built.pool.query(UNEXPECTED_OPERATION_SQL);
+      return originalGetPublicProduct(productId);
+    };
+
+    const failure = await built.app.inject({
+      method: "GET",
+      url: "/api/public/catalog/products/HOSTILE-PATH-PARAM-SENTINEL?request-id=HOSTILE-QUERY-SENTINEL&token=HOSTILE-TOKEN-SENTINEL",
+      headers: {
+        origin: PUBLIC_ORIGIN,
+        "request-id": "HOSTILE-REQUEST-ID-SENTINEL",
+        "x-request-id": "HOSTILE-REQUEST-ID-SENTINEL",
+        cookie: "session=HOSTILE-COOKIE-SENTINEL",
+        authorization: "Bearer HOSTILE-TOKEN-SENTINEL",
+      },
+    });
+
+    expect(observedRequestIds).toHaveLength(1);
+    const failureRequestId = observedRequestIds[0] ?? "";
+    expect(failureRequestId).toMatch(/^req-[0-9a-z]+$/);
+    expect(failure.statusCode).toBe(500);
+    expect(JSON.parse(failure.body)).toEqual({
+      error: { code: "CONFLICT", messageAr: "تعذر إكمال العملية." },
+    });
+    expect(failure.body).not.toContain(failureRequestId);
+    const headerNames = Object.keys(failure.headers).map((name) => name.toLowerCase());
+    expect(headerNames).not.toContain("request-id");
+    expect(headerNames).not.toContain("x-request-id");
+
+    expect(consoleError).toHaveBeenCalledTimes(1);
+    expect(consoleError.mock.calls[0]).toHaveLength(2);
+    const [event, metadata] = consoleError.mock.calls[0] ?? [];
+    expect(event).toBe("api.unexpected_failure");
+    expect(metadata).toEqual({
+      category: "unexpected_operation_failure",
+      requestId: failureRequestId,
+      routeTemplate: "/api/public/catalog/products/:productId",
+    });
+
+    built.catalog.getPublicProduct = originalGetPublicProduct;
+
+    const unauthenticated = await api(undefined, "POST", "/api/internal/catalog/categories", { nameAr: "ممنوع" });
+    expect(unauthenticated.status).toBe(401);
+    expect(unauthenticated.body.error.code).toBe("UNAUTHENTICATED");
+
+    const manager = await signIn("owner", "owner-pass-1");
+    const invalid = await api(manager, "POST", "/api/internal/catalog/categories", { nameAr: "" });
+    expect(invalid.status).toBe(400);
+    expect(invalid.body.error.code).toBe("VALIDATION");
+
+    const missing = await api(undefined, "GET", `/api/public/catalog/products/${crypto.randomUUID()}`);
+    expect(missing.status).toBe(404);
+    expect(missing.body.error.code).toBe("NOT_FOUND");
+
+    expect(consoleError).toHaveBeenCalledTimes(1);
+    const serialized = `${failure.body}\n${JSON.stringify(failure.headers)}\n${JSON.stringify(consoleError.mock.calls)}`;
+    for (const sentinel of DIAGNOSTIC_SENTINELS) {
+      expect(serialized).not.toContain(sentinel);
+    }
+  } finally {
+    built.catalog.getPublicProduct = originalGetPublicProduct;
+    consoleError.mockRestore();
+  }
 });
 
 async function startApp(overrides: { databasePoolMax?: number } = {}) {

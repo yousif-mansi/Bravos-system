@@ -6,24 +6,32 @@ test("same-account refresh during initial sales loading starts a fresh read and 
   const workspace = await (await page.request.get("http://127.0.0.1:5174/api/internal/workspace")).json() as WorkspaceDto;
   const stale = feedbackSale(workspace, "OLD");
   const fresh = feedbackSale(workspace, "NEW");
-  let releaseStale!: () => void;
-  const gate = new Promise<void>((resolve) => { releaseStale = resolve; });
-  let reads = 0;
+  let holdStale = true;
+  const releaseStale: Array<() => void> = [];
   await page.route("**/api/internal/sales", async (route) => {
-    reads += 1;
-    if (reads === 1) { await gate; await route.fulfill({ json: [stale] }); }
-    else await route.fulfill({ json: [fresh] });
+    const url = new URL(route.request().url());
+    if (route.request().method() !== "GET" || url.pathname !== "/api/internal/sales") {
+      await route.fallback();
+      return;
+    }
+    if (holdStale) {
+      await new Promise<void>((resolve) => { releaseStale.push(resolve); });
+      await route.fulfill({ json: [stale] });
+      return;
+    }
+    await route.fulfill({ json: [fresh] });
   });
   await page.route(`**/api/internal/sales/${fresh.id}`, (route) => route.fulfill({ json: fresh }));
   await page.getByRole("link", { name: "المبيعات", exact: true }).click();
   const loading = page.getByRole("status").filter({ hasText: "جارٍ تحميل المبيعات" });
   await expect(loading).toBeVisible();
+  holdStale = false;
   await page.evaluate((staffId) => window.dispatchEvent(new CustomEvent("bravos-account", { detail: { eventId: crypto.randomUUID(), generation: 0, staffId } })), workspace.staff.id);
   const list = page.getByTestId("sale-list");
   await expect(list.getByRole("button", { name: /POS-FEEDBACK-NEW/ })).toBeVisible();
   await expect(loading).toHaveCount(0);
   const staleResponse = page.waitForResponse((value) => value.url().endsWith("/api/internal/sales"));
-  releaseStale();
+  for (const release of releaseStale) release();
   await staleResponse;
   await expect(list.getByRole("button", { name: /POS-FEEDBACK-OLD/ })).toHaveCount(0);
   await list.getByRole("button", { name: /POS-FEEDBACK-NEW/ }).click();

@@ -46,25 +46,39 @@ test("production configuration defaults public ordering closed and requires an e
     DATABASE_URL: "postgres://operator@example/bravos",
     BETTER_AUTH_SECRET: "operator-secret-operator-secret-32",
     BRAVOS_PRODUCT_MEDIA_DIR: "C:/BravosPrivate/media",
+    BETTER_AUTH_URL: "https://api.example",
+    BRAVOS_INTERNAL_ORIGIN: "https://staff.example",
+    BRAVOS_PUBLIC_ORIGIN: "https://shop.example",
+  };
+  const rehearsalEnvironment = {
+    NODE_ENV: "production",
+    DATABASE_URL: environment.DATABASE_URL,
+    BETTER_AUTH_SECRET: environment.BETTER_AUTH_SECRET,
+    BRAVOS_PRODUCT_MEDIA_DIR: environment.BRAVOS_PRODUCT_MEDIA_DIR,
+    BRAVOS_LOOPBACK_REHEARSAL: "true",
+    BETTER_AUTH_URL: "http://127.0.0.1:3010",
+    BRAVOS_INTERNAL_ORIGIN: "http://127.0.0.1:5173",
+    BRAVOS_PUBLIC_ORIGIN: "http://127.0.0.1:3000",
   };
   expect(loadConfig(environment)).toMatchObject({ publicOrderingEnabled: false, secureCookies: true });
   expect(loadConfig({ ...environment, BRAVOS_PUBLIC_ORDERING_ENABLED: "true" }).publicOrderingEnabled).toBe(true);
   expect(() => loadConfig({ ...environment, BRAVOS_PUBLIC_ORDERING_ENABLED: "yes" })).toThrow(/exactly true or false/i);
-  expect(loadConfig({ ...environment, BRAVOS_LOOPBACK_REHEARSAL: "true" }).secureCookies).toBe(false);
+  expect(loadConfig(rehearsalEnvironment).secureCookies).toBe(false);
   expect(() => loadConfig({
-    ...environment,
-    BRAVOS_LOOPBACK_REHEARSAL: "true",
+    ...rehearsalEnvironment,
     BRAVOS_PUBLIC_ORIGIN: "https://shop.example",
   })).toThrow(/fixed production-build loopback origins/i);
   expect(() => loadConfig({
-    ...environment,
-    BRAVOS_LOOPBACK_REHEARSAL: "true",
+    ...rehearsalEnvironment,
     BRAVOS_TRUSTED_ORIGINS: "https://extra.example",
   })).toThrow(/fixed production-build loopback origins/i);
   expect(() => loadConfig({
     NODE_ENV: "production",
     DATABASE_URL: environment.DATABASE_URL,
     BETTER_AUTH_SECRET: environment.BETTER_AUTH_SECRET,
+    BETTER_AUTH_URL: environment.BETTER_AUTH_URL,
+    BRAVOS_INTERNAL_ORIGIN: environment.BRAVOS_INTERNAL_ORIGIN,
+    BRAVOS_PUBLIC_ORIGIN: environment.BRAVOS_PUBLIC_ORIGIN,
   })).toThrow(/BRAVOS_PRODUCT_MEDIA_DIR is required/i);
 });
 

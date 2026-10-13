@@ -242,6 +242,11 @@ function ReportContents({
             note={report.filters.channel === "online" ? "المصروفات مسجلة على الفروع ولا تُخصم عند عرض قناة الأونلاين وحدها." : undefined}
           />
           <Metric label="تكلفة المشتريات في الفترة" value={money(summary.purchaseCostPiasters)} />
+          <Metric
+            label="قيمة المخزون الافتتاحي في الفترة"
+            value={money(summary.openingStockCostPiasters)}
+            note="رصيد بداية الاستيراد وليس عملية شراء ولا مصروفاً، ولا يُخصم من ربح التشغيل."
+          />
         </div>
         {summary.costsIncomplete ? (
           <div className="report-warning" role="status">
@@ -257,6 +262,7 @@ function ReportContents({
       <Refunds refunds={report.refunds} branches={workspace.authorizedBranches} />
       <BestSellers report={report} />
       <Inventory report={report} />
+      <OpeningStock report={report} />
       <PurchasesAndExpenses report={report} />
       <LowStock report={report} branches={workspace.authorizedBranches} />
       <DetailPaging report={report} loading={loading} onPageChange={onPageChange} />
@@ -360,7 +366,7 @@ function DetailPaging({
   return (
     <nav className="card report-pagination" aria-label="صفحات تفاصيل التقرير">
       <p>
-        صفحة التفاصيل {page.page} · إجمالي السجلات: {page.totalCompletedSales} مبيعات، {page.totalRefunds} مرتجعات، {page.totalPurchases} مشتريات، {page.totalExpenses} مصروفات.
+        صفحة التفاصيل {page.page} · إجمالي السجلات: {page.totalCompletedSales} مبيعات، {page.totalRefunds} مرتجعات، {page.totalPurchases} مشتريات، {page.totalOpeningReceipts} مخزون افتتاحي، {page.totalExpenses} مصروفات.
       </p>
       <div className="actions">
         <button className="secondary" type="button" disabled={loading || page.page <= 1} onClick={() => onPageChange(page.page - 1)}>
@@ -540,12 +546,47 @@ function Inventory({ report }: { report: ManagementReportDto }) {
   );
 }
 
+function OpeningStock({ report }: { report: ManagementReportDto }) {
+  return (
+    <section className="card" data-testid="opening-stock" aria-labelledby="opening-stock-heading">
+      <h2 id="opening-stock-heading">المخزون الافتتاحي</h2>
+      <p className="muted">
+        هذا رصيد بداية الاستيراد لكل الفروع، وليس عملية شراء جديدة ولا مصروفاً تشغيلياً.
+        لا يتغير بفلتر الفرع أو الموظف أو قناة البيع. التاريخ المعروض هو تاريخ قبول الاستيراد،
+        وتبقى تواريخ دفعات التكلفة الأصلية لأجل الوارد أولاً يصرف أولاً.
+      </p>
+      <p className="expense-total" data-testid="opening-stock-total">{money(report.openingStock.totalPiasters)}</p>
+      {report.openingStock.receipts.length ? <ul className="report-plain-list">
+        {report.openingStock.receipts.map((receipt) => (
+          <li key={receipt.receiptId}>
+            <strong>{receipt.receiptDate}</strong>
+            <span>{receipt.effectiveQuantity} قطعة · {money(receipt.effectiveCostPiasters)}</span>
+            <ul className="report-lines" aria-label={`تفاصيل المخزون الافتتاحي ${receipt.receiptId}`}>
+              {receipt.lines.map((line) => (
+                <li key={line.lineId}>
+                  <span>{line.variant.product.nameAr} · {line.variant.size.nameAr} · {line.variant.color.nameAr} · {line.effectiveQuantity} قطعة</span>
+                  <strong>{money(line.effectiveUnitCostPiasters)} للوحدة · {money(line.effectiveCostPiasters)}</strong>
+                </li>
+              ))}
+            </ul>
+            {receipt.corrections.map((correction) => (
+              <span key={correction.id}>
+                تصحيح {correction.revision}: {correction.reason} · المسؤول {correction.changedByDisplayName} · {formatCairoDateTime(correction.changedAt)}
+              </span>
+            ))}
+          </li>
+        ))}
+      </ul> : <EmptyState title="مفيش مخزون افتتاحي" message="قبول استيراد المخزون في الفترة دي هيظهر هنا." />}
+    </section>
+  );
+}
+
 function PurchasesAndExpenses({ report }: { report: ManagementReportDto }) {
   return (
     <section className="grid two" aria-label="المشتريات والمصروفات">
       <div className="card">
         <h2>المشتريات</h2>
-        <p className="muted">المشتريات المعروضة لجميع الفروع ولا تتغير بفلتر الفرع أو الموظف أو قناة البيع.</p>
+        <p className="muted">المشتريات المعروضة لجميع الفروع ولا تتغير بفلتر الفرع أو الموظف أو قناة البيع. المخزون الافتتاحي المستورد ظاهر في قسمه ولا يُحسب هنا.</p>
         <p className="expense-total">{money(report.purchases.totalPiasters)}</p>
         {report.purchases.receipts.length ? <ul className="report-plain-list">
           {report.purchases.receipts.map((receipt) => (

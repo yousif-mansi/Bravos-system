@@ -383,6 +383,42 @@ test("operator secret files must be protected regular files outside the workspac
   }
 });
 
+test.skipIf(process.platform !== "win32")("operator recovery ignores uppercase inherited PowerShell module paths", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "bravos-recovery-module-path-"));
+  const directory = path.join(root, "recovery");
+  const modules = path.join(root, "modules");
+  const securityModule = path.join(modules, "Microsoft.PowerShell.Security");
+  try {
+    await mkdir(securityModule, { recursive: true });
+    await writeFile(path.join(securityModule, "Microsoft.PowerShell.Security.psd1"), String.raw`
+      @{ ModuleVersion = '1.0.0'; RootModule = 'security.psm1'; FunctionsToExport = @('Get-Acl') }
+    `, "utf8");
+    await writeFile(path.join(securityModule, "security.psm1"), "throw 'Inherited module path must not be used for recovery ACLs.'", "utf8");
+    await execFileAsync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", String.raw`
+      import { createOperatorRecoveryOutbox } from '@bravos/identity/node';
+      await createOperatorRecoveryOutbox(process.env.BRAVOS_TEST_RECOVERY_DIRECTORY).deliver({
+        purpose: 'owner-recovery',
+        createdAt: '2026-10-07T12:30:00.000Z',
+        token: 'b'.repeat(64),
+      });
+    `], {
+      env: { ...process.env, PSMODULEPATH: modules, BRAVOS_TEST_RECOVERY_DIRECTORY: directory },
+      windowsHide: true,
+      timeout: 30_000,
+    });
+    const latestPath = path.join(directory, "latest.json");
+    expect(JSON.parse(await readFile(latestPath, "utf8"))).toEqual({
+      purpose: "owner-recovery",
+      createdAt: "2026-10-07T12:30:00.000Z",
+      token: "b".repeat(64),
+    });
+    await assertPrivateOperatorPath(directory, "directory");
+    await assertPrivateOperatorPath(latestPath, "file");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("operator recovery rejects a workspace ancestor without changing it", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "bravos-recovery-ancestor-"));
   try {
@@ -408,7 +444,9 @@ test("operator recovery rejects a workspace ancestor without changing it", async
 async function permissionSnapshot(target: string): Promise<string> {
   if (process.platform === "win32") {
     const env = { ...process.env, BRAVOS_PERMISSION_TARGET: target };
-    delete env.PSModulePath;
+    for (const key of Object.keys(env)) {
+      if (key.toLowerCase() === "psmodulepath") delete env[key];
+    }
     const result = await execFileAsync("powershell.exe", [
       "-NoLogo",
       "-NoProfile",
@@ -433,7 +471,9 @@ async function assertPrivateOperatorPath(target: string, kind: "directory" | "fi
   else expect(info.isFile()).toBe(true);
   if (process.platform === "win32") {
     const env = { ...process.env, BRAVOS_PERMISSION_TARGET: target };
-    delete env.PSModulePath;
+    for (const key of Object.keys(env)) {
+      if (key.toLowerCase() === "psmodulepath") delete env[key];
+    }
     const result = await execFileAsync("powershell.exe", [
       "-NoLogo",
       "-NoProfile",

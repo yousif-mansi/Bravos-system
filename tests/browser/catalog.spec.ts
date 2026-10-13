@@ -199,7 +199,17 @@ test("manager renames taxonomy, selects an inventory SKU, and keeps existing ima
   await expect(newPair.getByRole("checkbox", { name: "عرض هذه التركيبة" })).not.toBeChecked();
   await newPair.getByRole("checkbox", { name: "عرض هذه التركيبة" }).check();
   await extendedForm.getByLabel("حالة الموقع").selectOption("available");
+  const savedPublication = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return response.request().method() === "PATCH"
+      && url.pathname === `/api/internal/catalog/products/${product.id}`;
+  });
   await extendedForm.getByRole("button", { name: "حفظ التعديل" }).click();
+  const saved = await savedPublication;
+  const savedBody = await saved.json() as { publication?: string };
+  expect(saved.status(), JSON.stringify(savedBody)).toBe(200);
+  expect(savedBody.publication, JSON.stringify(savedBody)).toBe("available");
+  await expect(page.getByRole("status")).toContainText("تم تحديث المنتج.");
   const published = await page.request.get(`http://127.0.0.1:5174/api/public/catalog/products/${product.id}`);
   expect(published.status()).toBe(200);
   const publishedBody = await published.json();
@@ -213,7 +223,7 @@ test("bulk size and color visibility preserves sparse inventory pairs and POS av
   await page.getByLabel("كلمة المرور").fill("e2e-owner-pass");
   await page.getByRole("button", { name: "دخول" }).click();
   await expect(page.getByRole("heading", { name: "اختيار الفرع النشط" })).toBeVisible();
-  await page.getByRole("button", { name: "أبشواي" }).click();
+  await chooseAbshway(page);
 
   const category = await staffApi(page, "POST", "/api/internal/catalog/categories", { nameAr: "تركيبات متفرقة" });
   const medium = await staffApi(page, "POST", "/api/internal/catalog/sizes", { nameAr: "متوسط متفرق" });
@@ -279,7 +289,7 @@ test("bulk size and color visibility preserves sparse inventory pairs and POS av
   await page.getByLabel("كلمة المرور").fill("e2e-cashier-pass");
   await page.getByRole("button", { name: "دخول" }).click();
   await expect(page.getByRole("heading", { name: "اختيار الفرع النشط" })).toBeVisible();
-  await page.getByRole("button", { name: "أبشواي" }).click();
+  await chooseAbshway(page);
   const lookup = await staffApi(page, "GET", "/api/internal/catalog/lookup?code=SPARSE-E2E");
   expect(lookup.status).toBe(200);
   expect(lookup.body.variants.map((variant: { id: string }) => variant.id).sort()).toEqual(created.body.variants.map((variant: { id: string }) => variant.id).sort());
@@ -291,6 +301,24 @@ test("bulk size and color visibility preserves sparse inventory pairs and POS av
   await page.getByLabel("اللون", { exact: true }).selectOption({ label: "أحمر متفرق" });
   await expect(page.getByTestId("available-quantity")).toHaveText("الكمية المتاحة: 2");
 });
+
+// selectActiveBranch returns WorkspaceDto. activeBranch is { id, code, nameAr } once the session branch is stored.
+async function chooseAbshway(page: Page) {
+  const selected = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return response.request().method() === "POST" && url.pathname === "/api/internal/active-branch";
+  });
+  await page.getByRole("button", { name: "أبشواي" }).click();
+  const response = await selected;
+  const body = await response.json() as { activeBranch?: { id?: string; code?: string; nameAr?: string } | null };
+  expect(response.status(), JSON.stringify(body)).toBe(200);
+  expect(body.activeBranch, JSON.stringify(body)).toEqual({
+    id: expect.any(String),
+    code: "abshway",
+    nameAr: "أبشواي",
+  });
+  await expect(page.getByTestId("active-branch")).toHaveText("أبشواي");
+}
 
 async function staffApi(page: Page, method: "GET" | "PATCH" | "POST", url: string, payload?: unknown) {
   const response = await page.request.fetch(`http://127.0.0.1:5174${url}`, {

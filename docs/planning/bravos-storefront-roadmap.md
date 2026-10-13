@@ -1,5 +1,7 @@
 # Bravos storefront implementation roadmap
 
+> **30 September 2026 — integration review after `741fdf8`:** The [integration impact report and proposed resume order](../reviews/storefront-integration-741fdf8.md) reconcile this historical roadmap with committed source. The later [dark storefront execution brief](storefront-evolution-execution.md) and [branch-stock operational rules](phase-1-operational-updates.md) supersede warm-bone/Cairo/central-stock wording below. Existing storefront implementation is committed through `dacf3c7`; `741fdf8` adds no public DTO or storefront source change. Proposed next order: bounded SF-10 acknowledgment wording and SF-07/09/10 integration verification, current production visual review, remaining SF-00/SF-08 inputs, SF-11 performance, then SF-12 quality acceptance. Optional stories remain optional. This is a review/documentation update, not authorization to implement or redesign; historical evidence and ticket IDs below remain intact.
+
 **Status:** Approved roadmap; SF-02/SF-04/SF-05 authorized for local implementation on 25 September 2026. Earlier execution history and outstanding acceptance gates are recorded below.
 **Baseline:** `main`, `15fd3661b29249ca1fc7f3484654476d6c1b2b1d`, 23 September 2026.  
 **Authority:** [Approved Experience Evolution Report](../../bravos-experience-evolution-report.md), refined by the user's subsequent Phase 0–5 instructions. The report's internal-system proposals and original phase numbering are outside this roadmap. Its provisional audit hypotheses are not treated as verified defects.  
@@ -132,3 +134,9 @@ Next priorities are approved photography and factual copy for SF-03/SF-08, the r
 | SF-10 | [#40](https://github.com/yousif-mansi/Bravos-system/issues/40) |
 | SF-11 | [#41](https://github.com/yousif-mansi/Bravos-system/issues/41) |
 | SF-12 | [#42](https://github.com/yousif-mansi/Bravos-system/issues/42) |
+
+### Main-review update — 9 October 2026
+
+The [main review](../reviews/production-readiness-main-review-2026-10-09.md) records the current candidate's identified source, actual verification and bounded disposition, including retained failures, the repaired fresh 32-case pass, development capture review and final bundle-guard hardening. Earlier execution and commit-authorization records remain historical and do not authorize publication of this candidate.
+
+SF-12 remains partial. SF-11, representative photography/content/font approval, physical devices, true zoom/screen-reader acceptance, hosted operation, recovery drills and launch approval remain separate open gates. Hosted CI has not executed; publication and hosted execution still require explicit approval. No domain/hosting purchase, deployment or public-ordering switch is authorized by this update.

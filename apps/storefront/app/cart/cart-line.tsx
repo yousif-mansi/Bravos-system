@@ -1,5 +1,6 @@
 import Image from "next/image";
 import Link from "next/link";
+import { useState } from "react";
 import type { CartLine as CartItem } from "./cart-types";
 import { formatEgp, productMediaUrl } from "../public-catalog";
 import styles from "./cart.module.css";
@@ -11,13 +12,16 @@ type CartLineProps = {
 };
 
 export function CartLine({ item, onQuantityChange, onRemove }: CartLineProps) {
+  const [failedImageRef, setFailedImageRef] = useState<string | null>(null);
   const unavailable = !item.orderable || item.knownAvailableQuantity === 0;
   const excessive = item.quantity > item.knownAvailableQuantity;
 
   return (
     <article className={`cart-line ${styles.line}`}>
       <div className={styles.photo}>
-        {item.imageRef ? <Image src={productMediaUrl(item.imageRef)} alt="" fill unoptimized sizes="(max-width: 580px) 88px, 112px" /> : <span>صورة المنتج</span>}
+        {item.imageRef && item.imageRef !== failedImageRef ? (
+          <Image src={productMediaUrl(item.imageRef)} alt="" fill unoptimized sizes="(max-width: 580px) 88px, 112px" onError={() => setFailedImageRef(item.imageRef)} />
+        ) : <span>{item.imageRef ? "هذه الصورة غير متاحة حالياً" : "صورة المنتج"}</span>}
       </div>
       <div className={styles.details}>
         <Link className={styles.productLink} href={`/products/${item.productId}`}><h2>{item.productNameAr}</h2></Link>

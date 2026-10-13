@@ -87,15 +87,19 @@
 }
 
 .categories a {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
   display: inline-flex;
   align-items: center;
+  max-width: 100%;
+  min-width: 44px;
   min-height: 44px;
   padding: .45rem .35rem;
   border-block-end: 1px solid transparent;
   color: var(--store-muted);
   text-decoration: none;
   font-size: 14px;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .categories a:hover,

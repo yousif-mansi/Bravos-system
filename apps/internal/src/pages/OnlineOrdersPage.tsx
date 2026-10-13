@@ -212,6 +212,7 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
   const [loadFailed, setLoadFailed] = useState(false);
   const [readVersion, setReadVersion] = useState(0);
   const detailFeedback = useRevealFeedback<HTMLElement>();
+  const pendingDetailReveal = useRef(false);
   const [contactOutcome, setContactOutcome] = useState<"no_answer" | "reached">("no_answer");
   const [contactNote, setContactNote] = useState("");
   const [agreementLines, setAgreementLines] = useState<AgreementLineDraft[]>([]);
@@ -270,7 +271,7 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
         setSettings(currentSettings);
         setWaitHours(String(currentSettings.unreachableWaitHours));
         setMinimumAttempts(String(currentSettings.minimumContactAttempts));
-        if (order) detailFeedback.reveal();
+        if (order) pendingDetailReveal.current = true;
       } catch (caught) {
         if (stillCurrent()) { setLoadFailed(true); setError(errorMessage(caught, "تعذر تحميل الطلبات الأونلاين.")); }
       } finally {
@@ -282,6 +283,12 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
       if (lifecycle.current === token) lifecycle.current += 1;
     };
   }, [workspace.staff.id, orderId, readVersion]);
+
+  useEffect(() => {
+    if (!selected || !pendingDetailReveal.current) return;
+    pendingDetailReveal.current = false;
+    detailFeedback.reveal();
+  }, [selected, detailFeedback]);
 
   useEffect(() => {
     if (!selected) return;

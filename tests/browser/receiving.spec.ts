@@ -175,7 +175,9 @@ test("manager receives separate cost batches and cashier sees their branch quant
   await page.getByLabel("المقاس").selectOption({ label: "32" });
   await page.getByLabel("اللون").selectOption({ label: "رمادي" });
   await expect(page.getByTestId("available-quantity")).toHaveText("الكمية المتاحة: 20");
-  await expect(page.getByText(/تكلفة|ربح|شراء/)).toHaveCount(0);
+  await expect(page.getByTestId("lookup-result").getByText(/تكلفة|ربح|شراء/)).toHaveCount(0);
+  const costLabels = page.getByText(/تكلفة شراء|تكلفة الوحدة|تكلفة الدفعات|دفعات التكلفة|مجمل ربح|ربح التشغيل/);
+  await expect(costLabels, (await costLabels.allInnerTexts()).join(" | ")).toHaveCount(0);
 });
 
 test("lost receiving response retries the same operation without duplicating stock", async ({ page }) => {

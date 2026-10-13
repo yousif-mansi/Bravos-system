@@ -144,7 +144,7 @@ import {
   type OpeningImportServices,
   type OpeningImportTemplateName,
 } from "@bravos/opening-import";
-import { createPostgresOpeningImportStore } from "@bravos/opening-import/node";
+import { createPostgresOpeningImportReportingReader, createPostgresOpeningImportStore } from "@bravos/opening-import/node";
 import { createPostgresOpeningCatalogTransaction } from "@bravos/catalog/node";
 import { createPostgresOpeningReceivingTransaction } from "@bravos/receiving/node";
 import { createPostgresOpeningExpenseTransaction } from "@bravos/expenses/node";
@@ -434,7 +434,7 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
       }))),
       uow: createPostgresReturnsUnitOfWork(
         pool,
-        createInventoryTransaction,
+        (client) => createInventoryTransaction(client, config.businessClock ? { now: config.businessClock } : undefined),
         createPostgresOnlineOrderStore,
         createPostgresReturnCorrectionStateReader,
         (client, inventoryTransaction) => createExchangeReplacementSaleWriter({
@@ -539,6 +539,7 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
         orders: createPostgresOnlineOrderReportingReader(client),
         returns: createPostgresReturnReportingFactsReader(client),
         purchases: createPostgresPurchaseReportingReader(client),
+        openingImports: createPostgresOpeningImportReportingReader(client),
         expenses: createPostgresExpenseReportingReader(client),
         catalog: createPostgresCatalogReportingReader(client),
       })),
@@ -1898,6 +1899,13 @@ function sendError(reply: FastifyReply, error: unknown) {
   if (error instanceof NotFoundError) {
     return reply.status(404).send(errorBody(error.code, error.message));
   }
+  const requestId = reply.request.id;
+  const routeTemplate = reply.request.routeOptions.url;
+  console.error("api.unexpected_failure", {
+    category: "unexpected_operation_failure",
+    requestId: typeof requestId === "string" ? requestId : "unavailable",
+    routeTemplate: typeof routeTemplate === "string" && routeTemplate.length > 0 ? routeTemplate : "unmatched",
+  });
   return reply.status(500).send(errorBody("CONFLICT", "تعذر إكمال العملية."));
 }
 

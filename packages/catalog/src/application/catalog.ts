@@ -428,6 +428,7 @@ function toCashierLookup(
   return {
     id: product.id,
     categoryId: product.category.id,
+    categoryNameAr: product.category.nameAr,
     code: product.code,
     nameAr: product.nameAr,
     descriptionAr: product.descriptionAr,

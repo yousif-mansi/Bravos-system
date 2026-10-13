@@ -116,8 +116,13 @@ test("storefront activity appears as anonymous aggregate counts and stays manage
   await page.goto("http://127.0.0.1:5174/analytics");
   await expect(page).toHaveURL(/\/workspace$/);
 
+  const signedOut = page.waitForResponse((response) => (
+    new URL(response.url()).pathname === "/api/auth/sign-out" && response.request().method() === "POST"
+  ));
   await page.getByRole("button", { name: "تسجيل الخروج" }).click();
   await expect(page).toHaveURL(/\/login$/);
+  const signedOutResponse = await signedOut;
+  expect(signedOutResponse.ok(), `${signedOutResponse.status()} ${await signedOutResponse.text()}`).toBe(true);
   expect((await staffApi(page, "GET", `/api/internal/analytics?from=${day}&to=${day}`)).status).toBe(401);
   expect((await rawDownload(page, `/api/internal/reports/management/export?format=xlsx&period=day&date=${day}`)).status()).toBe(401);
 });
@@ -296,11 +301,14 @@ async function seedProduct(page: Page, suffix: string, quantity: number) {
     variants: [{ sizeId: size.body.id, colorId: color.body.id, sellingPricePiastersOverride: null }],
   });
   const variantId = product.body.variants[0].id as string;
-  expect((await staffApi(page, "POST", "/api/internal/receiving/receipts", {
+  const workspace = await staffApi(page, "GET", "/api/internal/workspace");
+  const receipt = await staffApi(page, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
+    branchId: workspace.body.activeBranch.id,
     receiptDate: cairoDate(),
     lines: [{ variantId, quantity, unitCostPiasters: 9_000 }],
-  })).status).toBe(201);
+  });
+  expect(receipt.status, JSON.stringify(receipt.body)).toBe(201);
   return { productId: product.body.id as string, variantId, nameAr };
 }
 

@@ -5,6 +5,7 @@ import { afterAll, beforeAll, beforeEach, expect, test } from "vitest";
 import { buildApp, type BuiltApp } from "../../apps/api/src/app.ts";
 import { ensureOwner } from "../../apps/api/src/bootstrap.ts";
 import { startPostgresCluster, type PostgresCluster } from "@bravos/testkit";
+import { createInventoryTransaction } from "@bravos/inventory/node";
 
 const ORIGIN = "http://127.0.0.1:5173";
 let now = new Date("2026-09-16T08:00:00.000Z");
@@ -135,6 +136,7 @@ test("ordinary refund owed is explicit and cancellation without inventory moveme
     expectedRevision: drafted.body.revision,
   });
   expect(posted.status, JSON.stringify(posted.body)).toBe(201);
+  expect(posted.body.postedAt).toBe(now.toISOString());
 
   const owed = await managementReport(manager);
   expect(owed.body.refunds[0]).toMatchObject({
@@ -219,6 +221,7 @@ test("FIFO return cost, original branch and employee attribution change exactly 
   expect(posted.body.restorations).toEqual([
     expect.objectContaining({ batchId: oldest.body.lines[0].batchId, quantity: 1, unitCostPiasters: 10_000 }),
   ]);
+  expect(posted.body.postedAt).toBe(now.toISOString());
   const paymentOperationId = crypto.randomUUID();
   const paid = await api(manager, "POST", `/api/internal/returns/${drafted.body.id}/refund`, {
     operationId: paymentOperationId,
@@ -355,7 +358,9 @@ test("exchange reports full replacement revenue while credit and both cash direc
     cashRefundPiasters: 0,
   });
   const dearerExchange = await completeExchange(manager, dearerDraft, dearerQuote, "owed");
+  expect(dearerExchange.body.postedAt).toBe(now.toISOString());
   expect(dearerExchange.body.exchange).toMatchObject({
+    completedAt: now.toISOString(),
     replacementSaleId: dearerQuote.body.settlement.replacementSaleId,
     replacementMerchandisePiasters: 32_000,
     creditAppliedPiasters: 28_000,
@@ -379,7 +384,9 @@ test("exchange reports full replacement revenue while credit and both cash direc
     cashRefundPiasters: 8_000,
   });
   const cheaperExchange = await completeExchange(manager, cheaperDraft, cheaperQuote, "owed");
+  expect(cheaperExchange.body.postedAt).toBe(now.toISOString());
   expect(cheaperExchange.body.exchange).toMatchObject({
+    completedAt: now.toISOString(),
     replacementSaleId: cheaperQuote.body.settlement.replacementSaleId,
     replacementMerchandisePiasters: 20_000,
     creditAppliedPiasters: 20_000,
@@ -400,11 +407,13 @@ test("exchange reports full replacement revenue while credit and both cash direc
   });
   expect(owedReport.body.completedSales.find((sale: ReportSale) =>
     sale.source.id === dearerQuote.body.settlement.replacementSaleId)).toMatchObject({
+    occurredAt: now.toISOString(),
     effectiveMerchandisePiasters: 32_000,
     effectiveFinalPiasters: 32_000,
   });
   expect(owedReport.body.completedSales.find((sale: ReportSale) =>
     sale.source.id === cheaperQuote.body.settlement.replacementSaleId)).toMatchObject({
+    occurredAt: now.toISOString(),
     effectiveMerchandisePiasters: 20_000,
     effectiveFinalPiasters: 20_000,
   });
@@ -447,6 +456,108 @@ test("exchange reports full replacement revenue while credit and both cash direc
     cashRefundOwedPiasters: 0,
     exchange: { cashRefundPaidPiasters: 8_000, cashRefundOwedPiasters: 0 },
   });
+});
+
+test("return claim time survives replay across the Cairo month boundary without duplicate refund or stock", async () => {
+  const manager = await signIn("owner", "owner-pass-1");
+  await selectBranch(manager, abshwayId);
+  at("2026-09-30T18:00:00.000Z");
+  const { variantIds } = await seedProduct(manager, [25_000], "حد شهر المرتجعات");
+  const variantId = variantIds[0]!;
+  await receive(manager, variantId, 2, 11_000, "2026-09-30");
+  const sale = await completeSale(manager, [{ variantId, quantity: 2 }], {
+    occurredAt: now.toISOString(),
+  });
+  const source = await returnSource(manager, sale.body.id);
+  const draft = async () => {
+    const result = await api(manager, "POST", "/api/internal/returns", {
+      returnId: crypto.randomUUID(),
+      operationId: crypto.randomUUID(),
+      sourceSaleId: sale.body.id,
+      handlingBranchId: abshwayId,
+      authorizedRefundPiasters: 25_000,
+      lines: [{ sourceSaleLineId: source.lines[0].saleLineId, quantity: 1, sellableQuantity: 1 }],
+    });
+    expect(result.status, JSON.stringify(result.body)).toBe(201);
+    return result;
+  };
+  const beforeBoundary = "2026-09-30T20:59:59.999Z";
+  const boundary = "2026-09-30T21:00:00.000Z";
+  at(beforeBoundary);
+  const firstDraft = await draft();
+  const postPayload = { receivedAndInspected: true, expectedRevision: firstDraft.body.revision };
+  const first = await api(manager, "POST", `/api/internal/returns/${firstDraft.body.id}/post`, postPayload);
+  expect(first.status, JSON.stringify(first.body)).toBe(201);
+  expect(first.body.postedAt).toBe(beforeBoundary);
+  expect(first.body.restorations).toEqual([expect.objectContaining({ quantity: 1, unitCostPiasters: 11_000 })]);
+
+  at(boundary);
+  // Re-enter the inventory claim itself; the HTTP replay also has an earlier posted-record guard.
+  const client = await built.pool.connect();
+  try {
+    await client.query("BEGIN");
+    const operation = await client.query<{ payload_fingerprint: string; actor_staff_id: string }>(
+      "SELECT payload_fingerprint,actor_staff_id FROM inventory_operation WHERE id=$1",
+      [firstDraft.body.operationId],
+    );
+    const claimed = await createInventoryTransaction(client, { now: () => new Date(now) }).claimReturnOperation({
+      operationId: firstDraft.body.operationId,
+      payloadFingerprint: operation.rows[0]!.payload_fingerprint,
+      actorStaffId: operation.rows[0]!.actor_staff_id,
+    });
+    expect(claimed).toEqual({ kind: "replay", operationId: firstDraft.body.operationId, recordedAt: new Date(beforeBoundary) });
+
+    // Production's default and unrelated claims still use the database transaction clock.
+    const databaseClock = await client.query<{ recorded_at: Date }>("SELECT now() AS recorded_at");
+    const probe = { operationId: crypto.randomUUID(), payloadFingerprint: "return-clock-probe", actorStaffId: operation.rows[0]!.actor_staff_id };
+    const defaultClaim = await createInventoryTransaction(client).claimReturnOperation(probe);
+    expect(defaultClaim.recordedAt).toEqual(databaseClock.rows[0]!.recorded_at);
+    const saleClaim = await createInventoryTransaction(client, { now: () => new Date(now) }).claimSaleOperation({
+      ...probe, operationId: crypto.randomUUID(),
+    });
+    expect(saleClaim.recordedAt).toEqual(databaseClock.rows[0]!.recorded_at);
+  } finally {
+    try {
+      await client.query("ROLLBACK");
+    } finally {
+      client.release();
+    }
+  }
+
+  const replay = await api(manager, "POST", `/api/internal/returns/${firstDraft.body.id}/post`, postPayload);
+  expect(replay.status, JSON.stringify(replay.body)).toBe(200);
+  expect(replay.body).toEqual(first.body);
+  const beforeSecond = await managementReport(manager);
+  expect(beforeSecond.status, JSON.stringify(beforeSecond.body)).toBe(200);
+  expect(beforeSecond.body.pageInfo.totalRefunds).toBe(1);
+  expect(beforeSecond.body.summary).toMatchObject({
+    merchandiseRefundPiasters: 25_000,
+    knownNetMerchandiseCostPiasters: 11_000,
+  });
+  expect(beforeSecond.body.inventory).toMatchObject({ availableQuantity: 1, availableValuePiasters: 11_000 });
+
+  const secondDraft = await draft();
+  const second = await api(manager, "POST", `/api/internal/returns/${secondDraft.body.id}/post`, {
+    receivedAndInspected: true, expectedRevision: secondDraft.body.revision,
+  });
+  expect(second.status, JSON.stringify(second.body)).toBe(201);
+  expect(second.body.postedAt).toBe(boundary);
+  const september = await managementReport(manager);
+  const october = await api(manager, "GET", "/api/internal/reports/management?period=month&month=2026-10&detailPage=1&detailPageSize=100");
+  expect(september.status, JSON.stringify(september.body)).toBe(200);
+  expect(october.status, JSON.stringify(october.body)).toBe(200);
+  expect(september.body.refunds).toEqual([expect.objectContaining({ returnId: first.body.id, postedAt: beforeBoundary })]);
+  expect(october.body.refunds).toEqual([expect.objectContaining({ returnId: second.body.id, postedAt: boundary })]);
+  expect(september.body.summary).toMatchObject({
+    completedCount: 1, grossMerchandiseSalesPiasters: 50_000, merchandiseRefundPiasters: 25_000,
+    netMerchandiseSalesPiasters: 25_000, knownNetMerchandiseCostPiasters: 11_000, merchandiseGrossProfitPiasters: 14_000,
+  });
+  expect(october.body.summary).toMatchObject({
+    completedCount: 0, grossMerchandiseSalesPiasters: 0, merchandiseRefundPiasters: 25_000,
+    netMerchandiseSalesPiasters: -25_000, knownNetMerchandiseCostPiasters: -11_000, merchandiseGrossProfitPiasters: -14_000,
+  });
+  expect(october.body.inventory).toMatchObject({ availableQuantity: 2, availableValuePiasters: 22_000 });
+  expect((await returnSource(manager, sale.body.id)).lines[0].remainingQuantity).toBe(0);
 });
 
 test("a cancelled discounted sale retains accepted facts while every effective amount and cost is zero", async () => {

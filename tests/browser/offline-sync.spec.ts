@@ -92,7 +92,8 @@ test("pinned unpaid cart is rejected after shared cache reaches zero and earlier
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
-  await expect(page.getByRole("alert")).toContainText("الكمية المتاحة غير كافية.");
+  await expect(page.getByRole("main").getByRole("alert").filter({ hasText: /^الكمية المتاحة غير كافية\.$/ }))
+    .toContainText("الكمية المتاحة غير كافية.");
   await expect(page.getByRole("status").filter({ hasText: "تم حفظ البيع." })).toHaveCount(0);
   const state = await readPrivacyState(page);
   expect(state.sales.filter((sale) => sale.syncStatus === "pending")).toHaveLength(0);
@@ -136,7 +137,7 @@ test("a new local sale during an outstanding ack rebases newer stock first witho
   ]);
   expect(afterFirstCapture.effects).toHaveLength(1);
   expect(afterFirstCapture.stockCache.version).toBe(baselineVersion);
-  await addAndPrice(page, seed, { customerName: "زبون ثان", customerPhone: "01017000002" });
+  await addAndPrice(page, seed, { customerName: "زبون ثان", customerPhone: "01017000002", waitForLookupResponse: true });
   await page.getByRole("form", { name: "إتمام البيع" }).getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await page.getByRole("form", { name: "إتمام البيع" }).getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
@@ -204,7 +205,7 @@ test("an older acknowledgement that is not in the newer proof still rebases with
   await expect.poll(() => captured.length).toBe(1);
   expect(captured[0]?.saleId).toBe(saleB?.id);
   expect(captured[0]?.pendingOperationIds).toEqual([saleB?.operationId]);
-  await addAndPrice(page, seed, { customerPhone: "01017500001" });
+  await addAndPrice(page, seed, { customerPhone: "01017500001", waitForLookupResponse: true });
   await page.getByRole("form", { name: "إتمام البيع" }).getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await page.getByRole("form", { name: "إتمام البيع" }).getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
@@ -219,7 +220,7 @@ test("an older acknowledgement that is not in the newer proof still rebases with
   expect(committedB?.includedOperationIds).not.toContain(saleA?.operationId);
   expect(committedB?.stockVersion).toBeGreaterThan(committedA?.stockVersion ?? 0);
   expect(availabilityOf(committedB, seed.variantId)).toBe(2);
-  await addAndPrice(page, seed, { customerPhone: "01017500003" });
+  await addAndPrice(page, seed, { customerPhone: "01017500003", waitForLookupResponse: true });
   await page.getByRole("form", { name: "إتمام البيع" }).getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await page.getByRole("form", { name: "إتمام البيع" }).getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
@@ -310,7 +311,16 @@ test("rebase storage failure leaves the sale unacknowledged and not shown as syn
   const listedDuringFailure = await staffApi(page, "GET", "/api/internal/sales");
   expect(listedDuringFailure.body.some((sale: { id: string }) => sale.id === before.sales[0]?.id)).toBe(true);
   await restoreAckTransactionAbort(page);
-  await page.getByTestId("retry-sync").click();
+  const visibleRetry = page.locator("button.secondary[data-testid='retry-sync']");
+  await expect.poll(async () => {
+    const pending = (await readPrivacyState(page)).sales.filter((sale) => sale.syncStatus === "pending").length;
+    if (pending === 0) return "acknowledged";
+    if (await visibleRetry.count() > 0 && await visibleRetry.isEnabled()) {
+      await visibleRetry.click();
+      return "retried";
+    }
+    return "waiting";
+  }, { timeout: 30_000 }).not.toBe("waiting");
   await expect.poll(async () => (await readPrivacyState(page)).sales.filter((sale) => sale.syncStatus === "pending").length).toBe(0);
   const restored = await readPrivacyState(page);
   expect(restored.sales[0]?.syncStatus).toBe("acknowledged");
@@ -339,10 +349,10 @@ test("two tabs serialize synchronization of the same operation and deduct once",
   await page.getByRole("form", { name: "إتمام البيع" }).getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   const local = (await readPrivacyState(page)).sales[0];
-  await page.unroute("**/api/internal/sales/accepted");
-  await page.unroute("**/api/internal/sales");
   const held: HeldAccepted[] = [];
   await attachHeldAccepted(context, held);
+  await page.unroute("**/api/internal/sales/accepted");
+  await page.unroute("**/api/internal/sales");
   const page2 = await context.newPage();
   await Promise.all([page2.goto("http://127.0.0.1:5174/workspace"), page.getByRole("link", { name: "العودة لمساحة العمل" }).click()]);
   await expect.poll(() => held.filter((item) => item.saleId === local?.id).length).toBe(1);
@@ -579,7 +589,7 @@ test("account recovery preserves accepted and connected sales across revoke, exp
   await page.unroute("**/api/internal/sales/prepare");
   await page.getByRole("link", { name: "العودة لمساحة العمل" }).click();
   await page.getByRole("link", { name: "البحث عن منتج" }).click();
-  await addAndPrice(page, seed);
+  await addAndPrice(page, seed, { waitForLookupResponse: true });
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await expect(page.getByTestId("accepted-prices")).toBeVisible();
   await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();

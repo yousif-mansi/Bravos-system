@@ -56,6 +56,8 @@ export function WorkspacePage({
   const [restoreCustodyComplete, setRestoreCustodyComplete] = useState(false);
   const [restorePauseSnapshotPendingKey, setRestorePauseSnapshotPendingKey] = useState<string | null>(null);
   const syncingRef = useRef(false);
+  const restorePauseSnapshotRef = useRef<PosPriceSnapshotDto | null>(null);
+  const restorePausePendingKeyRef = useRef<string | null>(null);
   const restoreAcknowledgementRef = useRef<{ previewId: string; pendingKey: string } | null>(null);
   const restoreSyncRef = useRef<{ previewId: string; pendingKey: string } | null>(null);
   const restoreGenerationRef = useRef<number | null>(null);
@@ -169,12 +171,13 @@ export function WorkspacePage({
       if (!stillCurrent() || syncingRef.current) return;
       try {
         const state = await getRestorePause();
-        if (!stillCurrent()) return;
+        if (!stillCurrent() || syncingRef.current) return;
         const previousGeneration = restoreGenerationRef.current;
         restoreGenerationRef.current = state.currentGeneration;
         if (state.pause) {
           setObservedRestorePause(state.pause);
           const pendingKey = operationSetKey(await pos.listPendingOperationIds());
+          if (!stillCurrent() || syncingRef.current) return;
           const acknowledged = restoreAcknowledgementRef.current;
           if (acknowledged?.previewId === state.pause.previewId && acknowledged.pendingKey === pendingKey) return;
           const synchronized = restoreSyncRef.current;
@@ -188,6 +191,8 @@ export function WorkspacePage({
         restoreAcknowledgementRef.current = null;
         restoreSyncRef.current = null;
         setObservedRestorePause(null);
+        restorePauseSnapshotRef.current = null;
+        restorePausePendingKeyRef.current = null;
         setRestorePauseSnapshot(null);
         setRestorePauseSnapshotPendingKey(null);
         setRestorePauseAcknowledged(false);
@@ -369,12 +374,20 @@ export function WorkspacePage({
             // Sales still queued after applying this snapshot must be held by the server as retained sales.
             const remainingKey = operationSetKey(await pos.listPendingOperationIds());
             const acknowledged = restoreAcknowledgementRef.current;
+            restorePauseSnapshotRef.current = snapshot;
+            restorePausePendingKeyRef.current = remainingKey;
+            // The queue can shrink while this sync uploads retained sales. Later polls must
+            // see that post-sync queue, or a focus event starts another snapshot and drops
+            // the confirmation click.
+            restoreSyncRef.current = { previewId: snapshot.restorePause.previewId, pendingKey: remainingKey };
             setRestorePauseSnapshot(snapshot);
             setRestorePauseSnapshotPendingKey(remainingKey);
             setRestoreCustodyComplete(pendingCustodiedByServer(snapshot, remainingKey ? remainingKey.split(",") : []));
             setRestorePauseAcknowledged(acknowledged?.previewId === snapshot.restorePause.previewId && acknowledged.pendingKey === remainingKey);
           } else {
             restoreAcknowledgementRef.current = null;
+            restorePauseSnapshotRef.current = null;
+            restorePausePendingKeyRef.current = null;
             setRestorePauseSnapshot(null);
             setRestorePauseSnapshotPendingKey(null);
             setRestorePauseAcknowledged(false);
@@ -410,7 +423,6 @@ export function WorkspacePage({
     } finally {
       try {
         if (stillCurrent()) {
-          setSyncing(false);
           const data = await readPosReadiness(staffId);
           const other = await pos.countOtherPending(staffId);
           if (stillCurrent()) {
@@ -419,14 +431,28 @@ export function WorkspacePage({
           }
         }
       } finally {
+        // Release the lock before the button enables. Otherwise a click in that
+        // window hits the handler and returns without recording acknowledgement.
         syncingRef.current = false;
+        if (stillCurrent()) setSyncing(false);
       }
     }
   }
 
   async function acknowledgeRestorePause() {
-    const snapshot = restorePauseSnapshot;
-    if (!snapshot?.restorePause || syncingRef.current) return;
+    const staffIdForWait = workspace.staff.id;
+    const epochForWait = accountGeneration();
+    // A focus or poll can start sync in the same turn the button is still enabled.
+    // Dropping that click leaves the pause without an acknowledgement.
+    while (syncingRef.current) {
+      if (workspace.staff.id !== staffIdForWait || accountGeneration() !== epochForWait) return;
+      await new Promise((resolve) => window.setTimeout(resolve, 25));
+    }
+    // The click can land while a poll is still publishing a newer snapshot.
+    // The render that created this handler does not see that snapshot.
+    const snapshot = restorePauseSnapshotRef.current ?? restorePauseSnapshot;
+    const pendingKey = restorePausePendingKeyRef.current ?? restorePauseSnapshotPendingKey;
+    if (!snapshot?.restorePause) return;
     syncingRef.current = true;
     setSyncing(true);
     setSyncError("");
@@ -435,7 +461,7 @@ export function WorkspacePage({
     const stillCurrent = () => workspace.staff.id === staffId && accountGeneration() === epoch;
     try {
       const pendingOperationIds = await pos.listPendingOperationIds();
-      if (restorePauseSnapshotPendingKey !== operationSetKey(pendingOperationIds)) {
+      if (pendingKey !== operationSetKey(pendingOperationIds)) {
         setRestoreCustodyComplete(false);
         setSyncError("تغير طابور المبيعات بعد اللقطة. أعد المزامنة قبل تأكيد التوقف.");
         return;
@@ -445,13 +471,38 @@ export function WorkspacePage({
         setSyncError("لم يثبت الخادم حفظ كل المبيعات المكتملة بعد. أعد المزامنة قبل تأكيد التوقف.");
         return;
       }
-      await acknowledgeRestoreDevice(snapshot.restorePause.previewId, {
-        deviceId: snapshot.deviceId,
-        snapshotId: snapshot.snapshotId,
-      });
+      // The runtime pause is published while the preview is still being staged. The same
+      // snapshot is rejected until that preview is paused or ready, and the server asks
+      // for the confirmation to be retried. A different preview or a custody mismatch stops.
+      const previewId = snapshot.restorePause.previewId;
+      const stalePreview = "تغيرت بيانات العمل أو حالة الأجهزة بعد إعداد معاينة الاستعادة. حدّث المعاينة وأعد المحاولة.";
+      const deadline = Date.now() + 12_000;
+      let confirmed = false;
+      while (!confirmed) {
+        try {
+          await acknowledgeRestoreDevice(previewId, {
+            deviceId: snapshot.deviceId,
+            snapshotId: snapshot.snapshotId,
+          });
+          confirmed = true;
+        } catch (caught) {
+          const retryable = caught instanceof ApiError && caught.status === 409 && caught.messageAr === stalePreview && Date.now() < deadline;
+          if (!retryable || !stillCurrent()) {
+            if (stillCurrent()) setSyncError(caught instanceof ApiError ? caught.messageAr : "تعذر تأكيد توقف نقطة البيع للاستعادة.");
+            return;
+          }
+          const pause = await getRestorePause();
+          if (!stillCurrent()) return;
+          if (pause.pause?.previewId !== previewId) {
+            setSyncError(caught instanceof ApiError ? caught.messageAr : stalePreview);
+            return;
+          }
+          await new Promise((resolve) => window.setTimeout(resolve, 400));
+        }
+      }
       if (stillCurrent()) {
         restoreAcknowledgementRef.current = {
-          previewId: snapshot.restorePause.previewId,
+          previewId,
           pendingKey: operationSetKey(pendingOperationIds),
         };
         setRestorePauseAcknowledged(true);

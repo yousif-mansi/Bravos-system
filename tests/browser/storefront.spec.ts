@@ -104,7 +104,9 @@ test("Arabic storefront browses, persists an aggregated guest cart and handles c
   await categoryFilter.click();
   await expect(page.getByRole("link", { name: /جاكيت الموسم القادم/ })).toContainText("قريباً");
   await page.goto(`http://127.0.0.1:3001/products/${comingSoon.body.id}`);
-  await expect(page.getByText("هذا المنتج للعرض المسبق وسيكون متاحاً للطلب لاحقاً.")).toBeVisible();
+  const previewNote = page.getByRole("paragraph").filter({ hasText: "هذا المنتج للعرض المسبق وسيكون متاحاً للطلب لاحقاً." });
+  await expect(previewNote).toHaveCount(1);
+  await expect(previewNote).toBeVisible();
   await expect(page.getByRole("button", { name: "أضف إلى السلة" })).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });

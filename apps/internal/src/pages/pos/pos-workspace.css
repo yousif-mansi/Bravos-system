@@ -1,0 +1,93 @@
+.app-content > .shell.pos-workspace { max-width: 1600px; padding: 1.1rem 1.25rem 2rem; }
+.pos-workspace .page-hero { margin-bottom: 1rem; align-items: center; }
+.pos-workspace .page-hero h1 { font-size: 1.55rem; }
+.pos-workspace .pos-branch-context { margin: 0; color: var(--muted); font-size: .9rem; }
+.pos-workspace .pos-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(330px, 390px); gap: 1rem; align-items: start; }
+.pos-workspace .pos-discovery { min-width: 0; display: grid; gap: .85rem; }
+.pos-workspace .card { padding: 1rem; margin: 0; }
+.pos-workspace .pos-section-heading { display: flex; align-items: center; justify-content: space-between; gap: .6rem; margin-bottom: .8rem; }
+.pos-workspace .pos-section-heading h2 { margin: 0; font-size: 1.15rem; }
+.pos-workspace .pos-section-heading .muted { font-size: .8rem; }
+.pos-workspace .pos-scanner { display: flex; align-items: end; gap: .5rem; padding: .7rem 1rem; }
+.pos-workspace .pos-scanner .field { flex: 1; margin: 0; }
+.pos-workspace .pos-scanner label { font-size: .8rem; }
+.pos-workspace input, .pos-workspace select { padding: .5rem .65rem; }
+.pos-workspace .pos-scanner button { min-height: 44px; padding: .5rem 1rem; }
+.pos-workspace .pos-browser { background: var(--surface-elevated); border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem; }
+.pos-workspace .pos-browse-filter { margin-bottom: .75rem; }
+.pos-workspace .pos-browse-filter label { font-size: .85rem; }
+.pos-workspace .pos-categories { display: flex; flex-wrap: wrap; gap: .4rem; margin-bottom: 1rem; }
+.pos-workspace .pos-categories button { min-height: 36px; padding: .3rem .8rem; border-radius: 999px; font-size: .82rem; color: var(--text-secondary); background: var(--background-secondary); border: 1px solid var(--border); box-shadow: none; }
+.pos-workspace .pos-categories button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.pos-workspace .pos-product-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: .65rem; }
+.pos-workspace .pos-product-tile { display: flex; flex-direction: column; align-items: start; gap: .4rem; min-width: 0; min-height: 172px; padding: .9rem; color: var(--text-primary); background: var(--background-secondary); border: 1px solid var(--border); text-align: start; border-radius: var(--radius-sm); box-shadow: none; }
+.pos-workspace .pos-product-tile:hover, .pos-workspace .pos-product-tile.is-selected { border-color: var(--accent); background: var(--surface-muted); }
+.pos-workspace .pos-product-tile.is-selected { box-shadow: inset 0 0 0 1px var(--accent); }
+.pos-workspace .pos-product-tile strong { font-size: 1rem; line-height: 1.45; overflow-wrap: anywhere; }
+.pos-workspace .pos-product-code { font-size: .75rem; font-weight: 500; color: var(--muted); direction: ltr; overflow-wrap: anywhere; }
+.pos-workspace .pos-product-category { font-size: .75rem; color: var(--muted); }
+.pos-workspace .pos-product-price { margin-top: auto; font-weight: 700; font-size: .95rem; }
+.pos-workspace .pos-product-stock { color: var(--success); font-size: .76rem; font-weight: 500; }
+.pos-workspace .pos-product-stock.is-unavailable { color: var(--muted); }
+.pos-workspace .pos-browse-message { font-size: .85rem; color: var(--muted); }
+.pos-workspace .pos-browse-empty { padding: 1.5rem .5rem; text-align: center; }
+.pos-workspace .pos-browse-empty h3 { font-size: 1rem; }
+.pos-workspace .pos-selection h2 { font-size: 1.1rem; margin-bottom: .3rem; }
+.pos-workspace .pos-selection .muted { margin-bottom: .65rem; font-size: .85rem; }
+.pos-workspace .pos-variant-fields { display: grid; grid-template-columns: 1fr 1fr; gap: .65rem; }
+.pos-workspace .pos-variant-fields .field { margin-bottom: .6rem; }
+.pos-workspace .pos-pairs { display: flex; flex-wrap: wrap; gap: .4rem; margin-bottom: .65rem; max-height: 94px; overflow-y: auto; padding: 3px; }
+.pos-workspace .pos-pairs button { min-height: 36px; padding: .3rem .6rem; font-size: .8rem; background: var(--background-secondary); color: var(--text-secondary); border: 1px solid var(--border); box-shadow: none; }
+.pos-workspace .pos-pairs button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+.pos-workspace .pos-selected-summary { display: flex; align-items: center; justify-content: space-between; gap: .75rem; }
+.pos-workspace .pos-selected-summary p { margin: 0; font-size: .9rem; }
+.pos-workspace .pos-checkout { position: sticky; top: 96px; max-height: calc(100dvh - 112px); display: flex; flex-direction: column; overflow: hidden; padding: 0; }
+.pos-workspace .pos-checkout-heading { padding: .9rem 1rem; border-bottom: 1px solid var(--border); margin: 0; }
+.pos-workspace .pos-checkout-body { overflow-y: auto; min-height: 0; padding: .85rem 1rem; }
+.pos-workspace .pos-cart { list-style: none; margin: 0 0 .85rem; padding: 0; }
+.pos-workspace .pos-cart li { display: grid; grid-template-columns: minmax(0, 1fr) 68px auto; gap: .5rem; align-items: center; padding: .65rem 0; border-bottom: 1px solid var(--border); }
+.pos-workspace .pos-cart p { margin: 0; }
+.pos-workspace .pos-cart-name { font-size: .9rem; font-weight: 600; }
+.pos-workspace .pos-cart-meta { font-size: .78rem; color: var(--muted); }
+.pos-workspace .pos-cart .field { margin: 0; }
+.pos-workspace .pos-cart label { font-size: .75rem; }
+.pos-workspace .pos-cart input { min-width: 0; padding: .35rem; text-align: center; }
+.pos-workspace .pos-cart button { padding: .3rem .45rem; min-height: 44px; font-size: .78rem; }
+.pos-workspace .pos-checkout-fields { display: grid; grid-template-columns: 1fr 1fr; gap: .55rem; }
+.pos-workspace .pos-checkout-fields .field { margin: 0; }
+.pos-workspace .pos-checkout-fields label { font-size: .78rem; }
+.pos-workspace .pos-checkout-fields .pos-field-wide { grid-column: 1 / -1; }
+.pos-workspace .pos-accepted-prices { margin-top: .9rem; padding-top: .75rem; border-top: 1px solid var(--border); }
+.pos-workspace .pos-accepted-prices h3 { font-size: .95rem; margin-bottom: .5rem; }
+.pos-workspace .pos-accepted-prices p { font-size: .82rem; margin-bottom: .3rem; }
+.pos-workspace .pos-payment { margin: .75rem 0 0; padding: .65rem .75rem; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.pos-workspace .pos-payment legend { font-weight: 600; font-size: .9rem; }
+.pos-workspace .pos-payment label { font-size: .8rem; margin: 0; }
+.pos-workspace .pos-payment .grid { gap: .5rem; }
+.pos-workspace .pos-payment .field { margin: .3rem 0; }
+.pos-workspace .pos-payment p { margin: .3rem 0 0; font-size: .85rem; }
+.pos-workspace .pos-checkout-footer { border-top: 1px solid var(--border); padding: .75rem 1rem; background: var(--surface-elevated); }
+.pos-workspace .pos-cart-total { display: flex; justify-content: space-between; align-items: center; gap: .6rem; margin: 0 0 .6rem; font-size: .9rem; }
+.pos-workspace .pos-cart-total strong { font-size: 1.3rem; }
+.pos-workspace .pos-total-note { margin: -.25rem 0 .65rem; font-size: .75rem; color: var(--muted); }
+.pos-workspace .pos-handover { margin-bottom: .6rem; }
+.pos-workspace .pos-handover label { font-size: .78rem; line-height: 1.5; margin: 0; }
+.pos-workspace .pos-checkout-footer .actions { display: grid; grid-template-columns: 1fr 1fr; gap: .45rem; margin: 0; }
+.pos-workspace .pos-checkout-footer .actions button { min-width: 0; min-height: 44px; padding: .5rem .6rem; font-size: .8rem; }
+.pos-workspace .pos-checkout-footer .actions .pos-complete { grid-column: 1 / -1; }
+.pos-workspace .empty-state { padding: 1.8rem .4rem; }
+.pos-workspace .empty-state h3 { font-size: 1rem; }
+.pos-workspace .empty-state p { font-size: .85rem; }
+@media (max-width: 1100px) and (min-width: 861px) {
+  .app-content > .shell.pos-workspace { padding: 1rem .85rem; }
+  .pos-workspace .pos-layout { grid-template-columns: minmax(0, 1fr) 320px; gap: .75rem; }
+  .pos-workspace .pos-product-grid { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }
+}
+@media (max-width: 860px) {
+  .app-content > .shell.pos-workspace { padding: 1rem .75rem 2rem; }
+  .pos-workspace .pos-layout { grid-template-columns: 1fr; }
+  .pos-workspace .pos-checkout { position: static; max-height: none; overflow: visible; }
+  .pos-workspace .pos-checkout-body { overflow: visible; }
+  .pos-workspace .pos-selected-summary { flex-wrap: wrap; }
+  .pos-workspace .pos-product-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
+}

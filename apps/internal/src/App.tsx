@@ -39,6 +39,7 @@ const RestorePage = lazy(() => import("./pages/RestorePage.tsx"));
 
 export function App() {
   const location = useLocation();
+  const [workspaceGeneration, setWorkspaceGeneration] = useState(accountGeneration);
   const [workspace, setWorkspace] = useState<WorkspaceDto | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -135,6 +136,7 @@ export function App() {
 
   useEffect(() => {
     return subscribeAccount((payload) => {
+      setWorkspaceGeneration(payload.generation);
       if (payload.staffId === staffIdRef.current) {
         return;
       }
@@ -294,7 +296,7 @@ export function App() {
       window.removeEventListener("online", onOnline);
       window.removeEventListener("focus", onOnline);
     };
-  }, [workspace?.staff.id, workspace?.capabilities.cashier]);
+  }, [workspace?.staff.id, workspace?.capabilities.cashier, workspace?.activeBranch?.id, workspaceGeneration]);
 
   async function replaceWorkspace(next: WorkspaceDto | null) {
     setError("");

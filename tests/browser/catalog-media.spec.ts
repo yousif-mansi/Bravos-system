@@ -155,7 +155,7 @@ test("manager publishes product media and customers see only selectable stocked 
   const comingSoon = await staffApi(page, "PATCH", `/api/internal/catalog/products/${product.id}`, productWrite(reattached.body as ManagerProductDto, "coming_soon"));
   expect(comingSoon.status).toBe(200);
   await page.reload();
-  await expect(page.getByText("قريباً", { exact: true })).toBeVisible();
+  await expect(page.getByRole("main").getByText("قريباً", { exact: true })).toBeVisible();
   await expect(page.getByRole("radio")).toHaveCount(2);
   await expect(page.getByRole("radio").first()).toBeDisabled();
   await expect(page.getByRole("radio").nth(1)).toBeDisabled();
