@@ -59,9 +59,29 @@ test("guest reviews configured delivery and discounts while a newer cart item su
   await expect(page).toHaveURL(/\/checkout$/);
 
   const checkout = page.getByRole("form", { name: "بيانات طلب التوصيل" });
+  const optionalDetails = optionalDeliveryDetails(checkout);
+  const optionalSummary = optionalDetails.locator("summary");
+  await expect(optionalSummary).toHaveText("تفاصيل إضافية للتوصيل (اختياري)");
+  await expect(optionalDetails).not.toHaveJSProperty("open", true);
+  await expect(checkout.getByLabel("رقم بديل (اختياري)")).toBeAttached();
+  await expect(checkout.getByLabel("رقم بديل (اختياري)")).toBeHidden();
+  await expect(checkout.getByLabel("علامة مميزة (اختياري)")).toBeHidden();
+  await expect(checkout.getByLabel("ملاحظات (اختياري)")).toBeHidden();
+  await page.screenshot({ path: testInfo.outputPath("empty-collapsed-390.png"), fullPage: true });
+  await optionalSummary.click();
+  await expect(optionalDetails).toHaveJSProperty("open", true);
   await expect(checkout.getByLabel("رقم بديل (اختياري)")).toBeVisible();
   await expect(checkout.getByLabel("علامة مميزة (اختياري)")).toBeVisible();
   await expect(checkout.getByLabel("ملاحظات (اختياري)")).toBeVisible();
+  await page.setViewportSize({ width: 320, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await optionalSummary.focus();
+  await page.screenshot({ path: testInfo.outputPath("expanded-focus-320.png"), fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({ path: testInfo.outputPath("empty-expanded-390.png"), fullPage: true });
+  await optionalSummary.click();
+  await expect(optionalDetails).not.toHaveJSProperty("open", true);
+  await expect(checkout.getByLabel("رقم بديل (اختياري)")).toBeHidden();
   await checkout.getByLabel("منطقة التوصيل").selectOption(area.id);
   await checkout.getByLabel("كود الكوبون (اختياري)").fill("guest25");
   await checkout.getByRole("button", { name: "مراجعة السعر" }).click();
@@ -121,7 +141,14 @@ test("guest reviews configured delivery and discounts while a newer cart item su
   page.off("request", watchInvalidSubmit);
   await page.setViewportSize({ width: 1440, height: 900 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await expect(optionalDetails).not.toHaveJSProperty("open", true);
   await page.screenshot({ path: testInfo.outputPath("checkout-quote-desktop-1440.png"), fullPage: true });
+  await page.screenshot({ path: testInfo.outputPath("empty-collapsed-1440.png"), fullPage: true });
+  await optionalSummary.click();
+  await expect(optionalDetails).toHaveJSProperty("open", true);
+  await page.screenshot({ path: testInfo.outputPath("empty-expanded-1440.png"), fullPage: true });
+  await optionalSummary.click();
+  await expect(optionalDetails).not.toHaveJSProperty("open", true);
   await page.setViewportSize({ width: 390, height: 844 });
 
   const operationIds: string[] = [];
@@ -356,6 +383,12 @@ test("closed public ordering keeps the cart and shows the Arabic closure screen"
   await expect(cartLink(page)).toContainText("1");
   await expect(page.getByRole("region", { name: "منتجات السلة" }).getByRole("heading", { name: "قميص CLOSED-ORDERING-E2E-28", exact: true })).toBeVisible();
 });
+
+function optionalDeliveryDetails(form: ReturnType<Page["getByRole"]>) {
+  return form.locator("details").filter({
+    has: form.page().locator("summary", { hasText: "تفاصيل إضافية للتوصيل (اختياري)" }),
+  });
+}
 
 async function fillCheckoutCustomer(checkout: ReturnType<Page["getByRole"]>, areaId: string) {
   await checkout.getByLabel("الاسم").fill("عميل الإقرار المحفوظ");

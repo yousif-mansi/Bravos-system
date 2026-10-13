@@ -69,14 +69,16 @@ Record a real pilot in the blank [operator acceptance record](operator-pilot-acc
 
 ## Configuration reference
 
-Every value comes from the operator's process environment or secret store, never from a committed file or `.local/dev.env`.
+Every value comes from the operator's process environment or secret store, never from a committed file or `.local/dev.env`. `loadConfig` fail-fasts in `NODE_ENV=production` before `buildApp`, connection pools, or migrations: the authentication secret must be at least 32 characters, not whitespace-only, not the installed Better Auth public default, and not the exact committed example placeholders `replace-with-a-long-local-secret` / `replace-with-a-long-random-secret`. Those checks do not prove cryptographic randomness; the operator still generates and manages the real secret. Error messages name the variable and requirement and do not print the secret value. The accepted secret is stored verbatim.
+
+Outside this production-only loopback rehearsal, hosted production requires explicit `BRAVOS_INTERNAL_ORIGIN`, `BRAVOS_PUBLIC_ORIGIN`, and an auth origin selected through existing `BETTER_AUTH_URL` then `BRAVOS_API_ORIGIN` precedence. Each must be a canonical literal HTTPS origin: `https` scheme, no userinfo, no path, query or fragment, no wildcard hostname, and the configured string must equal the URL origin. Absent, empty, malformed, non-HTTPS, and noncanonical strings are rejected rather than defaulted or normalized. Hostname and port remain operator-owned. The explicit rehearsal flag still allows only the fixed `127.0.0.1` HTTP origins below; secret validation still applies. `BRAVOS_TRUSTED_ORIGINS` parsing is unchanged. This is source hardening of the startup boundary, not hosted acceptance, secret-randomness proof, or launch approval.
 
 | Setting | Rehearsal | Hosted launch |
 | --- | --- | --- |
 | `NODE_ENV` | `production` | `production` |
 | `DATABASE_URL` | Dedicated database; the role needs `CREATEDB` and access to the `postgres` maintenance database for restore staging | Same, with TLS and a backup owner |
-| `BETTER_AUTH_SECRET` | Long random value | Long random value kept outside backups; rotating it signs everyone out |
-| `BETTER_AUTH_URL`, `BRAVOS_INTERNAL_ORIGIN`, `BRAVOS_PUBLIC_ORIGIN` | Fixed `127.0.0.1` URLs | Exact HTTPS origins |
+| `BETTER_AUTH_SECRET` | Cryptographically generated value, at least 32 characters; placeholders and the Better Auth default are rejected at startup | Same, kept outside backups; rotating it signs everyone out |
+| `BETTER_AUTH_URL`, `BRAVOS_INTERNAL_ORIGIN`, `BRAVOS_PUBLIC_ORIGIN` | Exact fixed `http://127.0.0.1:3010`, `http://127.0.0.1:5173`, `http://127.0.0.1:3000` | Explicit canonical HTTPS origins; `BETTER_AUTH_URL` then `BRAVOS_API_ORIGIN` for the auth origin |
 | `BRAVOS_TRUSTED_ORIGINS` | Empty | Only extra origins that must call the API |
 | `BRAVOS_LOOPBACK_REHEARSAL`, `BRAVOS_SECURE_COOKIES=false` | `true` / `false` | Unset; cookies are secure |
 | `BRAVOS_OWNER_RECOVERY_ADAPTER`, `BRAVOS_OWNER_RECOVERY_OUTBOX_DIR` | `operator-file`, protected external directory | Same; only the operator account can read it |

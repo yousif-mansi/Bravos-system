@@ -219,6 +219,15 @@ test(`keyboard at ${width}px reaches gallery, cart recovery actions and checkout
   const phone = form.getByRole("textbox", { name: "رقم الموبايل الأساسي" });
   const area = form.getByRole("combobox", { name: "منطقة التوصيل" });
   const address = form.getByRole("textbox", { name: "العنوان بالتفصيل" });
+  const optionalDetails = form.locator("details").filter({
+    has: form.page().locator("summary", { hasText: "تفاصيل إضافية للتوصيل (اختياري)" }),
+  });
+  const optionalSummary = optionalDetails.locator("summary");
+  await expect(optionalSummary).toHaveText("تفاصيل إضافية للتوصيل (اختياري)");
+  await expect(optionalDetails).not.toHaveJSProperty("open", true);
+  const collapsedAlternate = form.getByRole("textbox", { name: "رقم بديل (اختياري)", includeHidden: true });
+  await expect(collapsedAlternate).toBeAttached();
+  await expect(collapsedAlternate).toBeHidden();
   const addressValue = width === 390
     ? `الفيوم، شارع الجامعة الطويل بجوار مكتبة BRAVOS Classic ${fixture.product.nameAr}، مبنى 12، الدور الثالث، شقة 4، البوابة الخضراء 2026`
     : "الفيوم، شارع الاختبار بجوار BRAVOS 2026";
@@ -275,12 +284,34 @@ test(`keyboard at ${width}px reaches gallery, cart recovery actions and checkout
     await expect(address).toHaveValue(addressValue);
     await expect(address).not.toHaveAttribute("aria-invalid", "true");
     await expect(page.locator("#detailedAddress-error")).toHaveCount(0);
+    await tabTo(page, optionalSummary);
+    await expectKeyboardFocus(optionalSummary);
+    await expectTargetSize(optionalSummary);
+    await page.keyboard.press("Enter");
+    await expect(optionalDetails).toHaveJSProperty("open", true);
+    const alternate = form.getByRole("textbox", { name: "رقم بديل (اختياري)", includeHidden: true });
+    await expect(alternate).toBeVisible();
+    await tabTo(page, alternate);
+    await page.keyboard.type("01112345678");
+    await expect(alternate).toHaveValue("01112345678");
+    await tabTo(page, optionalSummary);
+    await page.keyboard.press("Enter");
+    await expect(optionalDetails).not.toHaveJSProperty("open", true);
+    await expect(alternate).toBeHidden();
+    await expect(alternate).toHaveValue("01112345678");
+    await page.keyboard.press("Enter");
+    await expect(optionalDetails).toHaveJSProperty("open", true);
+    await expect(alternate).toBeVisible();
+    await expect(alternate).toHaveValue("01112345678");
+    await page.keyboard.press("Enter");
+    await expect(optionalDetails).not.toHaveJSProperty("open", true);
     await tabTo(page, submit);
     const orderResponse = page.waitForResponse((response) => response.request().method() === "POST"
       && response.url().endsWith("/api/public/checkout/orders"));
     await page.keyboard.press("Enter");
     const order = await orderResponse;
     expect(order.status()).toBe(201);
+    expect(order.request().postDataJSON()).toMatchObject({ alternatePhone: "01112345678" });
     expect(orderPosts).toBe(1);
     await expect(page.getByRole("heading", { name: "تم استلام طلبك" })).toBeVisible();
     const acknowledgment = page.getByRole("status");

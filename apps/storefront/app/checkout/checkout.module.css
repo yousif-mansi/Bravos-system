@@ -53,11 +53,26 @@
   font-size: .94rem;
 }
 
-.optionalHeading {
-  margin: var(--space-8) 0 var(--space-4);
+.optionalDetails {
+  margin: var(--space-8) 0 0;
   padding-block-start: var(--space-6);
   border-block-start: 1px solid var(--store-border);
+}
+
+.optionalDetails summary {
+  cursor: pointer;
+  min-height: 44px;
+  padding-block: var(--space-2);
   font-weight: 700;
+}
+
+.optionalDetails summary:focus-visible {
+  outline: 3px solid var(--store-focus);
+  outline-offset: 3px;
+}
+
+.optionalDetails .fields {
+  margin-block-start: var(--space-4);
 }
 
 .fields {

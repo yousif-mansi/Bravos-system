@@ -51,7 +51,7 @@ test("invalid cart explains repair before disabled customer fields on mobile", a
   await otherTab.close();
 });
 
-test("stock repair roundtrip retains the checkout draft and requires a fresh quote", async ({ page }) => {
+test("stock repair roundtrip retains the checkout draft and requires a fresh quote", async ({ page }, testInfo) => {
   const fixture = await setup(page);
   const x = await createProduct(page, fixture.suffix, "X");
   const y = await createProduct(page, fixture.suffix, "Y");
@@ -69,13 +69,26 @@ test("stock repair roundtrip retains the checkout draft and requires a fresh quo
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${STORE}/checkout`);
   const form = page.getByRole("form", { name: "بيانات طلب التوصيل" });
+  const optionalDetails = form.locator("details").filter({
+    has: form.page().locator("summary", { hasText: "تفاصيل إضافية للتوصيل (اختياري)" }),
+  });
+  await expect(optionalDetails).not.toHaveJSProperty("open", true);
   await form.getByLabel("الاسم", { exact: false }).fill("عميل اختبار");
   await form.getByLabel("رقم الموبايل الأساسي").fill("01012345678");
   await form.getByLabel("العنوان بالتفصيل").fill("شارع الاختبار");
   await form.getByLabel("منطقة التوصيل").selectOption(fixture.areaId);
+  await optionalDetails.locator("summary").click();
+  await expect(optionalDetails).toHaveJSProperty("open", true);
   await form.getByLabel("رقم بديل (اختياري)").fill("01212345678");
   await form.getByLabel("علامة مميزة (اختياري)").fill("بجوار المكتبة");
   await form.getByLabel("ملاحظات (اختياري)").fill("الاتصال قبل التوصيل");
+  await optionalDetails.locator("summary").click();
+  await expect(optionalDetails).not.toHaveJSProperty("open", true);
+  await expect(form.getByLabel("رقم بديل (اختياري)")).toHaveValue("01212345678");
+  await expect(form.getByLabel("علامة مميزة (اختياري)")).toHaveValue("بجوار المكتبة");
+  await expect(form.getByLabel("ملاحظات (اختياري)")).toHaveValue("الاتصال قبل التوصيل");
+  await optionalDetails.locator("summary").click();
+  await expect(optionalDetails).toHaveJSProperty("open", true);
   await form.getByLabel("كود الكوبون (اختياري)").fill(couponCode);
   const before = await savedCart(page);
   const rejected = page.waitForResponse((response) => response.url().endsWith("/api/public/checkout/quote"));
@@ -101,14 +114,24 @@ test("stock repair roundtrip retains the checkout draft and requires a fresh quo
   await page.locator(".cart-line").filter({ hasText: y.nameAr }).getByRole("button", { name: "حذف", exact: true }).click();
   await expect(page.locator(".cart-line")).toHaveCount(1);
   await page.getByRole("link", { name: "متابعة إتمام الطلب" }).click();
+  await expect(optionalDetails).toHaveJSProperty("open", true);
   await expect(form.getByLabel("الاسم", { exact: false })).toHaveValue("عميل اختبار");
   await expect(form.getByLabel("رقم الموبايل الأساسي")).toHaveValue("01012345678");
   await expect(form.getByLabel("العنوان بالتفصيل")).toHaveValue("شارع الاختبار");
   await expect(form.getByLabel("منطقة التوصيل")).toHaveValue(fixture.areaId);
+  await expect(form.getByLabel("رقم بديل (اختياري)")).toBeVisible();
   await expect(form.getByLabel("رقم بديل (اختياري)")).toHaveValue("01212345678");
   await expect(form.getByLabel("علامة مميزة (اختياري)")).toHaveValue("بجوار المكتبة");
   await expect(form.getByLabel("ملاحظات (اختياري)")).toHaveValue("الاتصال قبل التوصيل");
   await expect(form.getByLabel("كود الكوبون (اختياري)")).toHaveValue(couponCode);
+  await page.screenshot({ path: testInfo.outputPath("populated-return-390.png"), fullPage: true });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await expect(optionalDetails).toHaveJSProperty("open", true);
+  await page.screenshot({ path: testInfo.outputPath("populated-return-1440.png"), fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await optionalDetails.locator("summary").click();
+  await expect(optionalDetails).not.toHaveJSProperty("open", true);
+  await expect(form.getByLabel("رقم بديل (اختياري)")).toHaveValue("01212345678");
   await expect(page.getByRole("region", { name: "تفاصيل السعر" })).toHaveCount(0);
   await expect(form.getByRole("button", { name: "إرسال طلب التوصيل" })).toHaveCount(0);
   expect((await savedCart(page)).items).toMatchObject([{ variantId: x.variants[0].id, quantity: 1 }]);
@@ -119,8 +142,20 @@ test("stock repair roundtrip retains the checkout draft and requires a fresh quo
   const quote = await quoteResponse.json();
   expect(quote.lines).toMatchObject([{ variantId: x.variants[0].id, quantity: 1 }]);
   await expect(page.getByRole("region", { name: "تفاصيل السعر" })).toBeVisible();
+  const submitted = page.waitForRequest((request) => request.method() === "POST" && request.url().endsWith("/api/public/checkout/orders"));
   await form.getByRole("button", { name: "إرسال طلب التوصيل" }).click();
+  expect((await submitted).postDataJSON()).toMatchObject({
+    alternatePhone: "01212345678",
+    landmark: "بجوار المكتبة",
+    notes: "الاتصال قبل التوصيل",
+  });
   await expect(page.getByRole("heading", { name: "تم استلام طلبك" })).toBeVisible();
+  const accepted = await page.evaluate(() => JSON.parse(localStorage.getItem("bravos-guest-checkout-v1") ?? "null"));
+  expect(accepted.request).toMatchObject({
+    alternatePhone: "01212345678",
+    landmark: "بجوار المكتبة",
+    notes: "الاتصال قبل التوصيل",
+  });
   // A new basket in the same navigation session must not inherit accepted customer data.
   await page.getByRole("link", { name: "العودة إلى المتجر", exact: true }).click();
   await page.locator(`a.product-card[href="/products/${x.id}"]`).click();
@@ -136,6 +171,8 @@ test("stock repair roundtrip retains the checkout draft and requires a fresh quo
   await expect(form.getByLabel("علامة مميزة (اختياري)")).toHaveValue("");
   await expect(form.getByLabel("ملاحظات (اختياري)")).toHaveValue("");
   await expect(form.getByLabel("كود الكوبون (اختياري)")).toHaveValue("");
+  await expect(optionalDetails).not.toHaveJSProperty("open", true);
+  await expect(form.getByLabel("رقم بديل (اختياري)")).toBeHidden();
 });
 
 test("missing delivery areas explain the blocked decision before customer fields", async ({ page }) => {

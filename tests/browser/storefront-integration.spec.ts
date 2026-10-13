@@ -71,6 +71,11 @@ test("individually available products cannot quote a split basket and customer i
   await checkout(page).getByRole("button", { name: "إرسال طلب التوصيل" }).click();
   await expect(page.getByRole("heading", { name: "تم استلام طلبك" })).toBeVisible();
   const accepted = await page.evaluate(() => JSON.parse(localStorage.getItem("bravos-guest-checkout-v1") ?? "null"));
+  expect(accepted.request).toMatchObject({
+    alternatePhone: "01212345678",
+    landmark: "بجوار المكتبة",
+    notes: "الاتصال قبل التوصيل",
+  });
   expectPublicSafe(accepted.result);
   const replay = await publicApi(page, "POST", "/api/public/checkout/orders", accepted.request);
   expect(replay.status).toBe(200);
@@ -120,6 +125,11 @@ test("a basket losing its common branch after review rejects submission without 
   await checkout(page).getByRole("button", { name: "إرسال طلب التوصيل" }).click();
   await expect(page.getByRole("heading", { name: "تم استلام طلبك" })).toBeVisible();
   const accepted = await page.evaluate(() => JSON.parse(localStorage.getItem("bravos-guest-checkout-v1") ?? "null"));
+  expect(accepted.request).toMatchObject({
+    alternatePhone: "01212345678",
+    landmark: "بجوار المكتبة",
+    notes: "الاتصال قبل التوصيل",
+  });
   const afterOrders = await staffApi(page, "GET", "/api/internal/online-orders");
   expect(afterOrders.body).toHaveLength(beforeOrders.body.length + 1);
   expect(afterOrders.body.filter((order: { id: string }) => order.id === accepted.result.orderId)).toHaveLength(1);
@@ -241,8 +251,15 @@ const CUSTOMER = {
 };
 
 async function fillCustomer(page: Page, areaId: string) {
-  for (const [label, value] of Object.entries(CUSTOMER)) await checkout(page).getByRole("textbox", { name: label, exact: true }).fill(value);
-  await checkout(page).getByLabel("منطقة التوصيل").selectOption(areaId);
+  const form = checkout(page);
+  const optionalDetails = form.locator("details").filter({
+    has: form.page().locator("summary", { hasText: "تفاصيل إضافية للتوصيل (اختياري)" }),
+  });
+  if (!await optionalDetails.evaluate((element) => (element as HTMLDetailsElement).open)) {
+    await optionalDetails.locator("summary").click();
+  }
+  for (const [label, value] of Object.entries(CUSTOMER)) await form.getByRole("textbox", { name: label, exact: true }).fill(value);
+  await form.getByLabel("منطقة التوصيل").selectOption(areaId);
 }
 
 async function expectCustomer(page: Page, areaId: string) {

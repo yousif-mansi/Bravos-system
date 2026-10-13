@@ -33,7 +33,20 @@ test("a delayed failed price review preserves the checkout and keyboard retry ne
     ["ملاحظات (اختياري)", "يرجى الاتصال قبل التوصيل"],
     ["كود الكوبون (اختياري)", couponCode],
   ] as const;
+  const optionalDetails = form.locator("details").filter({
+    has: form.page().locator("summary", { hasText: "تفاصيل إضافية للتوصيل (اختياري)" }),
+  });
+  await expect(optionalDetails).not.toHaveJSProperty("open", true);
+  await optionalDetails.locator("summary").click();
+  await expect(optionalDetails).toHaveJSProperty("open", true);
   for (const [label, value] of optionalFields) await form.getByLabel(label).fill(value);
+  await optionalDetails.locator("summary").click();
+  await expect(optionalDetails).not.toHaveJSProperty("open", true);
+  await optionalDetails.locator("summary").click();
+  await expect(optionalDetails).toHaveJSProperty("open", true);
+  for (const [label, value] of optionalFields.slice(0, 3)) await expect(form.getByLabel(label)).toHaveValue(value);
+  await optionalDetails.locator("summary").click();
+  await expect(optionalDetails).not.toHaveJSProperty("open", true);
   const summary = page.getByRole("complementary", { name: "ملخص منتجات الطلب" });
   const beforeLines = await summary.getByRole("article").allTextContents();
   expect(beforeLines).toHaveLength(2);

@@ -53,6 +53,9 @@ export default function CheckoutPage() {
   const [unresolved, setUnresolved] = useState(false);
   const [hasPendingAttempt, setHasPendingAttempt] = useState(false);
   const [invalidFields, setInvalidFields] = useState<string[]>([]);
+  const [optionalDetailsOpen, setOptionalDetailsOpen] = useState(() =>
+    Boolean(fields.alternatePhone.trim() || fields.landmark.trim() || fields.notes.trim()),
+  );
   const recoveryStarted = useRef(false);
   const activeOperationId = useRef<string | null>(null);
   const submitStarted = useRef(false);
@@ -457,15 +460,17 @@ export default function CheckoutPage() {
                 {invalidFields.includes("detailedAddress") ? <small id="detailedAddress-error" className={styles.fieldError}>اكتب العنوان بالتفصيل.</small> : null}
               </label>
             </div>
-            <p className={styles.optionalHeading}>تفاصيل اختيارية تساعد في التوصيل</p>
-            <div className={`checkout-fields ${styles.fields}`}>
-              <CheckoutInput label="رقم بديل (اختياري)" name="alternatePhone" value={fields.alternatePhone} type="tel" inputMode="tel" autoComplete="tel" dir="ltr" onChange={updateField} />
-              <CheckoutInput label="علامة مميزة (اختياري)" name="landmark" value={fields.landmark} onChange={updateField} />
-              <label className={`checkout-field checkout-wide ${styles.field}`}>
-                <span>ملاحظات (اختياري)</span>
-                <textarea rows={3} value={fields.notes} onChange={(event) => setField("notes", event.target.value)} />
-              </label>
-            </div>
+            <details className={styles.optionalDetails} open={optionalDetailsOpen} onToggle={(event) => setOptionalDetailsOpen(event.currentTarget.open)}>
+              <summary>تفاصيل إضافية للتوصيل (اختياري)</summary>
+              <div className={`checkout-fields ${styles.fields}`}>
+                <CheckoutInput label="رقم بديل (اختياري)" name="alternatePhone" value={fields.alternatePhone} type="tel" inputMode="tel" autoComplete="tel" dir="ltr" onChange={updateField} />
+                <CheckoutInput label="علامة مميزة (اختياري)" name="landmark" value={fields.landmark} onChange={updateField} />
+                <label className={`checkout-field checkout-wide ${styles.field}`}>
+                  <span>ملاحظات (اختياري)</span>
+                  <textarea rows={3} value={fields.notes} onChange={(event) => setField("notes", event.target.value)} />
+                </label>
+              </div>
+            </details>
           </fieldset>
           <fieldset disabled={!cartValid || areasMissing || submitting || storageBlocked || unresolved}>
             <legend>الكوبون ومراجعة السعر</legend>
