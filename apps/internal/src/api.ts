@@ -41,7 +41,7 @@ import type {
   VariantLowStockDto,
   WorkspaceDto,
 } from "@bravos/contracts";
-import type { PublicCatalogBrowseDto, PublicProductDto } from "@bravos/contracts/public";
+import type { PublicCatalogBrowseDto, PublicProductDto, PublicProductSummaryDto } from "@bravos/contracts/public";
 
 export class ApiError extends Error {
   constructor(
@@ -529,9 +529,36 @@ export function updateOnlineOrderSettings(input: {
   });
 }
 
-export function searchPublicProducts(query: string) {
-  const params = new URLSearchParams({ q: query });
-  return request<PublicCatalogBrowseDto>(`/api/public/storefront/catalog?${params.toString()}`);
+export async function searchPublicProducts(query: string): Promise<PublicCatalogBrowseDto> {
+  const products = await request<PublicProductDto[]>("/api/public/catalog/products", { cache: "no-store" });
+  const normalized = query.trim().toLocaleLowerCase("ar");
+  const categories = [...new Map(products.map((product) => [product.category.id, {
+    id: product.category.id,
+    nameAr: product.category.nameAr,
+  }])).values()].sort((left, right) => left.nameAr.localeCompare(right.nameAr, "ar"));
+  return {
+    categories,
+    products: products
+      .filter((product) => {
+        if (!normalized) return true;
+        return `${product.nameAr} ${product.descriptionAr} ${product.category.nameAr}`
+          .toLocaleLowerCase("ar")
+          .includes(normalized);
+      })
+      .map(toPublicSummary),
+  };
+}
+
+function toPublicSummary(product: PublicProductDto): PublicProductSummaryDto {
+  const prices = product.variants.map((variant) => variant.sellingPricePiasters);
+  return {
+    id: product.id,
+    nameAr: product.nameAr,
+    category: { id: product.category.id, nameAr: product.category.nameAr },
+    availability: product.availability,
+    previewImageRef: product.imageRefs[0] ?? null,
+    lowestSellingPricePiasters: prices.length > 0 ? Math.min(...prices) : null,
+  };
 }
 
 export function getPublicProduct(productId: string) {

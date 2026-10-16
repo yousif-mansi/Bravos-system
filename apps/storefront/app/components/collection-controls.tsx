@@ -4,57 +4,47 @@ import type { PublicCatalogOptionDto } from "@bravos/contracts/public";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { type ChangeEvent, useEffect, useState } from "react";
-import { collectionHref, type CollectionSort } from "../collection-sort";
+import { collectionHref, parseCollectionSort, type CollectionSort } from "../collection-sort";
 import styles from "./collection-controls.module.css";
 
 type Props = {
-  query: string;
   categoryId: string;
   categories: PublicCatalogOptionDto[];
   sort: CollectionSort;
 };
 
-export function CollectionControls({ query, categoryId, categories, sort }: Props) {
+export function CollectionControls({ categoryId, categories, sort }: Props) {
   const router = useRouter();
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => { setMounted(true); }, []);
 
   function changeSort(event: ChangeEvent<HTMLSelectElement>) {
-    const nextSort = event.target.value as CollectionSort;
-    router.push(collectionHref({ query, categoryId, sort: nextSort }), { scroll: false });
+    const nextSort = parseCollectionSort(event.target.value);
+    router.push(collectionHref({ categoryId, sort: nextSort }), { scroll: false });
   }
 
   return (
     <div className={styles.controls}>
       <div className={styles.toolbar}>
-        <form className={styles.search} role="search" action="/" method="get">
-          <label htmlFor="product-search">ابحث عن منتج</label>
-          <div className={styles.searchRow}>
-            <input id="product-search" name="q" key={query} defaultValue={query} maxLength={80} placeholder="اسم المنتج" />
-            {categoryId ? <input type="hidden" name="category" value={categoryId} /> : null}
-            {sort !== "default" ? <input type="hidden" name="sort" value={sort} /> : null}
-            <button type="submit">بحث</button>
-          </div>
-        </form>
         <div className={styles.sort}>
-          <label htmlFor="collection-sort">ترتيب المنتجات</label>
+          <label htmlFor="collection-sort">Sort</label>
           <select id="collection-sort" value={sort} onChange={changeSort} disabled={!mounted} aria-busy={!mounted}>
-            <option value="default">ترتيب المتجر</option>
-            <option value="name">الاسم بالعربية</option>
-            <option value="price-asc">السعر يبدأ من: الأقل</option>
-            <option value="price-desc">السعر يبدأ من: الأعلى</option>
+            <option value="default">Default order</option>
+            <option value="price-asc">Price: low to high</option>
+            <option value="price-desc">Price: high to low</option>
           </select>
         </div>
       </div>
-      <nav className={styles.categories} aria-label="تصفية حسب التصنيف">
-        <Link className={!categoryId ? styles.selected : undefined} aria-current={!categoryId ? "page" : undefined} href={collectionHref({ query, sort })}>كل التصنيفات</Link>
+      <nav className={styles.categories} aria-label="Filter by category">
+        <Link className={!categoryId ? styles.selected : undefined} aria-current={!categoryId ? "page" : undefined} href={`${collectionHref({ sort })}#catalog-title`} prefetch={false}>All categories</Link>
         {categories.map((category) => (
           <Link
             className={category.id === categoryId ? styles.selected : undefined}
             aria-current={category.id === categoryId ? "page" : undefined}
-            href={collectionHref({ query, categoryId: category.id, sort })}
+            href={collectionHref({ categoryId: category.id, sort })}
             key={category.id}
+            prefetch={false}
             onFocus={(event) => {
               const link = event.currentTarget;
               const rail = link.parentElement?.getBoundingClientRect();
@@ -64,7 +54,7 @@ export function CollectionControls({ query, categoryId, categories, sort }: Prop
               }
             }}
           >
-            {category.nameAr}
+            <span dir="auto">{category.nameAr}</span>
           </Link>
         ))}
       </nav>

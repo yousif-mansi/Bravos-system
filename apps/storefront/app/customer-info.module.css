@@ -1,0 +1,62 @@
+.page {
+  width: 100%;
+  max-width: 760px;
+  margin-inline: auto;
+  padding-block: var(--space-8) var(--space-16);
+  color: var(--store-ink);
+  direction: ltr;
+  font-family: var(--font-commerce);
+  font-weight: 400;
+  line-height: 1.6;
+  text-align: start;
+}
+
+.page h1 {
+  margin-block: var(--space-2) var(--space-4);
+  font: 400 clamp(2rem, 6vw, 3.25rem)/1.2 var(--font-editorial);
+}
+
+.page h2 {
+  margin-block: var(--space-8) var(--space-3);
+  font: 500 1.25rem/1.4 var(--font-editorial);
+}
+
+.page p,
+.page li {
+  max-width: 65ch;
+}
+
+.page a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  color: var(--store-ink);
+  text-underline-offset: 0.2em;
+}
+
+.page a:focus-visible {
+  outline: 3px solid var(--store-focus);
+  outline-offset: 3px;
+}
+
+.links {
+  display: grid;
+  gap: var(--space-2);
+  margin: var(--space-4) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fallback {
+  margin-block: var(--space-4);
+  padding: var(--space-4);
+  border-inline-start: 3px solid var(--store-accent);
+  background: var(--store-surface);
+}
+
+.related {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  margin-block-start: var(--space-8);
+}

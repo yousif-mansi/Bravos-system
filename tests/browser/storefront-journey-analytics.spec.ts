@@ -7,7 +7,7 @@ import type {
 
 const STORE = "http://127.0.0.1:3001";
 const INTERNAL = "http://127.0.0.1:5174";
-const acknowledgment = "استلمنا طلبك للمراجعة. إرسال الطلب لا يحجز القطع؛ تأكيده يتم عبر واتساب.";
+const acknowledgment = "We received your order request. It is pending. Placing the request does not reserve the items, and this is not a completed sale.";
 type Counts = { [Key in keyof AnalyticsSummaryDto["metrics"]]: number };
 
 // Uses the normal Playwright stack's fresh PostgreSQL cluster and real HTTP routes.
@@ -64,47 +64,72 @@ test("full shopping journey preserves aggregate analytics across desktop and mob
     }
     return actual;
   };
-  const browsing: Counts = { visits: 2, productViews: 1, successfulCartAdditions: 0, acceptedOrderSubmissions: 0, completedOnlineSales: 0 };
+  const browsing: Counts = { visits: 1, productViews: 1, successfulCartAdditions: 0, acceptedOrderSubmissions: 0, completedOnlineSales: 0 };
 
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto(STORE);
-  await expect(page.getByLabel("ترتيب المنتجات")).toBeEnabled();
+  await expect(page.getByRole("heading", { name: "Shop by category", exact: true })).toBeVisible();
+  await expect(page.getByLabel("Sort")).toBeEnabled();
   await expect.poll(() => eventCount("visit")).toBe(1);
-  await page.getByLabel("ابحث عن منتج").fill(suffix);
-  await page.getByRole("button", { name: "بحث", exact: true }).click();
-  await expect(page).toHaveURL(new RegExp(`q=${suffix}`));
-  // Search is a native GET form: a second full document load is a second visit.
-  await expect.poll(() => eventCount("visit")).toBe(2);
-  await page.getByLabel("تصفية حسب التصنيف").getByRole("link", { name: category.nameAr, exact: true }).click();
+  // Category and sort navigation preserve the root layout's visit identity.
+  await page.getByLabel("Filter by category").getByRole("link", { name: category.nameAr, exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`category=${category.id}`));
-  await expect(page.getByLabel("تصفية حسب التصنيف").getByRole("link", { name: category.nameAr, exact: true })).toHaveAttribute("aria-current", "page");
-  await expect(page.getByLabel("ترتيب المنتجات")).toBeEnabled();
-  await page.getByLabel("ترتيب المنتجات").selectOption("price-asc");
+  await expect(page.getByLabel("Filter by category").getByRole("link", { name: category.nameAr, exact: true })).toHaveAttribute("aria-current", "page");
+  await expect(page.getByLabel("Sort")).toBeEnabled();
+  await page.getByLabel("Sort").selectOption("price-asc");
   await expect(page).toHaveURL(/sort=price-asc/);
   await page.locator("a.product-card").filter({ hasText: product.nameAr }).click();
   await expect(page.getByRole("heading", { name: product.nameAr })).toBeVisible();
   await expect.poll(() => eventCount("product_view")).toBe(1);
   expect([...acceptedEvents.values()].find((event) => event.eventType === "product_view")).toMatchObject({ productId: product.id });
+  expect(eventCount("visit")).toBe(1);
+  const publishedResponse = await page.request.get(`${STORE}/api/public/catalog/products/${product.id}`);
+  expect(publishedResponse.status()).toBe(200);
+  const published = await publishedResponse.json() as PublicProductDto;
+  const firstOrderable = published.variants.find((variant) => variant.orderable);
+  const alternate = published.variants.find((variant) => variant.orderable && variant.id !== firstOrderable?.id);
+  expect(firstOrderable).toBeTruthy();
+  expect(alternate).toBeTruthy();
+  expect(eventCount("visit")).toBe(1);
+  expect(eventCount("product_view")).toBe(1);
+  expect(eventCount("cart_addition")).toBe(0);
 
   const panel = page.locator(".purchase-panel");
-  const mobileBar = page.getByLabel("إضافة المنتج إلى السلة", { exact: true });
-  const pair = panel.locator("label.variant-option").filter({ hasText: `L ${suffix}` }).filter({ hasText: `رملي ${suffix}` }).getByRole("radio");
-  await pair.check();
-  await expect(pair).toBeChecked();
-  await expect(panel.getByLabel("الكمية")).toHaveValue("1");
+  const mobileBar = page.getByLabel("Add product to bag", { exact: true });
+  const colors = panel.getByRole("group", { name: "Color" });
+  const sizes = panel.getByRole("group", { name: "Size" });
+  await expect(sizes.getByRole("radio")).toHaveCount(1);
+  await expect(sizes.getByRole("radio")).toHaveValue(firstOrderable!.id);
+  await colors.getByRole("radio", { name: alternate!.color.nameAr }).check();
+  await expect(sizes.getByRole("radio")).toHaveCount(1);
+  await expect(sizes.getByRole("radio")).toHaveValue(alternate!.id);
+  expect(eventCount("visit")).toBe(1);
+  expect(eventCount("product_view")).toBe(1);
+  expect(eventCount("cart_addition")).toBe(0);
+  const sandColor = colors.getByRole("radio", { name: new RegExp(`رملي ${suffix}`) });
+  await sandColor.check();
+  const selectedSize = sizes.getByRole("radio");
+  await expect(selectedSize).toHaveCount(1);
+  await expect(selectedSize).toBeChecked();
+  await expect(selectedSize).toHaveValue(selected.id);
+  await expect(sandColor).toBeChecked();
+  await expect(panel.getByLabel("Quantity")).toHaveValue("1");
   await expect(mobileBar).toBeHidden();
   await expectCounts(browsing);
-  await panel.getByRole("button", { name: "أضف إلى السلة", exact: true }).click();
-  await expect(panel.getByRole("status")).toContainText("تمت إضافة الاختيار إلى السلة");
+  await panel.getByRole("button", { name: "Add to bag", exact: true }).click();
+  await expect(panel.getByRole("status")).toContainText("Added to your bag.");
   await expect.poll(() => eventCount("cart_addition")).toBe(1);
   await expectCounts({ ...browsing, successfulCartAdditions: 1 });
 
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(mobileBar).toBeInViewport();
-  await expect(pair).toBeChecked();
-  await expect(mobileBar).toContainText(`L ${suffix} / رملي ${suffix}`);
+  await expect(sandColor).toBeChecked();
+  await expect(selectedSize).toBeChecked();
+  await expect(selectedSize).toHaveValue(selected.id);
+  await expect(mobileBar).toContainText(`L ${suffix}`);
+  await expect(mobileBar).toContainText(`رملي ${suffix}`);
   await expectCounts({ ...browsing, successfulCartAdditions: 1 });
-  await mobileBar.getByRole("button", { name: "أضف إلى السلة", exact: true }).click();
+  await mobileBar.getByRole("button", { name: "Add to bag", exact: true }).click();
   await expect.poll(() => eventCount("cart_addition")).toBe(2);
   const additions = [...acceptedEvents.values()].filter((event) => event.eventType === "cart_addition");
   expect(additions).toHaveLength(2);
@@ -113,31 +138,31 @@ test("full shopping journey preserves aggregate analytics across desktop and mob
   await expect(mobileBar).toBeHidden();
   await expectCounts({ ...browsing, successfulCartAdditions: 2 });
 
-  await panel.getByRole("link", { name: "عرض السلة", exact: true }).click();
+  await panel.getByRole("link", { name: "View bag", exact: true }).click();
   await expect(page).toHaveURL(/\/cart$/);
   await expect(page.locator(".cart-line")).toHaveCount(1);
   await expect(page.locator(".cart-line")).toContainText(`L ${suffix}`);
   await expect(page.locator(".cart-line")).toContainText(`رملي ${suffix}`);
   await expect(page.locator(".cart-line output")).toHaveText("2");
-  await page.getByRole("link", { name: "متابعة إتمام الطلب" }).click();
+  await page.getByRole("link", { name: "Checkout" }).click();
   await expect(page).toHaveURL(/\/checkout$/);
-  const checkout = page.getByRole("form", { name: "بيانات طلب التوصيل" });
-  await checkout.getByLabel("الاسم").fill("عميل رحلة تجريبية");
-  await checkout.getByLabel("رقم الموبايل الأساسي").fill("01001234567");
-  await checkout.getByLabel("منطقة التوصيل").selectOption(area.id);
-  await checkout.getByLabel("العنوان بالتفصيل").fill("شارع الاختبار، الفيوم");
+  const checkout = page.getByRole("form", { name: "Checkout" });
+  await checkout.getByLabel("Name").fill("عميل رحلة تجريبية");
+  await checkout.getByLabel("Primary mobile number").fill("01001234567");
+  await checkout.getByLabel("Delivery").selectOption(area.id);
+  await checkout.getByLabel("Detailed address").fill("شارع الاختبار، الفيوم");
   const quoteResponsePromise = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/public/checkout/quote" && response.request().method() === "POST");
-  await checkout.getByRole("button", { name: "مراجعة السعر" }).click();
+  await checkout.getByRole("button", { name: "Review price" }).click();
   const quoteResponse = await quoteResponsePromise;
   expect(quoteResponse.ok()).toBe(true);
   const quote = await quoteResponse.json() as CheckoutQuoteDto;
   expect(quote.lines).toMatchObject([{ variantId: selected.id, quantity: 2, listedUnitPricePiasters: 30_000 }]);
   expect(quote.deliveryFeePiasters).toBe(2_500);
-  await expect(page.getByRole("region", { name: "تفاصيل السعر" })).toContainText("رسوم التوصيل");
+  await expect(page.getByRole("region", { name: "Price details" })).toContainText("Delivery fee");
   await expectCounts({ ...browsing, successfulCartAdditions: 2 });
 
   const submissionResponsePromise = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/public/checkout/orders" && response.request().method() === "POST");
-  await checkout.getByRole("button", { name: "إرسال طلب التوصيل" }).click();
+  await checkout.getByRole("button", { name: "Place order request" }).click();
   const submissionResponse = await submissionResponsePromise;
   expect(submissionResponse.status()).toBe(201);
   const submission = await submissionResponse.json() as PublicOrderSubmissionDto;
@@ -145,17 +170,19 @@ test("full shopping journey preserves aggregate analytics across desktop and mob
   expect(submission.status).toBe("pending");
   expect(submission.quote).toEqual(quote);
   expect(exactRequest.lines).toEqual([{ variantId: selected.id, quantity: 2 }]);
-  await expect(page.getByRole("heading", { name: "تم استلام طلبك" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Order request received" })).toBeVisible();
   await expect(page.getByRole("status")).toHaveText(acknowledgment);
   const accepted = await expectCounts({ ...browsing, successfulCartAdditions: 2, acceptedOrderSubmissions: 1 });
   // Catalog revalidation on cart/checkout is not a product-page view.
-  expect(eventCount("visit")).toBe(2);
+  expect(eventCount("visit")).toBe(1);
   expect(eventCount("product_view")).toBe(1);
   expect(eventCount("cart_addition")).toBe(2);
   const publicProductResponse = await page.request.get(`${STORE}/api/public/catalog/products/${product.id}`);
   expect(publicProductResponse.status()).toBe(200);
   const publicProduct = await publicProductResponse.json() as PublicProductDto;
   expect(publicProduct.variants.find((variant) => variant.id === selected.id)?.availableQuantity).toBe(4);
+  expect(eventCount("visit")).toBe(1);
+  expect(eventCount("product_view")).toBe(1);
 
   // Retry the exact accepted public commands: neither identity counts twice.
   const orderReplay = await page.request.post(`${STORE}/api/public/checkout/orders`, { headers: { origin: STORE }, data: exactRequest });

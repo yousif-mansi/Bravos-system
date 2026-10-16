@@ -96,7 +96,7 @@ test("contact links are empty until a manager configures safe real URLs", async 
   expect(filteredLinks.body.whatsappUrl).toBe(input.whatsappUrl);
 });
 
-test("public browsing searches published summaries and excludes hidden details", async () => {
+test("public browsing filters published summaries by category and excludes hidden details", async () => {
   const manager = await signIn("owner", "owner-pass-1");
   const shirts = await request(manager, "POST", "/api/internal/catalog/categories", { nameAr: "قمصان" });
   const jackets = await request(manager, "POST", "/api/internal/catalog/categories", { nameAr: "جاكيتات" });
@@ -108,10 +108,10 @@ test("public browsing searches published summaries and excludes hidden details",
     variants: [{ sizeId: size.body.id, colorId: color.body.id, sellingPricePiastersOverride: null }],
   });
   const visible = await request(manager, "POST", "/api/internal/catalog/products", product("SF-1", "قميص مميز", shirts.body.id, "available"));
-  await request(manager, "POST", "/api/internal/catalog/products", product("SF-2", "جاكيت شتوي", jackets.body.id, "coming_soon"));
+  const comingSoon = await request(manager, "POST", "/api/internal/catalog/products", product("SF-2", "جاكيت شتوي", jackets.body.id, "coming_soon"));
   await request(manager, "POST", "/api/internal/catalog/products", product("SF-3", "قميص مخفي", shirts.body.id, "hidden"));
 
-  const result = await request(undefined, "GET", `/api/public/storefront/catalog?q=${encodeURIComponent("قميص")}&categoryId=${shirts.body.id}`, undefined, PUBLIC_ORIGIN);
+  const result = await request(undefined, "GET", `/api/public/storefront/catalog?categoryId=${shirts.body.id}`, undefined, PUBLIC_ORIGIN);
   expect(result.status).toBe(200);
   expect(result.headers["cache-control"]).toContain("no-store");
   expect(result.body.categories).toEqual(expect.arrayContaining([
@@ -127,6 +127,25 @@ test("public browsing searches published summaries and excludes hidden details",
     lowestSellingPricePiasters: 37500,
   }]);
   expect(JSON.stringify(result.body)).not.toMatch(/قميص مخفي|description|variant|availableQuantity|cost|profit|batch/i);
+  const retiredSearch = await request(undefined, "GET", "/api/public/storefront/catalog?q=never-matches-any-product-999", undefined, PUBLIC_ORIGIN);
+  expect(retiredSearch.status).toBe(200);
+  expect(retiredSearch.headers["cache-control"]).toContain("no-store");
+  expect(retiredSearch.body.categories).toEqual(result.body.categories);
+  expect(retiredSearch.body.products).toEqual([
+    result.body.products[0],
+    {
+      id: comingSoon.body.id,
+      nameAr: "جاكيت شتوي",
+      category: { id: jackets.body.id, nameAr: "جاكيتات" },
+      availability: "coming_soon",
+      previewImageRef: null,
+      lowestSellingPricePiasters: 37500,
+    },
+  ]);
+  expect(JSON.stringify(retiredSearch.body)).not.toMatch(/قميص مخفي|description|variant|availableQuantity|cost|profit|batch/i);
+  const categoryWithRetiredSearch = await request(undefined, "GET", `/api/public/storefront/catalog?categoryId=${shirts.body.id}&q=never-matches-any-product-999`, undefined, PUBLIC_ORIGIN);
+  expect(categoryWithRetiredSearch.status).toBe(200);
+  expect(categoryWithRetiredSearch.body).toEqual(result.body);
   expect((await request(undefined, "GET", "/api/public/storefront/catalog?categoryId=bad", undefined, PUBLIC_ORIGIN)).status).toBe(400);
 });
 

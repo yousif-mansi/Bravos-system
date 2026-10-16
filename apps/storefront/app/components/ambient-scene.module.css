@@ -1,0 +1,53 @@
+.scene {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.wash,
+.drift {
+  position: absolute;
+  inset: -12%;
+}
+
+.wash {
+  background: radial-gradient(ellipse at 18% 0%, rgba(141, 145, 104, 0.34), transparent 46%);
+  animation: ambient-wash var(--motion-duration-ambient) var(--motion-ease) infinite alternate;
+}
+
+.drift {
+  background: radial-gradient(ellipse at 88% 100%, rgba(226, 205, 163, 0.16), transparent 42%);
+  animation: ambient-drift calc(var(--motion-duration-ambient) * 1.35) var(--motion-ease) infinite alternate;
+}
+
+.spot {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 480px;
+  height: 480px;
+  background: radial-gradient(circle, rgba(226, 205, 163, 0.14), transparent 68%);
+  transform: translate3d(calc(var(--spot-x, 0px) - 240px), calc(var(--spot-y, 0px) - 240px), 0);
+}
+
+@keyframes ambient-wash {
+  from { opacity: 0.55; transform: translate3d(-2%, -1%, 0); }
+  to { opacity: 0.9; transform: translate3d(3%, 2%, 0); }
+}
+
+@keyframes ambient-drift {
+  from { opacity: 0.35; transform: translate3d(2%, 1%, 0); }
+  to { opacity: 0.75; transform: translate3d(-3%, -2%, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wash,
+  .drift { animation: none; transform: none; }
+  .spot { display: none; }
+}
+
+@media (pointer: coarse) {
+  .spot { display: none; }
+}

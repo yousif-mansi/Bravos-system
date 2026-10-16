@@ -6,6 +6,7 @@ import type { PublicProductVariantDto } from "@bravos/contracts/public";
 import { useCart } from "../../cart/cart-provider";
 import { formatEgp } from "../../public-catalog";
 import styles from "./product-page.module.css";
+import { colorChoices, firstOrderableVariantId, sizesForColor, variantIdForColor } from "./variant-selection";
 
 export type PurchaseProduct = {
   id: string;
@@ -27,27 +28,46 @@ export function ProductPurchasePanel({ product, gallery, introduction, sizeGuide
   const copyRef = useRef<HTMLElement>(null);
   const addingRef = useRef(false);
   const [canStick, setCanStick] = useState(false);
-  const initialVariant = product.variants.find((variant) => variant.orderable)?.id ?? "";
+  const initialVariant = firstOrderableVariantId(product.variants);
   const [variantId, setVariantId] = useState(initialVariant);
   const [quantity, setQuantity] = useState(1);
   const [message, setMessage] = useState("");
   const [addedSuccessfully, setAddedSuccessfully] = useState(false);
   const [adding, setAdding] = useState(false);
   const selected = product.variants.find((variant) => variant.id === variantId) ?? null;
+  const colors = colorChoices(product.variants);
+  const sizes = selected ? sizesForColor(product.variants, selected.color.id) : [];
   const alreadyInCart = useMemo(
     () => cart.items.find((item) => item.variantId === variantId)?.quantity ?? 0,
     [cart.items, variantId],
   );
   const remaining = Math.max(0, (selected?.availableQuantity ?? 0) - alreadyInCart);
   const addDisabled = !product.orderable || !selected || remaining === 0 || !Number.isInteger(quantity) || quantity < 1 || quantity > remaining || adding;
-  const addLabel = adding ? "جارٍ الإضافة…" : remaining === 0 && selected ? "الكمية المتاحة في السلة" : "أضف إلى السلة";
+  const addLabel = adding ? "Adding…" : remaining === 0 && selected ? "Available quantity is in your bag" : "Add to bag";
+  const quantityGuidance = !selected || remaining === 0
+    ? ""
+    : !Number.isInteger(quantity) || quantity < 1
+      ? "Enter a whole number from 1."
+      : quantity > remaining
+        ? `Reduce the quantity to ${remaining}.`
+        : "";
 
   useEffect(() => {
     const copy = copyRef.current;
     if (!copy) return;
+    function readStickyTop() {
+      const node = copy!;
+      const inlinePosition = node.style.position;
+      if (getComputedStyle(node).position === "static") node.style.position = "relative";
+      const offset = Number.parseFloat(getComputedStyle(node).top);
+      node.style.position = inlinePosition;
+      return offset;
+    }
     function measure() {
       const viewportHeight = Math.min(window.innerHeight, window.visualViewport?.height ?? window.innerHeight);
-      setCanStick(copy!.getBoundingClientRect().height <= viewportHeight - 48);
+      const stickyTop = readStickyTop();
+      const breathingRoom = 24;
+      setCanStick(Number.isFinite(stickyTop) && copy!.getBoundingClientRect().height <= viewportHeight - stickyTop - breathingRoom);
     }
     const resizeObserver = new ResizeObserver(measure);
     resizeObserver.observe(copy);
@@ -65,7 +85,7 @@ export function ProductPurchasePanel({ product, gallery, introduction, sizeGuide
     if (addingRef.current) return;
     if (!selected) {
       setAddedSuccessfully(false);
-      setMessage("اختر المقاس واللون أولاً.");
+      setMessage("Choose a size and color first.");
       return;
     }
     addingRef.current = true;
@@ -84,14 +104,22 @@ export function ProductPurchasePanel({ product, gallery, introduction, sizeGuide
         quantity,
       });
       setAddedSuccessfully(added);
-      setMessage(added ? "تمت إضافة الاختيار إلى السلة." : "لا يمكن إضافة هذه الكمية حسب المخزون الحالي. راجع الاختيار والكمية.");
+      setMessage(added ? "Added to your bag." : "This quantity can't be added with the current stock. Review the selection and quantity.");
     } catch {
       setAddedSuccessfully(false);
-      setMessage("تعذر إضافة الاختيار إلى السلة. حاول مرة أخرى.");
+      setMessage("This selection couldn't be added to your bag. Try again.");
     } finally {
       addingRef.current = false;
       setAdding(false);
     }
+  }
+
+  function acceptVariant(nextId: string) {
+    if (!nextId || nextId === variantId) return;
+    setVariantId(nextId);
+    setQuantity(1);
+    setMessage("");
+    setAddedSuccessfully(false);
   }
 
   return (
@@ -101,43 +129,92 @@ export function ProductPurchasePanel({ product, gallery, introduction, sizeGuide
         {introduction}
         <section className={`purchase-panel ${styles.purchasePanel}`} aria-labelledby="choose-variant">
           <div className={styles.selectionHeading}>
-            <h2 id="choose-variant">اختر المقاس واللون</h2>
+            <h2 id="choose-variant">Choose size and color</h2>
             {selected ? (
               <p className={styles.selectedPrice}>
-                <span>سعر الاختيار</span>
+                <span>Selected price</span>
                 <strong>{formatEgp(selected.sellingPricePiasters)}</strong>
               </p>
             ) : (
-              <p className={styles.pricePrompt}>اختر المقاس واللون لمعرفة السعر.</p>
+              <p className={styles.pricePrompt}>
+                {product.variants.length > 0
+                  ? "Each size and color keeps its own price. None can be ordered."
+                  : "No size and color can be ordered."}
+              </p>
             )}
           </div>
-          <p className={styles.selectionHint}>المقاس واللون في اختيار واحد.</p>
-          <fieldset className={`variant-picker ${styles.variantPicker}`} disabled={!product.orderable}>
-            <legend className="sr-only">تركيبات المقاس واللون</legend>
-            {product.variants.map((variant) => (
-              <label className={`variant-option ${styles.variantOption}`} key={variant.id}>
-                <input
-                  type="radio"
-                  name="variant"
-                  value={variant.id}
-                  checked={variantId === variant.id}
-                  disabled={!variant.orderable}
-                  onChange={() => {
-                    setVariantId(variant.id);
-                    setQuantity(1);
-                    setMessage("");
-                    setAddedSuccessfully(false);
-                  }}
-                />
-                <span><b dir="auto">{variant.size.nameAr}</b><small dir="auto">{variant.color.nameAr}</small></span>
-                <strong>{formatEgp(variant.sellingPricePiasters)}</strong>
-                {!variant.orderable ? <em>غير متوفر</em> : null}
-              </label>
-            ))}
-          </fieldset>
+          {selected ? (
+            <>
+              <p className={styles.selectionHint}>Choose a color, then a size.</p>
+              <fieldset className={styles.choiceGroup} disabled={!product.orderable}>
+                <legend className={styles.choiceLegend}>Color</legend>
+                <div className={styles.choiceList}>
+                  {colors.map((color) => (
+                    <label className={`color-option ${styles.choiceOption}`} key={color.id}>
+                      <input
+                        type="radio"
+                        name="purchase-color"
+                        value={color.id}
+                        checked={selected.color.id === color.id}
+                        disabled={!color.orderable}
+                        onChange={() => {
+                          const nextId = variantIdForColor(product.variants, color.id, selected.size.id);
+                          if (nextId) acceptVariant(nextId);
+                        }}
+                      />
+                      <span dir="auto">{color.nameAr}</span>
+                      {!color.orderable ? <em>Unavailable</em> : null}
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+              <fieldset className={styles.choiceGroup} disabled={!product.orderable}>
+                <legend className={styles.choiceLegend}>Size</legend>
+                {sizes.length > 0 ? (
+                  <div className={styles.choiceList}>
+                    {sizes.map((size) => (
+                      <label className={`size-option ${styles.choiceOption}`} key={size.variantId}>
+                        <input
+                          type="radio"
+                          name="purchase-size"
+                          value={size.variantId}
+                          checked={selected.id === size.variantId}
+                          disabled={!size.orderable}
+                          onChange={() => {
+                            if (size.orderable) acceptVariant(size.variantId);
+                          }}
+                        />
+                        <span dir="auto">{size.nameAr}</span>
+                        <small>{formatEgp(size.sellingPricePiasters)}</small>
+                        {!size.orderable ? <em>Unavailable</em> : null}
+                      </label>
+                    ))}
+                  </div>
+                ) : (
+                  <p className={styles.choiceEmpty}>No size is selected.</p>
+                )}
+              </fieldset>
+            </>
+          ) : (
+            <>
+              <p className={styles.selectionHint}>These size and color pairs cannot be ordered.</p>
+              {product.variants.length > 0 ? (
+                <ul className={styles.unavailablePairs} aria-label="Unavailable size and color pairs">
+                  {product.variants.map((variant) => (
+                    <li className={styles.unavailablePair} key={variant.id}>
+                      <span>Size <b dir="auto">{variant.size.nameAr}</b></span>
+                      <span>Color <b dir="auto">{variant.color.nameAr}</b></span>
+                      <strong>{formatEgp(variant.sellingPricePiasters)}</strong>
+                      <em>Unavailable</em>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </>
+          )}
           {product.orderable ? (
             <div className={styles.addRow}>
-              <label htmlFor="product-quantity">الكمية</label>
+              <label htmlFor="product-quantity">Quantity</label>
               <input
                 id="product-quantity"
                 type="number"
@@ -145,8 +222,8 @@ export function ProductPurchasePanel({ product, gallery, introduction, sizeGuide
                 min={1}
                 max={remaining}
                 step={1}
-                aria-describedby="product-availability"
-                aria-invalid={!Number.isInteger(quantity) || quantity < 1 || (remaining > 0 && quantity > remaining) ? true : undefined}
+                aria-describedby={quantityGuidance ? "product-availability product-quantity-guidance" : "product-availability"}
+                aria-invalid={quantityGuidance ? true : undefined}
                 value={quantity}
                 disabled={!selected || remaining === 0}
                 onChange={(event) => {
@@ -155,35 +232,47 @@ export function ProductPurchasePanel({ product, gallery, introduction, sizeGuide
                   setAddedSuccessfully(false);
                 }}
               />
-              <button className={styles.inlineAction} type="button" disabled={addDisabled} aria-busy={adding} onClick={() => void addToCart()}>
+              <button className={styles.inlineAction} type="button" disabled={addDisabled} aria-busy={adding} aria-describedby={quantityGuidance ? "product-quantity-guidance" : undefined} onClick={() => void addToCart()}>
                 {addLabel}
               </button>
+              {quantityGuidance ? <p id="product-quantity-guidance" className={styles.quantityGuidance}>{quantityGuidance}</p> : null}
             </div>
           ) : null}
           {product.orderable ? (
             <p id="product-availability" className={styles.stockNote}>
-              {selected ? remaining > 0 ? `يمكن إضافة حتى ${remaining} من هذا الاختيار.` : "أضفت الكمية المتاحة من هذا الاختيار إلى السلة." : "اختر المقاس واللون أولاً."}
-              {alreadyInCart > 0 ? <span> في سلتك: {alreadyInCart}.</span> : null}
+              {selected ? remaining > 0 ? `You can add up to ${remaining} of this selection.` : "You added the available quantity of this selection to your bag." : "Choose a size and color first."}
+              {alreadyInCart > 0 ? <span> In your bag: {alreadyInCart}.</span> : null}
             </p>
           ) : null}
           <p className={message ? addedSuccessfully ? styles.successFeedback : styles.failureFeedback : styles.emptyFeedback} role="status" aria-live="polite" aria-atomic="true">
-            {message} {addedSuccessfully ? <Link href="/cart">عرض السلة</Link> : null}
+            {message} {addedSuccessfully ? <Link href="/cart">View bag</Link> : null}
           </p>
-          {product.orderable ? <p className={styles.purchaseNote}>الإضافة إلى السلة لا تحجز القطعة. يُراجع التوفر عند إرسال الطلب.</p> : null}
+          {product.orderable ? <p className={styles.purchaseNote}>Adding to your bag does not reserve the item. Availability is checked when you submit the order.</p> : null}
         </section>
       </section>
-      {sizeGuide ? <section className={styles.chapters} aria-label="معلومات المنتج">{sizeGuide}</section> : null}
+      {sizeGuide ? <section className={styles.chapters} aria-label="Product information">{sizeGuide}</section> : null}
       {product.orderable ? (
-        <div className={styles.mobileBar} aria-label="إضافة المنتج إلى السلة">
+        <div className={styles.mobileBar} aria-label="Add product to bag">
           <div className={styles.mobileSelection}>
-            <strong>{selected ? formatEgp(selected.sellingPricePiasters) : "اختر المقاس واللون"}</strong>
-            <span>{selected ? `${selected.size.nameAr} / ${selected.color.nameAr} · ${quantity}` : "لم يتم اختيار مقاس ولون"}</span>
-            <a href="#choose-variant">تغيير الاختيار</a>
+            <strong>{selected ? formatEgp(selected.sellingPricePiasters) : "Choose size and color"}</strong>
+            {selected ? (
+              <span className={styles.mobileVariant}>
+                <span>Size <b dir="auto">{selected.size.nameAr}</b></span>
+                <span>Color <b dir="auto">{selected.color.nameAr}</b></span>
+                {quantityGuidance ? null : <span>Qty {quantity}</span>}
+              </span>
+            ) : (
+              <span>No size and color selected</span>
+            )}
+            <a href="#choose-variant">Change selection</a>
           </div>
-          <button type="button" disabled={addDisabled} aria-busy={adding} onClick={() => void addToCart()}>{addLabel}</button>
-          {addedSuccessfully ? <Link className={styles.mobileCartLink} href="/cart">تمت الإضافة · عرض السلة</Link> : null}
+          <div className={styles.mobileAction}>
+            <button className={quantityGuidance ? styles.mobileSuppressedAction : undefined} type="button" disabled={addDisabled} aria-busy={adding} onClick={() => void addToCart()}>{addLabel}</button>
+            {quantityGuidance ? <a className={styles.mobileQuantityRepair} href="#product-quantity">{quantityGuidance}</a> : null}
+          </div>
+          {addedSuccessfully ? <Link className={styles.mobileCartLink} href="/cart">Added · View bag</Link> : null}
           {message && !addedSuccessfully ? (
-            <a className={styles.mobileFailure} href="#choose-variant">تعذر الإضافة · راجع الاختيار والكمية</a>
+            <a className={styles.mobileFailure} href="#choose-variant">Couldn't add · Check the selection and quantity</a>
           ) : null}
         </div>
       ) : null}

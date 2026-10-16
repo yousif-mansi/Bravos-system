@@ -25,7 +25,7 @@ defaults:
 jobs:
   static-and-build:
     name: Types, architecture, scripts and builds
-    runs-on: ubuntu-24.04
+    runs-on: windows-2025
     timeout-minutes: 30
     steps:
       - name: Checkout
@@ -66,7 +66,7 @@ jobs:
   http:
     name: PostgreSQL and HTTP integration
     needs: static-and-build
-    runs-on: ubuntu-24.04
+    runs-on: windows-2025
     timeout-minutes: 45
     steps:
       - name: Checkout
@@ -92,7 +92,7 @@ jobs:
   browser:
     name: Chromium browser acceptance
     needs: static-and-build
-    runs-on: ubuntu-24.04
+    runs-on: windows-2025
     timeout-minutes: 60
     steps:
       - name: Checkout
@@ -112,7 +112,7 @@ jobs:
           cache: false
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
-      - name: Install the locked Playwright Chromium and OS dependencies
-        run: pnpm exec playwright install --with-deps chromium
+      - name: Install the locked Playwright Chromium
+        run: pnpm exec playwright install chromium
       - name: Run the complete browser suite on its isolated stack
         run: pnpm test:browser --reporter=line

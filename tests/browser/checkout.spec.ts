@@ -4,7 +4,8 @@ import path from "node:path";
 import { Pool } from "pg";
 import type { PublicOrderSubmissionDto } from "@bravos/contracts/public";
 
-const acknowledgment = "استلمنا طلبك للمراجعة. إرسال الطلب لا يحجز القطع؛ تأكيده يتم عبر واتساب.";
+const freshReceiptStatus = "We received your order request. It is pending. Placing the request does not reserve the items, and this is not a completed sale.";
+const storedReceiptStatus = "This order request was already received and was not submitted again. This receipt does not establish its current status.";
 
 test("guest reviews configured delivery and discounts while a newer cart item survives the accepted response", async ({ context, page }, testInfo) => {
   await signInManager(page);
@@ -14,12 +15,12 @@ test("guest reviews configured delivery and discounts while a newer cart item su
   await areaForm.getByLabel("رسوم التوصيل بالجنيه").fill("25");
   await areaForm.getByLabel("متاحة في صفحة الطلب").check();
   await areaForm.getByRole("button", { name: "حفظ" }).click();
-  await expect(page.getByRole("status")).toContainText("تم حفظ منطقة التوصيل");
+  await expect(page.getByRole("status")).toContainText("تم حفظ منطقة التوصيل.");
   const areaRow = page.locator("article").filter({ hasText: "مدينة الفيوم" });
   await areaRow.getByRole("button", { name: "تعديل" }).click();
   await areaForm.getByLabel("رسوم التوصيل بالجنيه").fill("30");
   await areaForm.getByRole("button", { name: "حفظ" }).click();
-  await expect(page.getByRole("status")).toContainText("تم حفظ منطقة التوصيل");
+  await expect(page.getByRole("status")).toContainText("تم حفظ منطقة التوصيل.");
   await expect(page.getByText("30 ج.م. · متاحة", { exact: true })).toBeVisible();
   const listedAreas = await staffApi(page, "GET", "/api/internal/delivery-areas");
   const area = listedAreas.body.find((candidate: { nameAr: string }) => candidate.nameAr === "مدينة الفيوم");
@@ -55,57 +56,63 @@ test("guest reviews configured delivery and discounts while a newer cart item su
   await page.setViewportSize({ width: 390, height: 844 });
   await addPublicProduct(page, catalog.productId);
   await cartLink(page).click();
-  await page.getByRole("link", { name: "متابعة إتمام الطلب" }).click();
+  await expect(page).toHaveURL(/\/cart$/);
+  await expect(page.getByRole("heading", { name: "Bag", exact: true })).toBeVisible();
+  await expect(page.getByRole("complementary", { name: "Bag summary" })).toBeVisible();
+  const checkoutLink = page.getByRole("link", { name: "Checkout", exact: true });
+  await expect(checkoutLink).toBeVisible();
+  await expect(checkoutLink).toHaveAttribute("href", "/checkout");
+  await checkoutLink.click();
   await expect(page).toHaveURL(/\/checkout$/);
 
-  const checkout = page.getByRole("form", { name: "بيانات طلب التوصيل" });
+  const checkout = page.getByRole("form", { name: "Checkout" });
   const optionalDetails = optionalDeliveryDetails(checkout);
   const optionalSummary = optionalDetails.locator("summary");
-  await expect(optionalSummary).toHaveText("تفاصيل إضافية للتوصيل (اختياري)");
+  await expect(optionalSummary).toHaveText("Optional delivery details");
   await expect(optionalDetails).not.toHaveJSProperty("open", true);
-  await expect(checkout.getByLabel("رقم بديل (اختياري)")).toBeAttached();
-  await expect(checkout.getByLabel("رقم بديل (اختياري)")).toBeHidden();
-  await expect(checkout.getByLabel("علامة مميزة (اختياري)")).toBeHidden();
-  await expect(checkout.getByLabel("ملاحظات (اختياري)")).toBeHidden();
-  await page.screenshot({ path: testInfo.outputPath("empty-collapsed-390.png"), fullPage: true });
+  await expect(checkout.getByLabel("Alternate number (optional)")).toBeAttached();
+  await expect(checkout.getByLabel("Alternate number (optional)")).toBeHidden();
+  await expect(checkout.getByLabel("Landmark (optional)")).toBeHidden();
+  await expect(checkout.getByLabel("Notes (optional)")).toBeHidden();
+  await page.screenshot({ path: testInfo.outputPath("empty-collapsed-390.png"), fullPage: true, animations: "disabled" });
   await optionalSummary.click();
   await expect(optionalDetails).toHaveJSProperty("open", true);
-  await expect(checkout.getByLabel("رقم بديل (اختياري)")).toBeVisible();
-  await expect(checkout.getByLabel("علامة مميزة (اختياري)")).toBeVisible();
-  await expect(checkout.getByLabel("ملاحظات (اختياري)")).toBeVisible();
+  await expect(checkout.getByLabel("Alternate number (optional)")).toBeVisible();
+  await expect(checkout.getByLabel("Landmark (optional)")).toBeVisible();
+  await expect(checkout.getByLabel("Notes (optional)")).toBeVisible();
   await page.setViewportSize({ width: 320, height: 844 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await optionalSummary.focus();
-  await page.screenshot({ path: testInfo.outputPath("expanded-focus-320.png"), fullPage: true });
+  await page.screenshot({ path: testInfo.outputPath("expanded-focus-320.png"), fullPage: true, animations: "disabled" });
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.screenshot({ path: testInfo.outputPath("empty-expanded-390.png"), fullPage: true });
+  await page.screenshot({ path: testInfo.outputPath("empty-expanded-390.png"), fullPage: true, animations: "disabled" });
   await optionalSummary.click();
   await expect(optionalDetails).not.toHaveJSProperty("open", true);
-  await expect(checkout.getByLabel("رقم بديل (اختياري)")).toBeHidden();
-  await checkout.getByLabel("منطقة التوصيل").selectOption(area.id);
-  await checkout.getByLabel("كود الكوبون (اختياري)").fill("guest25");
-  await checkout.getByRole("button", { name: "مراجعة السعر" }).click();
+  await expect(checkout.getByLabel("Alternate number (optional)")).toBeHidden();
+  await checkout.getByLabel("Delivery").selectOption(area.id);
+  await checkout.getByLabel("Coupon code (optional)").fill("guest25");
+  await checkout.getByRole("button", { name: "Review price" }).click();
 
-  const review = page.getByRole("region", { name: "تفاصيل السعر" });
-  await expect(review).toContainText("إجمالي المنتجات قبل الخصم");
-  await expect.poll(() => normalizedText(review)).toContain("400 ج.م.");
+  const review = page.getByRole("region", { name: "Price details" });
+  await expect(review).toContainText("Merchandise total before discount");
+  await expect.poll(() => normalizedText(review)).toContain("EGP 400");
   await expect(review).toContainText("عرض طلب المتجر");
-  await expect.poll(() => normalizedText(review)).toContain("50 ج.م.");
+  await expect.poll(() => normalizedText(review)).toContain("EGP 50");
   await expect(review).toContainText("GUEST25");
-  await expect.poll(() => normalizedText(review)).toContain("25 ج.م.");
-  await expect(review).toContainText("رسوم التوصيل");
-  await expect.poll(() => normalizedText(review)).toContain("30 ج.م.");
-  await expect.poll(() => normalizedText(review)).toContain("355 ج.م.");
+  await expect.poll(() => normalizedText(review)).toContain("EGP 25");
+  await expect(review).toContainText("Delivery fee");
+  await expect.poll(() => normalizedText(review)).toContain("EGP 30");
+  await expect.poll(() => normalizedText(review)).toContain("EGP 355");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-  await page.screenshot({ path: testInfo.outputPath("checkout-quote-phone-390.png"), fullPage: true });
+  await page.screenshot({ path: testInfo.outputPath("checkout-quote-phone-390.png"), fullPage: true, animations: "disabled" });
 
-  const nameInput = checkout.getByLabel("الاسم");
-  const primaryPhoneInput = checkout.getByLabel("رقم الموبايل الأساسي");
-  const alternatePhoneInput = checkout.getByLabel("رقم بديل (اختياري)");
-  const addressInput = checkout.getByLabel("العنوان بالتفصيل");
+  const nameInput = checkout.getByLabel("Name");
+  const primaryPhoneInput = checkout.getByLabel("Primary mobile number");
+  const alternatePhoneInput = checkout.getByLabel("Alternate number (optional)");
+  const addressInput = checkout.getByLabel("Detailed address");
   expect(await nameInput.getAttribute("required")).not.toBeNull();
   expect(await primaryPhoneInput.getAttribute("required")).not.toBeNull();
-  expect(await checkout.getByLabel("منطقة التوصيل").getAttribute("required")).not.toBeNull();
+  expect(await checkout.getByLabel("Delivery").getAttribute("required")).not.toBeNull();
   expect(await addressInput.getAttribute("required")).not.toBeNull();
   expect(await alternatePhoneInput.getAttribute("required")).toBeNull();
   await expect(primaryPhoneInput).toHaveAttribute("type", "tel");
@@ -114,24 +121,24 @@ test("guest reviews configured delivery and discounts while a newer cart item su
     if (request.method() === "POST" && request.url().includes("/api/public/checkout/orders")) invalidSubmitRequests += 1;
   };
   page.on("request", watchInvalidSubmit);
-  await checkout.getByRole("button", { name: "إرسال طلب التوصيل" }).click();
+  await checkout.getByRole("button", { name: "Place order request" }).click();
   await expect(nameInput).toBeFocused();
   await expect(nameInput).toHaveAttribute("aria-invalid", "true");
   const nameErrorId = await nameInput.getAttribute("aria-describedby");
   expect(nameErrorId).toBeTruthy();
   await expect(page.locator(`#${nameErrorId}`)).toBeVisible();
-  await page.screenshot({ path: testInfo.outputPath("checkout-invalid-phone-390.png"), fullPage: true });
+  await page.screenshot({ path: testInfo.outputPath("checkout-invalid-phone-390.png"), fullPage: true, animations: "disabled" });
   expect(invalidSubmitRequests).toBe(0);
   await nameInput.fill("أحمد حسن");
   await expect(nameInput).not.toHaveAttribute("aria-invalid", "true");
   await expect(nameInput).toHaveValue("أحمد حسن");
-  await checkout.getByRole("button", { name: "إرسال طلب التوصيل" }).click();
+  await checkout.getByRole("button", { name: "Place order request" }).click();
   await expect(primaryPhoneInput).toBeFocused();
   await expect(primaryPhoneInput).toHaveAttribute("aria-invalid", "true");
   await primaryPhoneInput.fill("01001234567");
   await expect(primaryPhoneInput).not.toHaveAttribute("aria-invalid", "true");
   await expect(primaryPhoneInput).toHaveValue("01001234567");
-  await checkout.getByRole("button", { name: "إرسال طلب التوصيل" }).click();
+  await checkout.getByRole("button", { name: "Place order request" }).click();
   await expect(addressInput).toBeFocused();
   await expect(addressInput).toHaveAttribute("aria-invalid", "true");
   await addressInput.fill("شارع الجامعة، بجوار المكتبة");
@@ -142,11 +149,11 @@ test("guest reviews configured delivery and discounts while a newer cart item su
   await page.setViewportSize({ width: 1440, height: 900 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await expect(optionalDetails).not.toHaveJSProperty("open", true);
-  await page.screenshot({ path: testInfo.outputPath("checkout-quote-desktop-1440.png"), fullPage: true });
-  await page.screenshot({ path: testInfo.outputPath("empty-collapsed-1440.png"), fullPage: true });
+  await page.screenshot({ path: testInfo.outputPath("checkout-quote-desktop-1440.png"), fullPage: true, animations: "disabled" });
+  await page.screenshot({ path: testInfo.outputPath("empty-collapsed-1440.png"), fullPage: true, animations: "disabled" });
   await optionalSummary.click();
   await expect(optionalDetails).toHaveJSProperty("open", true);
-  await page.screenshot({ path: testInfo.outputPath("empty-expanded-1440.png"), fullPage: true });
+  await page.screenshot({ path: testInfo.outputPath("empty-expanded-1440.png"), fullPage: true, animations: "disabled" });
   await optionalSummary.click();
   await expect(optionalDetails).not.toHaveJSProperty("open", true);
   await page.setViewportSize({ width: 390, height: 844 });
@@ -164,7 +171,7 @@ test("guest reviews configured delivery and discounts while a newer cart item su
     await responseGate;
     await route.fulfill({ response });
   }, { times: 1 });
-  void checkout.getByRole("button", { name: "إرسال طلب التوصيل" }).click();
+  void checkout.getByRole("button", { name: "Place order request" }).click();
   await acceptedByBackend;
 
   const recoveryPage = await context.newPage();
@@ -172,9 +179,9 @@ test("guest reviews configured delivery and discounts while a newer cart item su
   await addPublicProduct(recoveryPage, nextCatalog.productId);
   await expect(cartLink(recoveryPage)).toContainText("2");
   releaseResponse?.();
-  await expect(page.getByRole("heading", { name: "تم استلام طلبك" })).toBeVisible();
-  await expect(page.getByRole("status")).toHaveText(acknowledgment);
-  await expect(page.getByText("سيتواصل معك ممثل برافوس عبر واتساب لتأكيد الطلب")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Order request received" })).toBeVisible();
+  await expect(page.getByRole("status")).toHaveText(freshReceiptStatus);
+  await expect(page.getByText("A Bravos representative confirms the request later on WhatsApp")).toBeVisible();
   expect(await recoveryPage.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await expect(cartLink(page)).toContainText("1");
   await expect(cartLink(recoveryPage)).toContainText("1");
@@ -188,10 +195,11 @@ test("guest reviews configured delivery and discounts while a newer cart item su
   expect(stored.request.notes).toBeUndefined();
 
   await recoveryPage.goto("http://127.0.0.1:3001/checkout");
-  await expect(recoveryPage.getByRole("form", { name: "بيانات طلب التوصيل" })).toBeVisible();
-  await expect(recoveryPage.getByRole("heading", { name: "تم استلام طلبك" })).toHaveCount(0);
+  await expect(recoveryPage.getByRole("form", { name: "Checkout" })).toBeVisible();
+  await expect(recoveryPage.getByRole("heading", { name: "Order request received", exact: true })).toHaveCount(0);
+  await expect(recoveryPage.getByRole("heading", { name: "Order request already received", exact: true })).toHaveCount(0);
   await expect(cartLink(recoveryPage)).toContainText("1");
-  await expect(recoveryPage.getByRole("complementary", { name: "ملخص منتجات الطلب" })).toContainText("NEXT-CHECKOUT-E2E-19");
+  await expect(recoveryPage.getByRole("complementary", { name: "Your items" })).toContainText("NEXT-CHECKOUT-E2E-19");
 });
 
 test("accepted acknowledgment survives staff confirmation and an empty-cart reload", async ({ page }) => {
@@ -203,25 +211,27 @@ test("accepted acknowledgment survives staff confirmation and an empty-cart relo
   const catalog = await seedCheckoutProduct(page, "ACK-CONFIRMED-E2E", 25_000, 1);
   await addPublicProduct(page, catalog.productId);
   await page.goto("http://127.0.0.1:3001/checkout");
-  const checkout = page.getByRole("form", { name: "بيانات طلب التوصيل" });
+  const checkout = page.getByRole("form", { name: "Checkout" });
   await fillCheckoutCustomer(checkout, area.body.id);
-  await checkout.getByRole("button", { name: "مراجعة السعر" }).click();
+  await checkout.getByRole("button", { name: "Review price" }).click();
   const submissions: unknown[] = [];
   page.on("request", (request) => {
     if (request.method() === "POST" && request.url().endsWith("/api/public/checkout/orders")) submissions.push(request.postDataJSON());
   });
-  await checkout.getByRole("button", { name: "إرسال طلب التوصيل" }).click();
-  await expect(page.getByRole("heading", { name: "تم استلام طلبك" })).toBeVisible();
-  await expect(page.getByRole("status")).toHaveText(acknowledgment);
+  await checkout.getByRole("button", { name: "Place order request" }).click();
+  await expect(page.getByRole("heading", { name: "Order request received" })).toBeVisible();
+  await expect(page.getByRole("status")).toHaveText(freshReceiptStatus);
   const accepted = await storedAttempt(page);
   expect(accepted.status).toBe("accepted");
   expect(accepted.cartCompleted).toBe(true);
   await confirmSubmittedOrder(page, accepted.result.orderId);
   await page.reload();
-  await expect(page.getByRole("heading", { name: "تم استلام طلبك" })).toBeVisible();
-  await expect(page.getByRole("status")).toHaveText(acknowledgment);
+  await expect(page.getByRole("heading", { name: "Order request already received", exact: true })).toBeVisible();
+  await expect(page.getByRole("status")).toHaveText(storedReceiptStatus);
+  await expect(page.getByRole("status")).not.toContainText("pending");
+  await expect(page.getByRole("status")).not.toContainText("confirmed");
   await expect(page.locator(".order-reference strong")).toHaveText(accepted.result.reference);
-  await expect.poll(() => normalizedText(page.locator(".success-total"))).toContain("275 ج.م.");
+  await expect.poll(() => normalizedText(page.locator(".success-total"))).toContain("EGP 275");
   expect(await storedAttempt(page)).toEqual(accepted);
   expect(submissions).toEqual([accepted.request]);
   await expectCartCompletedOnce(page, accepted.request.operationId);
@@ -238,12 +248,12 @@ test("a lost acceptance response replays the exact long reference after staff co
   const catalog = await seedCheckoutProduct(page, "REPLAY-CHECKOUT-E2E-19", 25_000, 1);
   await addPublicProduct(page, catalog.productId);
   await page.goto("http://127.0.0.1:3001/checkout");
-  const checkout = page.getByRole("form", { name: "بيانات طلب التوصيل" });
-  await checkout.getByLabel("الاسم").fill("سارة علي");
-  await checkout.getByLabel("رقم الموبايل الأساسي").fill("01221234567");
-  await checkout.getByLabel("منطقة التوصيل").selectOption(area.body.id);
-  await checkout.getByLabel("العنوان بالتفصيل").fill("إطسا، شارع المركز");
-  await checkout.getByRole("button", { name: "مراجعة السعر" }).click();
+  const checkout = page.getByRole("form", { name: "Checkout" });
+  await checkout.getByLabel("Name").fill("سارة علي");
+  await checkout.getByLabel("Primary mobile number").fill("01221234567");
+  await checkout.getByLabel("Delivery").selectOption(area.body.id);
+  await checkout.getByLabel("Detailed address").fill("إطسا، شارع المركز");
+  await checkout.getByRole("button", { name: "Review price" }).click();
 
   await setNextIsolatedOrderReference();
   let acceptedOperationId = "";
@@ -263,8 +273,8 @@ test("a lost acceptance response replays the exact long reference after staff co
       body: JSON.stringify({ error: { code: "CONFLICT", messageAr: "انقطع الرد بعد حفظ الطلب." } }),
     });
   }, { times: 1 });
-  await checkout.getByRole("button", { name: "إرسال طلب التوصيل" }).click();
-  await expect(page.locator('.checkout-message[role="alert"]')).toContainText("لم نتمكن من معرفة نتيجة الإرسال");
+  await checkout.getByRole("button", { name: "Place order request" }).click();
+  await expect(page.locator('.checkout-message[role="alert"]')).toContainText("We could not tell the result of this send");
   const pending = await page.evaluate(() => JSON.parse(localStorage.getItem("bravos-guest-checkout-v1") ?? "null"));
   expect(pending.status).toBe("pending");
   expect(pending.request.operationId).toBe(acceptedOperationId);
@@ -283,12 +293,14 @@ test("a lost acceptance response replays the exact long reference after staff co
   const recoveredResponse = await replayResponse;
   expect(recoveredResponse.status()).toBe(200);
   expect(await recoveredResponse.json()).toEqual(originalAcknowledgment);
-  await expect(page.getByRole("heading", { name: "تم استلام طلبك" })).toBeVisible();
-  await expect(page.getByRole("status")).toHaveText(acknowledgment);
+  await expect(page.getByRole("heading", { name: "Order request already received", exact: true })).toBeVisible();
+  await expect(page.getByRole("status")).toHaveText(storedReceiptStatus);
+  await expect(page.getByRole("status")).not.toContainText("pending");
+  await expect(page.getByRole("status")).not.toContainText("confirmed");
   await expect(page.locator(".order-reference strong")).toHaveText("BRV-1000000");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.screenshot({ path: testInfo.outputPath("checkout-recovered-long-reference-phone-390.png"), fullPage: true });
-  await expect.poll(() => normalizedText(page.locator(".success-total"))).toContain("275 ج.م.");
+  await expect.poll(() => normalizedText(page.locator(".success-total"))).toContain("EGP 275");
   const accepted = await page.evaluate(() => JSON.parse(localStorage.getItem("bravos-guest-checkout-v1") ?? "null"));
   expect(accepted.status).toBe("accepted");
   expect(accepted.request.operationId).toBe(acceptedOperationId);
@@ -297,8 +309,8 @@ test("a lost acceptance response replays the exact long reference after staff co
   expect(submissionRequests).toEqual([pending.request, pending.request]);
   await expectCartCompletedOnce(page, acceptedOperationId);
   await page.reload();
-  await expect(page.getByRole("heading", { name: "تم استلام طلبك" })).toBeVisible();
-  await expect(page.getByRole("status")).toHaveText(acknowledgment);
+  await expect(page.getByRole("heading", { name: "Order request already received", exact: true })).toBeVisible();
+  await expect(page.getByRole("status")).toHaveText(storedReceiptStatus);
   await expect(page.locator(".order-reference strong")).toHaveText("BRV-1000000");
   expect(await storedAttempt(page)).toEqual(accepted);
   expect(submissionRequests).toEqual([pending.request, pending.request]);
@@ -321,35 +333,35 @@ test("changed delivery pricing and a later stock shortage cannot submit an old r
 
   await addPublicProduct(page, catalog.productId, 2);
   await page.goto("http://127.0.0.1:3001/checkout");
-  const checkout = page.getByRole("form", { name: "بيانات طلب التوصيل" });
-  await checkout.getByLabel("الاسم").fill("منى محمود");
-  await checkout.getByLabel("رقم الموبايل الأساسي").fill("01111234567");
-  await checkout.getByLabel("منطقة التوصيل").selectOption(area.body.id);
-  await checkout.getByLabel("العنوان بالتفصيل").fill("ميدان سنورس، عمارة ٤");
-  await checkout.getByRole("button", { name: "مراجعة السعر" }).click();
-  await expect.poll(() => normalizedText(page.getByRole("region", { name: "تفاصيل السعر" }))).toContain("620 ج.م.");
+  const checkout = page.getByRole("form", { name: "Checkout" });
+  await checkout.getByLabel("Name").fill("منى محمود");
+  await checkout.getByLabel("Primary mobile number").fill("01111234567");
+  await checkout.getByLabel("Delivery").selectOption(area.body.id);
+  await checkout.getByLabel("Detailed address").fill("ميدان سنورس، عمارة ٤");
+  await checkout.getByRole("button", { name: "Review price" }).click();
+  await expect.poll(() => normalizedText(page.getByRole("region", { name: "Price details" }))).toContain("EGP 620");
 
   expect((await staffApi(page, "PUT", `/api/internal/delivery-areas/${area.body.id}`, {
     nameAr: "سنورس",
     feePiasters: 4_000,
     active: true,
   })).status).toBe(200);
-  await checkout.getByRole("button", { name: "إرسال طلب التوصيل" }).click();
-  await expect(page.locator('.checkout-message[role="alert"]')).toContainText("تغيّر السعر أو رسوم التوصيل");
-  await expect(checkout.getByRole("button", { name: "إرسال طلب التوصيل" })).toHaveCount(0);
-  await expect(checkout.getByLabel("الاسم")).toHaveValue("منى محمود");
-  await checkout.getByRole("button", { name: "مراجعة السعر" }).click();
-  await expect.poll(() => normalizedText(page.getByRole("region", { name: "تفاصيل السعر" }))).toContain("640 ج.م.");
+  await checkout.getByRole("button", { name: "Place order request" }).click();
+  await expect(page.locator('.checkout-message[role="alert"]')).toContainText("The price or delivery fee changed after your review");
+  await expect(checkout.getByRole("button", { name: "Place order request" })).toHaveCount(0);
+  await expect(checkout.getByLabel("Name")).toHaveValue("منى محمود");
+  await checkout.getByRole("button", { name: "Review price" }).click();
+  await expect.poll(() => normalizedText(page.getByRole("region", { name: "Price details" }))).toContain("EGP 640");
 
   const sold = await completePhysicalSale(page, catalog.variantId, 1);
   expect(sold.status).toBe(201);
-  await checkout.getByRole("button", { name: "إرسال طلب التوصيل" }).click();
-  await expect(page.locator('.checkout-message[role="alert"]')).toContainText("الكمية المطلوبة غير متاحة حالياً");
+  await checkout.getByRole("button", { name: "Place order request" }).click();
+  await expect(page.locator('.checkout-message[role="alert"]')).toContainText("These choices cannot all be supplied together");
   await expect(cartLink(page)).toContainText("2");
-  await expect(checkout.getByLabel("الاسم")).toHaveValue("منى محمود");
+  await expect(checkout.getByLabel("Name")).toHaveValue("منى محمود");
 });
 
-test("closed public ordering keeps the cart and shows the Arabic closure screen", async ({ page }) => {
+test("closed public ordering keeps the cart and shows the closure screen", async ({ page }) => {
   await signInManager(page);
   const catalog = await seedCheckoutProduct(page, "CLOSED-ORDERING-E2E-28", 30_000, 1);
   await addPublicProduct(page, catalog.productId);
@@ -368,33 +380,33 @@ test("closed public ordering keeps the cart and shows the Arabic closure screen"
         status: 503,
         contentType: "application/json",
         body: JSON.stringify({
-          error: { code: "PUBLIC_ORDERING_DISABLED", messageAr: "الطلب عبر المتجر غير متاح حالياً." },
+          error: { code: "PUBLIC_ORDERING_DISABLED", messageAr: "Ordering on the store is not available right now." },
         }),
       });
     });
   }
 
   await page.goto("http://127.0.0.1:3001/checkout");
-  await expect(page.getByRole("heading", { name: "الطلب عبر المتجر غير متاح حالياً" })).toBeVisible();
-  await expect(page.getByText("يمكنك تصفح المنتجات والاحتفاظ بما أضفته إلى السلة")).toBeVisible();
-  await expect(page.getByRole("form", { name: "بيانات طلب التوصيل" })).toHaveCount(0);
-  await page.getByRole("link", { name: "عرض السلة" }).click();
+  await expect(page.getByRole("heading", { name: "Ordering on the store is not available right now" })).toBeVisible();
+  await expect(page.getByText("You can browse products and keep what you added to the bag")).toBeVisible();
+  await expect(page.getByRole("form", { name: "Checkout" })).toHaveCount(0);
+  await page.getByRole("link", { name: "View bag" }).click();
   await expect(page).toHaveURL(/\/cart$/);
   await expect(cartLink(page)).toContainText("1");
-  await expect(page.getByRole("region", { name: "منتجات السلة" }).getByRole("heading", { name: "قميص CLOSED-ORDERING-E2E-28", exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Bag items" }).getByRole("heading", { name: "قميص CLOSED-ORDERING-E2E-28", exact: true })).toBeVisible();
 });
 
 function optionalDeliveryDetails(form: ReturnType<Page["getByRole"]>) {
   return form.locator("details").filter({
-    has: form.page().locator("summary", { hasText: "تفاصيل إضافية للتوصيل (اختياري)" }),
+    has: form.page().locator("summary", { hasText: "Optional delivery details" }),
   });
 }
 
 async function fillCheckoutCustomer(checkout: ReturnType<Page["getByRole"]>, areaId: string) {
-  await checkout.getByLabel("الاسم").fill("عميل الإقرار المحفوظ");
-  await checkout.getByLabel("رقم الموبايل الأساسي").fill("01009876543");
-  await checkout.getByLabel("منطقة التوصيل").selectOption(areaId);
-  await checkout.getByLabel("العنوان بالتفصيل").fill("الفيوم، شارع الاختبار");
+  await checkout.getByLabel("Name").fill("عميل الإقرار المحفوظ");
+  await checkout.getByLabel("Primary mobile number").fill("01009876543");
+  await checkout.getByLabel("Delivery").selectOption(areaId);
+  await checkout.getByLabel("Detailed address").fill("الفيوم، شارع الاختبار");
 }
 
 async function storedAttempt(page: Page) {
@@ -507,9 +519,9 @@ async function seedCheckoutProduct(page: Page, code: string, pricePiasters: numb
 
 async function addPublicProduct(page: Page, productId: string, quantity = 1) {
   await page.goto(`http://127.0.0.1:3001/products/${productId}`);
-  if (quantity !== 1) await page.getByLabel("الكمية").fill(String(quantity));
-  await page.getByRole("button", { name: "أضف إلى السلة" }).click();
-  await expect(page.getByRole("status")).toContainText("تمت إضافة الاختيار إلى السلة");
+  if (quantity !== 1) await page.getByLabel("Quantity").fill(String(quantity));
+  await page.getByRole("button", { name: "Add to bag" }).click();
+  await expect(page.getByRole("status")).toContainText("Added to your bag.");
 }
 
 async function completePhysicalSale(page: Page, variantId: string, quantity: number) {

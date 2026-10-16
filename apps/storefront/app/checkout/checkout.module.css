@@ -4,8 +4,13 @@
   min-height: 100svh;
   max-width: 1120px;
   margin-inline: auto;
-  padding-block: var(--space-8) var(--space-16);
+  padding-block: var(--space-6) var(--space-12);
   color: var(--store-ink);
+  direction: ltr;
+  font-family: var(--font-commerce);
+  font-weight: 400;
+  line-height: 1.5;
+  text-align: start;
 }
 
 .intro {
@@ -15,7 +20,7 @@
 
 .intro h1 {
   margin-block: var(--space-2) var(--space-3);
-  font: 400 clamp(2.4rem, 5vw, 3.7rem)/1.45 var(--font-editorial);
+  font: 400 clamp(2rem, 7vw, 3.25rem)/1.25 var(--font-editorial);
 }
 
 .intro > p:last-child {
@@ -23,9 +28,9 @@
   color: var(--store-muted);
 }
 
-.layout {
-  gap: var(--space-8);
-  grid-template-columns: minmax(0, 1fr) minmax(280px, 350px);
+.page .layout {
+  gap: var(--space-6);
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .form {
@@ -33,16 +38,17 @@
   min-width: 0;
 }
 
-.form fieldset {
+.page .form fieldset {
   min-width: 0;
-  padding: var(--space-6);
+  padding: var(--space-4);
   background: var(--store-surface);
   border-color: var(--store-border);
 }
 
-.form legend {
+.page .form legend {
   padding-inline: var(--space-2);
-  font-size: 1.15rem;
+  font-size: 1.05rem;
+  font-weight: 600;
   color: var(--store-accent);
 }
 
@@ -63,7 +69,7 @@
   cursor: pointer;
   min-height: 44px;
   padding-block: var(--space-2);
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .optionalDetails summary:focus-visible {
@@ -75,18 +81,20 @@
   margin-block-start: var(--space-4);
 }
 
-.fields {
-  gap: var(--space-4);
+.page .fields {
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-6);
 }
 
 .field {
   min-width: 0;
-  gap: var(--space-2);
+  gap: 10px;
 }
 
-.field > span {
+.page .field > span {
   color: var(--store-ink);
   font-size: .94rem;
+  font-weight: 600;
 }
 
 .requiredTag {
@@ -100,13 +108,15 @@
 .page .field input,
 .page .field select,
 .page .field textarea {
-  background: var(--store-surface);
+  background: var(--store-canvas);
   border-color: var(--store-border);
   border-radius: 0;
   min-height: 48px;
+  padding: 12px 14px;
   color: var(--store-ink);
-  background: var(--store-canvas);
   caret-color: var(--store-accent);
+  font: 400 1rem/1.5 var(--font-commerce);
+  text-align: start;
 }
 
 .field input::placeholder,
@@ -143,10 +153,45 @@
   min-height: 48px;
 }
 
+.page .form :global(.review-price) {
+  width: 100%;
+  max-width: none;
+  font-weight: 600;
+}
+
+.commit {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background: var(--store-surface);
+  border: 1px solid var(--store-border);
+  border-block-start: 2px solid var(--store-accent);
+}
+
+.disclosure {
+  margin: 0;
+}
+
+.infoLinks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  margin: 0;
+}
+
+.infoLinks a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  color: var(--store-ink);
+  text-underline-offset: 0.2em;
+}
+
 .page .form :global(.submit-order),
 .page :global(.button-link) {
   background: var(--store-accent);
   color: var(--store-canvas);
+  font-weight: 600;
 }
 
 .page .form :global(.submit-order):hover:not(:disabled),
@@ -173,7 +218,7 @@
 }
 
 .priceReview h2 {
-  font: 400 1.65rem/1.5 var(--font-editorial);
+  font: 400 1.45rem/1.4 var(--font-editorial);
 }
 
 .priceReview :global(.final-total) {
@@ -183,11 +228,15 @@
 }
 
 .priceReview :global(.final-total) strong {
-  font-size: 1.5rem;
+  font-size: 1.35rem;
+  font-weight: 600;
 }
 
 .priceReview > p:not(.authoritativeHint) {
   align-items: baseline;
+  flex-wrap: wrap;
+  row-gap: var(--space-1);
+  line-height: 1.5;
 }
 
 .priceReview strong {
@@ -227,10 +276,10 @@
 }
 
 .page .summary {
-  position: sticky;
-  top: 112px;
+  position: static;
+  grid-row: auto;
   min-width: 0;
-  padding: var(--space-6);
+  padding: var(--space-4);
   background: var(--store-surface);
   border-color: var(--store-border);
   border-block-start: 2px solid var(--store-accent);
@@ -242,7 +291,7 @@
 }
 
 .summary h2 {
-  font: 400 1.65rem/1.5 var(--font-editorial);
+  font: 400 1.45rem/1.4 var(--font-editorial);
 }
 
 .summary article {
@@ -256,7 +305,8 @@
 }
 
 .summary > p strong {
-  font-size: 1.3rem;
+  font-size: 1.2rem;
+  font-weight: 600;
 }
 
 .summary > :global(.muted) {
@@ -311,7 +361,65 @@
 }
 
 .mobileContext {
-  display: none;
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background: var(--store-surface);
+  border-block-start: 2px solid var(--store-accent);
+}
+
+.mobileSummary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  justify-content: space-between;
+  gap: var(--space-3) var(--space-4);
+}
+
+.mobileCount,
+.mobileAmount,
+.mobileAmountLabel,
+.mobileAmount strong {
+  font-family: var(--font-display);
+  letter-spacing: 0;
+}
+
+.mobileCount {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.mobileAmount {
+  display: grid;
+  gap: var(--space-1);
+  flex: 1 1 9rem;
+  min-width: min(100%, 9rem);
+  margin: 0;
+  text-align: end;
+}
+
+.mobileAmountLabel {
+  color: var(--store-muted);
+  font-size: 0.75rem;
+  font-weight: 400;
+  line-height: 1.35;
+}
+
+.mobileAmount strong {
+  font-size: 1.25rem;
+  font-weight: 600;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.mobileContext > p {
+  margin: 0;
+  color: var(--store-muted);
+  font-size: .875rem;
+  font-weight: 400;
+  line-height: 1.5;
 }
 
 .summary article strong,
@@ -331,9 +439,8 @@
   overflow-wrap: anywhere;
 }
 
-.success h1 {
-  font-family: var(--font-editorial);
-  font-weight: 400;
+.page.success h1 {
+  font: 400 clamp(1.8rem, 6vw, 2.6rem)/1.3 var(--font-editorial);
 }
 
 .success > p {
@@ -342,7 +449,9 @@
 
 .success :global(.success-total) strong {
   display: block;
-  font-size: 1.5rem;
+  margin-block-start: var(--space-1);
+  font-size: 1.35rem;
+  font-weight: 600;
   color: var(--store-accent);
 }
 
@@ -356,52 +465,60 @@
   text-align: center;
 }
 
-@media (max-width: 900px) {
+@media (min-width: 720px) {
+  .page {
+    padding-block: var(--space-8) var(--space-16);
+  }
+
+  .page .form fieldset,
+  .page .summary,
+  .priceReview {
+    padding: var(--space-6);
+  }
+
+  .page .fields {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-4);
+  }
+
+  .page .form :global(.review-price) {
+    width: auto;
+    max-width: 280px;
+  }
+}
+
+@media (min-width: 901px) {
+  .page .layout {
+    gap: var(--space-8);
+    grid-template-columns: minmax(0, 1fr) minmax(280px, 350px);
+  }
+
   .mobileContext {
-    display: block;
-    padding: var(--space-4);
-    background: var(--store-surface);
-    border-block-start: 2px solid var(--store-accent);
+    display: none;
   }
+}
 
-  .mobileContext p {
-    margin-block: var(--space-2) 0;
-    color: var(--store-muted);
-    font-size: .875rem;
-  }
-
-  .layout {
-    gap: var(--space-6);
-    grid-template-columns: minmax(0, 1fr);
-  }
-
+@media (min-width: 801px) {
   .page .summary {
-    grid-row: auto;
-    position: static;
+    position: sticky;
+    top: calc(var(--store-header-height) + var(--space-4));
+    max-height: calc(100svh - var(--store-header-height) - var(--space-6));
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scroll-padding-block: var(--space-3);
+  }
+}
+
+@media (max-width: 900px) {
+  .summary > :global(.muted) {
+    display: none;
   }
 }
 
 @media (max-width: 580px) {
-  .page {
-    padding-block: var(--space-6) var(--space-12);
-  }
-
   .intro {
     margin-block-end: var(--space-6);
     text-align: center;
-  }
-
-  .form fieldset,
-  .page .summary {
-    padding: var(--space-4);
-  }
-
-  .priceReview {
-    padding: var(--space-4);
-  }
-
-  .priceReview > p:not(.authoritativeHint) {
-    flex-wrap: wrap;
   }
 
   .success {

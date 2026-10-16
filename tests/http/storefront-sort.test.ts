@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PublicProductSummaryDto } from "@bravos/contracts/public";
-import { parseCollectionSort, sortCollection } from "../../apps/storefront/app/collection-sort";
+import { collectionHref, parseCollectionSort, sortCollection } from "../../apps/storefront/app/collection-sort";
 
 const category = { id: "category", nameAr: "قمصان" };
 const products: PublicProductSummaryDto[] = [
@@ -12,17 +12,40 @@ const products: PublicProductSummaryDto[] = [
 
 describe("storefront collection sorting", () => {
   it("keeps zero as a real price and missing prices last in both directions", () => {
+    const original = structuredClone(products);
     expect(sortCollection(products, "price-asc").map((product) => product.id)).toEqual(["b", "d", "a", "c"]);
     expect(sortCollection(products, "price-desc").map((product) => product.id)).toEqual(["a", "d", "b", "c"]);
-    expect(products.map((product) => product.id)).toEqual(["c", "b", "a", "d"]);
+    expect(products).toEqual(original);
   });
 
-  it("orders Arabic names across the full matching set and ignores unsupported sorts", () => {
-    const expected = [...products].sort((left, right) =>
-      new Intl.Collator("ar-EG", { sensitivity: "base", numeric: true }).compare(left.nameAr, right.nameAr),
-    );
-    expect(sortCollection(products, "name").map((product) => product.id)).toEqual(expected.map((product) => product.id));
-    expect(parseCollectionSort("popular")).toBe("default");
-    expect(sortCollection(products, parseCollectionSort("popular"))).toBe(products);
+  it("preserves catalog order for tied prices and missing prices without mutating the input", () => {
+    const tied = [...products, { ...products[3]!, id: "e" }, { ...products[0]!, id: "f" }];
+    const original = structuredClone(tied);
+    expect(sortCollection(tied, "price-asc").map((product) => product.id)).toEqual(["b", "d", "e", "a", "c", "f"]);
+    expect(sortCollection(tied, "price-desc").map((product) => product.id)).toEqual(["a", "d", "e", "b", "c", "f"]);
+    expect(tied).toEqual(original);
+  });
+
+  it("keeps default order and rejects retired or unsupported sorts", () => {
+    expect(parseCollectionSort("price-asc")).toBe("price-asc");
+    expect(parseCollectionSort("price-desc")).toBe("price-desc");
+    for (const value of [undefined, "default", "name", "newest", "popular"]) {
+      expect(parseCollectionSort(value)).toBe("default");
+      expect(sortCollection(products, parseCollectionSort(value))).toBe(products);
+    }
+  });
+
+  it("serializes category and price sorting without a search parameter", () => {
+    expect(collectionHref({})).toBe("/");
+    expect(collectionHref({ sort: "default" })).toBe("/");
+    expect(collectionHref({ categoryId: "category-id", sort: "default" })).toBe("/?category=category-id");
+    expect(collectionHref({ sort: "price-asc" })).toBe("/?sort=price-asc");
+    for (const sort of ["price-asc", "price-desc"] as const) {
+      const href = collectionHref({ categoryId: "category-id", sort });
+      expect(href).toBe(`/?category=category-id&sort=${sort}`);
+      expect([...new URL(href, "https://shop.example").searchParams]).toEqual([
+        ["category", "category-id"], ["sort", sort],
+      ]);
+    }
   });
 });

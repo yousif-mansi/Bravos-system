@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-test("Arabic storefront browses, persists an aggregated guest cart and handles changed availability", async ({ page }) => {
+test("English storefront browses, persists an aggregated guest cart and handles changed availability", async ({ page }, testInfo) => {
   await signInManager(page);
   await page.getByRole("link", { name: "روابط المتجر" }).click();
   await expect(page.getByRole("heading", { name: "روابط المتجر" })).toBeVisible();
@@ -52,62 +52,101 @@ test("Arabic storefront browses, persists an aggregated guest cart and handles c
   })).status).toBe(201);
 
   await page.goto("http://127.0.0.1:3001");
-  await expect(page.locator("html")).toHaveAttribute("dir", "rtl");
-  await expect(page.getByRole("heading", { name: /اختيارات هادئة/ })).toBeVisible();
-  await expect(page.getByRole("link", { name: "واتساب" })).toHaveAttribute("href", "https://wa.me/201000000018");
-  await expect(page.getByRole("link", { name: "فيسبوك" })).toHaveAttribute("href", "https://www.facebook.com/bravos-ticket-18");
+  await expect(page.locator("html")).toHaveAttribute("lang", "en");
+  await expect(page.locator("html")).toHaveAttribute("dir", "ltr");
+  const homeTitle = page.locator("#home-title");
+  await expect(homeTitle).toHaveText("Bravos Menswear");
+  await expect(homeTitle).toHaveClass(/sr-only/);
+  const hero = page.locator("section").filter({ has: homeTitle });
+  const cover = hero.locator("img");
+  await expect(cover).toHaveCount(1);
+  await expect(cover).toHaveAttribute("alt", "");
+  await expect.poll(() => cover.evaluate((img: HTMLImageElement) => [img.naturalWidth, img.naturalHeight])).toEqual([2048, 774]);
+  await expect(hero.locator("a, button, p")).toHaveCount(0);
+  expect(await hero.evaluate((section) => {
+    const parts: string[] = [];
+    const walker = document.createTreeWalker(section, NodeFilter.SHOW_TEXT);
+    let node = walker.nextNode();
+    while (node) {
+      const parent = node.parentElement;
+      const value = node.textContent?.trim() ?? "";
+      if (value && parent && !parent.closest(".sr-only")) parts.push(value);
+      node = walker.nextNode();
+    }
+    return parts;
+  })).toEqual([]);
+  await page.screenshot({ path: testInfo.outputPath("home.png"), fullPage: true });
+  await expect(page.getByRole("link", { name: "WhatsApp" })).toHaveAttribute("href", "https://wa.me/201000000018");
+  await expect(page.getByRole("link", { name: "Facebook" })).toHaveAttribute("href", "https://www.facebook.com/bravos-ticket-18");
   await expect(page.getByRole("link", { name: /إدارة|الموظفين|المصروفات|المرتجعات/ })).toHaveCount(0);
   await expect(page.getByText("منتج داخلي مخفي 18")).toHaveCount(0);
 
-  await page.getByLabel("ابحث عن منتج").fill("اليومي");
-  await page.getByRole("button", { name: "بحث" }).click();
+  await expect(page.locator("#catalog-title")).toHaveText("Shop by category");
+  await expect(page.getByRole("search")).toHaveCount(0);
+  await page.getByRole("navigation", { name: "Filter by category" })
+    .getByRole("link", { name: category.body.nameAr, exact: true }).click();
+  await expect(page).toHaveURL(`http://127.0.0.1:3001/?category=${category.body.id}`);
   await expect(page.getByRole("link", { name: /قميص برافوس اليومي/ })).toBeVisible();
   await expect(page.getByText("جاكيت الموسم القادم")).toHaveCount(0);
   await page.getByRole("link", { name: /قميص برافوس اليومي/ }).click();
   await expect(page.getByRole("heading", { name: "قميص برافوس اليومي" })).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("product.png"), fullPage: true });
   await expect(page.getByText("قميص قطني بقصة مريحة للاستخدام اليومي.")).toBeVisible();
   await expect(page.getByText("M18 — عرض الصدر 50 سم")).toBeVisible();
-  await expect(page.locator("label.variant-option").filter({ hasText: "M18" }).getByRole("radio")).toBeEnabled();
-  await expect(page.locator("label.variant-option").filter({ hasText: "L18" }).getByRole("radio")).toBeDisabled();
+  const colors = page.getByRole("group", { name: "Color" });
+  const sizes = page.getByRole("group", { name: "Size" });
+  await expect(sizes.getByRole("radio", { name: /M18/ })).toBeEnabled();
+  await expect(sizes.getByRole("radio", { name: /L18/ })).toHaveCount(0);
+  const sandColor = colors.getByRole("radio", { name: "رملي متجر 18" });
+  await expect(sandColor).toBeDisabled();
+  await expect(sandColor.locator("xpath=ancestor::label[1]")).toContainText("Unavailable");
 
-  await page.getByLabel("الكمية").fill("3");
-  await expect(page.getByRole("button", { name: "أضف إلى السلة" })).toBeDisabled();
-  await page.getByLabel("الكمية").fill("1");
-  await page.getByRole("button", { name: "أضف إلى السلة" }).click();
-  await expect(page.getByRole("status")).toContainText("تمت إضافة الاختيار");
-  await page.getByRole("button", { name: "أضف إلى السلة" }).click();
-  await expect(page.getByRole("button", { name: "الكمية المتاحة في السلة" })).toBeDisabled();
-  const headerCart = page.getByRole("navigation", { name: "التنقل الرئيسي" }).getByRole("link", { name: /السلة/ });
+  await page.getByLabel("Quantity").fill("3");
+  await expect(page.getByRole("button", { name: "Add to bag" })).toBeDisabled();
+  await page.getByLabel("Quantity").fill("1");
+  await page.getByRole("button", { name: "Add to bag" }).click();
+  await expect(page.getByRole("status")).toContainText("Added to your bag.");
+  await page.getByRole("button", { name: "Add to bag" }).click();
+  await expect(page.getByRole("button", { name: "Available quantity is in your bag" })).toBeDisabled();
+  const headerCart = page.getByRole("navigation", { name: "Primary" }).getByRole("link", { name: /Bag/ });
   await expect(headerCart).toContainText("2");
   await headerCart.click();
-  await expect(page.getByRole("heading", { name: "سلة التسوق" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Bag", exact: true })).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("bag.png"), fullPage: true });
   await expect(page.getByRole("heading", { name: "قميص برافوس اليومي" })).toHaveCount(1);
   await expect(page.locator(".cart-line output")).toHaveText("2");
   await page.reload();
   await expect(page.locator(".cart-line output")).toHaveText("2");
-  await expect(page.getByRole("button", { name: /دفع|إرسال الطلب|تأكيد الطلب/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /Place order request|Pay|Confirm order/ })).toHaveCount(0);
 
   const sale = await staffApi(page, "POST", "/api/internal/sales", {
     saleId: crypto.randomUUID(), operationId: crypto.randomUUID(), employeeDiscountPiasters: 0,
     lines: [{ variantId: stockedVariant.id, quantity: 1 }], physicallyCompleted: true,
   });
   expect(sale.status).toBe(201);
-  await page.getByRole("button", { name: "تحديث بيانات المنتجات" }).click();
-  await expect(page.getByText("المتاح الآن 1 فقط.", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "ضبط للمتاح" }).click();
+  await page.getByRole("button", { name: "Refresh product details" }).click();
+  await expect(page.getByText("Only 1 available now.", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Fit to available" }).click();
   await expect(page.locator(".cart-line output")).toHaveText("1");
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("http://127.0.0.1:3001");
-  const categoryFilter = page.getByRole("navigation", { name: "تصفية حسب التصنيف" }).getByRole("link", { name: "جاكيتات متجر 18", exact: true });
+  const categoryFilter = page.getByRole("navigation", { name: "Filter by category" }).getByRole("link", { name: "جاكيتات متجر 18", exact: true });
   await expect(categoryFilter).toBeVisible();
   await categoryFilter.click();
-  await expect(page.getByRole("link", { name: /جاكيت الموسم القادم/ })).toContainText("قريباً");
+  await expect(page.getByRole("link", { name: /جاكيت الموسم القادم/ })).toContainText("Coming Soon");
   await page.goto(`http://127.0.0.1:3001/products/${comingSoon.body.id}`);
-  const previewNote = page.getByRole("paragraph").filter({ hasText: "هذا المنتج للعرض المسبق وسيكون متاحاً للطلب لاحقاً." });
+  const previewNote = page.getByRole("paragraph").filter({ hasText: "Coming soon. Not available to order yet." });
   await expect(previewNote).toHaveCount(1);
   await expect(previewNote).toBeVisible();
-  await expect(page.getByRole("button", { name: "أضف إلى السلة" })).toHaveCount(0);
+  await expect(page.locator(".purchase-panel input[type='radio']")).toHaveCount(0);
+  const unavailablePairs = page.getByRole("list", { name: "Unavailable size and color pairs" });
+  await expect(unavailablePairs).toContainText("M18");
+  await expect(unavailablePairs).toContainText("أسود متجر 18");
+  await expect(unavailablePairs).toContainText(/EGP\s*700/);
+  await expect(unavailablePairs).toContainText("Unavailable");
+  await expect(page.getByText("Each size and color keeps its own price. None can be ordered.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Add to bag" })).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
@@ -148,9 +187,9 @@ test("cart preserves corrupt storage and reports unavailable persistence", async
     window.localStorage.setItem(key, value);
   }, { key: storageKey, value: corruptValue });
   await page.goto("http://127.0.0.1:3001/cart");
-  await expect(page.locator("p[role='alert']")).toContainText("تركنا البيانات الأصلية دون تغيير");
+  await expect(page.locator("p[role='alert']")).toContainText("The original data was left unchanged");
   await expect.poll(() => page.evaluate((key) => window.localStorage.getItem(key), storageKey)).toBe(corruptValue);
-  await expect(page.getByText("السلة تحفظ اختياراتك في هذا المتصفح لتراجع المقاسات والألوان والكميات.", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Review your selections, then add delivery details to see the final price.", { exact: true })).toHaveCount(0);
 
   const blockedPage = await context.newPage();
   await blockedPage.addInitScript(() => {
@@ -158,9 +197,9 @@ test("cart preserves corrupt storage and reports unavailable persistence", async
     Storage.prototype.setItem = () => { throw new DOMException("blocked", "SecurityError"); };
   });
   await blockedPage.goto("http://127.0.0.1:3001/cart");
-  await expect(blockedPage.locator("p[role='alert']")).toContainText("يتعذر حفظ السلة في هذا المتصفح الآن");
-  await expect(blockedPage.getByLabel("السلة غير محفوظة")).toBeVisible();
-  await expect(blockedPage.getByText("السلة تحفظ اختياراتك في هذا المتصفح لتراجع المقاسات والألوان والكميات.", { exact: true })).toHaveCount(0);
+  await expect(blockedPage.locator("p[role='alert']")).toContainText("This browser can't save the bag right now");
+  await expect(blockedPage.getByLabel("Bag not saved")).toBeVisible();
+  await expect(blockedPage.getByText("Review your selections, then add delivery details to see the final price.", { exact: true })).toHaveCount(0);
   await blockedPage.close();
 });
 

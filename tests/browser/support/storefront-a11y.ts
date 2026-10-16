@@ -299,7 +299,7 @@ export async function expectKeyboardFocus(target: Locator) {
         const hit = document.elementFromPoint(centerX, centerY);
         const style = getComputedStyle(element);
         const rootStyle = getComputedStyle(document.documentElement);
-        const bar = document.querySelector('[aria-label="إضافة المنتج إلى السلة"]');
+        const bar = document.querySelector('[aria-label="Add product to bag"]');
         return {
           unobscured: centerX >= 0 && centerX < innerWidth && centerY >= 0 && centerY < innerHeight
             && Boolean(hit && (element === hit || element.contains(hit))),
@@ -329,7 +329,7 @@ export async function expectKeyboardFocus(target: Locator) {
 // Advance with real Tab presses, without programmatic focus or a fixed DOM order.
 export async function tabTo(page: Page, target: Locator, unavailable?: Locator) {
   await expect(target).toBeVisible();
-  const bound = await page.evaluate(() => {
+  const readBound = () => page.evaluate(() => {
     function tabbable(element: Element) {
       if (!(element instanceof HTMLElement)) return false;
       if (element.tabIndex < 0 || element.hasAttribute("disabled") || element.getAttribute("aria-disabled") === "true") return false;
@@ -341,6 +341,7 @@ export async function tabTo(page: Page, target: Locator, unavailable?: Locator) 
     }
     return [...document.querySelectorAll("a[href], button, input, select, textarea, summary, [tabindex]")].filter(tabbable).length;
   });
+  let bound = await readBound();
   expect(bound, "rendered tabbable controls").toBeGreaterThan(0);
   const seen = new Set<string>();
   let categoryLinks = 0;
@@ -391,6 +392,9 @@ export async function tabTo(page: Page, target: Locator, unavailable?: Locator) 
     seen.add(identity);
     const href = await focused.evaluate((element) => element.getAttribute("href"));
     if (href?.includes("category=")) categoryLinks += 1;
+    // Native Tab can load more category cards. Keep the traversal bound tied to
+    // rendered controls while retaining the cycle and per-focus safety checks.
+    bound = Math.max(bound, await readBound());
     if (productSteps > bound) break;
     if (await target.count() > 0 && await target.evaluate((element) => element === document.activeElement)) {
       return { steps: presses + 1, categoryLinks };

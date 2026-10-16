@@ -2,4 +2,8 @@
   display: inline-flex;
   align-items: center;
   min-height: 44px;
+  margin-top: 8px;
+  color: var(--store-ink);
+  font-weight: 500;
+  text-underline-offset: .25em;
 }

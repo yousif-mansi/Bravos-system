@@ -87,14 +87,22 @@ test("manager publishes product media and customers see only selectable stocked 
   if (!stocked) throw new Error("Expected the stocked media test variant.");
 
   await page.goto("http://127.0.0.1:3001");
+  await page.locator(`[data-category-rail="${product.category.id}"]`).scrollIntoViewIfNeeded();
   const outOfStockCard = page.getByRole("link", { name: /قميص برافوس المصور/ });
-  await expect(outOfStockCard).toContainText("غير متوفر");
+  await expect(outOfStockCard).toContainText("Out of Stock");
   await outOfStockCard.click();
   await expect(page.getByRole("heading", { name: "قميص برافوس المصور" })).toBeVisible();
-  await expect(page.getByText("المنتج غير متوفر حالياً، ويمكنك تصفح تفاصيله.")).toBeVisible();
-  await expect(page.getByRole("radio")).toHaveCount(2);
-  await expect(page.getByRole("radio").first()).toBeDisabled();
-  await expect(page.getByRole("radio").nth(1)).toBeDisabled();
+  await expect(page.getByText("Out of stock. Product details are still available.")).toBeVisible();
+  await expect(page.locator(".purchase-panel input[type='radio']")).toHaveCount(0);
+  const unavailablePairs = page.getByRole("list", { name: "Unavailable size and color pairs" });
+  await expect(unavailablePairs.getByRole("listitem")).toHaveCount(2);
+  await expect(unavailablePairs).toContainText("XL17");
+  await expect(unavailablePairs).toContainText("أخضر 17");
+  await expect(unavailablePairs).toContainText("رملي 17");
+  await expect(unavailablePairs).toContainText(/EGP\s*320/);
+  await expect(unavailablePairs).toContainText(/EGP\s*340/);
+  await expect(unavailablePairs).toContainText("Unavailable");
+  await expect(page.getByRole("button", { name: "Add to bag" })).toHaveCount(0);
 
   const receipt = await staffApi(page, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
@@ -105,12 +113,13 @@ test("manager publishes product media and customers see only selectable stocked 
   expect(receipt.status).toBe(201);
 
   await page.goto("http://127.0.0.1:3001");
+  await page.locator(`[data-category-rail="${product.category.id}"]`).scrollIntoViewIfNeeded();
   const card = page.getByRole("link", { name: /قميص برافوس المصور/ });
-  await expect(card).toContainText("متوفر");
+  await expect(card).toContainText("In Stock");
   await card.click();
   await expect(page.getByRole("heading", { name: "قميص برافوس المصور" })).toBeVisible();
   await expect(page.getByText("XL17 — عرض الصدر 54 سم")).toBeVisible();
-  const productImage = page.getByRole("img", { name: /قميص برافوس المصور — صورة 1/ });
+  const productImage = page.getByRole("img", { name: /قميص برافوس المصور — photo 1/ });
   await expect(productImage).toBeVisible();
   const renderedImageUrl = await productImage.getAttribute("src");
   expect(renderedImageUrl).not.toBeNull();
@@ -124,10 +133,17 @@ test("manager publishes product media and customers see only selectable stocked 
     `http://127.0.0.1:3001/_next/image?url=${encodeURIComponent(renderedImagePath)}&w=640&q=75`,
   );
   expect(optimizerAttempt.status()).toBe(404);
-  const stockedChoice = page.locator("label.variant-option").filter({ hasText: "أخضر 17" }).getByRole("radio");
-  const emptyChoice = page.locator("label.variant-option").filter({ hasText: "رملي 17" }).getByRole("radio");
+  const colorGroup = page.getByRole("group", { name: "Color" });
+  const sizeGroup = page.getByRole("group", { name: "Size" });
+  const stockedChoice = colorGroup.getByRole("radio", { name: /أخضر 17/ });
+  const emptyChoice = colorGroup.getByRole("radio", { name: /رملي 17/ });
   await expect(stockedChoice).toBeEnabled();
+  await expect(stockedChoice).toBeChecked();
   await expect(emptyChoice).toBeDisabled();
+  await expect(emptyChoice.locator("xpath=ancestor::label[1]")).toContainText("Unavailable");
+  await expect(sizeGroup.getByRole("radio", { name: /XL17/ })).toBeEnabled();
+  await expect(sizeGroup.getByRole("radio")).toHaveCount(1);
+  await expect(page.getByRole("list", { name: "Unavailable size and color pairs" })).toHaveCount(0);
   await expect(page.getByText(/تكلفة|ربح|شراء|موظف/)).toHaveCount(0);
 
   const withoutMedia = await staffApi(
@@ -150,15 +166,23 @@ test("manager publishes product media and customers see only selectable stocked 
   );
   expect(reattached.status).toBe(200);
   await page.reload();
-  await expect(page.getByRole("img", { name: /قميص برافوس المصور — صورة 1/ })).toBeVisible();
+  await expect(page.getByRole("img", { name: /قميص برافوس المصور — photo 1/ })).toBeVisible();
 
   const comingSoon = await staffApi(page, "PATCH", `/api/internal/catalog/products/${product.id}`, productWrite(reattached.body as ManagerProductDto, "coming_soon"));
   expect(comingSoon.status).toBe(200);
   await page.reload();
-  await expect(page.getByRole("main").getByText("قريباً", { exact: true })).toBeVisible();
-  await expect(page.getByRole("radio")).toHaveCount(2);
-  await expect(page.getByRole("radio").first()).toBeDisabled();
-  await expect(page.getByRole("radio").nth(1)).toBeDisabled();
+  await expect(page.getByRole("main").getByText("Coming soon", { exact: true })).toBeVisible();
+  await expect(page.locator(".purchase-panel input[type='radio']")).toHaveCount(0);
+  const previewPairs = page.getByRole("list", { name: "Unavailable size and color pairs" });
+  await expect(previewPairs.getByRole("listitem")).toHaveCount(2);
+  await expect(previewPairs).toContainText("XL17");
+  await expect(previewPairs).toContainText("أخضر 17");
+  await expect(previewPairs).toContainText("رملي 17");
+  await expect(previewPairs).toContainText(/EGP\s*320/);
+  await expect(previewPairs).toContainText(/EGP\s*340/);
+  await expect(previewPairs).toContainText("Unavailable");
+  await expect(page.getByText("Each size and color keeps its own price. None can be ordered.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Add to bag" })).toHaveCount(0);
 
   const hidden = await staffApi(page, "PATCH", `/api/internal/catalog/products/${product.id}`, productWrite(comingSoon.body as ManagerProductDto, "hidden"));
   expect(hidden.status).toBe(200);
@@ -167,7 +191,7 @@ test("manager publishes product media and customers see only selectable stocked 
   await page.goto("http://127.0.0.1:3001");
   await expect(page.getByText("قميص برافوس المصور", { exact: true })).toHaveCount(0);
   await page.goto(`http://127.0.0.1:3001/products/${product.id}`);
-  await expect(page.getByRole("heading", { name: "المنتج غير موجود" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Product not found" })).toBeVisible();
   const hiddenMedia = await page.request.get(`http://127.0.0.1:3001${renderedImagePath}`);
   expect(hiddenMedia.status()).toBe(404);
 });

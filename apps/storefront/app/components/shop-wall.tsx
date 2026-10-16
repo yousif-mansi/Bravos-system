@@ -9,13 +9,12 @@ type ShopWallProps = {
 
 export function ShopWall({ products, prioritizeLead = false }: ShopWallProps) {
   return (
-    <section aria-label="المنتجات" className={styles.wall}>
+    <section aria-label="Products" className={styles.wall}>
       <div className={styles.grid}>
         {products.map((product, index) => (
           <ProductCard key={product.id} product={product} prioritizeMedia={prioritizeLead && index === 0} />
         ))}
       </div>
-      <p className={styles.note}>راجع سعر المقاس واللون وتوفرهما في صفحة المنتج.</p>
     </section>
   );
 }

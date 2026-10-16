@@ -4,15 +4,34 @@ import { writeFile } from "node:fs/promises";
 const STORE = "http://127.0.0.1:3001";
 const INTERNAL = "http://127.0.0.1:5174";
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
-const REQUIRED_FACES = [
-  { family: "commerce", weight: "400" },
-  { family: "commerce", weight: "500" },
-  { family: "commerce", weight: "700" },
-  { family: "editorial", weight: "400" },
-  { family: "editorial", weight: "700" },
-  { family: "display", weight: "400" },
-] as const;
-const PERMITTED_LOCAL_FALLBACKS = new Set(["commerce Fallback", "editorial Fallback", "display Fallback"]);
+const ROLE_WEIGHTS: Record<string, Array<[string, string]>> = {
+  home: [
+    ["body", "400"],
+    ["#home-title", "700"],
+    ["#catalog-title", "500"],
+  ],
+  discovery: [
+    ["body", "400"],
+    ["#catalog-title", "500"],
+  ],
+  product: [
+    ["body", "400"],
+    ["main h1", "400"],
+  ],
+  cart: [
+    ["body", "400"],
+    ["main h1", "400"],
+  ],
+  checkout: [
+    ["body", "400"],
+    ["main h1", "400"],
+  ],
+};
+
+function isClashVariableWoff2(url: string): boolean {
+  const path = url.split("?")[0] ?? url;
+  return /ClashDisplay[-_]Variable/i.test(path) && /\.woff2$/i.test(path);
+}
 
 function isArialLocalOnly(src: string): boolean {
   if (/url\(/i.test(src)) return false;
@@ -21,31 +40,6 @@ function isArialLocalOnly(src: string): boolean {
   if (!locals.every((match) => (match[1] ?? match[2] ?? match[3] ?? "").trim() === "Arial")) return false;
   return src.replace(/local\(\s*(?:"[^"]*"|'[^']*'|[^)]*)\s*\)/gi, "").replace(/[\s,]+/g, "") === "";
 }
-
-const ROLE_CHECKS: Record<string, Array<[string, { family: string; weight: string }]>> = {
-  home: [
-    ["body", { family: "commerce", weight: "400" }],
-    ["#home-title", { family: "editorial", weight: "400" }],
-    ['p[lang="en"]', { family: "display", weight: "400" }],
-    ["#catalog-title", { family: "editorial", weight: "400" }],
-  ],
-  discovery: [
-    ["body", { family: "commerce", weight: "400" }],
-    ["#catalog-title", { family: "editorial", weight: "400" }],
-  ],
-  product: [
-    ["body", { family: "commerce", weight: "400" }],
-    ["main h1", { family: "editorial", weight: "400" }],
-  ],
-  cart: [
-    ["body", { family: "commerce", weight: "400" }],
-    ["main h1", { family: "editorial", weight: "400" }],
-  ],
-  checkout: [
-    ["body", { family: "commerce", weight: "400" }],
-    ["main h1", { family: "editorial", weight: "400" }],
-  ],
-};
 
 test("storefront routes load local fonts and media without layout or runtime failures", async ({ page }, testInfo) => {
   test.setTimeout(300_000);
@@ -84,8 +78,8 @@ test("storefront routes load local fonts and media without layout or runtime fai
   });
   const productPage = await page.goto(`${STORE}/products/${product.id}`);
   expect(productPage?.status()).toBe(200);
-  await page.getByRole("button", { name: "أضف إلى السلة" }).first().click();
-  await expect(page.locator(".purchase-panel").getByRole("status")).toContainText("تمت إضافة");
+  await page.getByRole("button", { name: "Add to bag" }).first().click();
+  await expect(page.locator(".purchase-panel").getByRole("status")).toContainText("Added");
 
   await page.addInitScript(() => {
     const shifts: Array<{ value: number; startTime: number; sources: unknown[] }> = [];
@@ -158,22 +152,21 @@ test("storefront routes load local fonts and media without layout or runtime fai
       expect.soft(metrics.scrollWidth, `${route.name} at ${width}px`).toBeLessThanOrEqual(width);
       expect.soft(metrics.cls, `${route.name} at ${width}px CLS`).toBeLessThanOrEqual(0.1);
       const proof = await readFontProof(page);
-      const permittedFallbackFamilies = new Set<string>();
+      expect(proof.localOnly.length, "metric fallback faces").toBeGreaterThan(0);
       for (const face of proof.localOnly) {
-        expect(PERMITTED_LOCAL_FALLBACKS.has(face.family), `unexpected local-only font ${face.family}: ${face.src}`).toBe(true);
-        expect(isArialLocalOnly(face.src), `${face.family} src ${face.src}`).toBe(true);
-        permittedFallbackFamilies.add(face.family);
+        expect(isArialLocalOnly(face.src), `local-only font must be Arial ${face.family}: ${face.src}`).toBe(true);
       }
-      expect([...permittedFallbackFamilies].sort(), JSON.stringify(proof.localOnly)).toEqual([...PERMITTED_LOCAL_FALLBACKS].sort());
-      const unexpectedFontErrors = proof.fontFaces.filter((font) => font.status === "error" && !permittedFallbackFamilies.has(font.family));
+      const arialFamilies = new Set(proof.localOnly.map((face) => face.family));
+      const unexpectedFontErrors = proof.fontFaces.filter((font) => font.status === "error" && !arialFamilies.has(font.family));
       expect(unexpectedFontErrors, JSON.stringify({ unexpectedFontErrors, localOnly: proof.localOnly, fontFaces: proof.fontFaces })).toEqual([]);
-      for (const required of REQUIRED_FACES) {
-        const match = proof.loaded.find((face) => face.family === required.family && face.weight === required.weight);
-        expect(match?.faces.some((face) => face.family === required.family && face.weight === required.weight && face.status === "loaded"), JSON.stringify(match ?? proof.loaded)).toBe(true);
-        expect(proof.urlFaces.some((face) => face.family === required.family && face.weight === required.weight && face.urls.length > 0), JSON.stringify(proof.urlFaces)).toBe(true);
-      }
-      for (const [selector, expected] of ROLE_CHECKS[route.name] ?? []) {
-        expect(proof.roles[selector], `${route.name} ${selector}`).toEqual(expected);
+      expect(proof.clashFamily, "Clash Display family discovered from the variable woff2").not.toBe("");
+      expect(proof.clashWeight, proof.clashWeight).toContain("200");
+      expect(proof.clashWeight, proof.clashWeight).toContain("700");
+      expect(proof.clashLoaded.some((face) => face.status === "loaded"), JSON.stringify(proof.clashLoaded)).toBe(true);
+      expect(proof.androgy, "no Androgy face").toBe(false);
+      expect(metrics.preloads.some((preload) => isClashVariableWoff2(preload.url)), JSON.stringify(metrics.preloads)).toBe(true);
+      for (const [selector, weight] of ROLE_WEIGHTS[route.name] ?? []) {
+        expect(proof.roles[selector], `${route.name} ${selector}`).toEqual({ family: proof.clashFamily, weight });
       }
       const failedFonts = fontTraffic.filter((entry) => entry.status === "failed" || (typeof entry.status === "number" && (entry.status < 200 || entry.status >= 400)));
       expect(failedFonts, "font network").toEqual([]);
@@ -182,9 +175,20 @@ test("storefront routes load local fonts and media without layout or runtime fai
         expect(new URL(entry.url).origin, entry.url).toBe(STORE);
       }
       const loadedUrls = new Set(fontTraffic.filter((entry) => entry.status !== "failed").map((entry) => entry.url.split("?")[0]));
-      for (const face of proof.urlFaces) {
-        if (!REQUIRED_FACES.some((required) => required.family === face.family && required.weight === face.weight)) continue;
-        expect(face.urls.some((url) => loadedUrls.has(url.split("?")[0])), JSON.stringify({ face, loadedUrls: [...loadedUrls] })).toBe(true);
+      expect(proof.clashUrls.some((url) => loadedUrls.has(url.split("?")[0])), JSON.stringify({ clashUrls: proof.clashUrls, loadedUrls: [...loadedUrls] })).toBe(true);
+      if (route.name === "home") {
+        await expect(page.locator("html")).toHaveAttribute("lang", "en");
+        await expect(page.locator("html")).toHaveAttribute("dir", "ltr");
+        const title = page.locator("#home-title");
+        await expect(title).toHaveText("Bravos Menswear");
+        await expect(title).toHaveClass(/sr-only/);
+        const hero = page.locator("section").filter({ has: title });
+        const cover = hero.locator("img");
+        await expect(cover).toHaveCount(1);
+        await expect(cover).toHaveAttribute("alt", "");
+        await expect.poll(() => cover.evaluate((img: HTMLImageElement) => [img.naturalWidth, img.naturalHeight])).toEqual([2048, 774]);
+        await expect(hero.locator("a, button, p")).toHaveCount(0);
+        expect(await visibleHeroCopy(hero)).toEqual([]);
       }
       expect(errors, `${route.name} at ${width}px browser errors`).toEqual([]);
       await page.screenshot({ path: testInfo.outputPath(`${route.name}-${width}.png`), fullPage: true });
@@ -193,19 +197,24 @@ test("storefront routes load local fonts and media without layout or runtime fai
   await writeFile(testInfo.outputPath("storefront-load-metrics.json"), JSON.stringify({ browser: page.context().browser()?.version(), findings }, null, 2));
 });
 
-async function readFontProof(page: Page) {
-  return page.evaluate(async (required) => {
-    const normalizeWeight = (weight: string) => weight.trim() === "normal" || weight.trim() === "" ? "400" : weight.trim();
-    const loaded = [];
-    for (const face of required) {
-      const matches = await document.fonts.load(`${face.weight} 16px "${face.family}"`);
-      loaded.push({
-        family: face.family,
-        weight: face.weight,
-        faces: matches.map((match) => ({ family: match.family.replace(/["']/g, ""), weight: normalizeWeight(String(match.weight)), status: match.status })),
-      });
+async function visibleHeroCopy(hero: ReturnType<Page["locator"]>) {
+  return hero.evaluate((section) => {
+    const parts: string[] = [];
+    const walker = document.createTreeWalker(section, NodeFilter.SHOW_TEXT);
+    let node = walker.nextNode();
+    while (node) {
+      const parent = node.parentElement;
+      const value = node.textContent?.trim() ?? "";
+      if (value && parent && !parent.closest(".sr-only")) parts.push(value);
+      node = walker.nextNode();
     }
-    await document.fonts.ready;
+    return parts;
+  });
+}
+
+async function readFontProof(page: Page) {
+  return page.evaluate(async () => {
+    const normalizeWeight = (weight: string) => weight.trim() === "normal" || weight.trim() === "" ? "400" : weight.trim();
     const localOnly: Array<{ family: string; src: string }> = [];
     const urlFaces: Array<{ family: string; weight: string; urls: string[] }> = [];
     for (const sheet of [...document.styleSheets]) {
@@ -219,29 +228,39 @@ async function readFontProof(page: Page) {
         if (!(rule instanceof CSSFontFaceRule)) continue;
         const family = rule.style.getPropertyValue("font-family").replace(/["']/g, "").trim();
         const src = rule.style.getPropertyValue("src");
-        const weight = normalizeWeight(rule.style.getPropertyValue("font-weight"));
+        const weight = rule.style.getPropertyValue("font-weight").trim();
         const urls = [...src.matchAll(/url\(\s*(?:"([^"]+)"|'([^']+)'|([^)"'\s]+))\s*\)/g)]
           .map((match) => new URL(match[1] || match[2] || match[3] || "", sheet.href || location.href).href);
         if (/local\(/i.test(src) && urls.length === 0) localOnly.push({ family, src });
         if (urls.length > 0) urlFaces.push({ family, weight, urls });
       }
     }
+    const clashFace = urlFaces.find((face) => face.urls.some((url) => {
+      const path = url.split("?")[0] ?? url;
+      return /ClashDisplay[-_]Variable/i.test(path) && /\.woff2$/i.test(path);
+    }));
+    const clashFamily = clashFace?.family ?? "";
+    const loadedMatches = clashFamily ? await document.fonts.load(`400 16px "${clashFamily}"`) : [];
+    await document.fonts.ready;
     const firstFamily = (value: string) => value.split(",")[0]?.replace(/["']/g, "").trim() ?? "";
     const roles: Record<string, { family: string; weight: string } | null> = {};
-    for (const selector of ["body", "#home-title", 'p[lang="en"]', "#catalog-title", "main h1"]) {
+    for (const selector of ["body", "#home-title", "#catalog-title", "main h1"]) {
       const element = document.querySelector(selector);
       roles[selector] = element
         ? { family: firstFamily(getComputedStyle(element).fontFamily), weight: normalizeWeight(getComputedStyle(element).fontWeight) }
         : null;
     }
     return {
-      loaded,
+      clashFamily,
+      clashWeight: clashFace?.weight ?? "",
+      clashUrls: clashFace?.urls ?? [],
+      clashLoaded: loadedMatches.map((match) => ({ family: match.family.replace(/["']/g, ""), weight: normalizeWeight(String(match.weight)), status: match.status })),
+      androgy: urlFaces.some((face) => face.urls.some((url) => /androgy/i.test(url))),
       localOnly,
-      urlFaces,
       fontFaces: [...document.fonts].map((font) => ({ family: font.family.replace(/["']/g, ""), weight: normalizeWeight(String(font.weight)), status: font.status })),
       roles,
     };
-  }, REQUIRED_FACES.map((face) => ({ family: face.family, weight: face.weight })));
+  });
 }
 
 async function staffApi(page: Page, path: string, data: unknown) {

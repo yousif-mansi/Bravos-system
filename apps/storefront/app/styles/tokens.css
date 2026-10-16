@@ -10,6 +10,18 @@
   --store-success: #a5d8b1;
   --store-disabled: #2d302d;
   --store-accent: #d9c5a2;
+  --store-olive: #8d9168;
+  --store-champagne: #e2cda3;
+  --store-gutter: clamp(16px, 4vw, 64px);
+  --store-header-height: 72px;
+  --store-veil: rgba(12, 13, 13, 0.88);
+
+  --motion-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --motion-duration-fast: 180ms;
+  --motion-duration-medium: 640ms;
+  --motion-duration-enter: 780ms;
+  --motion-duration-ambient: 32s;
+  --motion-duration-marquee: 36s;
 
   --space-1: 4px;
   --space-2: 8px;
@@ -21,10 +33,15 @@
   --space-16: 64px;
   --space-24: 96px;
 
-  --font-commerce: var(--font-thmanyah-sans), "Segoe UI", Tahoma, Arial, sans-serif;
-  --font-editorial: var(--font-thmanyah-editorial), "Segoe UI", Tahoma, Arial, sans-serif;
-  --font-display: var(--font-androgy), "Arial Narrow", "Segoe UI", sans-serif;
-  --font-metadata: var(--font-thmanyah-sans), "Segoe UI", Tahoma, Arial, sans-serif;
+  --font-commerce: var(--font-clash-display), var(--font-rose), "Segoe UI", Tahoma, Arial, sans-serif;
+  --font-editorial: var(--font-clash-display), var(--font-rose), "Segoe UI", Tahoma, Arial, sans-serif;
+  --font-display: var(--font-clash-display), var(--font-rose), "Segoe UI", Tahoma, Arial, sans-serif;
+  --font-metadata: var(--font-clash-display), var(--font-rose), "Segoe UI", Tahoma, Arial, sans-serif;
+
+  --text-price: 16px;
+  --text-price-prefix: 13px;
+  --text-status: 13px;
+  --text-price-narrow: 12px;
 
   /* Existing route styles keep these aliases while later tickets refine their layouts. */
   --background-primary: var(--store-canvas);

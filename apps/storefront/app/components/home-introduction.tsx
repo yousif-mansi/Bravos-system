@@ -1,43 +1,25 @@
 import Image from "next/image";
-import Link from "next/link";
-import type { PublicCatalogOptionDto } from "@bravos/contracts/public";
-import { collectionHref } from "../collection-sort";
+import { BrandMarquee } from "./brand-marquee";
 import styles from "./home-introduction.module.css";
 
-export function HomeIntroduction({ categories }: { categories: PublicCatalogOptionDto[] }) {
+export function HomeIntroduction() {
   return (
     <>
-      <section className={styles.arrival} aria-labelledby="home-title">
-        <div className={styles.heading}>
-          <p className="eyebrow">برافوس · ملابس رجالي · الفيوم</p>
-          <p className={styles.display} lang="en" dir="ltr" aria-hidden="true">OWN YOUR<br /><span>PRESENCE.</span></p>
-          <h1 id="home-title">اختيارات هادئة. حضور واضح.</h1>
-        </div>
-        <div className={styles.cover}>
-          <Image src="/brand/cover.jpg" alt="برافوس للملابس الرجالي" width={2048} height={774} priority sizes="(max-width: 1240px) 100vw, 1240px" />
-        </div>
-        <div className={styles.afterCover}>
-          <p>ابدأ بقطعة تناسبك. اختر المقاس واللون، وراجع تفاصيل طلبك على مهل.</p>
-          <a className="button-link" href="#catalog-title">اكتشف التشكيلة <span aria-hidden="true">↙</span></a>
+      <section className={styles.hero} aria-labelledby="home-title">
+        <h1 id="home-title" className="sr-only">Bravos Menswear</h1>
+        <div className={styles.heroMedia}>
+          <Image
+            className={styles.heroImage}
+            src="/brand/cover.jpg"
+            alt=""
+            width={2048}
+            height={774}
+            priority
+            sizes="100vw"
+          />
         </div>
       </section>
-      {categories.length > 0 ? (
-        <section className={styles.collections} aria-labelledby="collections-title">
-          <div className={styles.sectionTitle}>
-            <p className={styles.index} lang="en" dir="ltr">01 / EXPLORE</p>
-            <h2 id="collections-title">ابدأ من اختيارك</h2>
-            <p>تصفّح التصنيفات الموجودة في المتجر.</p>
-          </div>
-          <nav className={styles.categoryGrid} aria-label="اكتشف تصنيفات المتجر">
-            {categories.map((category, index) => (
-              <Link key={category.id} href={collectionHref({ categoryId: category.id })}>
-                <span className={styles.index} aria-hidden="true">{String(index + 1).padStart(2, "0")}</span>
-                <span>{category.nameAr}</span><span className={styles.arrow} aria-hidden="true">↙</span>
-              </Link>
-            ))}
-          </nav>
-        </section>
-      ) : null}
+      <BrandMarquee />
     </>
   );
 }
@@ -45,15 +27,16 @@ export function HomeIntroduction({ categories }: { categories: PublicCatalogOpti
 export function HomeConfidence() {
   return (
     <section className={styles.confidence} aria-labelledby="confidence-title">
-      <div className={styles.brandStatement}>
-        <p className={styles.index} lang="en" dir="ltr">BRAVOS / MEN’S WEAR</p>
-        <h2 id="confidence-title">اختيارك يبدأ هنا.<br />والتفاصيل تفرق.</h2>
-        <p>برافوس للملابس الرجالي في الفيوم. تصفّح القطع، راجع المقاسات والألوان المتاحة، واختر ما يناسبك.</p>
-      </div>
-      <div className={styles.steps}>
-        <article><span className={styles.index} aria-hidden="true">01</span><h3>اختر القطعة</h3><p>السعر والتوفر حسب المقاس واللون في صفحة المنتج.</p></article>
-        <article><span className={styles.index} aria-hidden="true">02</span><h3>راجع طلبك</h3><p>اختر منطقة التوصيل وراجع الرسوم والإجمالي قبل الإرسال.</p></article>
-        <article><span className={styles.index} aria-hidden="true">03</span><h3>التأكيد عبر واتساب</h3><p>نتواصل لتأكيد توفر القطع والطلب. الدفع نقداً عند الاستلام.</p></article>
+      <h2 id="confidence-title">How an order works</h2>
+      <div className={styles.topics}>
+        <article>
+          <h3>WhatsApp confirmation</h3>
+          <p>Your order starts as a request. Items are not reserved until confirmation. We confirm availability with you on WhatsApp.</p>
+        </article>
+        <article>
+          <h3>Pay on delivery</h3>
+          <p>See the delivery fee and total before you submit. Pay cash on delivery.</p>
+        </article>
       </div>
     </section>
   );
