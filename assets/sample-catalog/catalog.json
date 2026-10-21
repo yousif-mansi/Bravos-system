@@ -1,0 +1,320 @@
+{
+  "version": "bravos-sample-range-2026-10-13-v1",
+  "purpose": "Owner-authorized fictional sample range for functional and visual evaluation before replacement with actual merchandise.",
+  "receiptDate": "2026-10-13",
+  "quantityPerVariantPerBranch": 5,
+  "categoryDefaults": {
+    "Pants": {
+      "pricePiasters": 109900,
+      "costPiasters": 55000,
+      "sizes": [
+        "30",
+        "32",
+        "34",
+        "36"
+      ]
+    },
+    "Jackets": {
+      "pricePiasters": 169900,
+      "costPiasters": 90000,
+      "sizes": [
+        "S",
+        "M",
+        "L",
+        "XL"
+      ]
+    },
+    "Shirts": {
+      "pricePiasters": 89900,
+      "costPiasters": 45000,
+      "sizes": [
+        "S",
+        "M",
+        "L",
+        "XL"
+      ]
+    },
+    "T-Shirts": {
+      "pricePiasters": 39900,
+      "costPiasters": 18000,
+      "sizes": [
+        "S",
+        "M",
+        "L",
+        "XL"
+      ]
+    }
+  },
+  "products": [
+    {
+      "code": "BRV-SAMPLE-001",
+      "category": "Pants",
+      "name": "Tapered Twill Pants",
+      "color": "Black",
+      "description": "A clean tapered silhouette with slanted side pockets. Pair with a crisp shirt or an everyday tee.",
+      "image": "images/BRV-SAMPLE-001.webp",
+      "garment": "matte black men's tapered twill trousers, slanted side pockets, belt loops, understated button waistband"
+    },
+    {
+      "code": "BRV-SAMPLE-002",
+      "category": "Pants",
+      "name": "Straight Chino Pants",
+      "color": "Sand",
+      "description": "A straight leg and understated finish for an easy everyday look.",
+      "image": "images/BRV-SAMPLE-002.webp",
+      "garment": "sand beige men's straight leg chino trousers, belt loops, clean front, flat waistband"
+    },
+    {
+      "code": "BRV-SAMPLE-003",
+      "category": "Pants",
+      "name": "Wide Leg Trousers",
+      "color": "Charcoal",
+      "description": "A relaxed wide leg with a clean front. Give the silhouette space with a simple top.",
+      "image": "images/BRV-SAMPLE-003.webp",
+      "garment": "charcoal gray men's wide leg tailored trousers, single subtle front pleat, belt loops"
+    },
+    {
+      "code": "BRV-SAMPLE-004",
+      "category": "Pants",
+      "name": "Utility Cargo Pants",
+      "color": "Olive",
+      "description": "Cargo pockets and a relaxed shape bring a practical edge to everyday dressing.",
+      "image": "images/BRV-SAMPLE-004.webp",
+      "garment": "muted olive men's relaxed cargo pants with restrained rectangular thigh pockets, clean waistband"
+    },
+    {
+      "code": "BRV-SAMPLE-005",
+      "category": "Pants",
+      "name": "Straight Denim Jeans",
+      "color": "Mid Blue",
+      "description": "A straight denim profile with five-pocket styling and a classic mid-blue look.",
+      "image": "images/BRV-SAMPLE-005.webp",
+      "garment": "mid blue men's straight leg five pocket jeans, natural subtle denim fade, no tears or branding"
+    },
+    {
+      "code": "BRV-SAMPLE-006",
+      "category": "Pants",
+      "name": "Dark Denim Jeans",
+      "color": "Indigo",
+      "description": "A dark denim finish and straight leg make a versatile base for layered outfits.",
+      "image": "images/BRV-SAMPLE-006.webp",
+      "garment": "dark indigo men's straight five pocket denim jeans, subtle tonal stitching, no distressing"
+    },
+    {
+      "code": "BRV-SAMPLE-007",
+      "category": "Pants",
+      "name": "Pleated Relaxed Trousers",
+      "color": "Stone",
+      "description": "A single pleat and relaxed leg give these trousers a considered, easy shape.",
+      "image": "images/BRV-SAMPLE-007.webp",
+      "garment": "stone light gray men's relaxed tailored trousers, single front pleat, clean wide straight leg"
+    },
+    {
+      "code": "BRV-SAMPLE-008",
+      "category": "Pants",
+      "name": "Minimal Utility Pants",
+      "color": "Black",
+      "description": "A straight silhouette with discreet utility detailing. Keep the rest of the look simple.",
+      "image": "images/BRV-SAMPLE-008.webp",
+      "garment": "black men's straight utility trousers with discreet flat thigh pocket, belt loops, tonal details"
+    },
+    {
+      "code": "BRV-SAMPLE-009",
+      "category": "Jackets",
+      "name": "Essential Bomber Jacket",
+      "color": "Black",
+      "description": "A zip front and ribbed edges define a compact bomber shape for everyday layering.",
+      "image": "images/BRV-SAMPLE-009.webp",
+      "garment": "black men's minimalist bomber jacket, closed metal zip front, ribbed cuffs and collar, no logos"
+    },
+    {
+      "code": "BRV-SAMPLE-010",
+      "category": "Jackets",
+      "name": "Utility Field Jacket",
+      "color": "Olive",
+      "description": "A structured collar and front patch pockets give this layer a purposeful profile.",
+      "image": "images/BRV-SAMPLE-010.webp",
+      "garment": "olive men's field jacket, four symmetrical patch pockets, shirt collar, button front"
+    },
+    {
+      "code": "BRV-SAMPLE-011",
+      "category": "Jackets",
+      "name": "Zip Utility Jacket",
+      "color": "Navy",
+      "description": "A neat collar and zip closure keep the shape straightforward and easy to style.",
+      "image": "images/BRV-SAMPLE-011.webp",
+      "garment": "deep navy men's utility jacket, shirt collar, metal zip front, two clean lower welt pockets"
+    },
+    {
+      "code": "BRV-SAMPLE-012",
+      "category": "Jackets",
+      "name": "Relaxed Overshirt Jacket",
+      "color": "Stone",
+      "description": "An overshirt silhouette with generous room for layering over a tee or shirt.",
+      "image": "images/BRV-SAMPLE-012.webp",
+      "garment": "stone beige men's relaxed overshirt jacket, button front, two chest patch pockets, straight hem"
+    },
+    {
+      "code": "BRV-SAMPLE-013",
+      "category": "Jackets",
+      "name": "Quilted Layer Jacket",
+      "color": "Charcoal",
+      "description": "A subtle quilted surface adds depth to a restrained, collarless layer.",
+      "image": "images/BRV-SAMPLE-013.webp",
+      "garment": "charcoal men's lightweight diamond quilted jacket, collarless round neckline, snap closure"
+    },
+    {
+      "code": "BRV-SAMPLE-014",
+      "category": "Jackets",
+      "name": "Classic Denim Jacket",
+      "color": "Indigo",
+      "description": "Chest pockets, a button front, and a dark denim finish create a familiar layering piece.",
+      "image": "images/BRV-SAMPLE-014.webp",
+      "garment": "dark indigo men's classic denim trucker jacket, two flap chest pockets, metal button front"
+    },
+    {
+      "code": "BRV-SAMPLE-015",
+      "category": "Shirts",
+      "name": "Clean Oxford Shirt",
+      "color": "White",
+      "description": "A button-down collar and understated shape give this white shirt an everyday polish.",
+      "image": "images/BRV-SAMPLE-015.webp",
+      "garment": "white men's Oxford style long sleeve shirt, button-down collar, one chest pocket, subtle woven texture"
+    },
+    {
+      "code": "BRV-SAMPLE-016",
+      "category": "Shirts",
+      "name": "Minimal Button Shirt",
+      "color": "Navy",
+      "description": "A clean button front and neat collar for a simple, composed look.",
+      "image": "images/BRV-SAMPLE-016.webp",
+      "garment": "navy men's smooth long sleeve button front shirt, point collar, clean chest without pockets"
+    },
+    {
+      "code": "BRV-SAMPLE-017",
+      "category": "Shirts",
+      "name": "Fine Stripe Shirt",
+      "color": "Stone",
+      "description": "Fine vertical stripes add a quiet graphic rhythm to a classic shirt silhouette.",
+      "image": "images/BRV-SAMPLE-017.webp",
+      "garment": "stone and white fine vertical striped men's long sleeve shirt, point collar, regular clean shape"
+    },
+    {
+      "code": "BRV-SAMPLE-018",
+      "category": "Shirts",
+      "name": "Resort Collar Shirt",
+      "color": "Black",
+      "description": "An open resort collar and short sleeves create an easy, relaxed profile.",
+      "image": "images/BRV-SAMPLE-018.webp",
+      "garment": "black men's short sleeve resort shirt, open camp collar, button front, no prints or pockets"
+    },
+    {
+      "code": "BRV-SAMPLE-019",
+      "category": "Shirts",
+      "name": "Relaxed Pocket Shirt",
+      "color": "Olive",
+      "description": "A roomy shirt shape and chest pocket work well as a light layer over a tee.",
+      "image": "images/BRV-SAMPLE-019.webp",
+      "garment": "olive men's relaxed long sleeve shirt, one patch chest pocket, point collar, button front"
+    },
+    {
+      "code": "BRV-SAMPLE-020",
+      "category": "Shirts",
+      "name": "Summer Collar Shirt",
+      "color": "Sand",
+      "description": "A relaxed short-sleeve shape with a softly textured finish and open collar.",
+      "image": "images/BRV-SAMPLE-020.webp",
+      "garment": "sand beige men's textured short sleeve camp collar shirt, subtle natural woven texture, button front"
+    },
+    {
+      "code": "BRV-SAMPLE-021",
+      "category": "Shirts",
+      "name": "Everyday Oxford Shirt",
+      "color": "Light Blue",
+      "description": "A light-blue finish and button-down collar make an easy everyday pairing.",
+      "image": "images/BRV-SAMPLE-021.webp",
+      "garment": "light blue men's Oxford style long sleeve button-down shirt, single chest pocket, clean regular shape"
+    },
+    {
+      "code": "BRV-SAMPLE-022",
+      "category": "Shirts",
+      "name": "Soft Check Shirt",
+      "color": "Brown",
+      "description": "A muted check pattern brings texture to a straightforward long-sleeve shirt.",
+      "image": "images/BRV-SAMPLE-022.webp",
+      "garment": "muted brown and charcoal small check men's long sleeve shirt, point collar, understated button front"
+    },
+    {
+      "code": "BRV-SAMPLE-023",
+      "category": "T-Shirts",
+      "name": "Essential Crew Tee",
+      "color": "Black",
+      "description": "A clean crew neck and regular shape. A simple starting point for everyday outfits.",
+      "image": "images/BRV-SAMPLE-023.webp",
+      "garment": "matte black men's regular fit crew neck short sleeve t-shirt, no graphics or logos"
+    },
+    {
+      "code": "BRV-SAMPLE-024",
+      "category": "T-Shirts",
+      "name": "Everyday Crew Tee",
+      "color": "White",
+      "description": "A plain white crew-neck tee with a neat, easy silhouette.",
+      "image": "images/BRV-SAMPLE-024.webp",
+      "garment": "white men's regular fit crew neck short sleeve t-shirt, no graphics or logos"
+    },
+    {
+      "code": "BRV-SAMPLE-025",
+      "category": "T-Shirts",
+      "name": "Structured Crew Tee",
+      "color": "Stone",
+      "description": "A structured-looking tee with a clean neck and a slightly boxy silhouette.",
+      "image": "images/BRV-SAMPLE-025.webp",
+      "garment": "stone light beige men's substantial textured crew neck t-shirt, slightly boxy silhouette, no graphics"
+    },
+    {
+      "code": "BRV-SAMPLE-026",
+      "category": "T-Shirts",
+      "name": "Boxy Everyday Tee",
+      "color": "Olive",
+      "description": "A boxy shape and wider sleeves give an understated tee a relaxed attitude.",
+      "image": "images/BRV-SAMPLE-026.webp",
+      "garment": "muted dark olive men's boxy fit crew neck t-shirt, slightly wider sleeves, no graphics"
+    },
+    {
+      "code": "BRV-SAMPLE-027",
+      "category": "T-Shirts",
+      "name": "Relaxed Crew Tee",
+      "color": "Navy",
+      "description": "A relaxed navy tee that works on its own or beneath an open shirt.",
+      "image": "images/BRV-SAMPLE-027.webp",
+      "garment": "deep navy men's relaxed fit crew neck short sleeve t-shirt, clean minimal finish"
+    },
+    {
+      "code": "BRV-SAMPLE-028",
+      "category": "T-Shirts",
+      "name": "Drop Shoulder Tee",
+      "color": "Charcoal",
+      "description": "Dropped shoulders and an easy shape create a laid-back everyday silhouette.",
+      "image": "images/BRV-SAMPLE-028.webp",
+      "garment": "charcoal gray men's oversized drop shoulder crew neck t-shirt, slightly longer sleeves, no graphics"
+    },
+    {
+      "code": "BRV-SAMPLE-029",
+      "category": "T-Shirts",
+      "name": "Washed Crew Tee",
+      "color": "Burgundy",
+      "description": "A muted burgundy tone and washed-looking surface add depth to a simple tee.",
+      "image": "images/BRV-SAMPLE-029.webp",
+      "garment": "muted burgundy men's crew neck t-shirt with subtle washed texture, regular relaxed fit, no graphics"
+    },
+    {
+      "code": "BRV-SAMPLE-030",
+      "category": "T-Shirts",
+      "name": "Daily Crew Tee",
+      "color": "Dust Blue",
+      "description": "A soft blue tone and uncomplicated crew-neck shape for everyday combinations.",
+      "image": "images/BRV-SAMPLE-030.webp",
+      "garment": "muted dusty blue men's regular fit crew neck short sleeve t-shirt, no graphics or logos"
+    }
+  ]
+}

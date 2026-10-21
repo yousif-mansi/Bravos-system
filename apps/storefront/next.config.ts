@@ -8,6 +8,8 @@ const nextConfig: NextConfig = {
   ...(process.env.BRAVOS_NEXT_DIST_DIR ? { distDir: process.env.BRAVOS_NEXT_DIST_DIR } : {}),
   reactStrictMode: true,
   allowedDevOrigins: ["127.0.0.1"],
+  // Next 16 accepts false here and removes the dev indicator badge.
+  devIndicators: false,
   agentRules: false,
   images: { unoptimized: true },
   async rewrites() {

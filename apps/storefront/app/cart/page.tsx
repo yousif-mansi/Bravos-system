@@ -12,7 +12,7 @@ export default function CartPage() {
   const cart = useCart();
   const validated = useRef(false);
   const [checking, setChecking] = useState(false);
-  const [availabilityMessage, setAvailabilityMessage] = useState("");
+  const [availabilityNotice, setAvailabilityNotice] = useState({ text: "", failed: false });
   const total = cart.items.reduce((sum, item) => sum + item.unitPricePiasters * item.quantity, 0);
 
   useEffect(() => {
@@ -25,7 +25,7 @@ export default function CartPage() {
     const before = cart.items;
     if (before.length === 0) return;
     setChecking(true);
-    setAvailabilityMessage("");
+    setAvailabilityNotice({ text: "", failed: false });
     try {
       const productIds = [...new Set(before.map((item) => item.productId))];
       const products = await Promise.all(productIds.map(async (productId) => {
@@ -59,9 +59,17 @@ export default function CartPage() {
         ) changed = true;
         await cart.refreshLine(item.variantId, next);
       }
-      setAvailabilityMessage(changed ? "تم تحديث بيانات المنتجات. راجع التغييرات والتنبيهات قبل المتابعة." : "تم تحديث بيانات المنتجات والأسعار. يُراجع توفر السلة كاملة عند مراجعة السعر.");
+      setAvailabilityNotice({
+        text: changed
+          ? "Product details were updated. Review the changes and notices before you continue."
+          : "Product details checked. Review the final total at checkout.",
+        failed: false,
+      });
     } catch {
-      setAvailabilityMessage("تعذر التحقق من المخزون الآن. أعد المحاولة قبل متابعة الطلب.");
+      setAvailabilityNotice({
+        text: "Stock couldn't be checked right now. Try again before continuing your order.",
+        failed: true,
+      });
     } finally {
       setChecking(false);
     }
@@ -69,40 +77,39 @@ export default function CartPage() {
 
   const heading = (
     <div className={`page-title ${styles.heading}`}>
-      <p className="eyebrow">اختياراتك</p>
-      <h1>سلة التسوق</h1>
+      <h1>Bag</h1>
       <p>{!cart.hydrated || cart.storageStatus === "ready"
-        ? "راجع اختياراتك، ثم أضف بيانات التوصيل لمراجعة السعر النهائي."
-        : "يمكنك استخدام السلة الآن، لكن اختياراتك الحالية محفوظة مؤقتاً في هذه الصفحة فقط."}</p>
+        ? "Review your selections, then add delivery details to see the final price."
+        : "You can use the bag now, but these selections are saved only on this page for now."}</p>
     </div>
   );
 
   if (!cart.hydrated) {
-    return <main id="main-content" className={`cart-page ${styles.page}`}>{heading}<div key="hydrating" className={styles.hydrating} role="status"><h2>نجهّز سلتك</h2><p>لحظات... نستعيد المنتجات المحفوظة في هذا المتصفح.</p></div></main>;
+    return <main id="main-content" className={`cart-page ${styles.page}`}>{heading}<div key="hydrating" className={styles.hydrating} role="status"><h2>Preparing your bag</h2><p>One moment… restoring the items saved in this browser.</p></div></main>;
   }
 
   return (
     <main id="main-content" className={`cart-page ${styles.page}`}>
       {heading}
       {cart.storageStatus === "unavailable" ? (
-        <p className={styles.storageWarning} role="alert">يتعذر حفظ السلة في هذا المتصفح الآن. ستفقد اختياراتك عند إغلاق الصفحة أو إعادة تحميلها.</p>
+        <p className={styles.storageWarning} role="alert">This browser can't save the bag right now. These selections will be lost if you close or reload the page.</p>
       ) : null}
       {cart.storageStatus === "corrupt" ? (
-        <p className={styles.storageWarning} role="alert">تعذر قراءة السلة المحفوظة. تركنا البيانات الأصلية دون تغيير، وتعمل السلة الحالية مؤقتاً فقط.</p>
+        <p className={styles.storageWarning} role="alert">The saved bag couldn't be read. The original data was left unchanged, and this bag works only for now.</p>
       ) : null}
-      {cart.items.length > 0 || availabilityMessage ? <div key="availability" className={styles.statusSlot}>
-        <p className={`cart-status ${styles.status} ${availabilityMessage.startsWith("تعذر") ? styles.errorStatus : ""}`} role="status">{availabilityMessage || (checking ? "لحظات... نراجع بيانات المنتجات والأسعار." : "راجع بيانات المنتجات والأسعار قبل المتابعة.")}</p>
+      {cart.items.length > 0 || availabilityNotice.text ? <div key="availability" className={styles.statusSlot}>
+        <p className={`cart-status ${styles.status}${availabilityNotice.failed ? ` ${styles.errorStatus}` : ""}`} role="status">{availabilityNotice.text || (checking ? "Checking product details and prices…" : "Review product details and prices before you continue.")}</p>
       </div> : null}
       {cart.items.length === 0 ? (
         <div className={`empty-state ${styles.empty}`}>
           <p className={styles.emptyMark} aria-hidden="true">BRAVOS</p>
-          <h2>اختياراتك تبدأ من هنا</h2>
-          <p>اختر منتجاً ومقاساً ولوناً لإضافته هنا. إضافة المنتجات إلى السلة لا تحجز المخزون.</p>
-          <Link className="button-link" href="/">تصفّح المنتجات</Link>
+          <h2>Your bag is empty</h2>
+          <p>Choose a product, size, and color to add it here. Adding products to your bag does not reserve stock.</p>
+          <Link className="button-link" href="/">Browse products</Link>
         </div>
       ) : (
         <div className={styles.layout}>
-          <section className={styles.lines} aria-label="منتجات السلة">
+          <section className={styles.lines} aria-label="Bag items">
             {cart.items.map((item) => (
               <CartLine
                 key={item.variantId}

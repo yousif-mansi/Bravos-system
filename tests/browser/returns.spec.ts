@@ -141,7 +141,7 @@ test("manager uses the separate Arabic Returns picker, posts inspection, and rec
   const history = page.locator(".return-history").getByRole("button").filter({ hasText: original.body.reference });
   await expect(history).toHaveCount(1);
   await expect(history).toContainText("قميص إرجاع المتصفح — L إرجاع / كحلي إرجاع × 1");
-  await expect(history).toContainText("الأصلي: أبشواي · الاستلام: أبشواي");
+  await expect(history).toContainText("الأصلي: أبشواي · فرع استلام المرتجع: أبشواي");
   await expect(history).toContainText("المقاس مش مناسب");
   await expect(page.getByTestId("return-details")).toContainText("800 ج.م.");
   await expect(page.getByTestId("return-details")).toContainText("المسودة لا تنشئ التزاماً نقدياً");
@@ -160,8 +160,8 @@ test("manager uses the separate Arabic Returns picker, posts inspection, and rec
   await expect(history).not.toContainText("المقاس مش مناسب");
   expect((await staffApi(page, "GET", "/api/internal/inventory/batches")).body).toEqual(afterDraft.body);
 
-  await page.getByRole("button", { name: "تأكيد الاستلام والفحص وترحيل الإرجاع" }).click();
-  await expect(page.getByRole("status")).toContainText("تم ترحيل الإرجاع");
+  await page.getByRole("button", { name: "تأكيد استلام وفحص المرتجع" }).click();
+  await expect(page.getByRole("status")).toContainText("تم تأكيد المرتجع وإعادة القطع الصالحة للبيع إلى المخزون");
   await expect(page.getByTestId("return-details")).toContainText("الاسترداد النقدي مستحق");
   const afterPost = await staffApi(page, "GET", "/api/internal/inventory/batches");
   expect(afterPost.body.find((batch: { variantId: string }) => batch.variantId === variantId).remainingQuantity).toBe(2);

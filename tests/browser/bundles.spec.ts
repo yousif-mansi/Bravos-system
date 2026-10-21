@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { openLookupLists } from "./support/open-lookup-lists";
 
 test("manager maintains fixed bundles and Buy-X-Get-Y rules in the Arabic offer editor", async ({ page }) => {
   await signIn(page, "owner", "e2e-owner-pass");
@@ -87,6 +88,7 @@ test("manager maintains fixed bundles and Buy-X-Get-Y rules in the Arabic offer 
   const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
   await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill("BUNDLE-E2E");
   await lookup.getByRole("button", { name: "بحث" }).click();
+  await openLookupLists(page);
   await page.getByLabel("المقاس").selectOption(cheapVariant.size.id);
   await page.getByLabel("اللون").selectOption(cheapVariant.color.id);
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();

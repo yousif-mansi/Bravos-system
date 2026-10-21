@@ -304,8 +304,7 @@ export function createCatalogServices(ports: {
       return products.map((product) => toPublicProduct(product, quantities));
     },
 
-    async browsePublicProducts(input: { query?: unknown; categoryId?: unknown }): Promise<PublicCatalogBrowseDto> {
-      const query = optionalBrowseQuery(input.query);
+    async browsePublicProducts(input: { categoryId?: unknown }): Promise<PublicCatalogBrowseDto> {
       const categoryId = optionalBrowseCategory(input.categoryId);
       const products = await ports.store.listPublishedProducts();
       const ids = products.flatMap((product) => product.variants.map((variant) => variant.id));
@@ -314,17 +313,10 @@ export function createCatalogServices(ports: {
         id: product.category.id,
         nameAr: product.category.nameAr,
       }])).values()].sort((left, right) => left.nameAr.localeCompare(right.nameAr, "ar"));
-      const normalizedQuery = query.toLocaleLowerCase("ar");
       return {
         categories,
         products: products
           .filter((product) => !categoryId || product.category.id === categoryId)
-          .filter((product) => {
-            if (!normalizedQuery) return true;
-            return `${product.nameAr} ${product.descriptionAr} ${product.category.nameAr}`
-              .toLocaleLowerCase("ar")
-              .includes(normalizedQuery);
-          })
           .map((product) => {
             const detail = toPublicProduct(product, quantities);
             const prices = detail.variants.map((variant) => variant.sellingPricePiasters);
@@ -372,14 +364,6 @@ export function createCatalogServices(ports: {
       return media;
     },
   };
-}
-
-function optionalBrowseQuery(value: unknown): string {
-  if (value === undefined || value === null || value === "") return "";
-  if (typeof value !== "string" || value.trim().length > 80) {
-    throw new CatalogValidationError("عبارة البحث غير صالحة.");
-  }
-  return value.trim();
 }
 
 function optionalBrowseCategory(value: unknown): string | null {

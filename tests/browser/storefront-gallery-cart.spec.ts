@@ -25,14 +25,14 @@ test("product gallery keeps empty and single-image cases simple, and navigates o
   const multiple = await createProduct(page, taxonomy, "GALLERY-MULTI-E2E", "منتج بثلاث صور", imageRefs);
 
   await page.goto(`http://127.0.0.1:3001/products/${empty.id}`);
-  const emptyGallery = page.getByRole("region", { name: "صور منتج بلا صور" });
-  await expect(emptyGallery.getByText("لا توجد صورة لهذا المنتج")).toBeVisible();
+  const emptyGallery = page.getByRole("region", { name: "Photos of منتج بلا صور" });
+  await expect(emptyGallery.getByText("No photo for this product")).toBeVisible();
   await expect(emptyGallery.getByRole("img")).toHaveCount(0);
   await expect(emptyGallery.getByRole("button")).toHaveCount(0);
 
   await page.goto(`http://127.0.0.1:3001/products/${single.id}`);
-  const singleGallery = page.getByRole("region", { name: "صور منتج بصورة واحدة" });
-  await expect(singleGallery.getByRole("img", { name: "منتج بصورة واحدة — صورة 1" })).toHaveAttribute(
+  const singleGallery = page.getByRole("region", { name: "Photos of منتج بصورة واحدة" });
+  await expect(singleGallery.getByRole("img", { name: "منتج بصورة واحدة — photo 1" })).toHaveAttribute(
     "src", mediaSrc(imageRefs[0]),
   );
   await expect(singleGallery.getByRole("button")).toHaveCount(0);
@@ -43,30 +43,39 @@ test("product gallery keeps empty and single-image cases simple, and navigates o
   });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`http://127.0.0.1:3001/products/${multiple.id}`);
-  const gallery = page.getByRole("region", { name: "صور منتج بثلاث صور" });
+  const gallery = page.getByRole("region", { name: "Photos of منتج بثلاث صور" });
   const activeImage = gallery.getByRole("img");
   await expect(activeImage).toHaveCount(1);
   await expect(activeImage).toHaveAttribute("src", mediaSrc(imageRefs[0]));
-  await expect(activeImage).toHaveAttribute("alt", "منتج بثلاث صور — صورة 1");
-  await expect(gallery.getByText("الصورة 1 من 3")).toBeVisible();
-  await expect(gallery.getByRole("button", { name: "عرض الصورة 1 من 3" })).toHaveAttribute("aria-current", "true");
+  await expect(activeImage).toHaveAttribute("alt", "منتج بثلاث صور — photo 1");
+  await expect(gallery.getByText("Photo 1 of 3")).toBeVisible();
+  await expect(gallery.getByRole("button", { name: "Show photo 1 of 3" })).toHaveAttribute("aria-current", "true");
   expect(mediaRequests.some((url) => url.includes(imageRefs[1]))).toBe(false);
   expect(mediaRequests.some((url) => url.includes(imageRefs[2]))).toBe(false);
 
-  const secondSelector = gallery.getByRole("button", { name: "عرض الصورة 2 من 3" });
+  const frame = gallery.getByLabel("Use the left and right arrow keys to browse product photos");
+  await frame.focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(activeImage).toHaveAttribute("alt", "منتج بثلاث صور — photo 2");
+  await expect(gallery.getByText("Photo 2 of 3")).toBeVisible();
+  await page.keyboard.press("ArrowLeft");
+  await expect(activeImage).toHaveAttribute("alt", "منتج بثلاث صور — photo 1");
+  await expect(gallery.getByText("Photo 1 of 3")).toBeVisible();
+
+  const secondSelector = gallery.getByRole("button", { name: "Show photo 2 of 3" });
   await secondSelector.focus();
   await expect(secondSelector).toBeFocused();
   await secondSelector.press("Enter");
   await expect(secondSelector).toHaveAttribute("aria-current", "true");
   await expect(activeImage).toHaveAttribute("src", mediaSrc(imageRefs[1]));
-  await expect(gallery.getByText("الصورة 2 من 3")).toBeVisible();
-  await gallery.getByRole("button", { name: "الصورة التالية" }).click();
+  await expect(gallery.getByText("Photo 2 of 3")).toBeVisible();
+  await gallery.getByRole("button", { name: "Next photo" }).click();
   await expect(activeImage).toHaveAttribute("src", mediaSrc(imageRefs[2]));
-  await expect(gallery.getByText("الصورة 3 من 3")).toBeVisible();
-  await gallery.getByRole("button", { name: "الصورة السابقة" }).focus();
-  await gallery.getByRole("button", { name: "الصورة السابقة" }).press("Space");
+  await expect(gallery.getByText("Photo 3 of 3")).toBeVisible();
+  await gallery.getByRole("button", { name: "Previous photo" }).focus();
+  await gallery.getByRole("button", { name: "Previous photo" }).press("Space");
   await expect(activeImage).toHaveAttribute("src", mediaSrc(imageRefs[1]));
-  const nextButton = gallery.getByRole("button", { name: "الصورة التالية" });
+  const nextButton = gallery.getByRole("button", { name: "Next photo" });
   await nextButton.hover();
   await page.waitForTimeout(250);
   const nextHover = await colorsOf(nextButton);
@@ -89,14 +98,14 @@ test("product gallery keeps empty and single-image cases simple, and navigates o
     await route.fulfill({ status: 404, body: "" });
   });
   const beforeFailure = await gallery.boundingBox();
-  await gallery.getByRole("button", { name: "عرض الصورة 3 من 3" }).click();
-  await expect(gallery.getByText("هذه الصورة غير متاحة حالياً")).toBeVisible();
+  await gallery.getByRole("button", { name: "Show photo 3 of 3" }).click();
+  await expect(gallery.getByText("This photo is unavailable right now")).toBeVisible();
   await expect(gallery.getByRole("img")).toHaveCount(0);
   const afterFailure = await gallery.boundingBox();
   expect(beforeFailure).not.toBeNull();
   expect(afterFailure).not.toBeNull();
   expect(Math.abs((afterFailure?.height ?? 0) - (beforeFailure?.height ?? 0))).toBeLessThan(3);
-  await gallery.getByRole("button", { name: "الصورة السابقة" }).click();
+  await gallery.getByRole("button", { name: "Previous photo" }).click();
   await expect(gallery.getByRole("img")).toHaveAttribute("src", mediaSrc(imageRefs[1]));
 });
 
@@ -152,26 +161,25 @@ test("cart keeps variant details and edited quantities through reload and a late
   await expect(lines).toHaveCount(2);
   await expect(lines.first()).toContainText("M للسلة");
   await expect(lines.first()).toContainText("أسود للسلة");
-  await expect(lines.first()).toContainText(`سعر القطعة ${money(25_000)}`);
-  await expect(lines.first()).toContainText(`إجمالي الاختيار${money(50_000)}`);
+  await expect(lines.first()).toContainText(`Unit price ${money(25_000)}`);
+  await expect(lines.first()).toContainText(`Selection total${money(50_000)}`);
   await expect(lines.first().locator("output")).toHaveText("2");
   await expect(lines.nth(1)).toContainText("رملي للسلة");
-  await expect(lines.nth(1)).toContainText(`إجمالي الاختيار${money(30_000)}`);
-  const summary = page.getByRole("complementary", { name: "ملخص السلة" });
-  await expect(summary).toContainText("عدد القطع3");
-  await expect(summary).toContainText(`مجموع مبدئي${money(80_000)}`);
-  await expect(summary).toContainText("للمنتجات فقط، قبل الخصومات والتوصيل. راجع المبلغ النهائي في الخطوة التالية.");
-  await expect(summary).toContainText("نراجع توفر السلة كاملة عند مراجعة السعر");
-  await expect(summary).toContainText("السلة لا تحجز القطع.");
-  const checkoutLink = page.getByRole("link", { name: "متابعة إتمام الطلب" });
+  await expect(lines.nth(1)).toContainText(`Selection total${money(30_000)}`);
+  const summary = page.getByRole("complementary", { name: "Bag summary" });
+  await expect(summary).toContainText("Items3");
+  await expect(summary).toContainText(`Estimated total${money(80_000)}`);
+  await expect(summary).toContainText("Before discounts and delivery. Review the final total at checkout.");
+  await expect(summary).toContainText("Items in your bag are not reserved.");
+  const checkoutLink = page.getByRole("link", { name: "Checkout" });
   await expect(checkoutLink).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath("cart-phone-390.png"), fullPage: true });
   expect(await hasNoHorizontalOverflow(page)).toBe(true);
 
-  const note = summary.getByText("للمنتجات فقط، قبل الخصومات والتوصيل. راجع المبلغ النهائي في الخطوة التالية.");
+  const note = summary.getByText("Before discounts and delivery. Review the final total at checkout.");
   const noteColor = await note.evaluate((element) => getComputedStyle(element).color);
   const summaryBackground = await summary.evaluate((element) => getComputedStyle(element).backgroundColor);
-  const increase = lines.first().getByRole("button", { name: "زيادة الكمية" });
+  const increase = lines.first().getByRole("button", { name: "Increase quantity" });
   const quantityBase = await colorsOf(increase);
   await increase.hover();
   await page.waitForTimeout(250);
@@ -194,10 +202,10 @@ test("cart keeps variant details and edited quantities through reload and a late
   expect(checkoutFocus.outlineStyle).not.toBe("none");
   expect(parseFloat(checkoutFocus.outlineWidth)).toBeGreaterThanOrEqual(1);
 
-  await lines.first().getByRole("button", { name: "تقليل الكمية" }).focus();
-  await lines.first().getByRole("button", { name: "تقليل الكمية" }).press("Enter");
+  await lines.first().getByRole("button", { name: "Decrease quantity" }).focus();
+  await lines.first().getByRole("button", { name: "Decrease quantity" }).press("Enter");
   await expect(lines.first().locator("output")).toHaveText("1");
-  await expect(summary).toContainText(`مجموع مبدئي${money(55_000)}`);
+  await expect(summary).toContainText(`Estimated total${money(55_000)}`);
   await page.reload();
   await expect(lines.first().locator("output")).toHaveText("1");
   const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("bravos-guest-cart-v1") ?? "null"));
@@ -208,10 +216,10 @@ test("cart keeps variant details and edited quantities through reload and a late
     lines: [{ variantId: second.id, quantity: 1 }], physicallyCompleted: true,
   });
   expect(sale.status).toBe(201);
-  await page.getByRole("button", { name: "تحديث بيانات المنتجات" }).click();
+  await page.getByRole("button", { name: "Refresh product details" }).click();
   await expect(lines).toHaveCount(2);
-  await expect(lines.nth(1).getByRole("alert")).toContainText("غير متوفر");
-  await expect(page.getByRole("link", { name: "متابعة إتمام الطلب" })).toHaveCount(0);
+  await expect(lines.nth(1).getByRole("alert")).toContainText("This selection is unavailable right now");
+  await expect(page.getByRole("link", { name: "Checkout" })).toHaveCount(0);
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.screenshot({ path: testInfo.outputPath("cart-desktop-1440.png"), fullPage: true });
   await page.setViewportSize({ width: 320, height: 800 });
@@ -264,9 +272,9 @@ test("cart preserves every saved selection through a slow failed availability re
     await page.goto("http://127.0.0.1:3001/cart");
     await expect.poll(() => interceptedReads).toBe(1);
     const lines = page.locator(".cart-line");
-    const summary = page.getByRole("complementary", { name: "ملخص السلة" });
-    await expect(page.locator(".cart-status")).toHaveText("لحظات... نراجع بيانات المنتجات والأسعار.");
-    const pendingRefresh = summary.getByRole("button", { name: "جارٍ تحديث المنتجات..." });
+    const summary = page.getByRole("complementary", { name: "Bag summary" });
+    await expect(page.locator(".cart-status")).toHaveText("Checking product details and prices…");
+    const pendingRefresh = summary.getByRole("button", { name: "Updating products…" });
     await expect(pendingRefresh).toBeDisabled();
     await expect(pendingRefresh).toHaveAttribute("aria-busy", "true");
     await expect(lines).toHaveCount(2);
@@ -277,17 +285,17 @@ test("cart preserves every saved selection through a slow failed availability re
     failureGate.release();
     const failedStatus = page.locator(".cart-status");
     await expect(failedStatus).toHaveAttribute("role", "status");
-    await expect(failedStatus).toHaveText("تعذر التحقق من المخزون الآن. أعد المحاولة قبل متابعة الطلب.");
+    await expect(failedStatus).toHaveText("Stock couldn't be checked right now. Try again before continuing your order.");
     await expect(lines.first().locator("output")).toHaveAttribute("aria-live", "polite");
     await expect(lines.nth(1).locator("output")).toHaveAttribute("aria-live", "polite");
-    const refresh = summary.getByRole("button", { name: "تحديث بيانات المنتجات" });
+    const refresh = summary.getByRole("button", { name: "Refresh product details" });
     await expect(refresh).toBeEnabled();
     await expect(refresh).toHaveAttribute("aria-busy", "false");
     await expect(lines).toHaveCount(2);
     await expect(lines.first().locator("output")).toHaveText("2");
     await expect(lines.nth(1).locator("output")).toHaveText("1");
     await expect(lines.getByRole("alert")).toHaveCount(0);
-    await expect(summary.getByText("عدّل الاختيارات غير المتوفرة قبل إتمام الطلب.")).toHaveCount(0);
+    await expect(summary.getByText("Update the unavailable selections before checkout.")).toHaveCount(0);
     expect(await savedCartItems(page)).toEqual(savedBefore);
 
     expect(await hasNoHorizontalOverflow(page)).toBe(true);
@@ -313,14 +321,14 @@ test("cart preserves every saved selection through a slow failed availability re
     expect((await retryResponse).status()).toBe(200);
     const recoveredStatus = page.locator(".cart-status");
     await expect(recoveredStatus).toHaveAttribute("role", "status");
-    await expect(recoveredStatus).toHaveText("تم تحديث بيانات المنتجات. راجع التغييرات والتنبيهات قبل المتابعة.");
+    await expect(recoveredStatus).toHaveText("Product details were updated. Review the changes and notices before you continue.");
     await expect(refresh).toBeEnabled();
     await expect(lines).toHaveCount(2);
     await expect(lines.first().locator("output")).toHaveText("2");
     await expect(lines.nth(1).locator("output")).toHaveText("1");
-    await expect(lines.first()).toContainText(`سعر القطعة ${money(28_000)}`);
-    await expect(lines.nth(1).getByRole("alert")).toContainText("غير متوفر");
-    await expect(summary).toContainText(`مجموع مبدئي${money(81_000)}`);
+    await expect(lines.first()).toContainText(`Unit price ${money(28_000)}`);
+    await expect(lines.nth(1).getByRole("alert")).toContainText("This selection is unavailable right now");
+    await expect(summary).toContainText(`Estimated total${money(81_000)}`);
     const savedAfter = await savedCartItems(page);
     expect(savedAfter).toEqual([
       { ...savedBefore[0], unitPricePiasters: 28_000 },
@@ -338,7 +346,7 @@ test("cart preserves every saved selection through a slow failed availability re
   }
 });
 
-test("cart replaces failed media with an Arabic fallback and shows a later replacement image", async ({ page }, testInfo) => {
+test("cart replaces failed media with an unavailable-photo fallback and shows a later replacement image", async ({ page }, testInfo) => {
   await signInManager(page);
   const suffix = crypto.randomUUID().slice(0, 8);
   const taxonomy = await seedTaxonomy(page, `media-${suffix}`);
@@ -373,7 +381,7 @@ test("cart replaces failed media with an Arabic fallback and shows a later repla
     const photo = line.locator(":scope > div").first();
     const beforeFailure = await photo.boundingBox();
     mediaGate.release();
-    await expect(line.getByText("هذه الصورة غير متاحة حالياً")).toBeVisible();
+    await expect(line.getByText("This photo is unavailable right now")).toBeVisible();
     await expect(line.locator("img")).toHaveCount(0);
     const afterFailure = await photo.boundingBox();
     expect(beforeFailure).not.toBeNull();
@@ -381,9 +389,9 @@ test("cart replaces failed media with an Arabic fallback and shows a later repla
     expect(afterFailure?.width).toBe(beforeFailure?.width);
     expect(afterFailure?.height).toBe(beforeFailure?.height);
     await expect(line.locator("output")).toHaveText("2");
-    await expect(line.getByRole("button", { name: "تقليل الكمية" })).toBeEnabled();
-    await expect(line.getByRole("button", { name: "زيادة الكمية" })).toBeEnabled();
-    const remove = line.getByRole("button", { name: "حذف", exact: true });
+    await expect(line.getByRole("button", { name: "Decrease quantity" })).toBeEnabled();
+    await expect(line.getByRole("button", { name: "Increase quantity" })).toBeEnabled();
+    const remove = line.getByRole("button", { name: "Remove", exact: true });
     await expect(remove).toBeEnabled();
     await expectTargetSize(remove);
     expect(await savedCartItems(page)).toEqual(savedBefore);
@@ -397,7 +405,7 @@ test("cart replaces failed media with an Arabic fallback and shows a later repla
       variants: [{ sizeId: taxonomy.sizeId, colorId: taxonomy.colorId, sellingPricePiastersOverride: null }],
     });
     expect(updated.status).toBe(200);
-    const refreshMedia = page.getByRole("button", { name: "تحديث بيانات المنتجات" });
+    const refreshMedia = page.getByRole("button", { name: "Refresh product details" });
     await expectTargetSize(refreshMedia);
     await tabTo(page, refreshMedia);
     const replacementResponse = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/public/catalog/media/${imageRefs[1]}`);
@@ -406,7 +414,7 @@ test("cart replaces failed media with an Arabic fallback and shows a later repla
     await expect(line.locator("img")).toHaveAttribute("src", mediaSrc(imageRefs[1]));
     await expect(line.locator("img")).toHaveAttribute("alt", "");
     await expect.poll(() => line.locator("img").evaluate((element) => (element as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
-    await expect(line.getByText("هذه الصورة غير متاحة حالياً")).toHaveCount(0);
+    await expect(line.getByText("This photo is unavailable right now")).toHaveCount(0);
     await expect(line.locator("output")).toHaveText("2");
     expect(await savedCartItems(page)).toEqual([{ ...savedBefore[0], imageRef: imageRefs[1] }]);
     expect(await hasNoHorizontalOverflow(page)).toBe(true);
@@ -430,9 +438,9 @@ async function receiveCartStock(page: Page, lines: Array<{ variantId: string; qu
 async function addProductToCart(page: Page, productId: string, quantity: number) {
   await page.goto(`http://127.0.0.1:3001/products/${productId}`);
   const panel = page.locator(".purchase-panel");
-  await panel.getByLabel("الكمية").fill(String(quantity));
-  await panel.getByRole("button", { name: "أضف إلى السلة", exact: true }).click();
-  await expect(panel.getByRole("status")).toContainText("تمت إضافة الاختيار إلى السلة");
+  await panel.getByLabel("Quantity").fill(String(quantity));
+  await panel.getByRole("button", { name: "Add to bag", exact: true }).click();
+  await expect(panel.getByRole("status")).toContainText("Added to your bag.");
 }
 
 async function savedCartItems(page: Page) {
@@ -519,7 +527,12 @@ function cairoDate() {
 }
 
 function money(piasters: number) {
-  return new Intl.NumberFormat("ar-EG", { style: "currency", currency: "EGP", minimumFractionDigits: 0 }).format(piasters / 100);
+  return new Intl.NumberFormat("en-EG", {
+    style: "currency",
+    currency: "EGP",
+    currencyDisplay: "code",
+    minimumFractionDigits: piasters % 100 === 0 ? 0 : 2,
+  }).format(piasters / 100).replace(/\u00a0/g, " ");
 }
 
 function mediaSrc(ref: string) {

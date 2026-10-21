@@ -44,24 +44,24 @@ test("product wall keeps honest prices, publication states, media space, and res
   })).status).toBe(201);
 
   await page.route(`**/api/public/catalog/media/${imageRef}`, (route) => route.abort());
-  const browseUrl = `${STORE}/?q=${encodeURIComponent("اختبار واجهة")}&category=${category.body.id}`;
+  const browseUrl = `${STORE}/?category=${category.body.id}`;
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto(browseUrl);
-  const wall = page.getByRole("region", { name: "المنتجات" });
+  const wall = page.getByRole("region", { name: "Products" });
   const cards = wall.locator("a.product-card");
   await expect(cards).toHaveCount(5);
   await expect(page.getByText("اختبار واجهة مخفي", { exact: true })).toHaveCount(0);
   await expect(page.getByText("اختبار واجهة معطف", { exact: true })).toHaveCount(0);
-  await expect(cards.filter({ hasText: "اختبار واجهة ألف" })).toContainText("يبدأ من");
+  await expect(cards.filter({ hasText: "اختبار واجهة ألف" })).toContainText("From");
   await expect(cards.filter({ hasText: "اختبار واجهة باء" })).toContainText(/[٠۰0]/);
-  await expect(cards.filter({ hasText: "اختبار واجهة باء" })).not.toContainText("السعر عند الاختيار");
-  await expect(cards.filter({ hasText: "اختبار واجهة جيم" })).toContainText("قريباً");
-  await expect(cards.filter({ hasText: "اختبار واجهة دال" })).toContainText("متوفر");
-  await expect(cards.filter({ hasText: "اختبار واجهة ألف" })).toContainText("غير متوفر");
-  await expect(cards.filter({ hasText: "اختبار واجهة باء" })).toContainText("الصورة غير متاحة");
+  await expect(cards.filter({ hasText: "اختبار واجهة باء" })).not.toContainText("Price on selection");
+  await expect(cards.filter({ hasText: "اختبار واجهة جيم" }).locator("p[data-availability='coming_soon']")).toHaveText("Coming Soon");
+  await expect(cards.filter({ hasText: "اختبار واجهة دال" }).locator("p[data-availability='in_stock']")).toHaveText("In Stock");
+  await expect(cards.filter({ hasText: "اختبار واجهة ألف" }).locator("p[data-availability='out_of_stock']")).toHaveText("Out of Stock");
+  await expect(cards.filter({ hasText: "اختبار واجهة باء" })).toContainText("Image unavailable");
   const brokenCard = cards.filter({ hasText: "اختبار واجهة دال" });
   await brokenCard.scrollIntoViewIfNeeded();
-  await expect(brokenCard).toContainText("الصورة غير متاحة");
+  await expect(brokenCard).toContainText("Image unavailable");
   await expect(brokenCard.locator("[data-product-media]")).toBeVisible();
   await expect(brokenCard).toHaveAttribute("href", `/products/${created[3].id}`);
   await cards.first().focus();
@@ -71,25 +71,92 @@ test("product wall keeps honest prices, publication states, media space, and res
   for (const [width, columns] of [[1440, 4], [768, 2], [390, 2], [320, 1]] as const) {
     await page.setViewportSize({ width, height: 900 });
     await expect.poll(() => cards.first().locator("..").evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(" ").length)).toBe(columns);
-    const dimensions = await cards.first().locator("[data-product-media]").boundingBox();
-    expect(dimensions).not.toBeNull();
-    if (dimensions) expect(dimensions.height / dimensions.width).toBeCloseTo(width >= 900 ? .625 : 1.25, 1);
+    const metrics = await cards.evaluateAll((elements) => elements.map((card) => {
+      const media = card.querySelector("[data-product-media]");
+      const price = card.querySelector("p:not([data-availability])");
+      const status = card.querySelector("p[data-availability]");
+      const title = card.querySelector("h3");
+      if (!media || !price || !status || !title || !price.parentElement) throw new Error("Product card is missing media, price, status, or title.");
+      const mediaBox = media.getBoundingClientRect();
+      const priceBox = price.getBoundingClientRect();
+      const statusBox = status.getBoundingClientRect();
+      const meta = getComputedStyle(price.parentElement);
+      const match = getComputedStyle(status).color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+      return {
+        width: mediaBox.width,
+        height: mediaBox.height,
+        top: mediaBox.top,
+        aspect: getComputedStyle(media).aspectRatio,
+        priceCenter: priceBox.top + priceBox.height / 2,
+        statusCenter: statusBox.top + statusBox.height / 2,
+        metaDisplay: meta.display,
+        metaDirection: meta.flexDirection,
+        availability: status.getAttribute("data-availability"),
+        red: match ? Number(match[1]) : 0,
+        green: match ? Number(match[2]) : 0,
+        blue: match ? Number(match[3]) : 0,
+        name: title.textContent,
+        titleAttr: title.getAttribute("title"),
+        titleAlign: getComputedStyle(title).textAlign,
+        mediaRadius: getComputedStyle(media).borderRadius,
+      };
+    }));
+    expect(metrics).toHaveLength(5);
+    expect(metrics.some((item) => item.availability === "in_stock")).toBe(true);
+    expect(metrics.some((item) => item.availability === "out_of_stock")).toBe(true);
+    const rowKeys: number[] = [];
+    const rows = new Map<number, typeof metrics>();
+    for (const item of metrics) {
+      const key = rowKeys.find((candidate) => Math.abs(candidate - item.top) <= 2) ?? item.top;
+      if (!rowKeys.includes(key)) rowKeys.push(key);
+      rows.set(key, [...(rows.get(key) ?? []), item]);
+    }
+    expect(rows.size).toBe(Math.ceil(metrics.length / columns));
+    for (const row of rows.values()) {
+      const widths = row.map((item) => item.width);
+      const heights = row.map((item) => item.height);
+      expect(Math.max(...widths) - Math.min(...widths)).toBeLessThanOrEqual(1);
+      expect(Math.max(...heights) - Math.min(...heights)).toBeLessThanOrEqual(1);
+    }
+    for (const item of metrics) {
+      expect(item.aspect).toBe("4 / 5");
+      expect(Math.abs(item.height * 4 - item.width * 5)).toBeLessThanOrEqual(2);
+      expect(item.titleAlign).toBe("center");
+      expect(item.mediaRadius).toBe("12px");
+      expect(item.metaDisplay).toBe("flex");
+      expect(item.metaDirection).toBe("row");
+      expect(Math.abs(item.priceCenter - item.statusCenter)).toBeLessThanOrEqual(1);
+      expect(item.titleAttr).toBe(item.name);
+      if (item.availability === "in_stock") {
+        expect(item.green).toBeGreaterThan(item.red + 20);
+        expect(item.green).toBeGreaterThan(item.blue);
+      }
+      if (item.availability === "out_of_stock") {
+        expect(item.red).toBeGreaterThan(item.green + 20);
+        expect(item.red).toBeGreaterThan(item.blue);
+      }
+    }
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     if (width === 390) await page.screenshot({ path: testInfo.outputPath("wall-390.png"), fullPage: true });
   }
 
   await page.setViewportSize({ width: 390, height: 844 });
-  await expect(page.getByRole("link", { name: "إزالة البحث: اختبار واجهة" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "إزالة التصنيف: اختبار واجهة المجموعة" })).toBeVisible();
-  await page.getByLabel("ترتيب المنتجات").selectOption("price-asc");
+  await expect(page.getByRole("search")).toHaveCount(0);
+  await expect(page.getByLabel("Search", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("status").filter({ hasText: /^\d+ products?$/ })).toHaveCount(0);
+  await expect(page.getByLabel("Sort").locator("option")).toHaveText([
+    "Default order", "Price: low to high", "Price: high to low",
+  ]);
+  await expect(page.getByRole("link", { name: "Remove category: اختبار واجهة المجموعة" })).toBeVisible();
+  await page.getByLabel("Sort").selectOption("price-asc");
   await expect(page).toHaveURL(/sort=price-asc/);
   await expect(page).toHaveURL(/category=/);
-  await expect(page).toHaveURL(/q=/);
+  await expect(page).not.toHaveURL(/q=/);
   await expect.poll(() => wall.locator("a.product-card h3").allTextContents()).toEqual([
     "اختبار واجهة باء", "اختبار واجهة دال", "اختبار واجهة هاء", "اختبار واجهة ألف", "اختبار واجهة جيم",
   ]);
   await page.screenshot({ path: testInfo.outputPath("filtered-price-asc-390.png"), fullPage: true });
-  await page.getByLabel("ترتيب المنتجات").selectOption("price-desc");
+  await page.getByLabel("Sort").selectOption("price-desc");
   await expect(page).toHaveURL(/sort=price-desc/);
   await expect.poll(() => wall.locator("a.product-card h3").allTextContents()).toEqual([
     "اختبار واجهة جيم", "اختبار واجهة ألف", "اختبار واجهة هاء", "اختبار واجهة دال", "اختبار واجهة باء",
@@ -101,38 +168,48 @@ test("product wall keeps honest prices, publication states, media space, and res
   ]);
   await page.goForward();
   await expect(page).toHaveURL(/sort=price-desc/);
-  await page.getByLabel("ترتيب المنتجات").selectOption("name");
-  await expect(page).toHaveURL(/sort=name/);
-  const expectedArabicNames = products.filter((product) => product.publication !== "hidden")
-    .map((product) => product.name).sort((left, right) => left.localeCompare(right, "ar"));
-  await expect.poll(() => wall.locator("a.product-card h3").allTextContents()).toEqual(expectedArabicNames);
-
-  await page.getByRole("link", { name: "إزالة التصنيف: اختبار واجهة المجموعة" }).click();
-  await expect(page).not.toHaveURL(/category=/);
-  await expect(page).toHaveURL(/q=/);
-  await expect(page).toHaveURL(/sort=name/);
-  await expect(wall.locator("a.product-card")).toHaveCount(6);
-  await page.getByRole("link", { name: "إزالة البحث: اختبار واجهة" }).click();
-  await expect(page).not.toHaveURL(/q=/);
-  await expect(page).toHaveURL(/sort=name/);
-  await page.getByLabel("ابحث عن منتج").fill("كلمة غير موجودة 999");
-  await page.getByRole("button", { name: "بحث" }).click();
-  await expect(page.getByRole("heading", { name: "لا توجد منتجات مطابقة" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "إزالة البحث: كلمة غير موجودة 999" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "مسح كل التصفية" })).toBeVisible();
-  await page.getByRole("link", { name: "مسح كل التصفية" }).click();
-  await expect(page).not.toHaveURL(/q=|category=/);
+  await expect.poll(() => wall.locator("a.product-card h3").allTextContents()).toEqual([
+    "اختبار واجهة جيم", "اختبار واجهة ألف", "اختبار واجهة هاء", "اختبار واجهة دال", "اختبار واجهة باء",
+  ]);
+  await page.getByLabel("Sort").selectOption("default");
+  await expect(page).not.toHaveURL(/sort=/);
+  await expect(cards).toHaveCount(5);
   for (const product of products.filter((candidate) => candidate.publication !== "hidden")) {
-    await expect(wall.locator("a.product-card").filter({ hasText: product.name })).toBeVisible();
+    await expect(cards.filter({ hasText: product.name })).toBeVisible();
   }
-  await expect(wall.locator("a.product-card").filter({ hasText: "اختبار واجهة معطف" })).toBeVisible();
-  await expect(wall.locator("a.product-card").filter({ hasText: "اختبار واجهة مخفي" })).toHaveCount(0);
-  await expect(page.getByLabel("ترتيب المنتجات")).toBeEnabled();
-  await page.getByLabel("ترتيب المنتجات").selectOption("default");
+  await expect(cards.filter({ hasText: "اختبار واجهة مخفي" })).toHaveCount(0);
+
+  await page.getByLabel("Sort").selectOption("price-desc");
+  await expect(page).toHaveURL(/sort=price-desc/);
+  const clearCategory = page.getByRole("link", { name: "Remove category: اختبار واجهة المجموعة", exact: true });
+  await expect(clearCategory).toHaveAttribute("href", "/?sort=price-desc#catalog-title");
+  await clearCategory.click();
+  await expect(page).not.toHaveURL(/category=|q=/);
+  await expect(page).toHaveURL(/sort=price-desc/);
+  await expect(page.locator("#catalog-title")).toHaveText("Shop by category");
+  await expect(page.getByRole("region", { name: "Products", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("status").filter({ hasText: /^\d+ products?$/ })).toHaveCount(0);
+  await page.getByRole("navigation", { name: "Filter by category" })
+    .getByRole("link", { name: "اختبار واجهة أخرى", exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`category=${otherCategory.body.id}`));
+  await expect(page).toHaveURL(/sort=price-desc/);
+  await expect(cards).toHaveCount(1);
+  await expect(cards.first()).toContainText("اختبار واجهة معطف");
+  await page.getByRole("link", { name: "Remove category: اختبار واجهة أخرى", exact: true }).click();
+  await expect(page.locator("#catalog-title")).toHaveText("Shop by category");
+  await expect(page.getByLabel("Sort")).toBeEnabled();
+  await page.getByLabel("Sort").selectOption("default");
   await expect(page).toHaveURL(STORE + "/");
-  await expect(page.getByRole("heading", { name: "اختيارات هادئة. حضور واضح." })).toBeVisible();
-  await expect(page.getByRole("navigation", { name: "اكتشف تصنيفات المتجر" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "كل المنتجات", exact: true })).toBeVisible();
+  const homeTitle = page.locator("#home-title");
+  await expect(homeTitle).toHaveText("Bravos Menswear");
+  await expect(homeTitle).toHaveClass(/sr-only/);
+  await expect(page.locator("html")).toHaveAttribute("lang", "en");
+  await expect(page.locator("html")).toHaveAttribute("dir", "ltr");
+  const hero = page.locator("section").filter({ has: homeTitle });
+  await expect(hero.locator("img")).toHaveAttribute("alt", "");
+  await expect(hero.locator("a, button, p")).toHaveCount(0);
+  await expect(page.getByRole("navigation", { name: "Filter by category" })).toBeVisible();
+  await expect(page.locator("#catalog-title")).toHaveText("Shop by category");
 });
 
 async function signInManager(page: Page) {

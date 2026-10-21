@@ -830,9 +830,9 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
             <div>
               <h2 ref={detailFeedback.headingRef} tabIndex={-1}>{selected.reference}</h2>
               <p id="order-status" data-testid="order-status">الحالة: {statusLabel(selected.status)}</p>
-              {selected.confirmedAt ? <p>أكد الطلب المسؤول {selected.confirmedByStaffId} في {formatDate(selected.confirmedAt)}.</p> : null}
+              {selected.confirmedAt ? <><p>تم تأكيد الطلب في {formatDate(selected.confirmedAt)}</p><StaffAttribution id={selected.confirmedByStaffId} /></> : null}
               {selected.fulfillmentBranchId ? <p>فرع التجهيز: {workspace.authorizedBranches.find((branch) => branch.id === selected.fulfillmentBranchId)?.nameAr ?? selected.fulfillmentBranchId}</p> : null}
-              {selected.cancelledAt ? <p>ألغاه المسؤول {selected.cancelledByStaffId} في {formatDate(selected.cancelledAt)} — {selected.cancellationReason}</p> : null}
+              {selected.cancelledAt ? <><p>تم إلغاء الطلب في {formatDate(selected.cancelledAt)} — {selected.cancellationReason}</p><StaffAttribution id={selected.cancelledByStaffId} /></> : null}
             </div>
             <p className="muted">أُرسل {formatDate(selected.submittedAt)} — إصدار الطلب {selected.revision}</p>
           </section>
@@ -892,7 +892,8 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
               <article className="history-item" key={attempt.id}>
                 <strong>{attempt.outcome === "reached" ? "تم التواصل" : "لا توجد إجابة"}</strong>
                 <p>{attempt.note ?? "من دون ملاحظة"}</p>
-                <p className="muted">{formatDate(attempt.occurredAt)} — المسؤول {attempt.actorStaffId}</p>
+                <p className="muted">{formatDate(attempt.occurredAt)}</p>
+                <StaffAttribution id={attempt.actorStaffId} />
               </article>
             ))}
           </section>
@@ -1147,6 +1148,16 @@ function pendingCopy(action: string) {
   return copy[action] ?? "جارٍ إكمال العملية…";
 }
 
+function StaffAttribution({ id }: { id: string | null }) {
+  if (!id) return null;
+  return (
+    <details className="business-disclosure">
+      <summary>تفاصيل المسؤول</summary>
+      <p>معرّف الموظف: <bdi>{id}</bdi></p>
+    </details>
+  );
+}
+
 function AgreementSnapshot({ quote, agreedAt, actorId }: { quote: OnlineOrderAgreementQuoteDto; agreedAt: string; actorId: string }) {
   return (
     <section className="card agreed-order" role="region" aria-label="الاتفاق الحالي مع العميل">
@@ -1168,7 +1179,8 @@ function AgreementSnapshot({ quote, agreedAt, actorId }: { quote: OnlineOrderAgr
         final={quote.finalTotalPiasters}
       />
       <PromotionSummary offer={quote.appliedAutomaticOffer} coupon={quote.appliedCoupon} />
-      <p className="muted">وافق العميل {formatDate(agreedAt)} — المسؤول {actorId}</p>
+      <p className="muted">وافق العميل {formatDate(agreedAt)}</p>
+      <StaffAttribution id={actorId} />
     </section>
   );
 }
@@ -1187,7 +1199,8 @@ function OrderTimeline({ order }: { order: OnlineOrderDto }) {
             <strong>{lifecycleLabel(event.type)}</strong>
             <p>من {statusLabel(event.fromStatus)} إلى {statusLabel(event.toStatus)}</p>
             {event.reason ? <p>السبب: {event.reason}</p> : null}
-            <p className="muted">حدث {formatDate(event.occurredAt)} — المسؤول {event.actorStaffId}</p>
+            <p className="muted">حدث {formatDate(event.occurredAt)}</p>
+            <StaffAttribution id={event.actorStaffId} />
             {event.recordedAt !== event.occurredAt ? <p className="muted">سُجل في النظام {formatDate(event.recordedAt)}</p> : null}
           </article>
         ))}
@@ -1256,9 +1269,9 @@ function FailedReturnInspections({
                   {lineNames.get(line.variantId) ?? line.variantId}: استُلم {line.receivedQuantity}، قابل للبيع {line.sellableQuantity}، غير قابل للبيع {line.nonsellableQuantity}
                 </p>
               ))}
-              <p className="muted">سجله المسؤول {inspection.recordedByStaffId}</p>
-              {inspection.postedAt ? <p className="muted">رحّله المدير {inspection.postedByStaffId} في {formatDate(inspection.postedAt)} · فرع الاستلام: {receivingBranches.find((branch) => branch.id === inspection.receivingBranchId)?.nameAr ?? "—"}</p> : null}
-              {inspection.abandonedAt ? <p className="muted">ألغاه المسؤول {inspection.abandonedByStaffId} في {formatDate(inspection.abandonedAt)} — {inspection.abandonmentReason}</p> : null}
+              <StaffAttribution id={inspection.recordedByStaffId} />
+              {inspection.postedAt ? <><p className="muted">رُحّل في {formatDate(inspection.postedAt)} · فرع الاستلام: {receivingBranches.find((branch) => branch.id === inspection.receivingBranchId)?.nameAr ?? "—"}</p><StaffAttribution id={inspection.postedByStaffId ?? null} /></> : null}
+              {inspection.abandonedAt ? <><p className="muted">أُلغي في {formatDate(inspection.abandonedAt)} — {inspection.abandonmentReason}</p><StaffAttribution id={inspection.abandonedByStaffId ?? null} /></> : null}
               {inspection.status === "draft" && order.actionEligibility.canPostFailedReturnInspection ? (
                 <div><div className="field"><label htmlFor={`inspection-receiving-branch-${inspection.id}`}>فرع استلام الشحنة</label><select id={`inspection-receiving-branch-${inspection.id}`} value={receivingBranchId} disabled={frozen} onChange={(event) => onReceivingBranchChange(event.target.value)} required>{receivingBranches.map((branch) => <option key={branch.id} value={branch.id}>{branch.nameAr}</option>)}</select></div><button type="button" disabled={frozen || !receivingBranchId} onClick={() => onPost(inspection.id)}>ترحيل الفحص واستعادة القابل للبيع</button></div>
               ) : null}

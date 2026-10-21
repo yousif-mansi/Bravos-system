@@ -23,6 +23,7 @@ blob-report/
 node_modules/
 .next/
 .next-e2e/
+.next-english-build/
 dist/
 build/
 coverage/
@@ -30,3 +31,6 @@ coverage/
 .venv/
 __pycache__/
 *.pyc
+
+# Generated catalog masters stay local; reviewed WebP delivery assets are versioned.
+/assets/sample-catalog/images/*.png

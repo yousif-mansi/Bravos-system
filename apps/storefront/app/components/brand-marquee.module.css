@@ -1,0 +1,146 @@
+.marquee {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding-inline: var(--store-gutter);
+  background: var(--store-canvas);
+  border-block: 1px solid var(--store-border);
+}
+
+.pause {
+  order: 2;
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  min-height: 44px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--store-muted);
+  cursor: pointer;
+}
+
+.marquee .pause:hover,
+.marquee .pause:focus-visible {
+  background: transparent;
+  color: var(--store-champagne);
+}
+
+.marquee .pause[aria-pressed="true"] {
+  background: transparent;
+  color: var(--store-champagne);
+}
+
+.marquee .pause:disabled {
+  cursor: not-allowed;
+  background: transparent;
+  color: var(--store-muted);
+  opacity: 1;
+}
+
+.glyph {
+  display: block;
+  width: 12px;
+  height: 12px;
+}
+
+.glyph[data-icon="pause"] {
+  position: relative;
+}
+
+.glyph[data-icon="pause"]::before,
+.glyph[data-icon="pause"]::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  width: 3px;
+  height: 12px;
+  background: currentColor;
+}
+
+.glyph[data-icon="pause"]::before { left: 0; }
+.glyph[data-icon="pause"]::after { right: 0; }
+
+.glyph[data-icon="play"] {
+  width: 0;
+  height: 0;
+  border-style: solid;
+  border-width: 6px 0 6px 11px;
+  border-color: transparent transparent transparent currentColor;
+}
+
+.viewport {
+  order: 1;
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  max-width: 100%;
+}
+
+.track {
+  display: flex;
+  width: max-content;
+  animation: marquee-shift var(--motion-duration-marquee) linear infinite;
+}
+
+.line {
+  display: flex;
+  margin: 0;
+  color: var(--store-ink);
+  font: 500 clamp(13px, 1.5vw, 18px)/1 var(--font-editorial);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.phrase {
+  padding-inline-end: 2.75rem;
+}
+
+.marquee:hover .track,
+.marquee:focus-within .track,
+.marquee[data-paused="true"] .track {
+  animation-play-state: paused;
+}
+
+@keyframes marquee-shift {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .marquee { align-items: flex-start; }
+
+  .viewport {
+    overflow: visible;
+    padding-inline: 0;
+  }
+
+  .track {
+    animation: none;
+    transform: none;
+    width: auto;
+    max-width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .line {
+    flex-wrap: wrap;
+    min-width: 0;
+    max-width: 100%;
+    white-space: normal;
+    letter-spacing: 0.06em;
+    line-height: 1.4;
+  }
+
+  .phrase { padding-inline-end: 0; }
+  .phrase:not(:first-child) { display: none; }
+  .duplicate { display: none; }
+  .pause { transition: none; }
+}

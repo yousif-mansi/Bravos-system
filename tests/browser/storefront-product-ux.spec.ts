@@ -4,19 +4,91 @@ const STAFF = "http://127.0.0.1:5174";
 const STORE = "http://127.0.0.1:3001";
 
 // All business fixtures use the fresh database started by playwright.config.ts.
-test("collection heading follows category and search, and clearing filters returns to all products", async ({ page }) => {
+test("collection heading follows category and clearing filters restores the category anchor", async ({ page }, testInfo) => {
   const fixture = await setup(page);
   const product = await createProduct(page, fixture.suffix, "TITLE");
+  await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${STORE}/?category=${product.category.id}`);
   await expect(page.getByRole("heading", { name: product.category.nameAr, exact: true })).toBeVisible();
-  await page.goto(`${STORE}/?category=${product.category.id}&q=${encodeURIComponent(product.nameAr)}`);
-  await expect(page.getByRole("heading", { name: `نتائج البحث عن «${product.nameAr}» في ${product.category.nameAr}`, exact: true })).toBeVisible();
-  await page.getByRole("link", { name: "إزالة التصنيف:" , exact: false }).click();
-  await expect(page.getByRole("heading", { name: `نتائج البحث عن «${product.nameAr}»`, exact: true })).toBeVisible();
-  await page.getByRole("link", { name: "مسح كل التصفية" }).click();
-  await expect(page.getByRole("heading", { name: "كل المنتجات", exact: true })).toBeVisible();
-  await page.goto(`${STORE}/?category=stale-category`);
-  await expect(page.getByRole("heading", { name: "كل المنتجات", exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Products", exact: true }).locator("a.product-card")).toHaveCount(1);
+  await expect(page.getByRole("search")).toHaveCount(0);
+  await expect(page.getByRole("link", { name: `Remove category: ${product.category.nameAr}`, exact: true })).toBeVisible();
+  await page.getByRole("link", { name: "Clear category", exact: true }).click();
+  const catalogTitle = page.locator("#catalog-title");
+  await expect(page.locator("#catalog-title")).toHaveText("Shop by category");
+  await expect(page).toHaveURL(`${STORE}/#catalog-title`);
+  await expect.poll(async () => catalogTitle.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    const header = document.querySelector(".store-header")!.getBoundingClientRect();
+    const margin = 24;
+    const gap = box.top - header.bottom;
+    const style = getComputedStyle(element);
+    return {
+      href: location.pathname + location.search + location.hash,
+      scrollY: window.scrollY,
+      top: box.top,
+      bottom: box.bottom,
+      viewportHeight: window.innerHeight,
+      inView: box.top >= 0 && box.bottom <= window.innerHeight,
+      headerHeight: Math.round(header.height),
+      scrollMargin: Math.round(Number.parseFloat(style.scrollMarginTop)),
+      paddingTop: Math.round(Number.parseFloat(style.paddingTop)),
+      clearsHeader: gap >= margin,
+    };
+  })).toMatchObject({
+    href: "/#catalog-title",
+    inView: true,
+    headerHeight: 64,
+    scrollMargin: 88,
+    paddingTop: 0,
+    clearsHeader: true,
+  });
+  const place = await catalogTitle.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    return { href: location.pathname + location.search + location.hash, scrollY: window.scrollY, top: box.top, bottom: box.bottom, viewportHeight: window.innerHeight };
+  });
+  expect(place.top, JSON.stringify(place)).toBeGreaterThanOrEqual(0);
+  expect(place.bottom, JSON.stringify(place)).toBeLessThanOrEqual(place.viewportHeight);
+  await expect(catalogTitle).toBeInViewport({ ratio: 1 });
+  await page.screenshot({ path: testInfo.outputPath("category-anchor-390.png") });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await catalogTitle.evaluate((element) => element.scrollIntoView({ block: "start", behavior: "instant" }));
+  await expect.poll(() => catalogTitle.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    const header = document.querySelector(".store-header")!.getBoundingClientRect();
+    const margin = 24;
+    const gap = box.top - header.bottom;
+    const style = getComputedStyle(element);
+    return {
+      headerHeight: Math.round(header.height),
+      scrollMargin: Math.round(Number.parseFloat(style.scrollMarginTop)),
+      paddingTop: Math.round(Number.parseFloat(style.paddingTop)),
+      clearsHeader: gap >= margin,
+      inView: box.top >= 0 && box.bottom <= window.innerHeight,
+    };
+  })).toEqual({ headerHeight: 72, scrollMargin: 96, paddingTop: 0, clearsHeader: true, inView: true });
+  await expect(catalogTitle).toBeInViewport({ ratio: 1 });
+  await page.screenshot({ path: testInfo.outputPath("category-anchor-1440.png") });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goBack();
+  await expect(page).toHaveURL(`${STORE}/?category=${product.category.id}`);
+  await expect(page.locator("#catalog-title")).toHaveText(product.category.nameAr);
+  await page.goForward();
+  await expect(page).toHaveURL(`${STORE}/#catalog-title`);
+  await expect(page.locator("#catalog-title")).toHaveText("Shop by category");
+  for (const categoryId of ["stale-category", crypto.randomUUID()]) {
+    await page.goto(`${STORE}/?category=${categoryId}`);
+    await expect(page.getByRole("region", { name: "Products", exact: true })).toHaveCount(0);
+    await expect(page.locator("#catalog-title")).toHaveText("Unavailable category");
+    await expect(page.getByRole("heading", { name: "No matching products", exact: true })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Remove category: Unavailable category", exact: true })).toBeVisible();
+    const recovery = page.getByRole("link", { name: "Categories", exact: true });
+    await expect(recovery).toHaveAttribute("href", "/#catalog-title");
+    await expect(page.getByRole("link", { name: "Clear category", exact: true })).toBeVisible();
+    await recovery.click();
+    await expect(page).toHaveURL(`${STORE}/#catalog-title`);
+    await expect(page.locator("#catalog-title")).toHaveText("Shop by category");
+  }
 });
 
 test("invalid cart explains repair before disabled customer fields on mobile", async ({ page }) => {
@@ -25,28 +97,28 @@ test("invalid cart explains repair before disabled customer fields on mobile", a
   await receive(page, fixture.a, product.variants[0].id);
   await addProduct(page, product.id);
   await page.goto(`${STORE}/checkout`);
-  await page.getByLabel("الاسم", { exact: false }).fill("عميل محفوظ");
+  await page.getByLabel("Name", { exact: false }).fill("عميل محفوظ");
   // A second tab updates the cart using its existing shared browser storage contract.
   const otherTab = await page.context().newPage();
   await otherTab.goto(`${STORE}/cart`);
   await expect(otherTab.locator(".cart-line")).toHaveCount(1);
-  await expect(otherTab.getByRole("button", { name: "تحديث بيانات المنتجات" })).toBeEnabled();
+  await expect(otherTab.getByRole("button", { name: "Refresh product details" })).toBeEnabled();
   await otherTab.evaluate(() => {
     const key = "bravos-guest-cart-v1";
     const stored = JSON.parse(localStorage.getItem(key)!);
     localStorage.setItem(key, JSON.stringify({ ...stored, revision: crypto.randomUUID(), items: stored.items.map((item: object) => ({ ...item, orderable: false })) }));
   });
   await page.setViewportSize({ width: 390, height: 844 });
-  const notice = page.getByRole("alert").filter({ hasText: "عدّل السلة قبل إتمام الطلب" });
+  const notice = page.getByRole("alert").filter({ hasText: "Update the bag before checkout" });
   await expect(notice).toBeVisible();
-  await expect(notice.getByRole("link", { name: "تعديل السلة" })).toHaveAttribute("href", "/cart");
-  await expect(page.getByLabel("الاسم", { exact: false })).toBeDisabled();
-  await expect(page.getByLabel("الاسم", { exact: false })).toHaveValue("عميل محفوظ");
-  await expect(page.getByRole("button", { name: "مراجعة السعر", exact: true })).toBeDisabled();
+  await expect(notice.getByRole("link", { name: "Edit bag" })).toHaveAttribute("href", "/cart");
+  await expect(page.getByLabel("Name", { exact: false })).toBeDisabled();
+  await expect(page.getByLabel("Name", { exact: false })).toHaveValue("عميل محفوظ");
+  await expect(page.getByRole("button", { name: "Review price", exact: true })).toBeDisabled();
   expect((await notice.boundingBox())!.y).toBeLessThan((await page.locator("fieldset").first().boundingBox())!.y);
-  await notice.getByRole("link", { name: "تعديل السلة" }).click();
+  await notice.getByRole("link", { name: "Edit bag" }).click();
   await expect(page).toHaveURL(`${STORE}/cart`);
-  await page.getByRole("link", { name: "متابعة التسوق" }).click();
+  await page.getByRole("link", { name: "Continue shopping" }).click();
   await expect(page).toHaveURL(`${STORE}/#catalog-title`);
   await otherTab.close();
 });
@@ -68,62 +140,62 @@ test("stock repair roundtrip retains the checkout draft and requires a fresh quo
   await addProduct(page, y.id);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${STORE}/checkout`);
-  const form = page.getByRole("form", { name: "بيانات طلب التوصيل" });
+  const form = page.getByRole("form", { name: "Checkout" });
   const optionalDetails = form.locator("details").filter({
-    has: form.page().locator("summary", { hasText: "تفاصيل إضافية للتوصيل (اختياري)" }),
+    has: form.page().locator("summary", { hasText: "Optional delivery details" }),
   });
   await expect(optionalDetails).not.toHaveJSProperty("open", true);
-  await form.getByLabel("الاسم", { exact: false }).fill("عميل اختبار");
-  await form.getByLabel("رقم الموبايل الأساسي").fill("01012345678");
-  await form.getByLabel("العنوان بالتفصيل").fill("شارع الاختبار");
-  await form.getByLabel("منطقة التوصيل").selectOption(fixture.areaId);
+  await form.getByLabel("Name", { exact: false }).fill("عميل اختبار");
+  await form.getByLabel("Primary mobile number").fill("01012345678");
+  await form.getByLabel("Detailed address").fill("شارع الاختبار");
+  await form.getByLabel("Delivery").selectOption(fixture.areaId);
   await optionalDetails.locator("summary").click();
   await expect(optionalDetails).toHaveJSProperty("open", true);
-  await form.getByLabel("رقم بديل (اختياري)").fill("01212345678");
-  await form.getByLabel("علامة مميزة (اختياري)").fill("بجوار المكتبة");
-  await form.getByLabel("ملاحظات (اختياري)").fill("الاتصال قبل التوصيل");
+  await form.getByLabel("Alternate number (optional)").fill("01212345678");
+  await form.getByLabel("Landmark (optional)").fill("بجوار المكتبة");
+  await form.getByLabel("Notes (optional)").fill("الاتصال قبل التوصيل");
   await optionalDetails.locator("summary").click();
   await expect(optionalDetails).not.toHaveJSProperty("open", true);
-  await expect(form.getByLabel("رقم بديل (اختياري)")).toHaveValue("01212345678");
-  await expect(form.getByLabel("علامة مميزة (اختياري)")).toHaveValue("بجوار المكتبة");
-  await expect(form.getByLabel("ملاحظات (اختياري)")).toHaveValue("الاتصال قبل التوصيل");
+  await expect(form.getByLabel("Alternate number (optional)")).toHaveValue("01212345678");
+  await expect(form.getByLabel("Landmark (optional)")).toHaveValue("بجوار المكتبة");
+  await expect(form.getByLabel("Notes (optional)")).toHaveValue("الاتصال قبل التوصيل");
   await optionalDetails.locator("summary").click();
   await expect(optionalDetails).toHaveJSProperty("open", true);
-  await form.getByLabel("كود الكوبون (اختياري)").fill(couponCode);
+  await form.getByLabel("Coupon code (optional)").fill(couponCode);
   const before = await savedCart(page);
   const rejected = page.waitForResponse((response) => response.url().endsWith("/api/public/checkout/quote"));
-  await form.getByRole("button", { name: "مراجعة السعر", exact: true }).click();
+  await form.getByRole("button", { name: "Review price", exact: true }).click();
   const response = await rejected;
   expect(response.status()).toBe(409);
   expect((await response.json()).error.code).toBe("INSUFFICIENT_STOCK");
-  const notice = page.getByRole("alert").filter({ hasText: "تعذر توفير اختيارات السلة كاملة معاً" });
+  const notice = page.getByRole("alert").filter({ hasText: "These choices cannot all be supplied together" });
   await expect(notice).toBeVisible();
-  await expect(notice.getByRole("link", { name: "تعديل السلة" })).toHaveAttribute("href", "/cart");
-  await expect(form.getByLabel("الاسم", { exact: false })).toHaveValue("عميل اختبار");
-  await expect(form.getByLabel("رقم الموبايل الأساسي")).toHaveValue("01012345678");
-  await expect(form.getByLabel("العنوان بالتفصيل")).toHaveValue("شارع الاختبار");
-  await expect(form.getByLabel("منطقة التوصيل")).toHaveValue(fixture.areaId);
+  await expect(notice.getByRole("link", { name: "Edit bag" })).toHaveAttribute("href", "/cart");
+  await expect(form.getByLabel("Name", { exact: false })).toHaveValue("عميل اختبار");
+  await expect(form.getByLabel("Primary mobile number")).toHaveValue("01012345678");
+  await expect(form.getByLabel("Detailed address")).toHaveValue("شارع الاختبار");
+  await expect(form.getByLabel("Delivery")).toHaveValue(fixture.areaId);
   expect(await savedCart(page)).toEqual(before);
   expect(await page.evaluate(() => localStorage.getItem("bravos-guest-checkout-v1"))).toBeNull();
-  await expect(form.getByRole("button", { name: "إرسال طلب التوصيل" })).toHaveCount(0);
-  const context = form.locator('[aria-label="ملخص الطلب المبدئي"]');
-  await expect(context).toContainText("قبل الخصومات ورسوم التوصيل");
+  await expect(form.getByRole("button", { name: "Place order request" })).toHaveCount(0);
+  const context = form.locator('[aria-label="Preliminary order summary"]');
+  await expect(context).toContainText("Preliminary total");
   expect((await context.boundingBox())!.y).toBeLessThan((await form.locator("fieldset").first().boundingBox())!.y);
-  await notice.getByRole("link", { name: "تعديل السلة" }).click();
-  await expect(page.getByRole("heading", { name: "سلة التسوق", exact: true })).toBeVisible();
-  await page.locator(".cart-line").filter({ hasText: y.nameAr }).getByRole("button", { name: "حذف", exact: true }).click();
+  await notice.getByRole("link", { name: "Edit bag" }).click();
+  await expect(page.getByRole("heading", { name: "Bag", exact: true })).toBeVisible();
+  await page.locator(".cart-line").filter({ hasText: y.nameAr }).getByRole("button", { name: "Remove", exact: true }).click();
   await expect(page.locator(".cart-line")).toHaveCount(1);
-  await page.getByRole("link", { name: "متابعة إتمام الطلب" }).click();
+  await page.getByRole("link", { name: "Checkout" }).click();
   await expect(optionalDetails).toHaveJSProperty("open", true);
-  await expect(form.getByLabel("الاسم", { exact: false })).toHaveValue("عميل اختبار");
-  await expect(form.getByLabel("رقم الموبايل الأساسي")).toHaveValue("01012345678");
-  await expect(form.getByLabel("العنوان بالتفصيل")).toHaveValue("شارع الاختبار");
-  await expect(form.getByLabel("منطقة التوصيل")).toHaveValue(fixture.areaId);
-  await expect(form.getByLabel("رقم بديل (اختياري)")).toBeVisible();
-  await expect(form.getByLabel("رقم بديل (اختياري)")).toHaveValue("01212345678");
-  await expect(form.getByLabel("علامة مميزة (اختياري)")).toHaveValue("بجوار المكتبة");
-  await expect(form.getByLabel("ملاحظات (اختياري)")).toHaveValue("الاتصال قبل التوصيل");
-  await expect(form.getByLabel("كود الكوبون (اختياري)")).toHaveValue(couponCode);
+  await expect(form.getByLabel("Name", { exact: false })).toHaveValue("عميل اختبار");
+  await expect(form.getByLabel("Primary mobile number")).toHaveValue("01012345678");
+  await expect(form.getByLabel("Detailed address")).toHaveValue("شارع الاختبار");
+  await expect(form.getByLabel("Delivery")).toHaveValue(fixture.areaId);
+  await expect(form.getByLabel("Alternate number (optional)")).toBeVisible();
+  await expect(form.getByLabel("Alternate number (optional)")).toHaveValue("01212345678");
+  await expect(form.getByLabel("Landmark (optional)")).toHaveValue("بجوار المكتبة");
+  await expect(form.getByLabel("Notes (optional)")).toHaveValue("الاتصال قبل التوصيل");
+  await expect(form.getByLabel("Coupon code (optional)")).toHaveValue(couponCode);
   await page.screenshot({ path: testInfo.outputPath("populated-return-390.png"), fullPage: true });
   await page.setViewportSize({ width: 1440, height: 900 });
   await expect(optionalDetails).toHaveJSProperty("open", true);
@@ -131,25 +203,25 @@ test("stock repair roundtrip retains the checkout draft and requires a fresh quo
   await page.setViewportSize({ width: 390, height: 844 });
   await optionalDetails.locator("summary").click();
   await expect(optionalDetails).not.toHaveJSProperty("open", true);
-  await expect(form.getByLabel("رقم بديل (اختياري)")).toHaveValue("01212345678");
-  await expect(page.getByRole("region", { name: "تفاصيل السعر" })).toHaveCount(0);
-  await expect(form.getByRole("button", { name: "إرسال طلب التوصيل" })).toHaveCount(0);
+  await expect(form.getByLabel("Alternate number (optional)")).toHaveValue("01212345678");
+  await expect(page.getByRole("region", { name: "Price details" })).toHaveCount(0);
+  await expect(form.getByRole("button", { name: "Place order request" })).toHaveCount(0);
   expect((await savedCart(page)).items).toMatchObject([{ variantId: x.variants[0].id, quantity: 1 }]);
   const reviewed = page.waitForResponse((response) => response.url().endsWith("/api/public/checkout/quote"));
-  await form.getByRole("button", { name: "مراجعة السعر", exact: true }).click();
+  await form.getByRole("button", { name: "Review price", exact: true }).click();
   const quoteResponse = await reviewed;
   expect(quoteResponse.status()).toBe(200);
   const quote = await quoteResponse.json();
   expect(quote.lines).toMatchObject([{ variantId: x.variants[0].id, quantity: 1 }]);
-  await expect(page.getByRole("region", { name: "تفاصيل السعر" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Price details" })).toBeVisible();
   const submitted = page.waitForRequest((request) => request.method() === "POST" && request.url().endsWith("/api/public/checkout/orders"));
-  await form.getByRole("button", { name: "إرسال طلب التوصيل" }).click();
+  await form.getByRole("button", { name: "Place order request" }).click();
   expect((await submitted).postDataJSON()).toMatchObject({
     alternatePhone: "01212345678",
     landmark: "بجوار المكتبة",
     notes: "الاتصال قبل التوصيل",
   });
-  await expect(page.getByRole("heading", { name: "تم استلام طلبك" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Order request received" })).toBeVisible();
   const accepted = await page.evaluate(() => JSON.parse(localStorage.getItem("bravos-guest-checkout-v1") ?? "null"));
   expect(accepted.request).toMatchObject({
     alternatePhone: "01212345678",
@@ -157,22 +229,25 @@ test("stock repair roundtrip retains the checkout draft and requires a fresh quo
     notes: "الاتصال قبل التوصيل",
   });
   // A new basket in the same navigation session must not inherit accepted customer data.
-  await page.getByRole("link", { name: "العودة إلى المتجر", exact: true }).click();
+  await page.getByRole("link", { name: "Back to the store", exact: true }).click();
+  await expect(page).toHaveURL(`${STORE}/`);
+  await page.getByRole("navigation", { name: "Filter by category" })
+    .getByRole("link", { name: x.category.nameAr, exact: true }).click();
   await page.locator(`a.product-card[href="/products/${x.id}"]`).click();
-  await page.locator('[aria-label="إضافة المنتج إلى السلة"]').getByRole("button", { name: "أضف إلى السلة", exact: true }).click();
-  await expect(page.locator(".purchase-panel").getByRole("status")).toContainText("تمت إضافة الاختيار إلى السلة");
+  await page.locator('[aria-label="Add product to bag"]').getByRole("button", { name: "Add to bag", exact: true }).click();
+  await expect(page.locator(".purchase-panel").getByRole("status")).toContainText("Added to your bag.");
   await page.getByRole("banner").locator('a[href="/cart"]').click();
-  await page.getByRole("link", { name: "متابعة إتمام الطلب" }).click();
-  await expect(form.getByLabel("الاسم", { exact: false })).toHaveValue("");
-  await expect(form.getByLabel("رقم الموبايل الأساسي")).toHaveValue("");
-  await expect(form.getByLabel("العنوان بالتفصيل")).toHaveValue("");
-  await expect(form.getByLabel("منطقة التوصيل")).toHaveValue("");
-  await expect(form.getByLabel("رقم بديل (اختياري)")).toHaveValue("");
-  await expect(form.getByLabel("علامة مميزة (اختياري)")).toHaveValue("");
-  await expect(form.getByLabel("ملاحظات (اختياري)")).toHaveValue("");
-  await expect(form.getByLabel("كود الكوبون (اختياري)")).toHaveValue("");
+  await page.getByRole("link", { name: "Checkout" }).click();
+  await expect(form.getByLabel("Name", { exact: false })).toHaveValue("");
+  await expect(form.getByLabel("Primary mobile number")).toHaveValue("");
+  await expect(form.getByLabel("Detailed address")).toHaveValue("");
+  await expect(form.getByLabel("Delivery")).toHaveValue("");
+  await expect(form.getByLabel("Alternate number (optional)")).toHaveValue("");
+  await expect(form.getByLabel("Landmark (optional)")).toHaveValue("");
+  await expect(form.getByLabel("Notes (optional)")).toHaveValue("");
+  await expect(form.getByLabel("Coupon code (optional)")).toHaveValue("");
   await expect(optionalDetails).not.toHaveJSProperty("open", true);
-  await expect(form.getByLabel("رقم بديل (اختياري)")).toBeHidden();
+  await expect(form.getByLabel("Alternate number (optional)")).toBeHidden();
 });
 
 test("missing delivery areas explain the blocked decision before customer fields", async ({ page }) => {
@@ -186,12 +261,12 @@ test("missing delivery areas explain the blocked decision before customer fields
     for (const area of active) expect((await staffApi(page, "PUT", `/api/internal/delivery-areas/${area.id}`, { nameAr: area.nameAr, feePiasters: area.feePiasters, active: false })).status).toBe(200);
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(`${STORE}/checkout`);
-    const notice = page.getByRole("alert").filter({ hasText: "لا توجد مناطق توصيل متاحة حالياً" });
+    const notice = page.getByRole("alert").filter({ hasText: "No delivery areas are available right now" });
     await expect(notice).toBeVisible();
-    await expect(page.getByLabel("الاسم", { exact: false })).toBeDisabled();
-    await expect(page.getByRole("button", { name: "مراجعة السعر", exact: true })).toBeDisabled();
+    await expect(page.getByLabel("Name", { exact: false })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Review price", exact: true })).toBeDisabled();
     expect((await notice.boundingBox())!.y).toBeLessThan((await page.locator("fieldset").first().boundingBox())!.y);
-    await notice.getByRole("link", { name: "العودة إلى السلة" }).click();
+    await notice.getByRole("link", { name: "Back to bag" }).click();
     await expect(page).toHaveURL(`${STORE}/cart`);
   } finally {
     for (const area of active) expect((await staffApi(page, "PUT", `/api/internal/delivery-areas/${area.id}`, { nameAr: area.nameAr, feePiasters: area.feePiasters, active: true })).status).toBe(200);
@@ -237,8 +312,8 @@ async function receive(page: Page, branchId: string, variantId: string) {
 
 async function addProduct(page: Page, productId: string) {
   await page.goto(`${STORE}/products/${productId}`);
-  await page.locator(".purchase-panel").getByRole("button", { name: "أضف إلى السلة" }).click();
-  await expect(page.locator(".purchase-panel").getByRole("status")).toContainText("تمت إضافة الاختيار إلى السلة");
+  await page.locator(".purchase-panel").getByRole("button", { name: "Add to bag" }).click();
+  await expect(page.locator(".purchase-panel").getByRole("status")).toContainText("Added to your bag.");
 }
 
 async function savedCart(page: Page) { return page.evaluate(() => JSON.parse(localStorage.getItem("bravos-guest-cart-v1") ?? "null")); }

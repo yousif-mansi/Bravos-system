@@ -81,6 +81,161 @@ function emptyNewInventoryProduct(): NewInventoryProduct {
   return { code: "", nameAr: "", categoryId: "", defaultEgp: "", variants: [emptyNewInventoryVariant()] };
 }
 
+type CategoryNode = { id: string; nameAr: string; parentId: string | null };
+
+function categoryPath(categories: readonly CategoryNode[], categoryId: string): string {
+  const byId = new Map(categories.map((item) => [item.id, item]));
+  const names: string[] = [];
+  const seen = new Set<string>();
+  let current = byId.get(categoryId);
+  while (current && !seen.has(current.id)) {
+    seen.add(current.id);
+    names.push(current.nameAr);
+    current = current.parentId ? byId.get(current.parentId) : undefined;
+  }
+  return names.reverse().join(" / ");
+}
+
+function categoryInBranch(categories: readonly CategoryNode[], productCategoryId: string, selectedCategoryId: string): boolean {
+  if (!selectedCategoryId) return true;
+  const byId = new Map(categories.map((item) => [item.id, item]));
+  const seen = new Set<string>();
+  let current = byId.get(productCategoryId);
+  while (current && !seen.has(current.id)) {
+    if (current.id === selectedCategoryId) return true;
+    seen.add(current.id);
+    current = current.parentId ? byId.get(current.parentId) : undefined;
+  }
+  return false;
+}
+
+function matchesNameOrSku(product: { code: string; nameAr: string }, query: string): boolean {
+  const needle = query.trim().toLocaleLowerCase();
+  if (!needle) return true;
+  return product.code.toLocaleLowerCase().includes(needle) || product.nameAr.toLocaleLowerCase().includes(needle);
+}
+
+function useDesktopMerchandise(): boolean {
+  const query = "(min-width: 1024px)";
+  const [desktop, setDesktop] = useState(() => typeof window !== "undefined" && window.matchMedia(query).matches);
+  useEffect(() => {
+    const media = window.matchMedia(query);
+    const update = () => setDesktop(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+  return desktop;
+}
+
+function matchedProducts(products: ManagerProductDto[], categories: CategoryDto[], categoryId: string, query: string): ManagerProductDto[] {
+  return products.filter((item) => categoryInBranch(categories, item.category.id, categoryId) && matchesNameOrSku(item, query));
+}
+
+function ProductChoiceOptions({
+  products,
+  categories,
+  desktop,
+  categoryId,
+  query,
+  selectedId,
+}: {
+  products: ManagerProductDto[];
+  categories: CategoryDto[];
+  desktop: boolean;
+  categoryId: string;
+  query: string;
+  selectedId: string;
+}) {
+  if (!desktop) {
+    return products.map((item) => <option key={item.id} value={item.id}>{item.code} — {item.nameAr}</option>);
+  }
+  const matched = matchedProducts(products, categories, categoryId, query);
+  // A desktop filter only hides other choices. The selected id stays selectable so the draft,
+  // variant, quantity, and any frozen receipt identity do not change with the filter.
+  const pinned = selectedId && !matched.some((item) => item.id === selectedId)
+    ? products.find((item) => item.id === selectedId)
+    : undefined;
+  const groups = new Map<string, { id: string; label: string; items: ManagerProductDto[] }>();
+  for (const item of matched) {
+    const id = item.category.id;
+    const group = groups.get(id);
+    if (group) group.items.push(item);
+    else groups.set(id, { id, label: categoryPath(categories, id) || item.category.nameAr, items: [item] });
+  }
+  const ordered = [...groups.values()].sort((left, right) => left.label.localeCompare(right.label, "ar"));
+  return (
+    <>
+      {pinned ? (
+        <optgroup label="الاختيار الحالي">
+          <option value={pinned.id}>{pinned.code} — {pinned.nameAr}</option>
+        </optgroup>
+      ) : null}
+      {ordered.map((group) => (
+        <optgroup key={group.id} label={group.label}>
+          {group.items.map((item) => <option key={item.id} value={item.id}>{item.code} — {item.nameAr}</option>)}
+        </optgroup>
+      ))}
+    </>
+  );
+}
+
+function MerchandiseFilters({
+  idPrefix,
+  categories,
+  categoryId,
+  query,
+  matched,
+  total,
+  onCategoryId,
+  onQuery,
+  onClear,
+}: {
+  idPrefix: string;
+  categories: CategoryDto[];
+  categoryId: string;
+  query: string;
+  matched: number;
+  total: number;
+  onCategoryId: (value: string) => void;
+  onQuery: (value: string) => void;
+  onClear: () => void;
+}) {
+  const options = categories
+    .map((item) => ({ id: item.id, label: categoryPath(categories, item.id) || item.nameAr }))
+    .sort((left, right) => left.label.localeCompare(right.label, "ar"));
+  const active = categoryId !== "" || query.trim() !== "";
+  return (
+    <div className="merchandise-filters" role="group" aria-label="تنظيم المنتجات" data-testid={`${idPrefix}-filters`}>
+      <div className="field">
+        <label htmlFor={`${idPrefix}-category`}>الفئة</label>
+        <select id={`${idPrefix}-category`} value={categoryId} aria-describedby={`${idPrefix}-count`} onChange={(event) => onCategoryId(event.target.value)}>
+          <option value="">كل الفئات</option>
+          {options.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+        </select>
+      </div>
+      <div className="field">
+        <label htmlFor={`${idPrefix}-query`}>الاسم أو رمز SKU</label>
+        <input
+          id={`${idPrefix}-query`}
+          value={query}
+          autoComplete="off"
+          placeholder="اسم أو رمز"
+          aria-describedby={`${idPrefix}-count`}
+          onChange={(event) => onQuery(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") event.preventDefault();
+          }}
+        />
+      </div>
+      <div className="merchandise-filter-meta">
+        <p id={`${idPrefix}-count`} data-testid={`${idPrefix}-count`}>المطابق: {matched} من {total}</p>
+        {active ? <button type="button" onClick={onClear}>مسح التصفية</button> : null}
+      </div>
+    </div>
+  );
+}
+
 type CorrectionDraftLine = {
   lineId: string;
   label: string;
@@ -135,6 +290,11 @@ export default function ReceivingPage({
   const [colors, setColors] = useState<ColorDto[]>([]);
   const [newInventoryProduct, setNewInventoryProduct] = useState<NewInventoryProduct>(emptyNewInventoryProduct);
   const [intakeMode, setIntakeMode] = useState<"new" | "existing">("new");
+  const [intakeBrowseCategoryId, setIntakeBrowseCategoryId] = useState("");
+  const [intakeBrowseQuery, setIntakeBrowseQuery] = useState("");
+  const [receiptBrowseCategoryId, setReceiptBrowseCategoryId] = useState("");
+  const [receiptBrowseQuery, setReceiptBrowseQuery] = useState("");
+  const desktop = useDesktopMerchandise();
   const [categoryName, setCategoryName] = useState("");
   const [categoryParentId, setCategoryParentId] = useState("");
   const [sizeName, setSizeName] = useState("");
@@ -144,6 +304,7 @@ export default function ReceivingPage({
   const [branchId, setBranchId] = useState(workspace.activeBranch?.id ?? workspace.authorizedBranches[0]?.id ?? "");
   const receiptFeedback = useRevealFeedback<HTMLElement>();
   const correctionFeedback = useRevealFeedback<HTMLFormElement>();
+  const intakeFeedback = useRevealFeedback<HTMLFormElement>();
   const [detailLoadingId, setDetailLoadingId] = useState<string | null>(null);
   const [receipts, setReceipts] = useState<ReceiptDto[]>([]);
   const [batches, setBatches] = useState<InventoryBatchDto[]>([]);
@@ -268,6 +429,7 @@ export default function ReceivingPage({
 
   const selectedReceipt = receipts.find((item) => item.id === selectedReceiptId) ?? receipts[0] ?? null;
   const formLocked = pendingReceive?.phase === "uncertain" && frozenPayload !== null;
+  const selectedExistingProduct = products.find((item) => item.code === newInventoryProduct.code) ?? null;
 
   const variantOptions = useMemo(() => {
     return products.flatMap((product) =>
@@ -285,7 +447,7 @@ export default function ReceivingPage({
       const quantity = Number(line.quantity);
       const unitCostPiasters = egpInputToPiasters(line.costEgp);
       if (!line.variantId) {
-        setError("يجب تحديد المتغير لكل صنف.");
+        setError("يجب تحديد المقاس واللون لكل صنف.");
         return null;
       }
       if (!Number.isInteger(quantity) || quantity < 1) {
@@ -686,7 +848,7 @@ export default function ReceivingPage({
     setError("");
     setNotice("");
     if (!overrideVariantId) {
-      setError("يجب تحديد المتغير لحد التنبيه.");
+      setError("يجب تحديد المقاس واللون لحد التنبيه.");
       return;
     }
     const trimmed = overrideThreshold.trim();
@@ -698,11 +860,11 @@ export default function ReceivingPage({
     setPending("override");
     try {
       await setVariantLowStockThreshold(overrideVariantId, value);
-      setNotice(value === null ? "تم حذف حد المتغير." : "تم حفظ حد المتغير.");
+      setNotice(value === null ? "تم حذف حد المقاس واللون." : "تم حفظ حد المقاس واللون.");
       setOverrideThreshold("");
       await refresh();
     } catch (caught) {
-      setError(caught instanceof ApiError ? caught.messageAr : "تعذر حفظ حد المتغير.");
+      setError(caught instanceof ApiError ? caught.messageAr : "تعذر حفظ حد المقاس واللون.");
     } finally {
       setPending("");
     }
@@ -805,7 +967,7 @@ export default function ReceivingPage({
   }
 
   return (
-    <main className="shell">
+    <main className="shell receiving-page">
       <header className="page-hero">
         <h1>استلام المخزون</h1>
       </header>
@@ -826,87 +988,11 @@ export default function ReceivingPage({
         </div>
       </section>
 
-      <section className="card" aria-label="تجهيز تصنيفات المخزون">
-        <h2>تجهيز التصنيف والمقاس واللون</h2>
-        <p className="muted">إذا كان أحد الاختيارات غير موجود، أضفه هنا ثم استخدمه في المنتج.</p>
-        <div className="grid two">
-          <form aria-label="إضافة تصنيف للمخزون" onSubmit={(event) => void addTaxonomy(event, "category")}>
-            <div className="field"><label htmlFor="intakeCategoryName">تصنيف جديد</label><input id="intakeCategoryName" value={categoryName} onChange={(event) => setCategoryName(event.target.value)} required /></div>
-            <div className="field"><label htmlFor="intakeCategoryParent">التصنيف الرئيسي (اختياري)</label><select id="intakeCategoryParent" value={categoryParentId} onChange={(event) => setCategoryParentId(event.target.value)}><option value="">تصنيف رئيسي</option>{categories.filter((item) => item.parentId === null).map((item) => <option key={item.id} value={item.id}>{item.nameAr}</option>)}</select></div>
-            <button type="submit" disabled={Boolean(pending)}>{pending === "taxonomy-category" ? "جارٍ الحفظ…" : "إضافة التصنيف"}</button>
-          </form>
-          <form aria-label="إضافة مقاس للمخزون" onSubmit={(event) => void addTaxonomy(event, "size")}>
-            <div className="field"><label htmlFor="intakeSizeName">مقاس جديد</label><input id="intakeSizeName" value={sizeName} onChange={(event) => setSizeName(event.target.value)} required /></div>
-            <button type="submit" disabled={Boolean(pending)}>{pending === "taxonomy-size" ? "جارٍ الحفظ…" : "إضافة المقاس"}</button>
-          </form>
-          <form aria-label="إضافة لون للمخزون" onSubmit={(event) => void addTaxonomy(event, "color")}>
-            <div className="field"><label htmlFor="intakeColorName">لون جديد</label><input id="intakeColorName" value={colorName} onChange={(event) => setColorName(event.target.value)} required /></div>
-            <button type="submit" disabled={Boolean(pending)}>{pending === "taxonomy-color" ? "جارٍ الحفظ…" : "إضافة اللون"}</button>
-          </form>
-        </div>
-      </section>
-
-      <form className="card stacked-form" aria-label="إضافة منتج إلى المخزون" aria-busy={pending === "new-product"} onSubmit={(event) => void onCreateAndReceive(event)}>
-        <h2>إضافة منتج أو تركيبة إلى المخزون</h2>
-        <p className="muted">سجّل المنتج أو مقاساً ولوناً جديدين له مع الكمية وتكلفة الشراء. يُحفظ المنتج أولاً ثم إذن الاستلام؛ إذا توقف الاتصال بين الخطوتين، استعد الرمز وأكمل الاستلام.</p>
-        <fieldset>
-          <legend>نوع الإضافة</legend>
-          <label><input type="radio" name="inventory-intake-mode" checked={intakeMode === "new"} disabled={Boolean(savedNewReceipt) || Boolean(pending)} onChange={() => { setIntakeMode("new"); setNewInventoryProduct(emptyNewInventoryProduct()); }} /> منتج جديد</label>
-          <label><input type="radio" name="inventory-intake-mode" checked={intakeMode === "existing"} disabled={Boolean(savedNewReceipt) || Boolean(pending)} onChange={() => { setIntakeMode("existing"); setNewInventoryProduct(emptyNewInventoryProduct()); }} /> مقاس ولون جديدان لمنتج موجود</label>
-        </fieldset>
-        {intakeMode === "existing" ? <div className="field">
-          <label htmlFor="existingInventoryProduct">اختر المنتج الموجود برمزه</label>
-          <select id="existingInventoryProduct" value={products.find((item) => item.code === newInventoryProduct.code)?.id ?? ""} disabled={Boolean(savedNewReceipt) || Boolean(pending)} onChange={(event) => {
-            const selected = products.find((item) => item.id === event.target.value);
-            setNewInventoryProduct(selected ? { code: selected.code, nameAr: selected.nameAr, categoryId: selected.category.id, defaultEgp: piastersToEgpInput(selected.defaultSellingPricePiasters), variants: [emptyNewInventoryVariant()] } : emptyNewInventoryProduct());
-          }} required>
-            <option value="">اختر المنتج</option>
-            {products.map((item) => <option key={item.id} value={item.id}>{item.code} — {item.nameAr}</option>)}
-          </select>
-        </div> : null}
-        {savedNewProduct ? <p className="notice" role="status">المنتج محفوظ: {savedNewProduct.code}. أكمل تسجيل الكمية لهذا المنتج دون إنشائه مرة أخرى.</p> : null}
-        <div className="field"><label htmlFor="newInventoryReceiptDate">تاريخ الاستلام</label><input id="newInventoryReceiptDate" type="date" value={receiptDate} onChange={(event) => setReceiptDate(event.target.value)} disabled={Boolean(savedNewReceipt) || Boolean(pending)} required /></div>
-        <div className="grid two">
-          <div className="field">
-            <label htmlFor="newInventoryCode">رمز المنتج / SKU</label>
-            <input id="newInventoryCode" value={newInventoryProduct.code} onChange={(event) => setNewInventoryProduct((current) => ({ ...current, code: event.target.value }))} disabled={intakeMode === "existing" || Boolean(savedNewReceipt) || Boolean(pending)} required />
-          </div>
-          <div className="field">
-            <label htmlFor="newInventoryName">اسم المنتج</label>
-            <input id="newInventoryName" value={newInventoryProduct.nameAr} onChange={(event) => setNewInventoryProduct((current) => ({ ...current, nameAr: event.target.value }))} disabled={intakeMode === "existing" || Boolean(savedNewReceipt) || Boolean(pending)} required />
-          </div>
-          <div className="field">
-            <label htmlFor="newInventoryCategory">التصنيف</label>
-            <select id="newInventoryCategory" value={newInventoryProduct.categoryId} onChange={(event) => setNewInventoryProduct((current) => ({ ...current, categoryId: event.target.value }))} disabled={intakeMode === "existing" || Boolean(savedNewReceipt) || Boolean(pending)} required>
-              <option value="">اختر تصنيفاً</option>
-              {categories.map((category) => <option key={category.id} value={category.id}>{category.nameAr}</option>)}
-            </select>
-          </div>
-          <div className="field">
-            <label htmlFor="newInventoryPrice">سعر البيع الافتراضي بالجنيه</label>
-            <input id="newInventoryPrice" inputMode="decimal" value={newInventoryProduct.defaultEgp} onChange={(event) => setNewInventoryProduct((current) => ({ ...current, defaultEgp: event.target.value }))} disabled={intakeMode === "existing" || Boolean(savedNewReceipt) || Boolean(pending)} required />
-          </div>
-        </div>
-        <fieldset className="grant-editor">
-          <legend>المقاسات والألوان والكميات</legend>
-          {newInventoryProduct.variants.map((row, index) => <div className="variant-row" key={row.key}>
-            <div className="field"><label htmlFor={`new-size-${row.key}`}>المقاس</label><select id={`new-size-${row.key}`} value={row.sizeId} onChange={(event) => setNewInventoryProduct((current) => ({ ...current, variants: current.variants.map((item) => item.key === row.key ? { ...item, sizeId: event.target.value } : item) }))} disabled={Boolean(savedNewReceipt) || Boolean(pending)} required><option value="">اختر مقاساً</option>{sizes.map((item) => <option key={item.id} value={item.id}>{item.nameAr}</option>)}</select></div>
-            <div className="field"><label htmlFor={`new-color-${row.key}`}>اللون</label><select id={`new-color-${row.key}`} value={row.colorId} onChange={(event) => setNewInventoryProduct((current) => ({ ...current, variants: current.variants.map((item) => item.key === row.key ? { ...item, colorId: event.target.value } : item) }))} disabled={Boolean(savedNewReceipt) || Boolean(pending)} required><option value="">اختر لوناً</option>{colors.map((item) => <option key={item.id} value={item.id}>{item.nameAr}</option>)}</select></div>
-            <div className="field"><label htmlFor={`new-qty-${row.key}`}>الكمية</label><input id={`new-qty-${row.key}`} type="number" min="1" step="1" value={row.quantity} onChange={(event) => setNewInventoryProduct((current) => ({ ...current, variants: current.variants.map((item) => item.key === row.key ? { ...item, quantity: event.target.value } : item) }))} disabled={Boolean(savedNewReceipt) || Boolean(pending)} required /></div>
-            <div className="field"><label htmlFor={`new-cost-${row.key}`}>تكلفة الشراء بالجنيه</label><input id={`new-cost-${row.key}`} inputMode="decimal" value={row.costEgp} onChange={(event) => setNewInventoryProduct((current) => ({ ...current, variants: current.variants.map((item) => item.key === row.key ? { ...item, costEgp: event.target.value } : item) }))} disabled={Boolean(savedNewReceipt) || Boolean(pending)} required /></div>
-            <button type="button" className="secondary" disabled={Boolean(savedNewReceipt) || Boolean(pending) || newInventoryProduct.variants.length <= 1} onClick={() => setNewInventoryProduct((current) => ({ ...current, variants: current.variants.filter((item) => item.key !== row.key) }))}>حذف التركيبة {index + 1}</button>
-          </div>)}
-          <button type="button" className="secondary" disabled={Boolean(savedNewReceipt) || Boolean(pending)} onClick={() => setNewInventoryProduct((current) => ({ ...current, variants: [...current.variants, emptyNewInventoryVariant()] }))}>إضافة مقاس ولون</button>
-        </fieldset>
-        <div className="actions">
-          <button type="submit" disabled={Boolean(pending) || !branchId}>{pending === "new-product" ? "جارٍ الحفظ…" : savedNewProduct ? "حفظ كمية المنتج" : intakeMode === "existing" ? "حفظ التركيبة والكمية" : "حفظ المنتج والكمية"}</button>
-          {savedNewReceipt && pendingReceive?.phase === "rejected" ? <button type="button" className="secondary" disabled={Boolean(pending)} onClick={() => { setSavedNewReceipt(null); setError(""); setNotice("راجع تاريخ الاستلام والفرع والكميات والتكلفة، ثم احفظ الكمية للمنتج المحفوظ."); }}>تعديل بيانات الاستلام المرفوض</button> : null}
-          {!savedNewReceipt ? <button type="button" className="secondary" disabled={Boolean(pending) || !newInventoryProduct.code.trim()} onClick={() => void recoverNewInventoryProduct()}>استعادة منتج محفوظ برمزه</button> : null}
-        </div>
-      </form>
-
       <form className="card" aria-label="تسجيل إذن استلام" onSubmit={(event) => void onSubmit(event)}>
-        <h2>{pendingReceive ? "عملية استلام غير مؤكدة" : "إذن استلام جديد"}</h2>
+        <div className="page-hero">
+          <h2>{pendingReceive ? "عملية استلام غير مؤكدة" : "إذن استلام جديد"}</h2>
+          <button type="button" className="secondary" onClick={() => intakeFeedback.reveal()}>إضافة منتج جديد</button>
+        </div>
         {pendingReceive ? (
           <p className="muted" data-testid="pending-operation">
             معرّف العملية محفوظ لهذه الجلسة. التحقق من النتيجة يتم عبر الخادم ولا يبدأ إذناً جديداً.
@@ -923,10 +1009,23 @@ export default function ReceivingPage({
             disabled={formLocked}
           />
         </div>
+        {desktop ? (
+          <MerchandiseFilters
+            idPrefix="receipt-browse"
+            categories={categories}
+            categoryId={receiptBrowseCategoryId}
+            query={receiptBrowseQuery}
+            matched={matchedProducts(products, categories, receiptBrowseCategoryId, receiptBrowseQuery).length}
+            total={products.length}
+            onCategoryId={setReceiptBrowseCategoryId}
+            onQuery={setReceiptBrowseQuery}
+            onClear={() => { setReceiptBrowseCategoryId(""); setReceiptBrowseQuery(""); }}
+          />
+        ) : null}
         {lines.map((line, index) => {
           const product = products.find((item) => item.id === line.productId);
           return (
-            <div className="variant-row" key={line.key}>
+            <div className="variant-row receipt-variant-row" key={line.key}>
               <div className="field">
                 <label htmlFor={`product-${line.key}`}>المنتج</label>
                 <select
@@ -940,10 +1039,16 @@ export default function ReceivingPage({
                   disabled={formLocked}
                 >
                   <option value="">اختر منتجاً</option>
-                  {products.map((item) => (
-                    <option key={item.id} value={item.id}>{item.code} — {item.nameAr}</option>
-                  ))}
+                  <ProductChoiceOptions
+                    products={products}
+                    categories={categories}
+                    desktop={desktop}
+                    categoryId={receiptBrowseCategoryId}
+                    query={receiptBrowseQuery}
+                    selectedId={line.productId}
+                  />
                 </select>
+                {product ? <p className="category-path">المسار: {categoryPath(categories, product.category.id) || product.category.nameAr}</p> : null}
               </div>
               <div className="field">
                 <label htmlFor={`variant-${line.key}`}>المقاس واللون</label>
@@ -957,7 +1062,7 @@ export default function ReceivingPage({
                   }}
                   disabled={formLocked || !product}
                 >
-                  <option value="">اختر المتغير</option>
+                  <option value="">اختر المقاس واللون</option>
                   {product?.variants.map((variant) => (
                     <option key={variant.id} value={variant.id}>
                       {variant.size.nameAr} / {variant.color.nameAr}
@@ -1019,7 +1124,7 @@ export default function ReceivingPage({
               {pending === "check" ? "جارٍ التحقق…" : "التحقق من النتيجة"}
             </button>
           ) : null}
-          <button type="submit" disabled={pending === "receive"}>
+          <button type="submit" className="business-primary-action" disabled={pending === "receive"}>
             {pending === "receive"
               ? "جارٍ الحفظ…"
               : pendingReceive
@@ -1029,25 +1134,189 @@ export default function ReceivingPage({
         </div>
       </form>
 
+      <section className="card" aria-label="تجهيز تصنيفات المخزون">
+        <details className="business-disclosure">
+        <summary>تجهيز التصنيف والمقاس واللون</summary>
+        <p className="muted">إذا كان أحد الاختيارات غير موجود، أضفه هنا ثم استخدمه في المنتج.</p>
+        <div className="grid two">
+          <form aria-label="إضافة تصنيف للمخزون" onSubmit={(event) => void addTaxonomy(event, "category")}>
+            <div className="field"><label htmlFor="intakeCategoryName">تصنيف جديد</label><input id="intakeCategoryName" value={categoryName} onChange={(event) => setCategoryName(event.target.value)} required /></div>
+            <div className="field"><label htmlFor="intakeCategoryParent">التصنيف الرئيسي (اختياري)</label><select id="intakeCategoryParent" value={categoryParentId} onChange={(event) => setCategoryParentId(event.target.value)}><option value="">تصنيف رئيسي</option>{categories.filter((item) => item.parentId === null).map((item) => <option key={item.id} value={item.id}>{item.nameAr}</option>)}</select></div>
+            <button type="submit" disabled={Boolean(pending)}>{pending === "taxonomy-category" ? "جارٍ الحفظ…" : "إضافة التصنيف"}</button>
+          </form>
+          <form aria-label="إضافة مقاس للمخزون" onSubmit={(event) => void addTaxonomy(event, "size")}>
+            <div className="field"><label htmlFor="intakeSizeName">مقاس جديد</label><input id="intakeSizeName" value={sizeName} onChange={(event) => setSizeName(event.target.value)} required /></div>
+            <button type="submit" disabled={Boolean(pending)}>{pending === "taxonomy-size" ? "جارٍ الحفظ…" : "إضافة المقاس"}</button>
+          </form>
+          <form aria-label="إضافة لون للمخزون" onSubmit={(event) => void addTaxonomy(event, "color")}>
+            <div className="field"><label htmlFor="intakeColorName">لون جديد</label><input id="intakeColorName" value={colorName} onChange={(event) => setColorName(event.target.value)} required /></div>
+            <button type="submit" disabled={Boolean(pending)}>{pending === "taxonomy-color" ? "جارٍ الحفظ…" : "إضافة اللون"}</button>
+          </form>
+        </div>
+        </details>
+      </section>
+
+      <form ref={intakeFeedback.regionRef} className={`card stacked-form reveal-feedback${intakeFeedback.highlighted ? " is-highlighted" : ""}`} aria-label="إضافة منتج إلى المخزون" aria-busy={pending === "new-product"} onSubmit={(event) => void onCreateAndReceive(event)}>
+        <h2 ref={intakeFeedback.headingRef} tabIndex={-1}>إضافة منتج أو تركيبة إلى المخزون</h2>
+        <p className="muted">سجّل المنتج أو مقاساً ولوناً جديدين له مع الكمية وتكلفة الشراء. يُحفظ المنتج أولاً ثم إذن الاستلام؛ إذا توقف الاتصال بين الخطوتين، استعد الرمز وأكمل الاستلام.</p>
+        <fieldset>
+          <legend>نوع الإضافة</legend>
+          <label><input type="radio" name="inventory-intake-mode" checked={intakeMode === "new"} disabled={Boolean(savedNewReceipt) || Boolean(pending)} onChange={() => { setIntakeMode("new"); setNewInventoryProduct(emptyNewInventoryProduct()); }} /> منتج جديد</label>
+          <label><input type="radio" name="inventory-intake-mode" checked={intakeMode === "existing"} disabled={Boolean(savedNewReceipt) || Boolean(pending)} onChange={() => { setIntakeMode("existing"); setNewInventoryProduct(emptyNewInventoryProduct()); }} /> مقاس ولون جديدان لمنتج موجود</label>
+        </fieldset>
+        {intakeMode === "existing" ? <>
+          {desktop ? (
+            <MerchandiseFilters
+              idPrefix="intake-browse"
+              categories={categories}
+              categoryId={intakeBrowseCategoryId}
+              query={intakeBrowseQuery}
+              matched={matchedProducts(products, categories, intakeBrowseCategoryId, intakeBrowseQuery).length}
+              total={products.length}
+              onCategoryId={setIntakeBrowseCategoryId}
+              onQuery={setIntakeBrowseQuery}
+              onClear={() => { setIntakeBrowseCategoryId(""); setIntakeBrowseQuery(""); }}
+            />
+          ) : null}
+          <div className="field">
+          <label htmlFor="existingInventoryProduct">اختر المنتج الموجود برمزه</label>
+          <select id="existingInventoryProduct" value={selectedExistingProduct?.id ?? ""} disabled={Boolean(savedNewReceipt) || Boolean(pending)} onChange={(event) => {
+            const selected = products.find((item) => item.id === event.target.value);
+            setNewInventoryProduct(selected ? { code: selected.code, nameAr: selected.nameAr, categoryId: selected.category.id, defaultEgp: piastersToEgpInput(selected.defaultSellingPricePiasters), variants: [emptyNewInventoryVariant()] } : emptyNewInventoryProduct());
+          }} required>
+            <option value="">اختر المنتج</option>
+            <ProductChoiceOptions
+              products={products}
+              categories={categories}
+              desktop={desktop}
+              categoryId={intakeBrowseCategoryId}
+              query={intakeBrowseQuery}
+              selectedId={selectedExistingProduct?.id ?? ""}
+            />
+          </select>
+          {selectedExistingProduct ? <p className="category-path">المسار: {categoryPath(categories, selectedExistingProduct.category.id) || selectedExistingProduct.category.nameAr}</p> : null}
+        </div>
+        </> : null}
+        {savedNewProduct ? <p className="notice" role="status">المنتج محفوظ: {savedNewProduct.code}. أكمل تسجيل الكمية لهذا المنتج دون إنشائه مرة أخرى.</p> : null}
+        <div className="field"><label htmlFor="newInventoryReceiptDate">تاريخ الاستلام</label><input id="newInventoryReceiptDate" type="date" value={receiptDate} onChange={(event) => setReceiptDate(event.target.value)} disabled={Boolean(savedNewReceipt) || Boolean(pending)} required /></div>
+        <div className="grid two">
+          <div className="field">
+            <label htmlFor="newInventoryCode">رمز المنتج / SKU</label>
+            <input id="newInventoryCode" value={newInventoryProduct.code} onChange={(event) => setNewInventoryProduct((current) => ({ ...current, code: event.target.value }))} disabled={intakeMode === "existing" || Boolean(savedNewReceipt) || Boolean(pending)} required />
+          </div>
+          <div className="field">
+            <label htmlFor="newInventoryName">اسم المنتج</label>
+            <input id="newInventoryName" value={newInventoryProduct.nameAr} onChange={(event) => setNewInventoryProduct((current) => ({ ...current, nameAr: event.target.value }))} disabled={intakeMode === "existing" || Boolean(savedNewReceipt) || Boolean(pending)} required />
+          </div>
+          <div className="field">
+            <label htmlFor="newInventoryCategory">التصنيف</label>
+            <select id="newInventoryCategory" value={newInventoryProduct.categoryId} onChange={(event) => setNewInventoryProduct((current) => ({ ...current, categoryId: event.target.value }))} disabled={intakeMode === "existing" || Boolean(savedNewReceipt) || Boolean(pending)} required>
+              <option value="">اختر تصنيفاً</option>
+              {categories.map((category) => <option key={category.id} value={category.id}>{categoryPath(categories, category.id) || category.nameAr}</option>)}
+            </select>
+          </div>
+          <div className="field">
+            <label htmlFor="newInventoryPrice">سعر البيع الافتراضي بالجنيه</label>
+            <input id="newInventoryPrice" inputMode="decimal" value={newInventoryProduct.defaultEgp} onChange={(event) => setNewInventoryProduct((current) => ({ ...current, defaultEgp: event.target.value }))} disabled={intakeMode === "existing" || Boolean(savedNewReceipt) || Boolean(pending)} required />
+          </div>
+        </div>
+        <fieldset className="grant-editor">
+          <legend>المقاسات والألوان والكميات</legend>
+          {newInventoryProduct.variants.map((row, index) => <div className="variant-row intake-variant-row" key={row.key}>
+            <div className="field"><label htmlFor={`new-size-${row.key}`}>المقاس</label><select id={`new-size-${row.key}`} value={row.sizeId} onChange={(event) => setNewInventoryProduct((current) => ({ ...current, variants: current.variants.map((item) => item.key === row.key ? { ...item, sizeId: event.target.value } : item) }))} disabled={Boolean(savedNewReceipt) || Boolean(pending)} required><option value="">اختر مقاساً</option>{sizes.map((item) => <option key={item.id} value={item.id}>{item.nameAr}</option>)}</select></div>
+            <div className="field"><label htmlFor={`new-color-${row.key}`}>اللون</label><select id={`new-color-${row.key}`} value={row.colorId} onChange={(event) => setNewInventoryProduct((current) => ({ ...current, variants: current.variants.map((item) => item.key === row.key ? { ...item, colorId: event.target.value } : item) }))} disabled={Boolean(savedNewReceipt) || Boolean(pending)} required><option value="">اختر لوناً</option>{colors.map((item) => <option key={item.id} value={item.id}>{item.nameAr}</option>)}</select></div>
+            <div className="field"><label htmlFor={`new-qty-${row.key}`}>الكمية</label><input id={`new-qty-${row.key}`} type="number" min="1" step="1" value={row.quantity} onChange={(event) => setNewInventoryProduct((current) => ({ ...current, variants: current.variants.map((item) => item.key === row.key ? { ...item, quantity: event.target.value } : item) }))} disabled={Boolean(savedNewReceipt) || Boolean(pending)} required /></div>
+            <div className="field"><label htmlFor={`new-cost-${row.key}`}>تكلفة الشراء بالجنيه</label><input id={`new-cost-${row.key}`} inputMode="decimal" value={row.costEgp} onChange={(event) => setNewInventoryProduct((current) => ({ ...current, variants: current.variants.map((item) => item.key === row.key ? { ...item, costEgp: event.target.value } : item) }))} disabled={Boolean(savedNewReceipt) || Boolean(pending)} required /></div>
+            <button type="button" className="secondary" disabled={Boolean(savedNewReceipt) || Boolean(pending) || newInventoryProduct.variants.length <= 1} onClick={() => setNewInventoryProduct((current) => ({ ...current, variants: current.variants.filter((item) => item.key !== row.key) }))}>حذف التركيبة {index + 1}</button>
+          </div>)}
+          <button type="button" className="secondary" disabled={Boolean(savedNewReceipt) || Boolean(pending)} onClick={() => setNewInventoryProduct((current) => ({ ...current, variants: [...current.variants, emptyNewInventoryVariant()] }))}>إضافة مقاس ولون</button>
+        </fieldset>
+        <div className="actions">
+          <button type="submit" disabled={Boolean(pending) || !branchId}>{pending === "new-product" ? "جارٍ الحفظ…" : savedNewProduct ? "حفظ كمية المنتج" : intakeMode === "existing" ? "حفظ التركيبة والكمية" : "حفظ المنتج والكمية"}</button>
+          {savedNewReceipt && pendingReceive?.phase === "rejected" ? <button type="button" className="secondary" disabled={Boolean(pending)} onClick={() => { setSavedNewReceipt(null); setError(""); setNotice("راجع تاريخ الاستلام والفرع والكميات والتكلفة، ثم احفظ الكمية للمنتج المحفوظ."); }}>تعديل بيانات الاستلام المرفوض</button> : null}
+          {!savedNewReceipt ? <button type="button" className="secondary" disabled={Boolean(pending) || !newInventoryProduct.code.trim()} onClick={() => void recoverNewInventoryProduct()}>استعادة منتج محفوظ برمزه</button> : null}
+        </div>
+      </form>
+
       <div className="grid two">
-        <section className="card">
-          <h2>أذون الاستلام</h2>
-          {receipts.length === 0 ? (
-            <EmptyState title="لسه مفيش استلام" message="سجّل أول إذن من النموذج فوق." />
+        <section className="card" aria-label="المخزون المنخفض">
+          <h2>المخزون المنخفض</h2>
+          {lowStock.length === 0 ? (
+            <EmptyState title="المخزون كويس" message="مفيش أصناف وصلت لحد التنبيه." />
           ) : (
-            <div className="staff-list" data-testid="receipt-list">
-              {receipts.map((receipt) => (
-                <article className="staff-item" key={receipt.id}>
-                  <button type="button" className="secondary" disabled={Boolean(detailLoadingId)} aria-busy={detailLoadingId === receipt.id} onClick={() => void openReceiptDetails(receipt.id)}>
-                    {detailLoadingId === receipt.id ? "جارٍ تحميل التفاصيل…" : "عرض التفاصيل"}
-                  </button>
-                  <p>التاريخ: {receipt.receiptDate}</p>
-                  <p>الفرع: {workspace.authorizedBranches.find((branch) => branch.id === receipt.branchId)?.nameAr ?? receipt.branchId}</p>
-                  <p>{receipt.lines.map((line) => line.variant.product.code).join("، ")}</p>
-                  <p className="muted">أصناف: {receipt.lines.length}</p>
+            <div className="staff-list" data-testid="low-stock-list">
+              {lowStock.map((item) => (
+                <article className="staff-item" key={`${item.branchId}:${item.variantId}`}>
+                  <p>
+                    {item.variant.product.code} / {item.variant.size.nameAr} / {item.variant.color.nameAr}
+                  </p>
+                  <p>الفرع: {workspace.authorizedBranches.find((branch) => branch.id === item.branchId)?.nameAr ?? item.branchId} — المتاح: {item.availableQuantity} — الحد: {item.threshold}</p>
                 </article>
               ))}
             </div>
+          )}
+          <details className="business-disclosure">
+            <summary>إعدادات التنبيه</summary>
+            <form aria-label="حد التنبيه العام" onSubmit={(event) => void onSaveThreshold(event)}>
+              <div className="field">
+                <label htmlFor="globalThreshold">الحد العام للكمية المتاحة</label>
+                <input id="globalThreshold" value={thresholdInput} onChange={(event) => setThresholdInput(event.target.value)} />
+              </div>
+              <button type="submit" disabled={pending === "settings"}>
+                {pending === "settings" ? "جارٍ الحفظ…" : "حفظ الحد العام"}
+              </button>
+            </form>
+            {settings ? <p className="muted">الحد الحالي: {settings.lowStockThreshold}</p> : null}
+            <form className="stacked-form" aria-label="حد تنبيه لمتغير" onSubmit={(event) => void onSaveOverride(event)}>
+              <div className="field">
+                <label htmlFor="overrideVariant">المقاس واللون</label>
+                <select id="overrideVariant" value={overrideVariantId} onChange={(event) => setOverrideVariantId(event.target.value)}>
+                  <option value="">اختر المقاس واللون</option>
+                  {variantOptions.map((item) => (
+                    <option key={item.variant.id} value={item.variant.id}>{item.label}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="field">
+                <label htmlFor="overrideThreshold">حد المقاس واللون (فارغ للحذف)</label>
+                <input id="overrideThreshold" value={overrideThreshold} onChange={(event) => setOverrideThreshold(event.target.value)} />
+              </div>
+              <button type="submit" disabled={pending === "override"}>
+                {pending === "override" ? "جارٍ الحفظ…" : "حفظ حد المقاس واللون"}
+              </button>
+            </form>
+          </details>
+        </section>
+        <section className="card">
+          <h2>تنبيه</h2>
+          <p>
+            الاستلام متصل ويتطلب صلاحية المدير. كل فرع له رصيد مستقل، وتبقى تكاليف الشراء في دفعات منفصلة.
+          </p>
+        </section>
+      </div>
+
+      <div className="grid two">
+        <section className="card" aria-label="سجل الاستلام">
+          {receipts.length === 0 ? (
+            <EmptyState title="لسه مفيش استلام" message="سجّل أول إذن من النموذج فوق." />
+          ) : (
+            <details className="business-disclosure">
+              <summary>سجل الاستلام</summary>
+              <div className="business-archive-scroll" role="region" aria-label="سجل الاستلام" tabIndex={0}>
+                <div className="staff-list" data-testid="receipt-list">
+                  {receipts.map((receipt) => (
+                    <article className="staff-item business-archive-row" key={receipt.id}>
+                      <button type="button" className="secondary" disabled={Boolean(detailLoadingId)} aria-busy={detailLoadingId === receipt.id} onClick={() => void openReceiptDetails(receipt.id)}>
+                        {detailLoadingId === receipt.id ? "جارٍ تحميل التفاصيل…" : "عرض التفاصيل"}
+                      </button>
+                      <p>التاريخ: {receipt.receiptDate} · الفرع: {workspace.authorizedBranches.find((branch) => branch.id === receipt.branchId)?.nameAr ?? receipt.branchId}</p>
+                      <p>{receipt.lines.map((line) => line.variant.product.code).join("، ")}</p>
+                      <p className="muted">أصناف: {receipt.lines.length}</p>
+                    </article>
+                  ))}
+                </div>
+              </div>
+            </details>
           )}
           {selectedReceipt ? (
             <section ref={receiptFeedback.regionRef} className={`reveal-feedback${receiptFeedback.highlighted ? " is-highlighted" : ""}`} data-testid="receipt-details">
@@ -1154,80 +1423,30 @@ export default function ReceivingPage({
           ) : null}
         </section>
 
-        <section className="card">
-          <h2>دفعات التكلفة</h2>
+        <section className="card" aria-label="تفاصيل دفعات الشراء">
           {batches.length === 0 ? (
             <EmptyState title="لسه مفيش دفعات" message="بعد أول استلام هتظهر هنا." />
           ) : (
-            <div className="staff-list" data-testid="batch-list">
-              {batches.map((batch) => (
-                <article className="staff-item" key={batch.id}>
-                  <p>
-                    {batch.variant.product.nameAr} — {batch.variant.product.code} / {batch.variant.size.nameAr} / {batch.variant.color.nameAr}
-                  </p>
-                  <p>المتبقي بالمخزون: {batch.remainingQuantity}</p>
-                  <p>حسب الفرع: {batch.branchBalances.map((balance) => `${workspace.authorizedBranches.find((branch) => branch.id === balance.branchId)?.nameAr ?? "فرع غير متاح"}: ${balance.availableQuantity}`).join("، ")}</p>
-                  <p>تكلفة شراء الوحدة: {formatEgpFromPiasters(batch.effectiveUnitCostPiasters)}</p>
-                </article>
-              ))}
-            </div>
+            <details className="business-disclosure">
+              <summary>تفاصيل دفعات الشراء</summary>
+              <div className="business-archive-scroll" role="region" aria-label="تفاصيل دفعات الشراء" tabIndex={0}>
+                <div className="staff-list" data-testid="batch-list">
+                  {batches.map((batch) => (
+                    <article className="staff-item business-archive-row" key={batch.id}>
+                      <p>
+                        {batch.variant.product.nameAr} — {batch.variant.product.code} / {batch.variant.size.nameAr} / {batch.variant.color.nameAr}
+                      </p>
+                      <p>المتبقي بالمخزون: {batch.remainingQuantity} · حسب الفرع: {batch.branchBalances.map((balance) => `${workspace.authorizedBranches.find((branch) => branch.id === balance.branchId)?.nameAr ?? "فرع غير متاح"}: ${balance.availableQuantity}`).join("، ")}</p>
+                      <p>تكلفة شراء الوحدة: {formatEgpFromPiasters(batch.effectiveUnitCostPiasters)}</p>
+                    </article>
+                  ))}
+                </div>
+              </div>
+            </details>
           )}
         </section>
       </div>
 
-      <div className="grid two">
-        <section className="card">
-          <h2>المخزون المنخفض</h2>
-          <form aria-label="حد التنبيه العام" onSubmit={(event) => void onSaveThreshold(event)}>
-            <div className="field">
-              <label htmlFor="globalThreshold">الحد العام للكمية المتاحة</label>
-              <input id="globalThreshold" value={thresholdInput} onChange={(event) => setThresholdInput(event.target.value)} />
-            </div>
-            <button type="submit" disabled={pending === "settings"}>
-              {pending === "settings" ? "جارٍ الحفظ…" : "حفظ الحد العام"}
-            </button>
-          </form>
-          {settings ? <p className="muted">الحد الحالي: {settings.lowStockThreshold}</p> : null}
-          <form className="stacked-form" aria-label="حد تنبيه لمتغير" onSubmit={(event) => void onSaveOverride(event)}>
-            <div className="field">
-              <label htmlFor="overrideVariant">المتغير</label>
-              <select id="overrideVariant" value={overrideVariantId} onChange={(event) => setOverrideVariantId(event.target.value)}>
-                <option value="">اختر متغيراً</option>
-                {variantOptions.map((item) => (
-                  <option key={item.variant.id} value={item.variant.id}>{item.label}</option>
-                ))}
-              </select>
-            </div>
-            <div className="field">
-              <label htmlFor="overrideThreshold">حد المتغير (فارغ للحذف)</label>
-              <input id="overrideThreshold" value={overrideThreshold} onChange={(event) => setOverrideThreshold(event.target.value)} />
-            </div>
-            <button type="submit" disabled={pending === "override"}>
-              {pending === "override" ? "جارٍ الحفظ…" : "حفظ حد المتغير"}
-            </button>
-          </form>
-          {lowStock.length === 0 ? (
-            <EmptyState title="المخزون كويس" message="مفيش أصناف وصلت لحد التنبيه." />
-          ) : (
-            <div className="staff-list" data-testid="low-stock-list">
-              {lowStock.map((item) => (
-                <article className="staff-item" key={`${item.branchId}:${item.variantId}`}>
-                  <p>
-                    {item.variant.product.code} / {item.variant.size.nameAr} / {item.variant.color.nameAr}
-                  </p>
-                  <p>الفرع: {workspace.authorizedBranches.find((branch) => branch.id === item.branchId)?.nameAr ?? item.branchId} — المتاح: {item.availableQuantity} — الحد: {item.threshold}</p>
-                </article>
-              ))}
-            </div>
-          )}
-        </section>
-        <section className="card">
-          <h2>تنبيه</h2>
-          <p>
-            الاستلام متصل ويتطلب صلاحية المدير. كل فرع له رصيد مستقل، وتبقى تكاليف الشراء في دفعات منفصلة.
-          </p>
-        </section>
-      </div>
     </main>
   );
 }

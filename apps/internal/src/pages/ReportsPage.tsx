@@ -342,7 +342,11 @@ function OnlineOrderOperations({ report }: { report: ManagementReportDto }) {
   return (
     <section className="card" data-testid="online-order-operations" aria-labelledby="online-order-operations-heading">
       <h2 id="online-order-operations-heading">طلبات الأونلاين قيد التشغيل</h2>
-      <p className="muted">هذه لقطة تشغيلية لجميع الفروع لا تتغير بالفترة أو فلتر الفرع. الطلبات المعلقة خارج المبيعات، وتُسجل قيمة الطلب عند التأكيد مرة واحدة.</p>
+      <p className="report-scope">الآن · كل الفروع · لا يتأثر بالفلاتر</p>
+      <details className="business-disclosure">
+        <summary>كيف تُحسب الأرقام؟</summary>
+        <p>الطلبات المعلقة خارج المبيعات، وتُسجل قيمة الطلب عند التأكيد مرة واحدة.</p>
+      </details>
       <div className="report-metrics">
         <Metric label="معلق" value={String(operations.pendingCount)} />
         <Metric label="مؤكد ومحمي" value={String(operations.confirmedCount)} />
@@ -528,7 +532,11 @@ function Inventory({ report }: { report: ManagementReportDto }) {
   return (
     <section className="card" data-testid="inventory-valuation" aria-labelledby="inventory-heading">
       <h2 id="inventory-heading">قيمة مخزون جميع الفروع</h2>
-      <p className="muted">هذه لقطة إجمالية للمخزون الحالي في جميع الفروع، ولا تتغير باختيار الفترة أو فلتر الفرع.</p>
+      <p className="report-scope">الآن · كل الفروع · لا يتأثر بالفلاتر</p>
+      <details className="business-disclosure">
+        <summary>كيف تُحسب الأرقام؟</summary>
+        <p>هذه لقطة إجمالية للمخزون الحالي في جميع الفروع، ولا تتغير باختيار الفترة أو فلتر الفرع.</p>
+      </details>
       <div className="report-metrics">
         <Metric label="المتاح" value={`${inventory.availableQuantity} قطعة · ${money(inventory.availableValuePiasters)}`} />
         <Metric
@@ -586,7 +594,9 @@ function PurchasesAndExpenses({ report }: { report: ManagementReportDto }) {
     <section className="grid two" aria-label="المشتريات والمصروفات">
       <div className="card">
         <h2>المشتريات</h2>
-        <p className="muted">المشتريات المعروضة لجميع الفروع ولا تتغير بفلتر الفرع أو الموظف أو قناة البيع. المخزون الافتتاحي المستورد ظاهر في قسمه ولا يُحسب هنا.</p>
+        <p className="report-scope">الفترة المحددة · كل الفروع</p>
+        <p className="report-scope">لا يتأثر بفلاتر الفرع أو الموظف أو قناة البيع</p>
+        <p>المخزون الافتتاحي المستورد ظاهر في قسمه ولا يُحسب هنا.</p>
         <p className="expense-total">{money(report.purchases.totalPiasters)}</p>
         {report.purchases.receipts.length ? <ul className="report-plain-list">
           {report.purchases.receipts.map((receipt) => (

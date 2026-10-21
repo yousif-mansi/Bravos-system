@@ -125,6 +125,6 @@ export type ProductMediaStorage = {
 
 export type PublicCatalogReader = {
   list(): Promise<PublicProductDto[]>;
-  browse(input: { query?: string; categoryId?: string }): Promise<PublicCatalogBrowseDto>;
+  browse(input: { categoryId?: string }): Promise<PublicCatalogBrowseDto>;
   get(id: string): Promise<PublicProductDto | null>;
 };

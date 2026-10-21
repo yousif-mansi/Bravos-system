@@ -48,6 +48,8 @@ pnpm exec playwright install chromium
 pnpm setup:local
 ```
 
+Step 6 is only for a clean clone. It labels accounts on the database named by `BRAVOS_SETUP_DATABASE_NAME`, which defaults to `bravos`, and it rewrites that setup root's `dev.env`. It does not load the sample catalog or product images. On the existing evaluation machine, skip step 6 and follow [Existing evaluation instance](#existing-evaluation-instance).
+
 After step 3, `pnpm` must report `10.34.5` and `node` must report `v22.23.3`. `scripts/pinned-env.ts` keeps child processes on the running Node executable's directory. `.local/tools` and `.local/tarballs` are local caches and must not be committed. `pnpm-lock.yaml` is the portable lockfile.
 
 ## Start the three processes
@@ -103,6 +105,25 @@ pnpm migrate:scratch
 
 `check:architecture` enforces source import and cycle rules and ignores generated `dist` / `.next` output. Production staff-chunk separation is checked by `pnpm build` (`scripts/check-bundles.mjs`) and the production-login browser test.
 
-## Limits of this slice
+## Existing evaluation instance
 
-Managers can maintain products, taxonomy and explicit size/color variants. Cashiers can look up a product by code and select a variant. Available quantity is honestly zero until receiving/inventory (ticket 03). POS checkout, FIFO batches, media upload and the public storefront catalog are not implemented.
+On 2026-10-16 the ordinary evaluation instance is PostgreSQL port 54329, database `bravos_phase1_20260929`, API `http://127.0.0.1:3010`, staff `http://127.0.0.1:5173`, and store `http://127.0.0.1:3000`. Main had these processes running. When they are down, start the same identity again with the pinned PATH from above:
+
+```powershell
+pnpm postgres:dev
+pnpm dev
+```
+
+`postgres:dev` uses `.local/postgres` unless `BRAVOS_PG_DATA_DIR` is set, and port 54329 unless `BRAVOS_PG_PORT` is set. The API reads `.local/dev.env` only for variables that are absent from the process environment. Leave that file and `bravos_phase1_20260929` as they are. Do not export a different `DATABASE_URL` for this ordinary start, and do not run `pnpm setup:local` here: its default database name is `bravos`, and a setup aimed at `.local` rewrites `.local/dev.env`.
+
+`setup:local` is not sample intake. A fresh clone has neither the populated database nor the sample media. Intake is documented in [sample-catalog.md](sample-catalog.md) and applies only to the already-running development API. Applying it again does not refill stock consumed by a sale.
+
+A persistent client-training database was not created. Automated checks keep their own temporary databases. `BRAVOS_SETUP_ROOT` affects only `setup:local` and does not retarget `postgres:dev` or `.local/dev.env`. The browse session is [client-local-acceptance.md](client-local-acceptance.md).
+
+18 October follow-up: the owner freed memory, the unchanged startup guard passed, and the isolated practice instance was initialized and verified on PostgreSQL 54330 / API 3012 / staff 5177 / storefront 3002. The ordinary instance stayed stopped. See the [client guide](client-local-acceptance.md) and [completed UX review](../reviews/business-ux-windows-ci-2026-10-18.md). These are dated observations, not a current health check or an instruction to recreate the database.
+
+## What this local stack includes
+
+Staff routes in `apps/internal/src/App.tsx` include نقطة البيع (`/lookup`), استلام المخزون (`/receiving`), المنتجات (`/catalog`), الطلبات الأونلاين (`/online-orders`), المرتجعات (`/returns`), المصروفات (`/expenses`), التقارير (`/reports`, with PDF and Excel download), نسخة احتياطية (`/backup`), and استعادة البيانات (`/restore`). The public store serves the home, a product page, `/cart`, and `/checkout`. Receiving shows each branch balance and the remaining quantity on a cost batch. The old ticket-02 note that POS checkout, FIFO batches, media upload, and the public catalog were unimplemented is historical.
+
+The staff service worker registers from a production build. `apps/internal/src/offline-ready.ts` returns immediately unless `import.meta.env.PROD` is set, and `devOptions.enabled` is false in `apps/internal/vite.config.ts`, so `pnpm dev` does not register it. `tests/browser/offline-production.spec.ts` starts the built staff preview on port 5176 against the isolated API on 3011 and does not start production Next. Hosting and a public domain remain outside this local session.

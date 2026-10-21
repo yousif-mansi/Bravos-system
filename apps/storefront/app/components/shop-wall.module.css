@@ -1,158 +1,252 @@
 .wall {
-  padding-block: var(--space-6) var(--space-8);
+  padding-block: var(--space-6, 24px) var(--space-8, 32px);
 }
 
+/* Four columns from 900px. Two from 390px so ordinary phones stay a wall. One below 390px, where two 12px rows would overflow. */
 .grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   align-items: start;
-  column-gap: clamp(16px, 2.2vw, 32px);
-  row-gap: clamp(40px, 5vw, 72px);
+  column-gap: clamp(12px, 2vw, 28px);
+  row-gap: clamp(28px, 4vw, 64px);
 }
 
 .card.card {
-  display: block;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  width: 100%;
   min-width: 0;
-  color: var(--store-ink);
-  font-family: var(--font-commerce);
+  max-width: 100%;
+  color: var(--store-ink, #f3efe6);
+  font-family: var(--font-commerce, inherit);
   text-decoration: none;
 }
 
-.card:nth-child(7n + 1) {
-  grid-column: span 2;
-}
-
 .card:focus-visible {
-  outline: 3px solid var(--store-focus);
-  outline-offset: 5px;
+  outline: 3px solid var(--store-focus, #e2cda3);
+  outline-offset: 4px;
 }
 
 .media {
+  --studio-core: rgba(243, 239, 230, 0.22);
+  --studio-floor: rgba(217, 197, 162, 0.2);
   position: relative;
+  isolation: isolate;
   display: grid;
   place-items: center;
+  flex: none;
   width: 100%;
+  height: auto;
   aspect-ratio: 4 / 5;
   overflow: hidden;
-  background: var(--store-surface);
-  border: 1px solid var(--store-border);
+  border-radius: 12px;
+  background-color: #141615;
+  background-image:
+    radial-gradient(ellipse 78% 62% at 50% 42%, var(--studio-core) 0%, rgba(243, 239, 230, 0.06) 46%, transparent 72%),
+    radial-gradient(ellipse 130% 70% at 50% 112%, var(--studio-floor), transparent 58%),
+    radial-gradient(circle at 50% 38%, #343732 0%, #1e201e 52%, #121413 100%);
+  box-shadow: inset 0 0 0 1px rgba(243, 239, 230, 0.12);
 }
 
-.card:nth-child(7n + 1) .media {
-  aspect-ratio: 8 / 5;
+.media::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+  background:
+    radial-gradient(ellipse 84% 64% at 50% 36%, rgba(243, 239, 230, 0.16), transparent 68%),
+    radial-gradient(ellipse 110% 46% at 50% 100%, rgba(226, 205, 163, 0.1), transparent 72%);
+  transition: opacity var(--motion-duration, 480ms) var(--motion-ease, ease);
 }
 
 .media img {
-  object-fit: contain;
-  padding: clamp(12px, 2vw, 28px);
-  transition: transform .5s ease;
+  z-index: 1;
+  object-fit: cover;
+  object-position: center;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  margin: 0;
+  transition: transform var(--motion-duration, 480ms) var(--motion-ease, ease);
 }
 
 .mediaFallback {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
   display: grid;
+  align-content: center;
   justify-items: center;
-  gap: var(--space-4);
-  padding: var(--space-4);
-  color: var(--store-muted);
-  font: 400 13px/1.7 var(--font-commerce);
+  max-width: 100%;
+  gap: var(--space-4, 16px);
+  padding: var(--space-4, 16px);
+  overflow-wrap: anywhere;
+  color: var(--store-muted, #b5b5ac);
+  font: 400 13px/1.7 var(--font-commerce, inherit);
   text-align: center;
 }
 
 .fallbackWordmark {
   max-width: 100%;
-  color: var(--store-muted);
-  font: 400 clamp(16px, 2vw, 26px)/1 var(--font-display, var(--font-commerce));
-  letter-spacing: .2em;
+  color: var(--store-muted, #b5b5ac);
+  font: 500 clamp(16px, 2vw, 24px)/1.2 var(--font-display, var(--font-commerce, inherit));
+  letter-spacing: 0.08em;
   direction: ltr;
-  padding-inline-start: .2em;
 }
 
 .caption {
-  padding-block: 18px 0;
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding-block: 12px 0;
   overflow-wrap: anywhere;
 }
 
 .name {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
   margin: 0;
-  font: 500 clamp(16px, 1.4vw, 19px)/1.7 var(--font-commerce);
+  text-align: center;
+  min-height: calc(2 * 1.35em);
+  max-height: calc(2 * 1.35em);
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  font: 500 clamp(15px, 1.4vw, 20px)/1.35 var(--font-editorial, var(--font-commerce, inherit));
+  letter-spacing: 0;
+}
+
+.meta {
+  display: flex;
+  flex-wrap: nowrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
 }
 
 .price {
-  margin: 6px 0 0;
-  color: var(--store-ink);
-  font: 500 15px/1.8 var(--font-commerce);
+  margin: 0;
+  color: var(--store-ink, #f3efe6);
+  font-weight: 500;
+  font-size: var(--text-price, 16px);
+  line-height: 1.3;
+  font-family: var(--font-commerce, inherit);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+  white-space: nowrap;
 }
 
 .pricePrefix {
-  color: var(--store-muted);
-  font-size: 13px;
+  color: var(--store-muted, #b5b5ac);
+  font-size: var(--text-price-prefix, 13px);
   font-weight: 400;
+  letter-spacing: 0;
 }
 
-.available,
-.unavailable {
-  margin: 6px 0 0;
-  font: 400 13px/1.8 var(--font-commerce);
+.status {
+  flex: 0 0 auto;
+  margin: 0;
+  font-weight: 500;
+  font-size: var(--text-status, 13px);
+  line-height: 1.3;
+  font-family: var(--font-commerce, inherit);
+  letter-spacing: 0;
+  white-space: nowrap;
 }
 
-.available {
-  color: var(--store-muted);
+.status[data-availability="in_stock"] {
+  color: var(--store-success, #a5d8b1);
 }
 
-.unavailable {
-  color: var(--store-accent, var(--store-ink));
+.status[data-availability="out_of_stock"] {
+  color: var(--store-error, #ffaca4);
 }
 
-.note {
-  margin: clamp(32px, 5vw, 64px) 0 0;
-  padding-block-start: var(--space-6);
-  border-block-start: 1px solid var(--store-border);
-  color: var(--store-muted);
-  font: 400 13px/1.9 var(--font-commerce);
+.status[data-availability="coming_soon"] {
+  color: var(--store-accent, #d9c5a2);
+}
+
+.card:hover .media,
+.card:focus-visible .media {
+  --studio-core: rgba(243, 239, 230, 0.26);
+  --studio-floor: rgba(226, 205, 163, 0.18);
+  box-shadow: inset 0 0 0 1px rgba(243, 239, 230, 0.2);
+}
+
+.card:hover .media::before,
+.card:focus-visible .media::before {
+  opacity: 0.45;
 }
 
 @media (hover: hover) and (pointer: fine) {
   .card:hover .name {
     text-decoration: underline;
-    text-decoration-color: var(--store-accent, var(--store-ink));
+    text-decoration-color: var(--store-accent, var(--store-ink, #f3efe6));
     text-underline-offset: 6px;
   }
 
   .card:hover .media img {
-    transform: scale(1.025);
+    transform: scale(1.035);
   }
+}
+
+.card:focus-visible .media img {
+  transform: scale(1.035);
 }
 
 @media (max-width: 899px) {
   .grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 36px 16px;
-  }
-
-  .card:nth-child(7n + 1) {
-    grid-column: auto;
-  }
-
-  .card:nth-child(7n + 1) .media {
-    aspect-ratio: 4 / 5;
+    column-gap: 12px;
+    row-gap: 28px;
   }
 }
 
 @media (max-width: 580px) {
-  .wall { padding-block-start: var(--space-4); }
-  .caption { padding-block-start: 12px; }
-  .name { font-size: 16px; }
-  .price { font-size: 14px; }
-  .media img { padding: 8px; }
-  .fallbackWordmark { font-size: 16px; letter-spacing: .12em; }
+  .wall { padding-block-start: var(--space-4, 16px); }
+  .caption { padding-block-start: 10px; gap: 6px; }
+  .name { font-size: 15px; line-height: 1.35; }
+  .price,
+  .pricePrefix,
+  .status {
+    font-size: var(--text-price-narrow, 12px);
+    line-height: 1.3;
+    letter-spacing: -0.02em;
+  }
+  .pricePrefix { font-weight: 400; }
+  .status { font-weight: 500; }
+  .meta { gap: 4px; }
+  .fallbackWordmark { font-size: 16px; letter-spacing: 0.06em; }
 }
 
-@media (max-width: 359px) {
-  .grid { grid-template-columns: minmax(0, 1fr); }
+@media (max-width: 480px) {
+  .grid { margin-inline: -8px; column-gap: 8px; row-gap: 24px; }
+}
+
+@media (max-width: 389px) {
+  .grid { grid-template-columns: minmax(0, 1fr); margin-inline: 0; }
+  .price { font-size: 14px; letter-spacing: 0; }
+  .pricePrefix { font-size: 12px; letter-spacing: 0; }
+  .status { font-size: 13px; letter-spacing: 0; }
   .fallbackWordmark { font-size: 24px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .media img { transition: none; }
-  .card:hover .media img { transform: none; }
+  .media::before,
+  .media img {
+    transition: none;
+  }
+
+  .card:hover .media img,
+  .card:focus-visible .media img {
+    transform: none;
+  }
 }

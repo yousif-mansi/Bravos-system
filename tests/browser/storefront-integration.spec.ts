@@ -18,20 +18,20 @@ test("public quantity caps at one branch's stock and anonymous return lookup sta
 
   await page.goto(`${STORE}/products/${product.body.id}`);
   const panel = page.locator(".purchase-panel");
-  await expect(panel.getByLabel("الكمية")).toHaveAttribute("max", "3");
-  await panel.getByLabel("الكمية").fill("4");
-  await expect(panel.getByRole("button", { name: "أضف إلى السلة" })).toBeDisabled();
+  await expect(panel.getByLabel("Quantity")).toHaveAttribute("max", "3");
+  await panel.getByLabel("Quantity").fill("4");
+  await expect(panel.getByRole("button", { name: "Add to bag" })).toBeDisabled();
   const excessiveQuote = await publicApi(page, "POST", "/api/public/checkout/quote", {
     deliveryAreaId: fixture.areaId, lines: [{ variantId, quantity: 4 }],
   });
   expect(excessiveQuote.status).toBe(409);
   expect(excessiveQuote.body.error.code).toBe("INSUFFICIENT_STOCK");
-  await panel.getByLabel("الكمية").fill("3");
-  await panel.getByRole("button", { name: "أضف إلى السلة" }).click();
-  await expect(panel.getByRole("status")).toContainText("تمت إضافة الاختيار إلى السلة");
+  await panel.getByLabel("Quantity").fill("3");
+  await panel.getByRole("button", { name: "Add to bag" }).click();
+  await expect(panel.getByRole("status")).toContainText("Added to your bag.");
   await page.goto(`${STORE}/cart`);
   await expect(page.locator(".cart-line output")).toHaveText("3");
-  await expect(page.getByRole("button", { name: "زيادة الكمية" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Increase quantity" })).toBeDisabled();
   expect((await savedCart(page)).items).toMatchObject([{ variantId, quantity: 3, knownAvailableQuantity: 3 }]);
 
   // The request fixture has its own empty cookie jar, unlike page.request.
@@ -54,22 +54,22 @@ test("individually available products cannot quote a split basket and customer i
   await fillCustomer(page, fixture.areaId);
   const before = (await savedCart(page)).items;
   const failed = page.waitForResponse((response) => response.url().endsWith("/api/public/checkout/quote"));
-  await checkout(page).getByRole("button", { name: "مراجعة السعر" }).click();
+  await checkout(page).getByRole("button", { name: "Review price" }).click();
   const response = await failed;
   expect(response.status()).toBe(409);
   expect((await response.json()).error.code).toBe("INSUFFICIENT_STOCK");
-  await expect(page.locator('.checkout-message[role="alert"]')).toContainText("الكمية المطلوبة غير متاحة حالياً");
-  await expect(checkout(page).getByRole("button", { name: "إرسال طلب التوصيل" })).toHaveCount(0);
+  await expect(page.locator('.checkout-message[role="alert"]')).toContainText("These choices cannot all be supplied together");
+  await expect(checkout(page).getByRole("button", { name: "Place order request" })).toHaveCount(0);
   await expectCustomer(page, fixture.areaId);
   expect((await savedCart(page)).items).toEqual(before);
-  await expect(page.getByRole("complementary", { name: "ملخص منتجات الطلب" })).toContainText(y.body.nameAr);
+  await expect(page.getByRole("complementary", { name: "Your items" })).toContainText(y.body.nameAr);
 
   await receive(page, fixture.a, y.body.variants[0].id, 1);
   await reviewSuccessfully(page);
   await expectCustomer(page, fixture.areaId);
   expect((await savedCart(page)).items).toEqual(before);
-  await checkout(page).getByRole("button", { name: "إرسال طلب التوصيل" }).click();
-  await expect(page.getByRole("heading", { name: "تم استلام طلبك" })).toBeVisible();
+  await checkout(page).getByRole("button", { name: "Place order request" }).click();
+  await expect(page.getByRole("heading", { name: "Order request received" })).toBeVisible();
   const accepted = await page.evaluate(() => JSON.parse(localStorage.getItem("bravos-guest-checkout-v1") ?? "null"));
   expect(accepted.request).toMatchObject({
     alternatePhone: "01212345678",
@@ -108,12 +108,12 @@ test("a basket losing its common branch after review rejects submission without 
     expect(current.body.variants[0]).toMatchObject({ availableQuantity: 1, orderable: true });
   }
   const rejected = page.waitForResponse((response) => response.url().endsWith("/api/public/checkout/orders"));
-  await checkout(page).getByRole("button", { name: "إرسال طلب التوصيل" }).click();
+  await checkout(page).getByRole("button", { name: "Place order request" }).click();
   const response = await rejected;
   expect(response.status()).toBe(409);
   expect((await response.json()).error.code).toBe("INSUFFICIENT_STOCK");
-  await expect(page.locator('.checkout-message[role="alert"]')).toContainText("الكمية المطلوبة غير متاحة حالياً");
-  await expect(checkout(page).getByRole("button", { name: "إرسال طلب التوصيل" })).toHaveCount(0);
+  await expect(page.locator('.checkout-message[role="alert"]')).toContainText("These choices cannot all be supplied together");
+  await expect(checkout(page).getByRole("button", { name: "Place order request" })).toHaveCount(0);
   await expectCustomer(page, fixture.areaId);
   expect((await savedCart(page)).items).toEqual(beforeCart);
   expect(await page.evaluate(() => localStorage.getItem("bravos-guest-checkout-v1"))).toBeNull();
@@ -122,8 +122,8 @@ test("a basket losing its common branch after review rejects submission without 
   await receive(page, fixture.a, y.body.variants[0].id, 1);
   await reviewSuccessfully(page);
   await expectCustomer(page, fixture.areaId);
-  await checkout(page).getByRole("button", { name: "إرسال طلب التوصيل" }).click();
-  await expect(page.getByRole("heading", { name: "تم استلام طلبك" })).toBeVisible();
+  await checkout(page).getByRole("button", { name: "Place order request" }).click();
+  await expect(page.getByRole("heading", { name: "Order request received" })).toBeVisible();
   const accepted = await page.evaluate(() => JSON.parse(localStorage.getItem("bravos-guest-checkout-v1") ?? "null"));
   expect(accepted.request).toMatchObject({
     alternatePhone: "01212345678",
@@ -138,44 +138,67 @@ test("a basket losing its common branch after review rejects submission without 
 test("hiding a sparse variant pair refreshes it unavailable in the cart while POS retains both original pairs", async ({ page }) => {
   const fixture = await setup(page);
   const product = await createProduct(page, fixture.suffix, "SPARSE", true);
-  const hidden = product.body.variants.find((variant: { size: { id: string }; color: { id: string } }) => (
+  const hidden = product.body.variants.find((variant: { size: { id: string; nameAr: string }; color: { id: string; nameAr: string } }) => (
     variant.size.id === product.write.variants[0].sizeId && variant.color.id === product.write.variants[0].colorId
   ));
-  expect(hidden).toBeTruthy();
-  const visible = product.body.variants.find((variant: { id: string }) => variant.id !== hidden.id);
-  expect(visible).toBeTruthy();
+  if (!hidden) throw new Error("Expected the sparse pair that will be hidden.");
+  const visible = product.body.variants.find((variant: { id: string; color: { nameAr: string } }) => variant.id !== hidden.id);
+  if (!visible) throw new Error("Expected the sparse pair that stays visible.");
   await receive(page, fixture.a, hidden.id, 2);
   await receive(page, fixture.a, visible.id, 1);
+  const published = await publicApi(page, "GET", `/api/public/catalog/products/${product.body.id}`);
+  expect(published.status).toBe(200);
+  const orderable = (published.body.variants as Array<{ id: string; orderable: boolean }>).filter((variant) => variant.orderable);
+  expect(orderable.length).toBeGreaterThan(0);
+  const initial = orderable[0]!;
+  expect([hidden.id, visible.id]).toContain(initial.id);
+  const alternate = initial.id === hidden.id ? visible : hidden;
   await page.goto(`${STORE}/products/${product.body.id}`);
   const panel = page.locator(".purchase-panel");
-  await expect(panel.getByRole("radio")).toHaveCount(2);
-  await panel.locator(`input[value="${hidden.id}"]`).check();
-  await panel.getByRole("button", { name: "أضف إلى السلة" }).click();
-  await expect(panel.getByRole("status")).toContainText("تمت إضافة الاختيار إلى السلة");
+  const colors = panel.getByRole("group", { name: "Color" });
+  const sizes = panel.getByRole("group", { name: "Size" });
+  await expect(panel.locator("input[type='radio']")).toHaveCount(3);
+  await expect(colors.getByRole("radio")).toHaveCount(2);
+  await expect(sizes.getByRole("radio")).toHaveCount(1);
+  await expect(sizes.getByRole("radio")).toHaveValue(initial.id);
+  await expect(panel.locator(`input[value="${alternate.id}"]`)).toHaveCount(0);
+  await colors.getByRole("radio", { name: alternate.color.nameAr }).check();
+  await expect(sizes.getByRole("radio")).toHaveCount(1);
+  await expect(sizes.getByRole("radio")).toHaveValue(alternate.id);
+  await expect(panel.locator(`input[value="${initial.id}"]`)).toHaveCount(0);
+  await colors.getByRole("radio", { name: hidden.color.nameAr }).check();
+  await expect(sizes.getByRole("radio")).toHaveValue(hidden.id);
+  await expect(panel.locator(`input[value="${visible.id}"]`)).toHaveCount(0);
+  await panel.getByRole("button", { name: "Add to bag" }).click();
+  await expect(panel.getByRole("status")).toContainText("Added to your bag.");
   const edited = await staffApi(page, "PATCH", `/api/internal/catalog/products/${product.body.id}`, {
     ...product.write,
     variants: product.write.variants.map((variant, index) => ({ ...variant, onlineVisible: index !== 0 })),
   });
   expect(edited.status).toBe(200);
   await page.reload();
-  // A Windows streamed reload can keep a second checked input outside the accessibility tree.
-  // The commerce surface is the one accessible, enabled group. Its radio cardinality stays exact.
-  const surface = panel.getByRole("group", { name: "تركيبات المقاس واللون" });
-  await expect(surface).toHaveCount(1);
-  const choice = surface.getByRole("radio");
-  await expect(choice).toHaveCount(1);
-  await expect(choice).toBeVisible();
-  await expect(choice).toBeEnabled();
-  await expect(choice).toBeChecked();
-  await expect(choice).toHaveValue(visible.id);
+  const remainingColors = panel.getByRole("group", { name: "Color" });
+  const remainingSizes = panel.getByRole("group", { name: "Size" });
+  await expect(panel.locator("input[type='radio']")).toHaveCount(2);
+  const colorChoice = remainingColors.getByRole("radio");
+  const sizeChoice = remainingSizes.getByRole("radio");
+  await expect(colorChoice).toHaveCount(1);
+  await expect(colorChoice).toBeVisible();
+  await expect(colorChoice).toBeEnabled();
+  await expect(colorChoice).toBeChecked();
+  await expect(sizeChoice).toHaveCount(1);
+  await expect(sizeChoice).toBeVisible();
+  await expect(sizeChoice).toBeEnabled();
+  await expect(sizeChoice).toBeChecked();
+  await expect(sizeChoice).toHaveValue(visible.id);
   await expect(panel.locator(`input[value="${hidden.id}"]`)).toHaveCount(0);
-  const add = panel.getByRole("button", { name: "أضف إلى السلة" });
+  const add = panel.getByRole("button", { name: "Add to bag" });
   await expect(add).toHaveCount(1);
   await expect(add).toBeVisible();
   await expect(add).toBeEnabled();
   await page.goto(`${STORE}/cart`);
   await expect(page.locator(".cart-line")).toHaveCount(1);
-  await expect(page.locator(".cart-line [role=alert]")).toContainText("هذا الاختيار غير متوفر حالياً");
+  await expect(page.locator(".cart-line [role=alert]")).toContainText("This selection is unavailable right now");
   expect((await savedCart(page)).items).toMatchObject([{ variantId: hidden.id, quantity: 1, orderable: false }]);
   const pos = await staffApi(page, "GET", "/api/internal/catalog/pos-snapshot");
   expect(pos.status).toBe(200);
@@ -241,40 +264,40 @@ async function receive(page: Page, branchId: string, variantId: string, quantity
 
 async function addProduct(page: Page, productId: string) {
   await page.goto(`${STORE}/products/${productId}`);
-  await page.locator(".purchase-panel").getByRole("button", { name: "أضف إلى السلة" }).click();
-  await expect(page.locator(".purchase-panel").getByRole("status")).toContainText("تمت إضافة الاختيار إلى السلة");
+  await page.locator(".purchase-panel").getByRole("button", { name: "Add to bag" }).click();
+  await expect(page.locator(".purchase-panel").getByRole("status")).toContainText("Added to your bag.");
 }
 
 const CUSTOMER = {
-  "الاسم": "عميل تكامل المتجر", "رقم الموبايل الأساسي": "01012345678", "العنوان بالتفصيل": "الفيوم، شارع الاختبار، منزل ١",
-  "رقم بديل (اختياري)": "01212345678", "علامة مميزة (اختياري)": "بجوار المكتبة", "ملاحظات (اختياري)": "الاتصال قبل التوصيل",
+  "Name": "عميل تكامل المتجر", "Primary mobile number": "01012345678", "Detailed address": "الفيوم، شارع الاختبار، منزل ١",
+  "Alternate number (optional)": "01212345678", "Landmark (optional)": "بجوار المكتبة", "Notes (optional)": "الاتصال قبل التوصيل",
 };
 
 async function fillCustomer(page: Page, areaId: string) {
   const form = checkout(page);
   const optionalDetails = form.locator("details").filter({
-    has: form.page().locator("summary", { hasText: "تفاصيل إضافية للتوصيل (اختياري)" }),
+    has: form.page().locator("summary", { hasText: "Optional delivery details" }),
   });
   if (!await optionalDetails.evaluate((element) => (element as HTMLDetailsElement).open)) {
     await optionalDetails.locator("summary").click();
   }
   for (const [label, value] of Object.entries(CUSTOMER)) await form.getByRole("textbox", { name: label, exact: true }).fill(value);
-  await form.getByLabel("منطقة التوصيل").selectOption(areaId);
+  await form.getByLabel("Delivery").selectOption(areaId);
 }
 
 async function expectCustomer(page: Page, areaId: string) {
   for (const [label, value] of Object.entries(CUSTOMER)) await expect(checkout(page).getByRole("textbox", { name: label, exact: true })).toHaveValue(value);
-  await expect(checkout(page).getByLabel("منطقة التوصيل")).toHaveValue(areaId);
+  await expect(checkout(page).getByLabel("Delivery")).toHaveValue(areaId);
 }
 
 async function reviewSuccessfully(page: Page) {
   const quoted = page.waitForResponse((response) => response.url().endsWith("/api/public/checkout/quote"));
-  await checkout(page).getByRole("button", { name: "مراجعة السعر" }).click();
+  await checkout(page).getByRole("button", { name: "Review price" }).click();
   const response = await quoted;
   expect(response.status()).toBe(200);
   expectPublicSafe(await response.json());
-  await expect(page.getByRole("region", { name: "تفاصيل السعر" })).toBeVisible();
-  await expect(checkout(page).getByRole("button", { name: "إرسال طلب التوصيل" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Price details" })).toBeVisible();
+  await expect(checkout(page).getByRole("button", { name: "Place order request" })).toBeVisible();
 }
 
 // Inspect keys recursively so fixture names/descriptions cannot trigger false positives.
@@ -293,7 +316,7 @@ function expectPublicSafe(value: unknown, path = "response") {
   }
 }
 
-function checkout(page: Page) { return page.getByRole("form", { name: "بيانات طلب التوصيل" }); }
+function checkout(page: Page) { return page.getByRole("form", { name: "Checkout" }); }
 async function savedCart(page: Page) { return page.evaluate(() => JSON.parse(localStorage.getItem("bravos-guest-cart-v1") ?? "null")); }
 
 async function staffApi(page: Page, method: "GET" | "POST" | "PATCH", url: string, payload?: unknown) {

@@ -12,24 +12,23 @@ type CartSummaryProps = {
 
 export function CartSummary({ itemCount, merchandiseTotal, checking, canCheckout, onRefresh }: CartSummaryProps) {
   return (
-    <aside className={`cart-summary ${styles.summary}`} aria-label="ملخص السلة">
-      <p className={styles.summaryEyebrow}>قبل إتمام الطلب</p>
-      <h2>ملخص السلة</h2>
+    <aside className={`cart-summary ${styles.summary}`} aria-label="Bag summary">
+      <h2>Bag summary</h2>
       <dl className={styles.summaryRows}>
-        <div><dt>عدد القطع</dt><dd>{itemCount}</dd></div>
-        <div className={styles.merchandiseTotal}><dt>مجموع مبدئي</dt><dd>{formatEgp(merchandiseTotal)}</dd></div>
+        <div><dt>Items</dt><dd>{itemCount}</dd></div>
+        <div className={styles.merchandiseTotal}><dt>Estimated total</dt><dd>{formatEgp(merchandiseTotal)}</dd></div>
       </dl>
-      <p className={styles.summaryNote}>للمنتجات فقط، قبل الخصومات والتوصيل. راجع المبلغ النهائي في الخطوة التالية.</p>
+      <p className={styles.summaryNote}>Before discounts and delivery. Review the final total at checkout.</p>
       {canCheckout ? (
-        <Link className={`button-link cart-checkout-link ${styles.checkoutLink}`} href="/checkout">متابعة إتمام الطلب</Link>
+        <Link className={`button-link cart-checkout-link ${styles.checkoutLink}`} href="/checkout">Checkout</Link>
       ) : (
-        <p className={styles.summaryWarning}>عدّل الاختيارات غير المتوفرة قبل إتمام الطلب.</p>
+        <p className={styles.summaryWarning}>Update the unavailable selections before checkout.</p>
       )}
       <button type="button" className={`secondary-action ${styles.refreshButton}`} disabled={checking} aria-busy={checking} onClick={onRefresh}>
-        {checking ? "جارٍ تحديث المنتجات..." : "تحديث بيانات المنتجات"}
+        {checking ? "Updating products…" : "Refresh product details"}
       </button>
-      <Link className={styles.continueShopping} href="/#catalog-title">متابعة التسوق</Link>
-      <p className={styles.reservationNote}>الدفع نقداً عند الاستلام. نراجع توفر السلة كاملة عند مراجعة السعر، ثم يؤكد ممثل برافوس الطلب عبر واتساب. السلة لا تحجز القطع.</p>
+      <Link className={styles.continueShopping} href="/#catalog-title">Continue shopping</Link>
+      <p className={styles.reservationNote}>Items in your bag are not reserved.</p>
     </aside>
   );
 }

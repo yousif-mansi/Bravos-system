@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { openLookupLists } from "./support/open-lookup-lists";
 
 test("manager maintains a product and cashier looks it up by code", async ({ page }) => {
   await page.goto("http://127.0.0.1:5174/login");
@@ -8,6 +9,7 @@ test("manager maintains a product and cashier looks it up by code", async ({ pag
   await expect(page.getByRole("heading", { name: "اختيار الفرع النشط" })).toBeVisible();
   await page.getByRole("button", { name: "أبشواي" }).click();
   await page.getByRole("link", { name: "استلام المخزون" }).click();
+  await page.locator("summary").filter({ hasText: "تجهيز التصنيف والمقاس واللون" }).click();
   const categoryForm = page.getByRole("form", { name: "إضافة تصنيف للمخزون" });
   await categoryForm.getByLabel("تصنيف جديد").fill("تيشيرتات");
   await categoryForm.getByRole("button", { name: "إضافة التصنيف" }).click();
@@ -57,6 +59,7 @@ test("manager maintains a product and cashier looks it up by code", async ({ pag
   await lookupForm.getByRole("textbox", { name: "رمز المنتج" }).fill("TS-E2E");
   await lookupForm.getByRole("button", { name: "بحث" }).click();
   await expect(page.getByTestId("lookup-result")).toContainText("تيشيرت تجريبي");
+  await openLookupLists(page);
   await page.getByLabel("المقاس").selectOption({ label: "L" });
   await page.getByLabel("اللون").selectOption({ label: "أسود" });
   await expect(page.getByTestId("selected-variant")).toContainText("سعر البيع: 250 ج.م.");
@@ -66,7 +69,7 @@ test("manager maintains a product and cashier looks it up by code", async ({ pag
 
 test("manager renames taxonomy, selects an inventory SKU, and keeps existing image references", async ({
   page,
-}) => {
+}, testInfo) => {
   await page.goto("http://127.0.0.1:5174/login");
   await page.getByLabel("اسم الدخول").fill("owner");
   await page.getByLabel("كلمة المرور").fill("e2e-owner-pass");
@@ -178,6 +181,7 @@ test("manager renames taxonomy, selects an inventory SKU, and keeps existing ima
   });
 
   await page.getByRole("link", { name: "استلام المخزون" }).click();
+  await page.locator("summary").filter({ hasText: "تجهيز التصنيف والمقاس واللون" }).click();
   const newSize = page.getByRole("form", { name: "إضافة مقاس للمخزون" });
   await newSize.getByLabel("مقاس جديد").fill("XL");
   await newSize.getByRole("button", { name: "إضافة المقاس" }).click();
@@ -215,6 +219,86 @@ test("manager renames taxonomy, selects an inventory SKU, and keeps existing ima
   const publishedBody = await published.json();
   expect(publishedBody.variants).toHaveLength(1);
   expect(publishedBody.variants[0].size.nameAr).toBe("XL");
+
+  const parentCategoryId = after.body.category.id as string;
+  const childCategory = await staffApi(page, "POST", "/api/internal/catalog/categories", {
+    nameAr: "جاكيتات فرعية",
+    parentId: parentCategoryId,
+  });
+  expect(childCategory.status).toBe(201);
+  const childProduct = await staffApi(page, "POST", "/api/internal/catalog/products", {
+    code: "JK-CHILD-E2E",
+    nameAr: "جاكيت فرعي",
+    descriptionAr: "",
+    categoryId: childCategory.body.id,
+    defaultSellingPricePiasters: after.body.defaultSellingPricePiasters,
+    publication: "hidden",
+    imageRefs: [],
+    sizeGuideAr: null,
+    variants: [{
+      sizeId: after.body.variants[0].size.id,
+      colorId: after.body.variants[0].color.id,
+      sellingPricePiastersOverride: null,
+    }],
+  });
+  expect(childProduct.status).toBe(201);
+
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "إدارة المنتجات" })).toBeVisible();
+  const count = page.getByTestId("catalog-browse-count");
+  await expect(count).toBeVisible();
+  const unfiltered = (await count.innerText()).trim();
+  const unfilteredMatch = unfiltered.match(/^المطابق: (\d+) من (\d+)$/);
+  expect(unfilteredMatch?.[1]).toBe(unfilteredMatch?.[2]);
+  const total = Number(unfilteredMatch?.[2]);
+  expect(total).toBeGreaterThanOrEqual(2);
+  await page.screenshot({ path: testInfo.outputPath("catalog-desktop-1440.png"), fullPage: true });
+
+  const filters = page.getByTestId("catalog-browse-filters");
+  const parentCard = page.locator("article.staff-item").filter({ hasText: "جاكيت تجريبي" });
+  const childCard = page.locator("article.staff-item").filter({ hasText: "جاكيت فرعي" });
+  await filters.locator("#catalog-browse-category").selectOption(parentCategoryId);
+  await expect(parentCard).toBeVisible();
+  await expect(childCard).toBeVisible();
+  const parentMatch = (await count.innerText()).trim().match(/^المطابق: (\d+) من (\d+)$/);
+  expect(parentMatch?.[2]).toBe(String(total));
+  const parentMatched = Number(parentMatch?.[1]);
+  expect(parentMatched).toBeGreaterThanOrEqual(2);
+  expect(parentMatched).toBeLessThanOrEqual(total);
+
+  await filters.locator("#catalog-browse-category").selectOption(childCategory.body.id as string);
+  await expect(childCard).toBeVisible();
+  await expect(parentCard).toHaveCount(0);
+  const childMatch = (await count.innerText()).trim().match(/^المطابق: (\d+) من (\d+)$/);
+  expect(childMatch?.[2]).toBe(String(total));
+  const childMatched = Number(childMatch?.[1]);
+  expect(childMatched).toBeGreaterThanOrEqual(1);
+  expect(childMatched).toBeLessThan(parentMatched);
+
+  await filters.getByRole("button", { name: "مسح التصفية" }).click();
+  await expect(filters.locator("#catalog-browse-category")).toHaveValue("");
+  await expect(filters.locator("#catalog-browse-query")).toHaveValue("");
+  await expect(count).toHaveText(`المطابق: ${total} من ${total}`);
+
+  await filters.locator("#catalog-browse-query").fill("JK-E2E");
+  await expect(parentCard).toBeVisible();
+  await expect(childCard).toHaveCount(0);
+  await filters.locator("#catalog-browse-query").fill("جاكيت فرعي");
+  await expect(childCard).toBeVisible();
+  await expect(parentCard).toHaveCount(0);
+  await filters.locator("#catalog-browse-query").fill("لا-يطابق-تصنيف-999");
+  await expect(page.getByTestId("catalog-browse-empty")).toHaveText("لا توجد منتجات مطابقة.");
+  await expect(count).toHaveText(`المطابق: 0 من ${total}`);
+
+  await filters.getByRole("button", { name: "مسح التصفية" }).click();
+  await parentCard.getByRole("button", { name: "تعديل" }).click();
+  await expect(page.locator("#productCode")).toHaveValue("JK-E2E");
+  await expect(page.locator("#productName")).toHaveValue("جاكيت تجريبي");
+  await filters.locator("#catalog-browse-query").fill("JK-CHILD-E2E");
+  await expect(parentCard).toHaveCount(0);
+  await expect(page.locator("#productCode")).toHaveValue("JK-E2E");
+  await expect(page.locator("#productName")).toHaveValue("جاكيت تجريبي");
 });
 
 test("bulk size and color visibility preserves sparse inventory pairs and POS availability", async ({ page }) => {
@@ -258,6 +342,7 @@ test("bulk size and color visibility preserves sparse inventory pairs and POS av
   await page.getByLabel("رمز المنتج", { exact: true }).first().fill("SPARSE-E2E");
   await page.getByRole("button", { name: "عرض المنتج" }).click();
   const form = page.getByRole("form", { name: "تعديل منتج" });
+  await form.locator("summary").filter({ hasText: "تحديد جماعي حسب المقاس أو اللون" }).click();
   const sizeChoices = form.getByRole("group", { name: "المقاسات المعروضة على الموقع", exact: true });
   const colorChoices = form.getByRole("group", { name: "الألوان المعروضة على الموقع", exact: true });
   const pairs = form.getByRole("checkbox", { name: "عرض هذه التركيبة" });
@@ -297,6 +382,7 @@ test("bulk size and color visibility preserves sparse inventory pairs and POS av
   const lookupForm = page.getByRole("form", { name: "البحث برمز المنتج" });
   await lookupForm.getByRole("textbox", { name: "رمز المنتج" }).fill("SPARSE-E2E");
   await lookupForm.getByRole("button", { name: "بحث" }).click();
+  await openLookupLists(page);
   await page.getByLabel("المقاس", { exact: true }).selectOption({ label: "متوسط متفرق" });
   await page.getByLabel("اللون", { exact: true }).selectOption({ label: "أحمر متفرق" });
   await expect(page.getByTestId("available-quantity")).toHaveText("الكمية المتاحة: 2");

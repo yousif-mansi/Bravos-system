@@ -25,11 +25,13 @@ test("storefront activity appears as anonymous aggregate counts and stays manage
   });
 
   await page.goto("http://127.0.0.1:3001");
+  await page.locator(`[data-category-rail="${product.categoryId}"]`).scrollIntoViewIfNeeded();
   await page.getByRole("link", { name: new RegExp(product.nameAr) }).click();
-  await page.getByLabel("الكمية").fill("2");
-  await page.getByRole("button", { name: "أضف إلى السلة" }).click();
-  await expect(page.getByRole("status")).toContainText("تمت إضافة الاختيار إلى السلة");
-  await page.getByLabel("التنقل الرئيسي").getByRole("link", { name: "المتجر", exact: true }).click();
+  await page.getByLabel("Quantity").fill("2");
+  await page.getByRole("button", { name: "Add to bag" }).click();
+  await expect(page.getByRole("status")).toContainText("Added to your bag.");
+  await page.getByLabel("Primary").getByRole("link", { name: "Shop", exact: true }).click();
+  await page.locator(`[data-category-rail="${nextProduct.categoryId}"]`).scrollIntoViewIfNeeded();
   await page.getByRole("link", { name: new RegExp(nextProduct.nameAr) }).click();
   await expect(page.getByRole("heading", { name: nextProduct.nameAr })).toBeVisible();
 
@@ -309,7 +311,7 @@ async function seedProduct(page: Page, suffix: string, quantity: number) {
     lines: [{ variantId, quantity, unitCostPiasters: 9_000 }],
   });
   expect(receipt.status, JSON.stringify(receipt.body)).toBe(201);
-  return { productId: product.body.id as string, variantId, nameAr };
+  return { productId: product.body.id as string, categoryId: category.body.id as string, variantId, nameAr };
 }
 
 async function completePhysicalSale(page: Page, variantId: string) {

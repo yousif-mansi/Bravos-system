@@ -689,11 +689,10 @@ async function registerRoutes(
   });
 
   app.get("/api/public/storefront/catalog", async (request, reply) => {
-    const query = request.query as { q?: string | string[]; categoryId?: string | string[] };
+    const params = request.query as { categoryId?: string | string[] };
     reply.header("cache-control", "no-store");
     return handle(reply, async () => catalog.browsePublicProducts({
-      query: Array.isArray(query.q) ? query.q[0] : query.q,
-      categoryId: Array.isArray(query.categoryId) ? query.categoryId[0] : query.categoryId,
+      categoryId: Array.isArray(params.categoryId) ? params.categoryId[0] : params.categoryId,
     }));
   });
 

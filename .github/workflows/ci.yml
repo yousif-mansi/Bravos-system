@@ -25,7 +25,7 @@ defaults:
 jobs:
   static-and-build:
     name: Types, architecture, scripts and builds
-    runs-on: ubuntu-24.04
+    runs-on: windows-2025
     timeout-minutes: 30
     steps:
       - name: Checkout
@@ -59,14 +59,16 @@ jobs:
       - name: Check performance script syntax
         run: node --check scripts/measure-storefront-performance.mjs
       - name: Run pure performance and bundle guard script tests
-        run: node --test tests/scripts/storefront-performance.test.mjs tests/scripts/check-bundles.test.mjs
+        run: node --test tests/scripts/storefront-performance.test.mjs tests/scripts/check-bundles.test.mjs tests/scripts/embedded-postgres-stage-error.test.mjs tests/scripts/windows-postgres-start.test.mjs
+      - name: Check sample catalog intake guards without accessing business data
+        run: node --import tsx --test tests/scripts/sample-catalog.test.mjs
       - name: Build API, internal app and storefront; check bundle separation
         run: pnpm build
 
   http:
     name: PostgreSQL and HTTP integration
     needs: static-and-build
-    runs-on: ubuntu-24.04
+    runs-on: windows-2025
     timeout-minutes: 45
     steps:
       - name: Checkout
@@ -92,7 +94,7 @@ jobs:
   browser:
     name: Chromium browser acceptance
     needs: static-and-build
-    runs-on: ubuntu-24.04
+    runs-on: windows-2025
     timeout-minutes: 60
     steps:
       - name: Checkout
@@ -112,7 +114,7 @@ jobs:
           cache: false
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
-      - name: Install the locked Playwright Chromium and OS dependencies
-        run: pnpm exec playwright install --with-deps chromium
+      - name: Install the locked Playwright Chromium
+        run: pnpm exec playwright install chromium
       - name: Run the complete browser suite on its isolated stack
         run: pnpm test:browser --reporter=line

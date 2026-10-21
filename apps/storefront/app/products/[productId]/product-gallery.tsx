@@ -27,7 +27,7 @@ export function ProductGallery({ productNameAr, imageRefs }: ProductGalleryProps
     event.preventDefault();
     if (event.key === "Home") setSelectedIndex(0);
     else if (event.key === "End") setSelectedIndex(imageCount - 1);
-    else move(event.key === "ArrowLeft" ? 1 : -1);
+    else move(event.key === "ArrowRight" ? 1 : -1);
   }
 
   function finishSwipe(event: TouchEvent<HTMLDivElement>) {
@@ -51,11 +51,11 @@ export function ProductGallery({ productNameAr, imageRefs }: ProductGalleryProps
   }
 
   return (
-    <section className={styles.gallery} aria-label={`صور ${productNameAr}`} onKeyDown={navigateByKeyboard}>
+    <section className={styles.gallery} aria-label={`Photos of ${productNameAr}`} onKeyDown={navigateByKeyboard}>
       <div
         className={styles.mainFrame}
         tabIndex={imageCount > 1 ? 0 : undefined}
-        aria-label={imageCount > 1 ? "استخدم سهمي اليمين واليسار لتصفح صور المنتج" : undefined}
+        aria-label={imageCount > 1 ? "Use the left and right arrow keys to browse product photos" : undefined}
         onTouchStart={(event) => {
           const touch = event.touches[0];
           touchStart.current = event.touches.length === 1 && touch ? { x: touch.clientX, y: touch.clientY } : null;
@@ -67,7 +67,7 @@ export function ProductGallery({ productNameAr, imageRefs }: ProductGalleryProps
           <Image
             key={selectedIndex}
             src={productMediaUrl(selectedRef)}
-            alt={`${productNameAr} — صورة ${selectedIndex + 1}`}
+            alt={`${productNameAr} — photo ${selectedIndex + 1}`}
             fill
             unoptimized
             priority={selectedIndex === 0}
@@ -78,38 +78,38 @@ export function ProductGallery({ productNameAr, imageRefs }: ProductGalleryProps
         ) : (
           <div className={styles.missingImage}>
             <span className={styles.mediaWordmark} aria-hidden="true">BRAVOS</span>
-            <span>{imageCount === 0 ? "لا توجد صورة لهذا المنتج" : "هذه الصورة غير متاحة حالياً"}</span>
+            <span>{imageCount === 0 ? "No photo for this product" : "This photo is unavailable right now"}</span>
           </div>
         )}
       </div>
 
       {imageCount > 1 ? (
         <div className={styles.navigation}>
-          <button type="button" className={styles.stepButton} onClick={() => move(-1)} aria-label="الصورة السابقة">
-            السابق
+          <button type="button" className={styles.stepButton} onClick={() => move(-1)} aria-label="Previous photo">
+            Previous
           </button>
           <p className={styles.position} aria-live="polite" aria-atomic="true">
-            الصورة {selectedIndex + 1} من {imageCount}
+            Photo {selectedIndex + 1} of {imageCount}
           </p>
-          <button type="button" className={styles.stepButton} onClick={() => move(1)} aria-label="الصورة التالية">
-            التالي
+          <button type="button" className={styles.stepButton} onClick={() => move(1)} aria-label="Next photo">
+            Next
           </button>
         </div>
       ) : null}
 
       {imageCount > 1 ? (
-        <div className={styles.selectors} role="group" aria-label="اختيار صورة المنتج">
+        <div className={styles.selectors} role="group" aria-label="Choose a product photo">
           {imageRefs.map((_, index) => (
             <button
               key={index}
               type="button"
               className={styles.selector}
-              aria-label={`عرض الصورة ${index + 1} من ${imageCount}`}
+              aria-label={`Show photo ${index + 1} of ${imageCount}`}
               aria-current={selectedIndex === index ? "true" : undefined}
               onClick={() => setSelectedIndex(index)}
             >
               <span className={styles.selectorNumber} aria-hidden="true">{String(index + 1).padStart(2, "0")}</span>
-              <span className={styles.selectorCaption} aria-hidden="true">صورة</span>
+              <span className={styles.selectorCaption} aria-hidden="true">Photo</span>
               <span className="sr-only">{index + 1}</span>
             </button>
           ))}

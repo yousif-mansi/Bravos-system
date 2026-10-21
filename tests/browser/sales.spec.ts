@@ -1,6 +1,7 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 import type { SaleDto, SalePaymentDto } from "@bravos/contracts";
 import type { OfflineCompletedSale } from "@bravos/sales/browser";
+import { openLookupLists } from "./support/open-lookup-lists";
 
 test("receiving, split sale and authorized sales view form one connected workflow", async ({ page }) => {
   await page.goto("http://127.0.0.1:5174/login");
@@ -32,14 +33,14 @@ test("receiving, split sale and authorized sales view form one connected workflo
   await page.getByRole("link", { name: "استلام المخزون" }).click();
   const receive = page.getByRole("form", { name: "تسجيل إذن استلام" });
   await receive.getByLabel("تاريخ الاستلام").fill("2026-09-11");
-  await receive.getByLabel("المنتج").selectOption({ label: "POS-E2E — قميص نقطة البيع" });
+  await receive.getByLabel("المنتج", { exact: true }).selectOption({ label: "POS-E2E — قميص نقطة البيع" });
   await receive.getByLabel("المقاس واللون").selectOption({ label: "M / أزرق" });
   await receive.getByLabel("الكمية").fill("10");
   await receive.getByLabel("تكلفة الشراء للجنيه").fill("100");
   await receive.getByRole("button", { name: "حفظ الاستلام" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ إذن الاستلام.");
   await receive.getByLabel("تاريخ الاستلام").fill("2026-09-11");
-  await receive.getByLabel("المنتج").selectOption({ label: "POS-E2E — قميص نقطة البيع" });
+  await receive.getByLabel("المنتج", { exact: true }).selectOption({ label: "POS-E2E — قميص نقطة البيع" });
   await receive.getByLabel("المقاس واللون").selectOption({ label: "M / أزرق" });
   await receive.getByLabel("الكمية").fill("10");
   await receive.getByLabel("تكلفة الشراء للجنيه").fill("140");
@@ -56,6 +57,7 @@ test("receiving, split sale and authorized sales view form one connected workflo
   await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill("POS-E2E");
   await lookup.getByRole("button", { name: "بحث" }).click();
   await expect(page.getByTestId("lookup-result")).toContainText("قميص نقطة البيع");
+  await openLookupLists(page);
   await page.getByLabel("المقاس").selectOption({ label: "M" });
   await page.getByLabel("اللون").selectOption({ label: "أزرق" });
   await expect(page.getByTestId("available-quantity")).toHaveText("الكمية المتاحة: 20");
@@ -232,6 +234,7 @@ test("lost complete response retries the same sale without charging the customer
   const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
   await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill("LOST-E2E");
   await lookup.getByRole("button", { name: "بحث" }).click();
+  await openLookupLists(page);
   await page.getByLabel("المقاس").selectOption({ label: "مقاس مفقود" });
   await page.getByLabel("اللون").selectOption({ label: "لون مفقود" });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
@@ -351,6 +354,7 @@ test("an unpaid price quote can be abandoned without recording a sale", async ({
   const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
   await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill("ABANDON-E2E");
   await lookup.getByRole("button", { name: "بحث" }).click();
+  await openLookupLists(page);
   await page.getByLabel("المقاس").selectOption({ label: "مقاس إلغاء" });
   await page.getByLabel("اللون").selectOption({ label: "لون إلغاء" });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
@@ -413,6 +417,7 @@ test("lost complete before send recovers the prepared sale after stock is taken"
   const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
   await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill("BEFORE-E2E");
   await lookup.getByRole("button", { name: "بحث" }).click();
+  await openLookupLists(page);
   await page.getByLabel("المقاس").selectOption({ label: "مقاس قبل الإرسال" });
   await page.getByLabel("اللون").selectOption({ label: "لون قبل الإرسال" });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
@@ -609,6 +614,7 @@ test("check result completes a physically paid preparation instead of accepting 
   const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
   await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill("CHECK-E2E");
   await lookup.getByRole("button", { name: "بحث" }).click();
+  await openLookupLists(page);
   await page.getByLabel("المقاس").selectOption({ label: "مقاس تحقق" });
   await page.getByLabel("اللون").selectOption({ label: "لون تحقق" });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
@@ -689,6 +695,7 @@ test("invalid employee discount stays editable then completes after correction",
   const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
   await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill("DISCOUNT-E2E");
   await lookup.getByRole("button", { name: "بحث" }).click();
+  await openLookupLists(page);
   await page.getByLabel("المقاس").selectOption({ label: "مقاس خصم" });
   await page.getByLabel("اللون").selectOption({ label: "لون خصم" });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
@@ -757,6 +764,7 @@ test("two open tabs keep a physically completed marker and save that sale once",
     const lookup = target.getByRole("form", { name: "البحث برمز المنتج" });
     await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill("TWOTAB-E2E");
     await lookup.getByRole("button", { name: "بحث" }).click();
+    await openLookupLists(target);
     await target.getByLabel("المقاس").selectOption({ label: sizeLabel });
     await target.getByLabel("اللون").selectOption({ label: colorLabel });
     await target.getByRole("button", { name: "إضافة إلى السلة" }).click();
@@ -944,6 +952,7 @@ test("rapid cart edit disables completion of the old quote until prices are acce
   const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
   await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill("RAPID-E2E");
   await lookup.getByRole("button", { name: "بحث" }).click();
+  await openLookupLists(page);
   await page.getByLabel("المقاس").selectOption({ label: "مقاس سريع" });
   await page.getByLabel("اللون").selectOption({ label: "لون سريع" });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
@@ -1098,6 +1107,7 @@ test("cart edits during delayed prepare cannot complete a stale quote", async ({
   const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
   await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill("DURING-E2E");
   await lookup.getByRole("button", { name: "بحث" }).click();
+  await openLookupLists(page);
   await page.getByLabel("المقاس").selectOption({ label: "مقاس أثناء" });
   await page.getByLabel("اللون").selectOption({ label: "لون أثناء" });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
@@ -1236,6 +1246,7 @@ test("blocked tab recovers the other tab's sale then continues its own cart", as
     const lookup = target.getByRole("form", { name: "البحث برمز المنتج" });
     await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill("FOREIGN-E2E");
     await lookup.getByRole("button", { name: "بحث" }).click();
+    await openLookupLists(target);
     await target.getByLabel("المقاس").selectOption({ label: "مقاس أجنبي" });
     await target.getByLabel("اللون").selectOption({ label: "لون أجنبي" });
     await target.getByRole("button", { name: "إضافة إلى السلة" }).click();
@@ -1518,6 +1529,7 @@ test("synchronous double complete keeps a single sale identity", async ({ page }
   const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
   await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill("DOUBLE-E2E");
   await lookup.getByRole("button", { name: "بحث" }).click();
+  await openLookupLists(page);
   await page.getByLabel("المقاس").selectOption({ label: "مقاس مزدوج" });
   await page.getByLabel("اللون").selectOption({ label: "لون مزدوج" });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();

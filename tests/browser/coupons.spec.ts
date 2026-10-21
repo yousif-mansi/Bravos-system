@@ -1,4 +1,5 @@
 import { expect, test, type Browser, type Page } from "@playwright/test";
+import { openLookupLists } from "./support/open-lookup-lists";
 
 const ACTIVE_START = "2020-01-01";
 const ACTIVE_END = "2099-12-31";
@@ -318,6 +319,7 @@ async function addProduct(page: Page, code: string, sizeName: string, colorName:
     await lookup.getByRole("button", { name: "بحث" }).click();
     await expect(matchingResult).toBeVisible();
   }
+  await openLookupLists(page);
   await page.getByLabel("المقاس").selectOption({ label: sizeName });
   await expect(page.getByLabel("اللون")).toBeEnabled();
   await page.getByLabel("اللون").selectOption({ label: colorName });

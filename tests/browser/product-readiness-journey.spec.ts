@@ -10,68 +10,74 @@ const STORE = "http://127.0.0.1:3001";
 // All fixtures and assertions use HTTP, with no database reads or mocked commerce.
 test("customer purchase journey leaves pending stock intact and confirms one branch exactly once", async ({ page }) => {
   const fixture = await seedJourney(page);
-  const { product, regular, premium, empty, a, b, areaId, suffix } = fixture;
+  const { product, regular, premium, empty, a, b, areaId } = fixture;
   const beforeReport = await onlineReport(page, a);
   await expectBranchStock(page, product.id, a, regular.id, premium.id, [4, 3]);
   await expectBranchStock(page, product.id, b, regular.id, premium.id, [1, 2]);
   await expectPublicStock(page, product.id, regular.id, premium.id, empty.id, [4, 3]);
 
   await page.goto(STORE);
-  await page.getByLabel("ابحث عن منتج").fill(suffix);
-  await page.getByRole("button", { name: "بحث", exact: true }).click();
-  await expect(page).toHaveURL(new RegExp(`q=${suffix}`));
+  await page.getByRole("navigation", { name: "Filter by category" })
+    .getByRole("link", { name: product.category.nameAr, exact: true }).click();
+  await expect(page).toHaveURL(`${STORE}/?category=${product.category.id}`);
   await page.locator("a.product-card").filter({ hasText: product.nameAr }).click();
   await expect(page.getByRole("heading", { name: product.nameAr })).toBeVisible();
   const panel = page.locator(".purchase-panel");
-  await expect(panel.locator(`input[value="${empty.id}"]`)).toBeDisabled();
-  await panel.locator(`input[value="${regular.id}"]`).check();
-  await expect(panel.getByLabel("الكمية")).toHaveAttribute("max", "4");
-  await panel.getByLabel("الكمية").fill("5");
-  await expect(panel.getByRole("button", { name: "أضف إلى السلة", exact: true })).toBeDisabled();
+  const sizes = panel.getByRole("group", { name: "Size" });
+  await expect(panel.getByRole("group", { name: "Color" }).getByRole("radio")).toHaveCount(1);
+  await expect(sizes.locator("input[type='radio']")).toHaveCount(3);
+  await expect(sizes.locator(`input[value="${empty.id}"]`)).toBeDisabled();
+  await expect(sizes.locator(`input[value="${empty.id}"]`).locator("xpath=ancestor::label[1]")).toContainText("Unavailable");
+  await expect(sizes.locator(`input[value="${premium.id}"]`).locator("xpath=ancestor::label[1]")).toContainText(/EGP\s*300/);
+  await expect(sizes.locator(`input[value="${regular.id}"]`).locator("xpath=ancestor::label[1]")).toContainText(/EGP\s*250/);
+  await sizes.locator(`input[value="${regular.id}"]`).check();
+  await expect(panel.getByLabel("Quantity")).toHaveAttribute("max", "4");
+  await panel.getByLabel("Quantity").fill("5");
+  await expect(panel.getByRole("button", { name: "Add to bag", exact: true })).toBeDisabled();
   const excessive = await api<{ error: { code: string } }>(page, STORE, "POST", "/api/public/checkout/quote", {
     deliveryAreaId: areaId, lines: [{ variantId: regular.id, quantity: 5 }],
   }, 409);
   expect(excessive.error.code).toBe("INSUFFICIENT_STOCK");
-  await panel.getByLabel("الكمية").fill("1");
+  await panel.getByLabel("Quantity").fill("1");
   await addSelected(page);
-  await panel.locator(`input[value="${premium.id}"]`).check();
+  await sizes.locator(`input[value="${premium.id}"]`).check();
   await addSelected(page);
-  await panel.getByRole("link", { name: "عرض السلة", exact: true }).click();
+  await panel.getByRole("link", { name: "View bag", exact: true }).click();
 
   const regularLine = page.locator(".cart-line").filter({ hasText: regular.size.nameAr });
   const premiumLine = page.locator(".cart-line").filter({ hasText: premium.size.nameAr });
-  const summary = page.getByRole("complementary", { name: "ملخص السلة" });
+  const summary = page.getByRole("complementary", { name: "Bag summary" });
   await expect(page.locator(".cart-line")).toHaveCount(2);
-  await expect(summary).toContainText(`مجموع مبدئي${money(55_000)}`);
-  await regularLine.getByRole("button", { name: "زيادة الكمية" }).click();
+  await expect(summary).toContainText(`Estimated total${money(55_000)}`);
+  await regularLine.getByRole("button", { name: "Increase quantity" }).click();
   await expect(regularLine.locator("output")).toHaveText("2");
-  await expect(summary).toContainText(`مجموع مبدئي${money(80_000)}`);
-  await regularLine.getByRole("button", { name: "زيادة الكمية" }).click();
+  await expect(summary).toContainText(`Estimated total${money(80_000)}`);
+  await regularLine.getByRole("button", { name: "Increase quantity" }).click();
   await expect(regularLine.locator("output")).toHaveText("3");
-  await expect(summary).toContainText(`مجموع مبدئي${money(105_000)}`);
-  await regularLine.getByRole("button", { name: "تقليل الكمية" }).click();
+  await expect(summary).toContainText(`Estimated total${money(105_000)}`);
+  await regularLine.getByRole("button", { name: "Decrease quantity" }).click();
   await expect(regularLine.locator("output")).toHaveText("2");
-  await premiumLine.getByRole("button", { name: "حذف", exact: true }).click();
+  await premiumLine.getByRole("button", { name: "Remove", exact: true }).click();
   await expect(page.locator(".cart-line")).toHaveCount(1);
-  await expect(summary).toContainText(`مجموع مبدئي${money(50_000)}`);
+  await expect(summary).toContainText(`Estimated total${money(50_000)}`);
   await regularLine.getByRole("link", { name: product.nameAr }).click();
-  await panel.locator(`input[value="${premium.id}"]`).check();
+  await sizes.locator(`input[value="${premium.id}"]`).check();
   await addSelected(page);
-  await panel.getByRole("link", { name: "عرض السلة", exact: true }).click();
+  await panel.getByRole("link", { name: "View bag", exact: true }).click();
   await expect(page.locator(".cart-line")).toHaveCount(2);
   await expect(regularLine.locator("output")).toHaveText("2");
   await expect(premiumLine.locator("output")).toHaveText("1");
-  await expect(summary).toContainText(`مجموع مبدئي${money(80_000)}`);
-  await page.getByRole("link", { name: "متابعة إتمام الطلب" }).click();
+  await expect(summary).toContainText(`Estimated total${money(80_000)}`);
+  await page.getByRole("link", { name: "Checkout" }).click();
 
-  const checkout = page.getByRole("form", { name: "بيانات طلب التوصيل" });
+  const checkout = page.getByRole("form", { name: "Checkout" });
   for (const name of ["customerName", "primaryPhone", "deliveryAreaId", "detailedAddress"]) {
     await expect(checkout.locator(`[name="${name}"]`)).toHaveAttribute("required", "");
   }
-  await checkout.getByLabel("منطقة التوصيل").selectOption(areaId);
+  await checkout.getByLabel("Delivery").selectOption(areaId);
   const quoteResponse = page.waitForResponse((response) =>
     new URL(response.url()).pathname === "/api/public/checkout/quote" && response.request().method() === "POST");
-  await checkout.getByRole("button", { name: "مراجعة السعر" }).click();
+  await checkout.getByRole("button", { name: "Review price" }).click();
   const quoted = await quoteResponse;
   expect(quoted.status()).toBe(200);
   const quote = await quoted.json() as CheckoutQuoteDto;
@@ -87,26 +93,26 @@ test("customer purchase journey leaves pending stock intact and confirms one bra
     expect.objectContaining({ variantId: premium.id, quantity: 1, listedUnitPricePiasters: 30_000, merchandiseTotalPiasters: 30_000 }),
   ]));
   expect(quote.lines).toHaveLength(2);
-  const review = page.getByRole("region", { name: "تفاصيل السعر" });
-  await expect(review.getByText("إجمالي المنتجات بعد الخصم").locator("..")).toContainText(money(80_000));
-  await expect(review.getByText(`رسوم التوصيل إلى ${fixture.areaName}`).locator("..")).toContainText(money(2_500));
-  await expect(review.getByText("الإجمالي عند الاستلام").locator("..")).toContainText(money(82_500));
+  const review = page.getByRole("region", { name: "Price details" });
+  await expect(review.getByText("Merchandise total after discount").locator("..")).toContainText(money(80_000));
+  await expect(review.getByText(`Delivery fee to ${fixture.areaName}`).locator("..")).toContainText(money(2_500));
+  await expect(review.getByText("Cash on delivery total").locator("..")).toContainText(money(82_500));
 
   let submissions = 0;
   page.on("request", (request) => {
     if (new URL(request.url()).pathname === "/api/public/checkout/orders" && request.method() === "POST") submissions += 1;
   });
-  await checkout.getByRole("button", { name: "إرسال طلب التوصيل" }).click();
+  await checkout.getByRole("button", { name: "Place order request" }).click();
   for (const name of ["customerName", "primaryPhone", "detailedAddress"]) {
     await expect(checkout.locator(`[name="${name}"]`)).toHaveAttribute("aria-invalid", "true");
   }
   expect(submissions).toBe(0);
-  await checkout.getByLabel("الاسم").fill("عميل رحلة المخزون");
-  await checkout.getByLabel("رقم الموبايل الأساسي").fill("01012345678");
-  await checkout.getByLabel("العنوان بالتفصيل").fill("الفيوم، شارع رحلة الاختبار، منزل ١");
+  await checkout.getByLabel("Name").fill("عميل رحلة المخزون");
+  await checkout.getByLabel("Primary mobile number").fill("01012345678");
+  await checkout.getByLabel("Detailed address").fill("الفيوم، شارع رحلة الاختبار، منزل ١");
   const submissionResponse = page.waitForResponse((response) =>
     new URL(response.url()).pathname === "/api/public/checkout/orders" && response.request().method() === "POST");
-  await checkout.getByRole("button", { name: "إرسال طلب التوصيل" }).click();
+  await checkout.getByRole("button", { name: "Place order request" }).click();
   const submitted = await submissionResponse;
   expect(submitted.status()).toBe(201);
   const accepted = await submitted.json() as PublicOrderSubmissionDto;
@@ -114,8 +120,8 @@ test("customer purchase journey leaves pending stock intact and confirms one bra
   expect(accepted.status).toBe("pending");
   expect(accepted.quote).toEqual(quote);
   expectPublicSafe(accepted);
-  await expect(page.getByRole("heading", { name: "تم استلام طلبك" })).toBeVisible();
-  await expect(page.getByRole("status")).toHaveText("استلمنا طلبك للمراجعة. إرسال الطلب لا يحجز القطع؛ تأكيده يتم عبر واتساب.");
+  await expect(page.getByRole("heading", { name: "Order request received" })).toBeVisible();
+  await expect(page.getByRole("status")).toHaveText("We received your order request. It is pending. Placing the request does not reserve the items, and this is not a completed sale.");
   await expect(page.locator(".success-total")).toContainText(money(82_500));
   expect(submissions).toBe(1);
   const savedCart = await page.evaluate(() => JSON.parse(localStorage.getItem("bravos-guest-cart-v1") ?? "null"));
@@ -206,8 +212,8 @@ async function seedJourney(page: Page) {
 
 async function addSelected(page: Page) {
   const panel = page.locator(".purchase-panel");
-  await panel.getByRole("button", { name: "أضف إلى السلة", exact: true }).click();
-  await expect(panel.getByRole("status")).toContainText("تمت إضافة الاختيار إلى السلة");
+  await panel.getByRole("button", { name: "Add to bag", exact: true }).click();
+  await expect(panel.getByRole("status")).toContainText("Added to your bag.");
 }
 
 async function expectBranchStock(page: Page, productId: string, branchId: string, regularId: string, premiumId: string, quantities: [number, number]) {
@@ -252,5 +258,10 @@ function cairoDate() {
 }
 
 function money(piasters: number) {
-  return new Intl.NumberFormat("ar-EG", { style: "currency", currency: "EGP", minimumFractionDigits: 0 }).format(piasters / 100);
+  return new Intl.NumberFormat("en-EG", {
+    style: "currency",
+    currency: "EGP",
+    currencyDisplay: "code",
+    minimumFractionDigits: piasters % 100 === 0 ? 0 : 2,
+  }).format(piasters / 100).replace(/\u00a0/g, " ");
 }

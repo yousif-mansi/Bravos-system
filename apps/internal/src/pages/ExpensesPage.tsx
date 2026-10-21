@@ -28,6 +28,13 @@ function expenseValueText(value: ExpenseDto["effective"]): string {
   return `${formatEgpFromPiasters(value.amountPiasters)} — ${value.expenseDate} — ${value.category.nameAr} — ${value.description}`;
 }
 
+function latestCancellationReason(changes: ExpenseDto["changes"]): string | undefined {
+  for (let index = changes.length - 1; index >= 0; index -= 1) {
+    if (changes[index]?.type === "cancellation") return changes[index]?.reason;
+  }
+  return undefined;
+}
+
 export default function ExpensesPage({
   workspace,
   onChanged,
@@ -247,17 +254,21 @@ export default function ExpensesPage({
 
       {selected ? <section ref={detailsFeedback.regionRef} className={`card expense-details reveal-feedback${detailsFeedback.highlighted ? " is-highlighted" : ""}`} data-testid="expense-details"><h2 ref={detailsFeedback.headingRef} tabIndex={-1}>تفاصيل المصروف</h2>
         <p>الحالة: {selected.status === "cancelled" ? "ملغي" : "ساري"}</p>
-        <p className="muted">سجله {selected.createdByDisplayName} في {selected.branch.nameAr} — {new Date(selected.recordedAt).toLocaleString("ar-EG", { timeZone: "Africa/Cairo" })}</p>
-        <p>الأصل: {formatEgpFromPiasters(selected.original.amountPiasters)} — {selected.original.expenseDate} — {selected.original.category.nameAr} — {selected.original.description}</p>
         {selected.effective ? <p>القيمة الفعلية: {formatEgpFromPiasters(selected.effective.amountPiasters)} — {selected.effective.expenseDate} — {selected.effective.category.nameAr} — {selected.effective.description}</p> : <p>القيمة الفعلية: صفر</p>}
-        <h3>سجل التعديلات</h3>{selected.changes.length === 0 ? <p className="empty">لا توجد تعديلات.</p> : selected.changes.map((change) => (
-          <article className="history-item" data-testid="expense-history-item" key={change.id}>
-            <p>{change.type === "cancellation" ? "إلغاء" : "تصحيح"} — {change.reason}</p>
-            <p>قبل: {expenseValueText(change.previous)}</p>
-            <p>بعد: {expenseValueText(change.effective)}</p>
-            <p className="muted">{change.changedByDisplayName} — {new Date(change.changedAt).toLocaleString("ar-EG", { timeZone: "Africa/Cairo" })}</p>
-          </article>
-        ))}
+        <p className="muted">سجله {selected.createdByDisplayName} في {selected.branch.nameAr} — {new Date(selected.recordedAt).toLocaleString("ar-EG", { timeZone: "Africa/Cairo" })}</p>
+        {selected.status === "cancelled" ? <p>سبب الإلغاء: {latestCancellationReason(selected.changes)}</p> : null}
+        <details className="business-disclosure">
+          <summary>الأصل وسجل التعديلات</summary>
+          <p>الأصل: {formatEgpFromPiasters(selected.original.amountPiasters)} — {selected.original.expenseDate} — {selected.original.category.nameAr} — {selected.original.description}</p>
+          {selected.changes.length === 0 ? <p className="empty">لم يُعدّل</p> : selected.changes.map((change) => (
+            <article className="history-item" data-testid="expense-history-item" key={change.id}>
+              <p>{change.type === "cancellation" ? "إلغاء" : "تصحيح"} — {change.reason}</p>
+              <p>قبل: {expenseValueText(change.previous)}</p>
+              <p>بعد: {expenseValueText(change.effective)}</p>
+              <p className="muted">{change.changedByDisplayName} — {new Date(change.changedAt).toLocaleString("ar-EG", { timeZone: "Africa/Cairo" })}</p>
+            </article>
+          ))}
+        </details>
         {manager && selected.effective ? <form className="stacked-form" aria-label="تصحيح أو إلغاء مصروف" onSubmit={(event) => void submitChange(event)}><h3>تصحيح أو إلغاء</h3>
           {pendingChange ? <p className="muted">هناك تعديل غير مؤكد؛ ستتم إعادة المحاولة بنفس المعرّف.</p> : null}
           <div className="field"><label htmlFor="changeType">الإجراء</label><select id="changeType" value={changeType} disabled={Boolean(pendingChange)} onChange={(event) => setChangeType(event.target.value as "correction" | "cancellation")}><option value="correction">تصحيح</option><option value="cancellation">إلغاء</option></select></div>

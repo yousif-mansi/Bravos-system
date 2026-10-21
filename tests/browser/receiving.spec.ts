@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { openLookupLists } from "./support/open-lookup-lists";
 
 test("manager sees concise receipt facts and expands correction audit after a safe retry", async ({ page }) => {
   await page.goto("http://127.0.0.1:5174/login");
@@ -30,6 +31,7 @@ test("manager sees concise receipt facts and expands correction audit after a sa
   expect(receipt.status).toBe(201);
 
   await page.getByRole("link", { name: "استلام المخزون" }).click();
+  await page.locator("summary").filter({ hasText: "سجل الاستلام" }).click();
   const receiptCard = page.getByTestId("receipt-list").getByText("RC-E2E").locator("..");
   await receiptCard.getByRole("button", { name: "عرض التفاصيل" }).click();
   const details = page.getByTestId("receipt-details");
@@ -80,8 +82,9 @@ test("manager sees concise receipt facts and expands correction audit after a sa
   await expect(details).toContainText("تصحيح فاتورة المورد");
   await expect(details.getByText("التصحيح 1: تصحيح فاتورة المورد")).toHaveCount(1);
   await expect(audit.getByText(/نفّذه مالك برافوس — .+/)).toBeVisible();
+  await page.locator("summary").filter({ hasText: "تفاصيل دفعات الشراء" }).click();
   const batch = page.getByTestId("batch-list").getByText("RC-E2E").locator("..");
-  await expect(batch.getByText("تكلفة شراء الوحدة: 140 ج.م.", { exact: true })).toHaveCount(1);
+  await expect(batch.getByText("تكلفة شراء الوحدة: 140 ج.م.", { exact: true })).toBeVisible();
   await expect(batch).toContainText("المتبقي بالمخزون: 2");
   await expect(batch).toContainText("أبشواي: 2");
   await expect(batch).not.toContainText("الأصلية");
@@ -123,7 +126,7 @@ test("manager receives separate cost batches and cashier sees their branch quant
   const form = page.getByRole("form", { name: "تسجيل إذن استلام" });
   await form.getByLabel("تاريخ الاستلام").fill("2026-09-11");
   await form.getByRole("button", { name: "إضافة صنف" }).click();
-  const products = form.getByLabel("المنتج");
+  const products = form.getByLabel("المنتج", { exact: true });
   const variants = form.getByLabel("المقاس واللون");
   const quantities = form.getByLabel("الكمية");
   const costs = form.getByLabel("تكلفة الشراء للجنيه");
@@ -139,11 +142,12 @@ test("manager receives separate cost batches and cashier sees their branch quant
   await expect(page.getByRole("status")).toContainText("تم حفظ إذن الاستلام.");
   await expect(page.getByTestId("receipt-details")).toContainText("الكمية المستلمة: 10 — تكلفة شراء الوحدة: 100 ج.م.");
   await expect(page.getByTestId("receipt-details")).toContainText("الكمية المستلمة: 10 — تكلفة شراء الوحدة: 140 ج.م.");
+  await page.locator("summary").filter({ hasText: "تفاصيل دفعات الشراء" }).click();
   const costBatches = page.getByTestId("batch-list").locator("article").filter({ hasText: "PT-E2E" });
   await expect(costBatches).toHaveCount(2);
-  await expect(costBatches.getByText("تكلفة شراء الوحدة: 100 ج.م.", { exact: true })).toHaveCount(1);
-  await expect(costBatches.getByText("تكلفة شراء الوحدة: 140 ج.م.", { exact: true })).toHaveCount(1);
-  await expect(costBatches.getByText("المتبقي بالمخزون: 10", { exact: true })).toHaveCount(2);
+  await expect(costBatches.getByText("تكلفة شراء الوحدة: 100 ج.م.", { exact: true })).toBeVisible();
+  await expect(costBatches.getByText("تكلفة شراء الوحدة: 140 ج.م.", { exact: true })).toBeVisible();
+  await expect(costBatches.getByText(/^المتبقي بالمخزون: 10 · حسب الفرع:/)).toHaveCount(2);
   await expect(costBatches.getByText(/الأصلية|الفعالة/)).toHaveCount(0);
   const lowStockRows = page.getByTestId("low-stock-list").locator("article").filter({ hasText: "PT-E2E" });
   await expect(lowStockRows).toHaveCount(1);
@@ -172,6 +176,7 @@ test("manager receives separate cost batches and cashier sees their branch quant
   await lookupForm.getByRole("textbox", { name: "رمز المنتج" }).fill("PT-E2E");
   await lookupForm.getByRole("button", { name: "بحث" }).click();
   await expect(page.getByTestId("lookup-result")).toContainText("بنطلون تجريبي");
+  await openLookupLists(page);
   await page.getByLabel("المقاس").selectOption({ label: "32" });
   await page.getByLabel("اللون").selectOption({ label: "رمادي" });
   await expect(page.getByTestId("available-quantity")).toHaveText("الكمية المتاحة: 20");
@@ -210,7 +215,7 @@ test("lost receiving response retries the same operation without duplicating sto
   await expect(page.getByRole("heading", { name: "استلام المخزون", exact: true })).toBeVisible();
   const form = page.getByRole("form", { name: "تسجيل إذن استلام" });
   await form.getByLabel("تاريخ الاستلام").fill("2026-09-11");
-  await form.getByLabel("المنتج").selectOption({ label: "SH-E2E — حذاء تجريبي" });
+  await form.getByLabel("المنتج", { exact: true }).selectOption({ label: "SH-E2E — حذاء تجريبي" });
   await form.getByLabel("المقاس واللون").selectOption({ label: "41 / بني" });
   await form.getByLabel("الكمية").fill("5");
   await form.getByLabel("تكلفة الشراء للجنيه").fill("80");
@@ -279,7 +284,7 @@ test("lost response then edit, reload and check result keep a single receiving e
   await expect(page.getByRole("heading", { name: "استلام المخزون", exact: true })).toBeVisible();
   const form = page.getByRole("form", { name: "تسجيل إذن استلام" });
   await form.getByLabel("تاريخ الاستلام").fill("2026-09-11");
-  await form.getByLabel("المنتج").selectOption({ label: "CT-E2E — معطف تجريبي" });
+  await form.getByLabel("المنتج", { exact: true }).selectOption({ label: "CT-E2E — معطف تجريبي" });
   await form.getByLabel("المقاس واللون").selectOption({ label: "42R / زيتي استلام" });
   await form.getByLabel("الكمية").fill("5");
   await form.getByLabel("تكلفة الشراء للجنيه").fill("90");
@@ -374,7 +379,7 @@ test("a rejected receiving operation keeps its identity and can be retried after
   await expect(page.getByRole("heading", { name: "استلام المخزون", exact: true })).toBeVisible();
   const form = page.getByRole("form", { name: "تسجيل إذن استلام" });
   await form.getByLabel("تاريخ الاستلام").fill("2026-09-11");
-  await form.getByLabel("المنتج").selectOption({ label: "HT-E2E — قبعة تجريبية" });
+  await form.getByLabel("المنتج", { exact: true }).selectOption({ label: "HT-E2E — قبعة تجريبية" });
   await form.getByLabel("المقاس واللون").selectOption({ label: "واحد / بيج" });
   await form.getByLabel("الكمية").fill("2");
   await form.getByLabel("تكلفة الشراء للجنيه").fill("40");
@@ -446,7 +451,7 @@ test("two synchronous submit events before digest settles keep one receiving eff
   await expect(page.getByRole("heading", { name: "استلام المخزون", exact: true })).toBeVisible();
   const form = page.getByRole("form", { name: "تسجيل إذن استلام" });
   await form.getByLabel("تاريخ الاستلام").fill("2026-09-11");
-  await form.getByLabel("المنتج").selectOption({ label: "DS-E2E — حزام مزدوج" });
+  await form.getByLabel("المنتج", { exact: true }).selectOption({ label: "DS-E2E — حزام مزدوج" });
   await form.getByLabel("المقاس واللون").selectOption({ label: "حزام / بني مزدوج" });
   await form.getByLabel("الكمية").fill("4");
   await form.getByLabel("تكلفة الشراء للجنيه").fill("55");
@@ -517,7 +522,7 @@ test("lost request before send retries the same identity without duplicating sto
   await expect(page.getByRole("heading", { name: "استلام المخزون", exact: true })).toBeVisible();
   const form = page.getByRole("form", { name: "تسجيل إذن استلام" });
   await form.getByLabel("تاريخ الاستلام").fill("2026-09-11");
-  await form.getByLabel("المنتج").selectOption({ label: "LB-E2E — جورب إرسال" });
+  await form.getByLabel("المنتج", { exact: true }).selectOption({ label: "LB-E2E — جورب إرسال" });
   await form.getByLabel("المقاس واللون").selectOption({ label: "مراسل / رمادي إرسال" });
   await form.getByLabel("الكمية").fill("6");
   await form.getByLabel("تكلفة الشراء للجنيه").fill("20");
@@ -586,7 +591,7 @@ test("pending receiving identity survives closing the page and reopening a fresh
   await expect(page.getByRole("heading", { name: "استلام المخزون", exact: true })).toBeVisible();
   const form = page.getByRole("form", { name: "تسجيل إذن استلام" });
   await form.getByLabel("تاريخ الاستلام").fill("2026-09-11");
-  await form.getByLabel("المنتج").selectOption({ label: "CL-E2E — وشاح إغلاق" });
+  await form.getByLabel("المنتج", { exact: true }).selectOption({ label: "CL-E2E — وشاح إغلاق" });
   await form.getByLabel("المقاس واللون").selectOption({ label: "وشاح / كحلي إغلاق" });
   await form.getByLabel("الكمية").fill("7");
   await form.getByLabel("تكلفة الشراء للجنيه").fill("30");
@@ -691,14 +696,14 @@ test("an already-open second tab cannot overwrite or clear another tab's uncerta
 
   const formA = page.getByRole("form", { name: "تسجيل إذن استلام" });
   await formA.getByLabel("تاريخ الاستلام").fill("2026-09-11");
-  await formA.getByLabel("المنتج").selectOption({ label: "TA-E2E — منتج التبويب أ" });
+  await formA.getByLabel("المنتج", { exact: true }).selectOption({ label: "TA-E2E — منتج التبويب أ" });
   await formA.getByLabel("المقاس واللون").selectOption({ label: "تبويب / أحمر تبويب" });
   await formA.getByLabel("الكمية").fill("5");
   await formA.getByLabel("تكلفة الشراء للجنيه").fill("70");
 
   const formB = pageB.getByRole("form", { name: "تسجيل إذن استلام" });
   await formB.getByLabel("تاريخ الاستلام").fill("2026-09-11");
-  await formB.getByLabel("المنتج").selectOption({ label: "TB-E2E — منتج التبويب ب" });
+  await formB.getByLabel("المنتج", { exact: true }).selectOption({ label: "TB-E2E — منتج التبويب ب" });
   await formB.getByLabel("المقاس واللون").selectOption({ label: "تبويب / أزرق تبويب" });
   await formB.getByLabel("الكمية").fill("8");
   await formB.getByLabel("تكلفة الشراء للجنيه").fill("80");
@@ -766,7 +771,7 @@ test("an already-open second tab cannot overwrite or clear another tab's uncerta
 test("tab A keeps its frozen operation after tab B recovers and clears the shared marker", async ({
   page,
   context,
-}) => {
+}, testInfo) => {
   await page.goto("http://127.0.0.1:5174/login");
   await page.getByLabel("اسم الدخول").fill("owner");
   await page.getByLabel("كلمة المرور").fill("e2e-owner-pass");
@@ -795,16 +800,53 @@ test("tab A keeps its frozen operation after tab B recovers and clears the share
 
   await page.getByRole("link", { name: "استلام المخزون" }).click();
   await expect(page.getByRole("heading", { name: "استلام المخزون", exact: true })).toBeVisible();
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await armNativeSubmitCounter(page);
+  const intake = page.getByRole("form", { name: "إضافة منتج إلى المخزون" });
+  await intake.getByRole("radio", { name: "مقاس ولون جديدان لمنتج موجود" }).check();
+  await expect(page.getByTestId("intake-browse-filters")).toBeVisible();
+  const existingProduct = intake.getByLabel("اختر المنتج الموجود برمزه");
+  await existingProduct.selectOption(product.body.id);
+  await intake.locator("select[id^='new-size-']").selectOption(size.body.id);
+  await intake.locator("select[id^='new-color-']").selectOption(color.body.id);
+  await intake.locator("input[id^='new-qty-']").fill("1");
+  await intake.locator("input[id^='new-cost-']").fill("10");
+  await expect(intake.getByRole("button", { name: "حفظ التركيبة والكمية" })).toBeEnabled();
+  const intakeQuery = page.locator("#intake-browse-query");
+  await intakeQuery.fill("لا-يطابق-FA");
+  const intakeSubmits = await nativeSubmitCount(page, "إضافة منتج إلى المخزون");
+  await intakeQuery.press("Enter");
+  expect(await nativeSubmitCount(page, "إضافة منتج إلى المخزون")).toBe(intakeSubmits);
+  await expect(existingProduct).toHaveValue(product.body.id);
+  await expect(existingProduct.locator("optgroup[label='الاختيار الحالي'] option")).toHaveAttribute("value", product.body.id);
+  await expect(intake.locator("select[id^='new-size-']")).toHaveValue(size.body.id);
+  await expect(intake.locator("select[id^='new-color-']")).toHaveValue(color.body.id);
+  await expect(intake.locator("input[id^='new-qty-']")).toHaveValue("1");
+  await page.getByTestId("intake-browse-filters").getByRole("button", { name: "مسح التصفية" }).click();
+  await expect(intakeQuery).toHaveValue("");
+  await intake.getByRole("radio", { name: "منتج جديد" }).check();
   const pageB = await context.newPage();
   await pageB.goto("http://127.0.0.1:5174/receiving");
   await expect(pageB.getByRole("heading", { name: "استلام المخزون", exact: true })).toBeVisible();
 
   const formA = page.getByRole("form", { name: "تسجيل إذن استلام" });
   await formA.getByLabel("تاريخ الاستلام").fill("2026-09-11");
-  await formA.getByLabel("المنتج").selectOption({ label: "FA-E2E — منتج التجميد" });
+  await formA.getByLabel("المنتج", { exact: true }).selectOption({ label: "FA-E2E — منتج التجميد" });
   await formA.getByLabel("المقاس واللون").selectOption({ label: "مجمد / ذهبي مجمد" });
   await formA.getByLabel("الكمية").fill("6");
   await formA.getByLabel("تكلفة الشراء للجنيه").fill("45");
+  await page.locator("#receipt-browse-query").fill("لا-يطابق-FA");
+  await expect(formA.getByRole("button", { name: "حفظ الاستلام" })).toBeEnabled();
+  const receiptSubmits = await nativeSubmitCount(page, "تسجيل إذن استلام");
+  await page.locator("#receipt-browse-query").press("Enter");
+  expect(await nativeSubmitCount(page, "تسجيل إذن استلام")).toBe(receiptSubmits);
+  await expect(formA.getByLabel("المنتج", { exact: true })).toHaveValue(product.body.id);
+  await expect(formA.getByLabel("المقاس واللون")).toHaveValue(variantId);
+  await expect(formA.getByLabel("الكمية")).toHaveValue("6");
+  await expect(formA.getByLabel("المنتج", { exact: true }).locator("optgroup[label='الاختيار الحالي'] option")).toHaveAttribute("value", product.body.id);
+  await page.getByTestId("receipt-browse-filters").getByRole("button", { name: "مسح التصفية" }).click();
+  await expect(page.locator("#receipt-browse-query")).toHaveValue("");
+  await page.screenshot({ path: testInfo.outputPath("receiving-desktop-1440.png"), fullPage: true });
 
   const operationIds: string[] = [];
   let dropFirst = true;
@@ -828,6 +870,28 @@ test("tab A keeps its frozen operation after tab B recovers and clears the share
   await formA.getByRole("button", { name: "حفظ الاستلام" }).click();
   await expect(page.getByRole("alert")).toBeVisible();
   await expect(formA.getByLabel("الكمية")).toBeDisabled();
+  await page.locator("#receipt-browse-query").fill("لا-يطابق-FA");
+  await expect(formA.getByLabel("المنتج", { exact: true })).toBeDisabled();
+  await expect(formA.getByLabel("المنتج", { exact: true })).toHaveValue(product.body.id);
+  await expect(formA.getByLabel("المقاس واللون")).toBeDisabled();
+  await expect(formA.getByLabel("المقاس واللون")).toHaveValue(variantId);
+  await expect(formA.getByLabel("الكمية")).toHaveValue("6");
+  await expect(page.getByTestId("pending-operation")).toBeVisible();
+  await expect(formA.getByRole("button", { name: "إعادة المحاولة" })).toBeEnabled();
+  const frozenSubmits = await nativeSubmitCount(page, "تسجيل إذن استلام");
+  const operationsBeforeEnter = operationIds.length;
+  const markerBeforeEnter = await readPendingMarkerSnapshot(page);
+  await page.locator("#receipt-browse-query").press("Enter");
+  expect(await nativeSubmitCount(page, "تسجيل إذن استلام")).toBe(frozenSubmits);
+  expect(operationIds).toHaveLength(operationsBeforeEnter);
+  expect(await readPendingMarkerSnapshot(page)).toEqual(markerBeforeEnter);
+  await expect(formA.getByLabel("المنتج", { exact: true })).toHaveValue(product.body.id);
+  await expect(formA.getByLabel("المقاس واللون")).toHaveValue(variantId);
+  await expect(formA.getByLabel("الكمية")).toBeDisabled();
+  await expect(formA.getByLabel("الكمية")).toHaveValue("6");
+  await expect(page.getByTestId("pending-operation")).toBeVisible();
+  await page.getByTestId("receipt-browse-filters").getByRole("button", { name: "مسح التصفية" }).click();
+  await expect(page.locator("#receipt-browse-query")).toHaveValue("");
   const originalId = operationIds[0];
   expect(originalId).toEqual(expect.any(String));
   const markerKey = await page.evaluate(() => {
@@ -864,6 +928,7 @@ test("tab A keeps its frozen operation after tab B recovers and clears the share
   await formA.getByRole("button", { name: /حفظ الاستلام|إعادة المحاولة/ }).click();
   await expect(page.getByRole("status")).toContainText(/تم حفظ إذن الاستلام|تم العثور على إذن الاستلام المحفوظ/);
   await expect(page.getByTestId("receipt-details")).toContainText("الكمية المستلمة: 6 — تكلفة شراء الوحدة: 45 ج.م.");
+  expect(operationIds).toHaveLength(2);
   expect(new Set(operationIds).size).toBe(1);
   expect(operationIds.every((id) => id === originalId)).toBe(true);
 
@@ -974,7 +1039,7 @@ test("a later same-account receive keeps its marker when the recovered tab retri
 async function fillSameAccountReceive(target: Page, quantity: string) {
   const form = target.getByRole("form", { name: "تسجيل إذن استلام" });
   await form.getByLabel("تاريخ الاستلام").fill("2026-09-11");
-  await form.getByLabel("المنتج").selectOption({ label: "SS-E2E — تحقق الحساب المشترك" });
+  await form.getByLabel("المنتج", { exact: true }).selectOption({ label: "SS-E2E — تحقق الحساب المشترك" });
   await form.getByLabel("المقاس واللون").selectOption({ label: "مقاس نفس الحساب / لون نفس الحساب" });
   await form.getByLabel("الكمية").fill(quantity);
   await form.getByLabel("تكلفة الشراء للجنيه").fill("45");
@@ -1014,6 +1079,40 @@ async function readPendingMarker(
       return raw
         ? (JSON.parse(raw) as { operationId: string; staffId: string; phase: string; digest: string | null })
         : null;
+    }
+    return null;
+  });
+}
+
+async function armNativeSubmitCounter(page: Page) {
+  await page.evaluate(() => {
+    const host = window as Window & { __bravosNativeSubmitCounts?: Record<string, number> };
+    if (host.__bravosNativeSubmitCounts) return;
+    const counts: Record<string, number> = {};
+    host.__bravosNativeSubmitCounts = counts;
+    document.addEventListener("submit", (event) => {
+      const form = event.target;
+      if (!(form instanceof HTMLFormElement)) return;
+      const name = form.getAttribute("aria-label") ?? "";
+      counts[name] = (counts[name] ?? 0) + 1;
+    }, true);
+  });
+}
+
+async function nativeSubmitCount(page: Page, formName: string) {
+  return page.evaluate((name) => {
+    const counts = (window as Window & { __bravosNativeSubmitCounts?: Record<string, number> }).__bravosNativeSubmitCounts;
+    return counts?.[name] ?? 0;
+  }, formName);
+}
+
+async function readPendingMarkerSnapshot(page: Page) {
+  return page.evaluate(() => {
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index);
+      if (key?.startsWith("bravos.receiving.pending.")) {
+        return { key, value: localStorage.getItem(key) };
+      }
     }
     return null;
   });
