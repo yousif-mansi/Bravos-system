@@ -59,7 +59,9 @@ jobs:
       - name: Check performance script syntax
         run: node --check scripts/measure-storefront-performance.mjs
       - name: Run pure performance and bundle guard script tests
-        run: node --test tests/scripts/storefront-performance.test.mjs tests/scripts/check-bundles.test.mjs
+        run: node --test tests/scripts/storefront-performance.test.mjs tests/scripts/check-bundles.test.mjs tests/scripts/embedded-postgres-stage-error.test.mjs tests/scripts/windows-postgres-start.test.mjs
+      - name: Check sample catalog intake guards without accessing business data
+        run: node --import tsx --test tests/scripts/sample-catalog.test.mjs
       - name: Build API, internal app and storefront; check bundle separation
         run: pnpm build
 

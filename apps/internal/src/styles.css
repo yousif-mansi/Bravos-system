@@ -84,12 +84,17 @@ input, select, textarea {
   width: 100%;
   min-height: 44px;
   padding: 0.75rem 0.9rem;
-  border: 1px solid var(--border);
+  border: 1px solid var(--control-border);
   border-radius: var(--radius-sm);
   background: var(--background-secondary);
   color: var(--text-primary);
   appearance: none;
   transition: border-color 0.15s ease, box-shadow 0.15s ease, background-color 0.22s ease;
+}
+input::placeholder,
+textarea::placeholder {
+  color: var(--text-secondary);
+  opacity: 1;
 }
 input[type="checkbox"], input[type="radio"] {
   appearance: auto;
@@ -171,6 +176,15 @@ input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible {
     transition: border-color 0.2s ease, box-shadow 0.2s ease;
   }
 }
+/* The reveal hook aligns this region to the scrollport start. Clear the sticky toolbar (5rem row; stacked below 640px) and keep the 1rem gap. */
+.receiving-page .reveal-feedback {
+  scroll-margin-block-start: calc(5rem + 1rem);
+}
+@media (max-width: 640px) {
+  .receiving-page .reveal-feedback {
+    scroll-margin-block-start: calc(14rem + 1rem);
+  }
+}
 select {
   background-image: linear-gradient(45deg, transparent 50%, var(--text-secondary) 50%), linear-gradient(135deg, var(--text-secondary) 50%, transparent 50%);
   background-position: calc(100% - 16px) calc(50% - 3px), calc(100% - 11px) calc(50% - 3px);
@@ -232,7 +246,7 @@ button.secondary, a.button.secondary {
   background: var(--surface-elevated);
   color: var(--text-primary);
   text-decoration: none;
-  border: 1px solid var(--border);
+  border: 1px solid var(--control-border);
 }
 
 button.ghost, a.button.ghost, .ghost {
@@ -242,11 +256,22 @@ button.ghost, a.button.ghost, .ghost {
   text-decoration: none;
 }
 
-button.danger { background: var(--danger); color: var(--text-primary); }
+button.danger {
+  background: var(--danger);
+  color: var(--on-danger);
+  border-color: var(--danger);
+}
+button.danger:hover:not(:disabled),
+button.danger:focus-visible:not(:disabled) {
+  background: var(--danger);
+  color: var(--on-danger);
+  border-color: var(--on-danger);
+  filter: none;
+}
 
 .error {
   background: color-mix(in srgb, var(--danger) 16%, var(--surface));
-  color: var(--danger);
+  color: var(--danger-text);
   border: 1px solid color-mix(in srgb, var(--danger) 40%, var(--border));
   border-radius: 10px;
   padding: 0.75rem;
@@ -856,6 +881,10 @@ button, .button, input, select {
   color: var(--brand-accent);
   box-shadow: inset -2px 0 0 var(--brand-accent);
 }
+[data-theme="light"] .nav-link:hover,
+[data-theme="light"] .nav-link.is-active {
+  color: var(--text-primary);
+}
 [dir="rtl"] .nav-link.is-active { box-shadow: inset 2px 0 0 var(--brand-accent); }
 .nav-link.is-active svg { opacity: 1; }
 .app-frame.is-collapsed .nav-group-label,
@@ -1171,4 +1200,157 @@ input[type="checkbox"][aria-invalid="true"],
 input[type="radio"][aria-invalid="true"] {
   outline: 2px solid var(--danger);
   outline-offset: 2px;
+}
+
+.catalog-page .merchandise-filters,
+.receiving-page .merchandise-filters {
+  display: none;
+}
+
+.catalog-page .category-path,
+.receiving-page .category-path {
+  margin: 0.2rem 0 0;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+@media (min-width: 1024px) {
+  .catalog-page .catalog-workspace {
+    display: grid;
+    grid-template-columns: minmax(320px, 420px) minmax(0, 1fr);
+    gap: 1rem;
+    align-items: start;
+  }
+
+  .catalog-page .catalog-workspace > .catalog-top.grid.two {
+    display: contents;
+  }
+
+  .catalog-page .catalog-taxonomy {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .catalog-page .catalog-editor {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+    margin-top: 0;
+    padding-top: 0;
+    border-top: 0;
+    position: sticky;
+    top: 5.25rem;
+    z-index: 1;
+  }
+
+  .catalog-page .catalog-browse {
+    grid-column: 1;
+    grid-row: 1;
+    min-width: 0;
+  }
+
+  .catalog-page .catalog-browse .staff-list {
+    max-height: min(70vh, 52rem);
+    overflow: auto;
+  }
+
+  .catalog-page .catalog-browse .staff-item {
+    padding: 0.55rem 0.7rem;
+  }
+
+  .catalog-page .catalog-browse .staff-item p {
+    margin: 0.15rem 0;
+  }
+
+  .catalog-page .merchandise-filters,
+  .receiving-page .merchandise-filters {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+    gap: 0.75rem;
+    align-items: end;
+    margin-bottom: 0.9rem;
+  }
+
+  .catalog-page .merchandise-filters .field,
+  .receiving-page .merchandise-filters .field,
+  .merchandise-filter-meta {
+    margin-bottom: 0;
+  }
+
+  .merchandise-filter-meta {
+    display: grid;
+    gap: 0.35rem;
+    justify-items: start;
+  }
+
+  .merchandise-filter-meta p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.92rem;
+  }
+
+  .receiving-page .intake-variant-row,
+  .receiving-page .receipt-variant-row {
+    grid-template-columns: minmax(0, 1.5fr) minmax(0, 1.1fr) minmax(5.5rem, 0.55fr) minmax(7rem, 0.7fr) auto;
+    gap: 0.5rem 0.65rem;
+    align-items: end;
+  }
+
+  .receiving-page .intake-variant-row .field,
+  .receiving-page .receipt-variant-row .field {
+    margin-bottom: 0;
+  }
+}
+
+.business-disclosure summary {
+  min-block-size: 44px;
+  cursor: pointer;
+  font-weight: 600;
+}
+.business-disclosure > summary:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 3px;
+}
+.report-scope {
+  margin: 0 0 0.65rem;
+  color: var(--text-primary);
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+.catalog-bulk-warning {
+  margin: 0.35rem 0 0.75rem;
+  color: var(--text-primary);
+  font-weight: 700;
+}
+
+.business-disclosure[open] > summary {
+  margin-block-end: 0.75rem;
+}
+
+.business-archive-scroll {
+  max-block-size: 28rem;
+  overflow: auto;
+}
+
+.business-archive-row {
+  display: grid;
+  grid-template-rows: auto auto;
+  gap: 0.2rem;
+  overflow-wrap: anywhere;
+}
+
+.business-archive-row p {
+  margin-block: 0.15rem;
+}
+
+button.business-primary-action {
+  background: var(--primary-action-bg, var(--brand-accent));
+  color: var(--primary-action-ink, var(--brand-on-accent));
+  border-color: var(--primary-action-bg, var(--brand-accent));
+}
+
+button.business-primary-action:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--primary-action-bg, var(--brand-accent)) 92%, black);
+  color: var(--primary-action-ink, var(--brand-on-accent));
+  border-color: color-mix(in srgb, var(--primary-action-bg, var(--brand-accent)) 92%, black);
+  filter: none;
 }

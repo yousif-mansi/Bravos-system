@@ -28,7 +28,7 @@ export function CartSummary({ itemCount, merchandiseTotal, checking, canCheckout
         {checking ? "Updating products…" : "Refresh product details"}
       </button>
       <Link className={styles.continueShopping} href="/#catalog-title">Continue shopping</Link>
-      <p className={styles.reservationNote}>We check the whole bag when the price is reviewed. The bag does not reserve the items.</p>
+      <p className={styles.reservationNote}>Items in your bag are not reserved.</p>
     </aside>
   );
 }

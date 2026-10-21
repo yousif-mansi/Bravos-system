@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
+import { openLookupLists } from "./support/open-lookup-lists";
 
 const BASE_URL = "http://127.0.0.1:5174";
 const ARCHIVE_TYPE = "application/vnd.bravos.backup";
@@ -303,6 +304,7 @@ async function addAndPrice(
   await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill(seed.code);
   await lookup.locator('button[type="submit"]').click();
   await expect(page.getByTestId("lookup-result")).toContainText(seed.nameAr);
+  await openLookupLists(page);
   await page.getByLabel("المقاس").selectOption({ label: seed.sizeName });
   await page.getByLabel("اللون").selectOption({ label: seed.colorName });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();

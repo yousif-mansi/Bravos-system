@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { openLookupLists } from "./support/open-lookup-lists";
 
 const internal = "http://127.0.0.1:5174";
 
@@ -81,6 +82,7 @@ async function openPos(page: Page) {
 
 async function chooseM(page: Page, data: Awaited<ReturnType<typeof seed>>) {
   await page.getByTestId("pos-product-tile").filter({ hasText: data.product.code }).click();
+  await openLookupLists(page);
   await page.getByLabel("المقاس", { exact: true }).selectOption(data.sizes[0].id);
   await page.getByLabel("اللون", { exact: true }).selectOption(data.colors[0].id);
 }
@@ -102,7 +104,8 @@ test("cashier browses real staff categories and actual variant prices without kn
   await page.getByLabel("ابحث بالاسم أو الكود").fill(data.product.nameAr);
   await tile.focus();
   await page.keyboard.press("Enter");
-  await expect(page.getByLabel("المقاس", { exact: true })).toBeFocused();
+  await expect(page.getByRole("group", { name: "اختيارات الصنف المتاحة" }).getByRole("button").first()).toBeFocused();
+  await openLookupLists(page);
   await page.getByLabel("المقاس", { exact: true }).selectOption(data.sizes[0].id);
   await expect(page.getByLabel("اللون", { exact: true }).locator("option")).toHaveCount(2);
   await page.getByLabel("اللون", { exact: true }).selectOption(data.colors[0].id);
@@ -196,7 +199,8 @@ test("POS uses two lanes on desktop and tablet, stacks on phones and keeps check
   const tile = page.getByTestId("pos-product-tile").filter({ hasText: data.product.code });
   await tile.focus();
   await page.keyboard.press("Enter");
-  await expect(page.getByLabel("المقاس", { exact: true })).toBeFocused();
+  await expect(page.getByRole("group", { name: "اختيارات الصنف المتاحة" }).getByRole("button").first()).toBeFocused();
+  await openLookupLists(page);
   await page.getByLabel("المقاس", { exact: true }).selectOption(data.sizes[0].id);
   await page.getByLabel("اللون", { exact: true }).selectOption(data.colors[0].id);
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();

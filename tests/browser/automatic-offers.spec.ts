@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { openLookupLists } from "./support/open-lookup-lists";
 
 test("manager creates an offer and the connected cashier keeps its accepted value through completion", async ({
   browser,
@@ -55,6 +56,7 @@ test("manager creates an offer and the connected cashier keeps its accepted valu
   const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
   await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill("OFFER-E2E");
   await lookup.getByRole("button", { name: "بحث" }).click();
+  await openLookupLists(page);
   await page.getByLabel("المقاس").selectOption({ label: "مقاس عرض متصفح" });
   await page.getByLabel("اللون").selectOption({ label: "لون عرض متصفح" });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();

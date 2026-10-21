@@ -16,11 +16,47 @@ test("manager sees the central-data warning and saves a usable verified encrypte
   });
   expect(snapshot.status).toBe(201);
 
+  let rejectBackupReadiness = false;
+  await page.route("**/api/internal/backups/readiness", async (route) => {
+    if (
+      rejectBackupReadiness
+      && route.request().method() === "GET"
+      && new URL(page.url()).pathname === "/backup"
+    ) {
+      try {
+        await route.fulfill({ status: 503, contentType: "text/plain", body: "" });
+      } catch {
+        /* A superseded readiness request can abort before this response is applied. */
+      }
+      return;
+    }
+    await route.continue();
+  });
+  rejectBackupReadiness = true;
+
   await page.getByRole("link", { name: "نسخة احتياطية" }).click();
   await expect(page.getByRole("heading", { name: "نسخة احتياطية للبيانات" })).toBeVisible();
+  await expect(page.getByText("تحفظ النسخة بيانات العمل وإعداداته. ملفات الصور غير مشمولة.")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "المبيعات غير المتزامنة غير مشمولة" })).toBeVisible();
   await expect(page.getByText("أي مبيعات مكتملة ما زالت غير مرسلة")).toBeVisible();
+  await page.locator("summary").filter({ hasText: /^تفاصيل محتويات النسخة$/ }).click();
   await expect(page.getByText("ملفات الصور نفسها غير موجودة داخل النسخة")).toBeVisible();
   await expect(page.getByText("هذه الشاشة للتنزيل فقط")).toBeVisible();
+  const backupForm = page.getByRole("form", { name: "إنشاء نسخة احتياطية" });
+  await expect(page.getByRole("alert")).toContainText("تعذر فحص أجهزة نقاط البيع المعروفة.");
+  await expect(backupForm.getByRole("button", { name: "إنشاء وتنزيل النسخة" })).toBeDisabled();
+  await backupForm.getByLabel("كلمة حماية النسخة").fill("مسودة كلمة الحماية");
+  await backupForm.getByLabel("تأكيد كلمة الحماية").fill("مسودة التأكيد");
+  rejectBackupReadiness = false;
+  const readinessRecovered = page.waitForResponse((response) => (
+    new URL(response.url()).pathname === "/api/internal/backups/readiness"
+    && response.request().method() === "GET"
+    && response.status() === 200
+  ));
+  await page.getByRole("button", { name: "إعادة المحاولة", exact: true }).click();
+  expect((await readinessRecovered).status()).toBe(200);
+  await expect(backupForm.getByLabel("كلمة حماية النسخة")).toHaveValue("مسودة كلمة الحماية");
+  await expect(backupForm.getByLabel("تأكيد كلمة الحماية")).toHaveValue("مسودة التأكيد");
   const warning = page.getByTestId("backup-unsynchronized-warning");
   await expect(warning).toContainText(deviceId);
   await expect(warning).toContainText("عمليات معلّقة معروفة: 1");

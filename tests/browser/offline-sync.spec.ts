@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { openLookupLists } from "./support/open-lookup-lists";
 
 test("delayed web crypto still saves a local sale and acks two operations in one transaction", async ({ page }) => {
   const seed = await seedSingleProduct(page, { quantity: 2, price: 16500, code: "SYNC-HASH" });
@@ -748,6 +749,7 @@ async function attemptAcceptPrices(page: Page, seed: { code: string; nameAr?: st
   await expect(page.getByTestId("lookup-result")).toContainText(seed.nameAr ?? seed.code);
   const color = page.getByLabel("اللون");
   await expect(color).toBeDisabled();
+  await openLookupLists(page);
   await page.getByLabel("المقاس").selectOption({ label: seed.sizeName });
   await expect(color).toBeEnabled();
   await color.selectOption({ label: seed.colorName });
@@ -777,8 +779,10 @@ async function addAndPrice(
   }
   await expect(page.getByTestId("lookup-result")).toContainText(seed.nameAr ?? seed.code);
   const color = page.getByLabel("اللون");
+  await openLookupLists(page);
   await page.getByLabel("المقاس").selectOption({ index: 0 });
   await expect(color).toBeDisabled();
+  await openLookupLists(page);
   await page.getByLabel("المقاس").selectOption({ label: seed.sizeName });
   await expect(color).toBeEnabled();
   await color.selectOption({ label: seed.colorName });

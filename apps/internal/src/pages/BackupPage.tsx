@@ -44,6 +44,7 @@ export default function BackupPage({ workspace }: { workspace: WorkspaceDto }) {
   const activeRequest = useRef<AbortController | null>(null);
   const readinessRequest = useRef<AbortController | null>(null);
   const readinessVersion = useRef(0);
+  const reloadReadiness = useRef<(() => void) | null>(null);
 
   function isCurrentAccount(staffId: string, epoch: number, token: number): boolean {
     return lifecycle.current === token
@@ -89,6 +90,7 @@ export default function BackupPage({ workspace }: { workspace: WorkspaceDto }) {
     const token = ++lifecycle.current;
     const epoch = accountGeneration();
     const reload = () => void refreshReadiness(staffId, epoch, token);
+    reloadReadiness.current = reload;
     reload();
     window.addEventListener("online", reload);
     const unsubscribe = subscribeAccount(() => {
@@ -101,6 +103,7 @@ export default function BackupPage({ workspace }: { workspace: WorkspaceDto }) {
       setCompleted(null);
     });
     return () => {
+      reloadReadiness.current = null;
       lifecycle.current += 1;
       readinessRequest.current?.abort();
       activeRequest.current?.abort();
@@ -176,27 +179,36 @@ export default function BackupPage({ workspace }: { workspace: WorkspaceDto }) {
 
       <section className="card backup-scope" aria-labelledby="backup-scope-title">
         <h2 id="backup-scope-title">ما الذي تحفظه النسخة؟</h2>
-        <p>
-          تشمل سجلات العمل المركزية، والسجلات الأصلية وتصحيحاتها، ودفعات التكلفة وتخصيصاتها،
-          وإعدادات التشغيل، وربط الموظفين بالعمليات، وهويات العمليات اللازمة لمنع التكرار.
-        </p>
-        <p>
-          تُحفظ مراجع الصور، لكن ملفات الصور نفسها غير موجودة داخل النسخة. لذلك لا يمكن لهذه النسخة
-          وحدها استعادة ملف صورة محذوف من التخزين.
-        </p>
-        <p className="muted">
-          لا تحتوي النسخة على كلمات دخول أو جلسات نشطة أو رموز استعادة أو أسرار الخدمة.
-          هذه الشاشة للتنزيل فقط؛ معاينة الاستعادة وتأكيدها تأتي في مسار مستقل.
-        </p>
+        <p>تحفظ النسخة بيانات العمل وإعداداته. ملفات الصور غير مشمولة.</p>
+        <details className="business-disclosure">
+          <summary>تفاصيل محتويات النسخة</summary>
+          <p>
+            تشمل سجلات العمل المركزية، والسجلات الأصلية وتصحيحاتها، ودفعات التكلفة وتخصيصاتها،
+            وإعدادات التشغيل، وربط الموظفين بالعمليات، وهويات العمليات اللازمة لمنع التكرار.
+          </p>
+          <p>
+            تُحفظ مراجع الصور، لكن ملفات الصور نفسها غير موجودة داخل النسخة. لذلك لا يمكن لهذه النسخة
+            وحدها استعادة ملف صورة محذوف من التخزين.
+          </p>
+          <p className="muted">
+            لا تحتوي النسخة على كلمات دخول أو جلسات نشطة أو رموز استعادة أو أسرار الخدمة.
+            هذه الشاشة للتنزيل فقط؛ معاينة الاستعادة وتأكيدها تأتي في مسار مستقل.
+          </p>
+        </details>
       </section>
 
       <section className="card backup-central-warning" aria-labelledby="backup-central-title">
-        <h2 id="backup-central-title">حدود البيانات المركزية</h2>
+        <h2 id="backup-central-title">المبيعات غير المتزامنة غير مشمولة</h2>
         <p>
           تُنشأ النسخة من البيانات التي وصلت إلى الخادم المركزي. أي مبيعات مكتملة ما زالت غير مرسلة
           من جهاز نقطة بيع لن تكون داخل الملف.
         </p>
-        <Readiness readiness={readiness} loading={readinessLoading} error={readinessError} />
+        <Readiness
+          readiness={readiness}
+          loading={readinessLoading}
+          error={readinessError}
+          onRetry={() => reloadReadiness.current?.()}
+        />
       </section>
 
       <form className="card backup-form" aria-label="إنشاء نسخة احتياطية" onSubmit={(event) => void createBackup(event)}>
@@ -232,7 +244,7 @@ export default function BackupPage({ workspace }: { workspace: WorkspaceDto }) {
             onChange={(event) => { setConfirmation(event.currentTarget.value); setInvalidPasswordField(null); }}
           />
         </div>
-        <button type="submit" disabled={creating || readinessLoading || !readiness || Boolean(readinessError)}>
+        <button type="submit" className="business-primary-action" disabled={creating || readinessLoading || !readiness || Boolean(readinessError)}>
           {creating ? "لحظات…" : "إنشاء وتنزيل النسخة"}
         </button>
       </form>
@@ -244,16 +256,23 @@ function Readiness({
   readiness,
   loading,
   error,
+  onRetry,
 }: {
   readiness: BackupReadinessDto | null;
   loading: boolean;
   error: string;
+  onRetry: () => void;
 }) {
   if (loading) {
     return <p role="status">لحظات…</p>;
   }
   if (error) {
-    return <div className="error" role="alert">{error}</div>;
+    return (
+      <div className="error" role="alert">
+        {error}
+        <button className="secondary" type="button" onClick={onRetry}>إعادة المحاولة</button>
+      </div>
+    );
   }
   if (!readiness || readiness.knownUnsynchronizedTillCount === 0) {
     return <div className="notice" role="status">كل الأجهزة المعروفة متزامنة.</div>;

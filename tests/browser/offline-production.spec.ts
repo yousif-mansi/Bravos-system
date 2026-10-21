@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { expect, test } from "@playwright/test";
 import { pinnedProcessEnv, workspaceRoot } from "../../scripts/pinned-env.ts";
+import { openLookupLists } from "./support/open-lookup-lists";
 
 const PREVIEW_PORT = 5176;
 const PREVIEW_ORIGIN = `http://127.0.0.1:${PREVIEW_PORT}`;
@@ -83,6 +84,7 @@ test("production precache serves first offline POS navigation and survives a sam
     await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill("OFF-PROD");
     await lookup.getByRole("button", { name: "بحث" }).click();
     await expect(page.getByTestId("lookup-result")).toContainText("قميص الإنتاج");
+    await openLookupLists(page);
     await page.getByLabel("المقاس").selectOption({ label: "مقاس إنتاج" });
     await page.getByLabel("اللون").selectOption({ label: "لون إنتاج" });
     await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
@@ -151,6 +153,7 @@ test("production precache serves first offline POS navigation and survives a sam
     const lookupAgain = again.getByRole("form", { name: "البحث برمز المنتج" });
     await lookupAgain.getByRole("textbox", { name: "رمز المنتج" }).fill("OFF-PROD");
     await lookupAgain.getByRole("button", { name: "بحث" }).click();
+    await openLookupLists(again);
     await again.getByLabel("المقاس").selectOption({ label: "مقاس إنتاج" });
     await again.getByLabel("اللون").selectOption({ label: "لون إنتاج" });
     await expect(again.getByTestId("available-quantity")).toHaveText("الكمية المتاحة: 2");
@@ -217,6 +220,7 @@ test("production offline queue survives restart then automatically syncs after r
     const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
     await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill("OFF-ACK");
     await lookup.getByRole("button", { name: "بحث" }).click();
+    await openLookupLists(page);
     await page.getByLabel("المقاس").selectOption({ label: "مقاس مزامنة" });
     await page.getByLabel("اللون").selectOption({ label: "لون مزامنة" });
     await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
@@ -325,6 +329,7 @@ test("waiting service worker with an unknown schema defers activation", async ({
   const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
   await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill("OFF-WAIT");
   await lookup.getByRole("button", { name: "بحث" }).click();
+  await openLookupLists(page);
   await page.getByLabel("المقاس").selectOption({ label: "مقاس تحديث" });
   await page.getByLabel("اللون").selectOption({ label: "لون تحديث" });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
@@ -534,6 +539,7 @@ test("schema 2 individual paid units and signed-in session survive upgrade and o
     const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
     await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill("OFF-UP");
     await lookup.getByRole("button", { name: "بحث" }).click();
+    await openLookupLists(page);
     await page.getByLabel("المقاس").selectOption({ label: "مقاس ترقية" });
     await page.getByLabel("اللون").selectOption({ label: "لون ترقية" });
     await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
@@ -735,6 +741,7 @@ test("schema 2 completed sales missing paid-unit allocations defer upgrade and k
     const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
     await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill("OFF-INCOMPLETE");
     await lookup.getByRole("button", { name: "بحث" }).click();
+    await openLookupLists(page);
     await page.getByLabel("المقاس").selectOption({ label: "مقاس ناقص" });
     await page.getByLabel("اللون").selectOption({ label: "لون ناقص" });
     await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
@@ -940,6 +947,7 @@ test("explicit logout from catalog, staff and receiving pages blocks offline res
   const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
   await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill("OFF-LOGOUT-M");
   await lookup.getByRole("button", { name: "بحث" }).click();
+  await openLookupLists(page);
   await page.getByLabel("المقاس").selectOption({ label: "مقاس خروج" });
   await page.getByLabel("اللون").selectOption({ label: "لون خروج" });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
@@ -1046,6 +1054,7 @@ test("a fresh cashier login keeps an old cached session from becoming current af
   const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
   await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill("OFF-SESS-P");
   await lookup.getByRole("button", { name: "بحث" }).click();
+  await openLookupLists(page);
   await page.getByLabel("المقاس").selectOption({ label: "مقاس جلسة" });
   await page.getByLabel("اللون").selectOption({ label: "لون جلسة" });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();

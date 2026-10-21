@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import type { WorkspaceDto } from "@bravos/contracts";
 import type { OfflinePosServices } from "@bravos/sales/browser";
+import { openLookupLists } from "./support/open-lookup-lists";
 
 type LogoutRace = {
   started: boolean;
@@ -234,6 +235,7 @@ async function queueOwnerSale(page: Page) {
   await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill(code);
   await lookup.getByRole("button", { name: "بحث" }).click();
   await expect(page.getByTestId("lookup-result")).toContainText(code);
+  await openLookupLists(page);
   await page.getByLabel("المقاس").selectOption({ label: `مقاس ${code}` });
   await page.getByLabel("اللون").selectOption({ label: `لون ${code}` });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();

@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { openLookupLists } from "./support/open-lookup-lists";
 
 test("cashier completes an offline cash sale from an issued snapshot and keeps 275/175", async ({ page }) => {
   const seed = await seedTwoPriceProduct(page);
@@ -20,9 +21,11 @@ test("cashier completes an offline cash sale from an issued snapshot and keeps 2
   await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill(seed.code);
   await lookup.getByRole("button", { name: "بحث" }).click();
   await expect(page.getByTestId("lookup-result")).toContainText(seed.nameAr);
+  await openLookupLists(page);
   await page.getByLabel("المقاس").selectOption({ label: seed.sizeName });
   await page.getByLabel("اللون").selectOption({ label: seed.blackName });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
+  await openLookupLists(page);
   await page.getByLabel("المقاس").selectOption({ label: seed.sizeName });
   await page.getByLabel("اللون").selectOption({ label: seed.whiteName });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
@@ -54,6 +57,7 @@ test("local stock effects reject selling three of two remaining units across rep
   const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
   await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill(seed.code);
   await lookup.getByRole("button", { name: "بحث" }).click();
+  await openLookupLists(page);
   await page.getByLabel("المقاس").selectOption({ label: seed.sizeName });
   await page.getByLabel("اللون").selectOption({ label: seed.colorName });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
@@ -90,6 +94,7 @@ test("two tabs cannot sell the same remaining cached unit", async ({ context }) 
     const lookup = tab.getByRole("form", { name: "البحث برمز المنتج" });
     await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill(seed.code);
     await lookup.getByRole("button", { name: "بحث" }).click();
+    await openLookupLists(tab);
     await tab.getByLabel("المقاس").selectOption({ label: seed.sizeName });
     await tab.getByLabel("اللون").selectOption({ label: seed.colorName });
     await tab.getByRole("button", { name: "إضافة إلى السلة" }).click();
@@ -132,6 +137,7 @@ test("storage failure does not claim a saved sale", async ({ page }) => {
   const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
   await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill(seed.code);
   await lookup.getByRole("button", { name: "بحث" }).click();
+  await openLookupLists(page);
   await page.getByLabel("المقاس").selectOption({ label: seed.sizeName });
   await page.getByLabel("اللون").selectOption({ label: seed.colorName });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
@@ -176,6 +182,7 @@ test("aborted IndexedDB writes roll back and retry the same completed sale ident
   const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
   await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill(seed.code);
   await lookup.getByRole("button", { name: "بحث" }).click();
+  await openLookupLists(page);
   await page.getByLabel("المقاس").selectOption({ label: seed.sizeName });
   await page.getByLabel("اللون").selectOption({ label: seed.colorName });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
@@ -244,6 +251,7 @@ test("sign-out preserves queued sales and another cashier cannot read or submit 
   const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
   await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill(seed.code);
   await lookup.getByRole("button", { name: "بحث" }).click();
+  await openLookupLists(page);
   await page.getByLabel("المقاس").selectOption({ label: seed.sizeName });
   await page.getByLabel("اللون").selectOption({ label: seed.colorName });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
@@ -283,6 +291,7 @@ test("sign-out preserves queued sales and another cashier cannot read or submit 
   await expect(lookupForm.getByRole("button", { name: "بحث" })).toBeEnabled();
   const again = page.getByTestId("lookup-result");
   await expect(again).toContainText(seed.nameAr);
+  await openLookupLists(page);
   await page.locator("#lookupSize").selectOption({ label: seed.sizeName });
   await expect(page.locator("#lookupColor")).toBeEnabled();
   await page.locator("#lookupColor").selectOption({ label: seed.colorName });
@@ -376,6 +385,7 @@ test("a delayed manager sales response cannot overwrite a cashier after another 
   const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
   await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill("OFF-DELAY-COST");
   await lookup.getByRole("button", { name: "بحث" }).click();
+  await openLookupLists(page);
   await page.getByLabel("المقاس").selectOption({ label: "مقاس تكلفة" });
   await page.getByLabel("اللون").selectOption({ label: "لون تكلفة" });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
@@ -630,6 +640,7 @@ test("a fresh cashier login keeps an old cached session from becoming current", 
   const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
   await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill(seed.code);
   await lookup.getByRole("button", { name: "بحث" }).click();
+  await openLookupLists(page);
   await page.getByLabel("المقاس").selectOption({ label: seed.sizeName });
   await page.getByLabel("اللون").selectOption({ label: seed.colorName });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
@@ -689,6 +700,7 @@ test("cached availability stays distinct from local effects so 5 then 1 then 4 s
   async function sell(quantity: number) {
     const result = await searchProduct(page, seed.code);
     await expect(result).toContainText(seed.nameAr);
+    await openLookupLists(result);
     await result.getByLabel("المقاس").selectOption({ label: seed.sizeName });
     await result.getByLabel("اللون").selectOption({ label: seed.colorName });
     await result.getByRole("button", { name: "إضافة إلى السلة" }).click();
@@ -703,6 +715,7 @@ test("cached availability stays distinct from local effects so 5 then 1 then 4 s
   await sell(1);
   const afterFirst = await searchProduct(page, seed.code);
   await expect(afterFirst).toContainText(seed.nameAr);
+  await openLookupLists(afterFirst);
   await afterFirst.getByLabel("المقاس").selectOption({ label: seed.sizeName });
   await afterFirst.getByLabel("اللون").selectOption({ label: seed.colorName });
   await expect(page.getByTestId("available-quantity")).toHaveText("الكمية المتاحة: 4");
@@ -712,6 +725,7 @@ test("cached availability stays distinct from local effects so 5 then 1 then 4 s
   expect(state.effects.reduce((sum, effect) => sum + effect.quantity, 0)).toBe(5);
   const afterAll = await searchProduct(page, seed.code);
   await expect(afterAll).toContainText(seed.nameAr);
+  await openLookupLists(afterAll);
   await afterAll.getByLabel("المقاس").selectOption({ label: seed.sizeName });
   await afterAll.getByLabel("اللون").selectOption({ label: seed.colorName });
   await expect(page.getByTestId("available-quantity")).toHaveText("الكمية المتاحة: 0");
@@ -729,6 +743,7 @@ test("retrying a committed last-unit sale recovers the original fact", async ({ 
   const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
   await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill(seed.code);
   await lookup.getByRole("button", { name: "بحث" }).click();
+  await openLookupLists(page);
   await page.getByLabel("المقاس").selectOption({ label: seed.sizeName });
   await page.getByLabel("اللون").selectOption({ label: seed.colorName });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
@@ -814,9 +829,11 @@ test("another tab replacing the snapshot cannot reprice an accepted quote", asyn
   const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
   await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill(seed.code);
   await lookup.getByRole("button", { name: "بحث" }).click();
+  await openLookupLists(page);
   await page.getByLabel("المقاس").selectOption({ label: seed.sizeName });
   await page.getByLabel("اللون").selectOption({ label: seed.blackName });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
+  await openLookupLists(page);
   await page.getByLabel("المقاس").selectOption({ label: seed.sizeName });
   await page.getByLabel("اللون").selectOption({ label: seed.whiteName });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
@@ -1033,6 +1050,7 @@ test("explicit offline sign-out blocks POS until online reauthentication", async
   const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
   await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill(seed.code);
   await lookup.getByRole("button", { name: "بحث" }).click();
+  await openLookupLists(page);
   await page.getByLabel("المقاس").selectOption({ label: seed.sizeName });
   await page.getByLabel("اللون").selectOption({ label: seed.colorName });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
@@ -1068,6 +1086,7 @@ test("reconnect retries the original accepted sale once without repricing", asyn
   const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
   await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill(seed.code);
   await lookup.getByRole("button", { name: "بحث" }).click();
+  await openLookupLists(page);
   await page.getByLabel("المقاس").selectOption({ label: seed.sizeName });
   await page.getByLabel("اللون").selectOption({ label: seed.colorName });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
@@ -1135,6 +1154,7 @@ test("offline stock cache keeps each branch balance separate for the same varian
   const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
   await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill(seed.code);
   await lookup.getByRole("button", { name: "بحث" }).click();
+  await openLookupLists(page);
   await page.getByLabel("المقاس").selectOption({ label: seed.sizeName });
   await page.getByLabel("اللون").selectOption({ label: seed.colorName });
   await expect(page.getByTestId("available-quantity")).toHaveText("الكمية المتاحة: 3");
@@ -1146,6 +1166,7 @@ test("offline stock cache keeps each branch balance separate for the same varian
   await page.getByRole("link", { name: "البحث عن منتج" }).click();
   await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill(seed.code);
   await lookup.getByRole("button", { name: "بحث" }).click();
+  await openLookupLists(page);
   await page.getByLabel("المقاس").selectOption({ label: seed.sizeName });
   await page.getByLabel("اللون").selectOption({ label: seed.colorName });
   await expect(page.getByTestId("available-quantity")).toHaveText("الكمية المتاحة: 1");
@@ -1179,6 +1200,7 @@ test("queued sales survive a preserving schema upgrade and unsafe upgrades stay 
   const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
   await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill(seed.code);
   await lookup.getByRole("button", { name: "بحث" }).click();
+  await openLookupLists(page);
   await page.getByLabel("المقاس").selectOption({ label: seed.sizeName });
   await page.getByLabel("اللون").selectOption({ label: seed.colorName });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();

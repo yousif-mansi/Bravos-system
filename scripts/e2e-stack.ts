@@ -137,7 +137,14 @@ async function startControlServer(): Promise<void> {
 async function main(): Promise<void> {
   await mkdir(outboxDir, { recursive: true });
   console.log("e2e: starting postgres");
-  cluster = await startPostgresCluster({ port: 55433 });
+  try {
+    cluster = await startPostgresCluster({ port: 55433 });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("e2e: postgres failed before the cluster was ready");
+    console.error(message);
+    throw error;
+  }
   await cluster.createDatabase("bravos_e2e");
   console.log("e2e: building API");
   built = await buildApp({

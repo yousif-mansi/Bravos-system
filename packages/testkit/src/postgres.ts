@@ -1,23 +1,54 @@
 import { execFile } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import EmbeddedPostgres from "embedded-postgres";
 import { Pool } from "pg";
 import { applyMigrations } from "@bravos/persistence";
+import { appendCapturedPostgresLog, wrapEmbeddedPostgresStageError } from "./embedded-postgres-stage-error.ts";
+import { probeWindowsListen, tcpListenerMayBeOpen, waitForOwnedPortClose } from "./owned-port-close.ts";
+import {
+  ownedPostgresChildHasExited,
+  resolveWindowsPostgresExecutable,
+  startOwnedWindowsPostgres,
+  watchOwnedPostgresChildClose,
+  windowsPostgresServerArgs,
+  type OwnedPostgresProcess,
+} from "./windows-postgres-start.ts";
+
+const FAILED_START_CLOSE_BUDGET_MS = 5_000;
+const OWNED_CHILD_CLOSE_BUDGET_MS = 15_000;
 
 class ManagedEmbeddedPostgres extends EmbeddedPostgres {
   private readonly databaseDir: string;
   private readonly port: number;
   private stopPromise: Promise<void> | null = null;
+  private ownedWindowsChild: OwnedPostgresProcess | null = null;
 
   constructor(databaseDir: string, port: number, options: ConstructorParameters<typeof EmbeddedPostgres>[0]) {
     super(options);
     this.databaseDir = databaseDir;
     this.port = port;
+  }
+
+  retainOwnedWindowsChild(child: OwnedPostgresProcess): void {
+    this.ownedWindowsChild = child;
+  }
+
+  override async createDatabase(name: string): Promise<void> {
+    if (process.platform !== "win32") {
+      await super.createDatabase(name);
+      return;
+    }
+    const client = this.getPgClient("postgres", "127.0.0.1");
+    try {
+      await client.connect();
+      await client.query(`CREATE DATABASE ${client.escapeIdentifier(name)}`);
+    } finally {
+      await client.end();
+    }
   }
 
   override stop(): Promise<void> {
@@ -34,11 +65,11 @@ class ManagedEmbeddedPostgres extends EmbeddedPostgres {
       await stopWindowsPostgres(this.databaseDir);
     } catch (gracefulError) {
       try {
-        await super.stop();
+        await terminateOwnedWindowsChild(this.ownedWindowsChild);
       } catch (fallbackError) {
         throw new AggregateError(
           [gracefulError, fallbackError],
-          "Postgres graceful shutdown and embedded-postgres fallback both failed.",
+          "Postgres graceful shutdown and the owned Windows child fallback both failed.",
         );
       }
     }
@@ -66,6 +97,15 @@ export async function startPostgresCluster(options?: {
     : await mkdtemp(path.join(tmpdir(), "bravos-pg-"));
   const user = "bravos";
   const password = "bravos-test";
+  let nativeLogTail: string | null = "";
+  const recordNativeLog = (message: string) => {
+    if (nativeLogTail !== null) {
+      nativeLogTail = appendCapturedPostgresLog(nativeLogTail, message);
+    }
+    if (process.env.BRAVOS_PG_LOG === "1") {
+      console.log(message);
+    }
+  };
   const pg = new ManagedEmbeddedPostgres(databaseDir, port, {
     databaseDir,
     user,
@@ -76,27 +116,43 @@ export async function startPostgresCluster(options?: {
     persistent: true,
     initdbFlags: ["--encoding=UTF8", "--locale=C"],
     postgresFlags: process.platform === "win32" ? ["-c", "io_method=sync"] : [],
-    onLog: (message) => {
-      if (process.env.BRAVOS_PG_LOG === "1") {
-        console.log(message);
-      }
-    },
+    onLog: recordNativeLog,
     onError: (error) => {
+      recordNativeLog(error instanceof Error ? error.message : String(error));
       console.error(error);
     },
   });
   try {
     await pg.initialise();
   } catch (error) {
-    if (!options?.persistentDir) {
-      throw error;
-    }
     const message = error instanceof Error ? error.message : String(error);
-    if (!/already|exist|init/i.test(message)) {
-      throw error;
+    if (!options?.persistentDir || !/already|exist|init/i.test(message)) {
+      await abandonFailedStartup(databaseDir, options?.persistentDir);
+      throw wrapEmbeddedPostgresStageError("initialise", error, nativeLogTail ?? "");
     }
   }
-  await pg.start();
+  let ownedChild: OwnedPostgresProcess | undefined;
+  try {
+    if (process.platform === "win32") {
+      ownedChild = await startOwnedWindowsPostgres({
+        executable: await resolveWindowsPostgresExecutable(),
+        args: windowsPostgresServerArgs(databaseDir, port),
+        parentEnv: process.env,
+        onOutput: recordNativeLog,
+        onSpawned(child) {
+          ownedChild = child;
+          pg.retainOwnedWindowsChild(child);
+        },
+      });
+      pg.retainOwnedWindowsChild(ownedChild);
+    } else {
+      await pg.start();
+    }
+  } catch (error) {
+    await abandonFailedStartup(databaseDir, options?.persistentDir, ownedChild);
+    throw wrapEmbeddedPostgresStageError("start", error, nativeLogTail ?? "");
+  }
+  nativeLogTail = null;
   return {
     port,
     user,
@@ -149,50 +205,12 @@ async function stopWindowsPostgres(databaseDir: string): Promise<void> {
 }
 
 async function waitForPortToClose(port: number): Promise<void> {
-  const deadline = Date.now() + 5_000;
-  do {
-    const open = await Promise.all([
-      listenerMayBeOpen("127.0.0.1", port),
-      listenerMayBeOpen("::1", port),
-    ]);
-    if (open.every((value) => !value)) {
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  } while (Date.now() < deadline);
-  throw new Error(`Embedded Postgres stopped but its owned port ${port} is still listening.`);
-}
-
-async function listenerMayBeOpen(host: string, port: number): Promise<boolean> {
-  return await new Promise<boolean>((resolve, reject) => {
-    const socket = connect({ host, port });
-    let settled = false;
-    const finish = (open: boolean) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      socket.destroy();
-      resolve(open);
-    };
-    const fail = (error: Error) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      socket.destroy();
-      reject(error);
-    };
-    socket.setTimeout(250);
-    socket.once("connect", () => finish(true));
-    socket.once("error", (error: NodeJS.ErrnoException) => {
-      if (["ECONNREFUSED", "EADDRNOTAVAIL", "EHOSTUNREACH", "ENETUNREACH"].includes(error.code ?? "")) {
-        finish(false);
-        return;
-      }
-      fail(error);
-    });
-    socket.once("timeout", () => finish(true));
+  await waitForOwnedPortClose(port, {
+    platform: process.platform,
+    connect: tcpListenerMayBeOpen,
+    nativeListening: probeWindowsListen,
+    now: Date.now,
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   });
 }
 
@@ -200,6 +218,61 @@ export async function createMigratedPool(connectionString: string): Promise<Pool
   const pool = new Pool({ connectionString });
   await applyMigrations(pool);
   return pool;
+}
+
+async function abandonFailedStartup(
+  databaseDir: string,
+  persistentDir: string | undefined,
+  owned?: OwnedPostgresProcess,
+): Promise<void> {
+  if (persistentDir) {
+    return;
+  }
+  // A failed spawn may still be alive after kill(); deleting the data directory
+  // before close can hit a live postgres.exe. Leave the scratch if close is unconfirmed.
+  if (owned && !ownedPostgresChildHasExited(owned)) {
+    const watch = watchOwnedPostgresChildClose(owned, FAILED_START_CLOSE_BUDGET_MS);
+    const closed = await watch.closed;
+    if (!closed) {
+      return;
+    }
+  }
+  try {
+    await removeOwnedScratch(databaseDir);
+  } catch {
+    // Preserve the original initialise/start error; leftover scratch is secondary.
+  }
+}
+
+async function terminateOwnedWindowsChild(owned: OwnedPostgresProcess | null): Promise<void> {
+  if (!owned) {
+    throw new Error("No owned Windows Postgres child is available to stop.");
+  }
+  if (ownedPostgresChildHasExited(owned)) {
+    return;
+  }
+  const watch = watchOwnedPostgresChildClose(owned, OWNED_CHILD_CLOSE_BUDGET_MS);
+  try {
+    if (ownedPostgresChildHasExited(owned)) {
+      return;
+    }
+    let killed: boolean;
+    try {
+      killed = owned.kill();
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(`Owned Windows Postgres child could not be stopped: ${detail}`, { cause: error });
+    }
+    if (killed === false) {
+      throw new Error("Owned Windows Postgres child could not be stopped: kill returned false.");
+    }
+    const closed = await watch.closed;
+    if (!closed) {
+      throw new Error("Owned Windows Postgres child did not close after it was stopped.");
+    }
+  } finally {
+    watch.stop();
+  }
 }
 
 async function removeOwnedScratch(databaseDir: string): Promise<void> {

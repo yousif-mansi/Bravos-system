@@ -45,6 +45,7 @@ test("Arabic expense entry retries one operation and manager correction preserve
   await correction.getByRole("button", { name: "حفظ الإجراء" }).click();
   await expect(page.getByRole("status")).toContainText("تم تصحيح المصروف مرة واحدة");
   await expect(page.getByTestId("expense-totals")).toContainText("50 ج.م.");
+  await page.getByTestId("expense-details").locator("summary").filter({ hasText: /^الأصل وسجل التعديلات$/ }).click();
   await expect(page.getByTestId("expense-details")).toContainText("الأصل: 500 ج.م.");
   await expect(page.getByTestId("expense-details")).toContainText("القيمة الفعلية: 50 ج.م.");
   await expect(page.getByTestId("expense-details")).toContainText("تم إدخال صفر زائد");

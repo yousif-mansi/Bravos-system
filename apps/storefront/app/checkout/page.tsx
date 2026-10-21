@@ -368,7 +368,7 @@ export default function CheckoutPage() {
     <div className={`page-title ${styles.intro}`}>
       <p className="eyebrow">Order request</p>
       <h1>Checkout</h1>
-      <p>No account is needed. Enter the delivery details, then review the current total before you place the order request.</p>
+      <p>No account is needed. Enter the delivery details on this page.</p>
     </div>
   );
 
@@ -445,7 +445,6 @@ export default function CheckoutPage() {
                 <strong>{formatEgp(cart.items.reduce((sum, item) => sum + item.unitPricePiasters * item.quantity, 0))}</strong>
               </p>
             </div>
-            <p>Before discounts and the delivery fee. The final total appears after the price review.</p>
             <Link className={styles.editCartLink} href="/cart">Edit bag</Link>
           </div>
           <fieldset disabled={!cartValid || areasMissing || submitting || storageBlocked || unresolved}>
@@ -495,7 +494,7 @@ export default function CheckoutPage() {
               <span>Coupon code (optional)</span>
               <input value={fields.couponCode} autoCapitalize="characters" onChange={(event) => setField("couponCode", event.target.value)} />
             </label>
-            <p className={styles.reviewHint}>The delivery fee, discounts, and final total appear after the price review.</p>
+            <p className={styles.reviewHint}>Review the total, including delivery and discounts.</p>
             <button type="button" className="secondary-action review-price" disabled={!cartValid || areasLoading || areasError || areasMissing || !fields.deliveryAreaId || quoting} onClick={() => void reviewPrice()}>
               {quoting ? "Reviewing the price…" : quote ? "Review price again" : "Review price"}
             </button>
@@ -506,7 +505,7 @@ export default function CheckoutPage() {
           {submitting ? <p aria-live="polite" className={styles.processNotice}>Checking the result of this same order request. Please wait.</p> : null}
           {unresolved && !submitting ? <div className={styles.uncertainNotice}><strong>Send result is uncertain</strong><p>The same order attempt is kept. Use the check below before any new order request.</p></div> : null}
           {unresolved && !storageBlocked ? <button type="button" className="secondary-action" disabled={submitting} onClick={() => void recoverStoredAttempt()}>Check the same request</button> : null}
-          {storageBlocked ? <p className="recovery-help">A new send cannot be started safely from this page. Saved data was not cleared. Contact Bravos through the links at the bottom of the page before starting another order request.</p> : null}
+          {storageBlocked ? <p className="recovery-help">A new send cannot be started safely from this page. Saved data was not cleared.</p> : null}
           <div className={styles.commit}>
             <p className={`muted ${styles.disclosure}`}>You are placing an order request for review, with cash on delivery. Items are not reserved and the coupon is not used when you place the request. A Bravos representative confirms it later on WhatsApp.</p>
             <p className={styles.infoLinks}><Link href="/shipping">Shipping</Link><Link href="/returns">Returns</Link><Link href="/contact">Contact</Link></p>
@@ -529,7 +528,6 @@ export default function CheckoutPage() {
             </article>
           );})}
           <p><span>{quote && quoteKey === currentInputKey ? "Merchandise total before discount" : "Preliminary merchandise total"}</span><strong>{formatEgp(quote && quoteKey === currentInputKey ? quote.merchandiseOriginalPiasters : cart.items.reduce((sum, item) => sum + item.unitPricePiasters * item.quantity, 0))}</strong></p>
-          <p className="muted">This total is before discounts and the delivery fee. Review the final cash total in the price details.</p>
         </aside>
       </div>
     </main>

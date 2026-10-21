@@ -64,6 +64,53 @@ function emptyProduct(): ProductDraft {
   };
 }
 
+type CategoryNode = { id: string; nameAr: string; parentId: string | null };
+
+function categoryPath(categories: readonly CategoryNode[], categoryId: string): string {
+  const byId = new Map(categories.map((item) => [item.id, item]));
+  const names: string[] = [];
+  const seen = new Set<string>();
+  let current = byId.get(categoryId);
+  while (current && !seen.has(current.id)) {
+    seen.add(current.id);
+    names.push(current.nameAr);
+    current = current.parentId ? byId.get(current.parentId) : undefined;
+  }
+  return names.reverse().join(" / ");
+}
+
+function categoryInBranch(categories: readonly CategoryNode[], productCategoryId: string, selectedCategoryId: string): boolean {
+  if (!selectedCategoryId) return true;
+  const byId = new Map(categories.map((item) => [item.id, item]));
+  const seen = new Set<string>();
+  let current = byId.get(productCategoryId);
+  while (current && !seen.has(current.id)) {
+    if (current.id === selectedCategoryId) return true;
+    seen.add(current.id);
+    current = current.parentId ? byId.get(current.parentId) : undefined;
+  }
+  return false;
+}
+
+function matchesNameOrSku(product: { code: string; nameAr: string }, query: string): boolean {
+  const needle = query.trim().toLocaleLowerCase();
+  if (!needle) return true;
+  return product.code.toLocaleLowerCase().includes(needle) || product.nameAr.toLocaleLowerCase().includes(needle);
+}
+
+function useDesktopMerchandise(): boolean {
+  const query = "(min-width: 1024px)";
+  const [desktop, setDesktop] = useState(() => typeof window !== "undefined" && window.matchMedia(query).matches);
+  useEffect(() => {
+    const media = window.matchMedia(query);
+    const update = () => setDesktop(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+  return desktop;
+}
+
 export default function CatalogPage({
   workspace,
   onChanged,
@@ -82,6 +129,9 @@ export default function CatalogPage({
   const [sizeName, setSizeName] = useState("");
   const [colorName, setColorName] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [browseCategoryId, setBrowseCategoryId] = useState("");
+  const [browseQuery, setBrowseQuery] = useState("");
+  const desktop = useDesktopMerchandise();
   const [skuQuery, setSkuQuery] = useState("");
   const [product, setProduct] = useState<ProductDraft>(emptyProduct);
   const [pending, setPending] = useState("");
@@ -363,16 +413,23 @@ export default function CatalogPage({
   }
 
   const roots = categories.filter((item) => item.parentId === null);
+  const matchedProducts = products.filter((item) => categoryInBranch(categories, item.category.id, browseCategoryId) && matchesNameOrSku(item, browseQuery));
+  const listedProducts = desktop ? matchedProducts : products;
+  const browseActive = browseCategoryId !== "" || browseQuery.trim() !== "";
+  const categoryOptions = categories
+    .map((item) => ({ id: item.id, label: categoryPath(categories, item.id) || item.nameAr }))
+    .sort((left, right) => left.label.localeCompare(right.label, "ar"));
 
   return (
-    <main className="shell">
+    <main className="shell catalog-page">
       <header className="page-hero">
         <h1>إدارة المنتجات</h1>
       </header>
       {error ? <div className="error" role="alert">{error}</div> : null}
       {notice ? <div className="notice" role="status">{notice}</div> : null}
-      <div className="grid two">
-        <section className="card">
+      <div className="catalog-workspace">
+      <div className="grid two catalog-top">
+        <section className="card catalog-taxonomy">
           <h2>التصنيفات والمقاسات والألوان</h2>
           <form aria-label="إضافة تصنيف" onSubmit={(event) => void onCreateCategory(event)}>
             <div className="field">
@@ -466,7 +523,7 @@ export default function CatalogPage({
             </div>
           ) : null}
         </section>
-        <div className="stacked-form">
+        <div className="stacked-form catalog-editor">
           <section className="card" aria-label="اختيار منتج من المخزون">
             <h2>اختيار منتج من المخزون</h2>
             <p className="muted">ابدأ بتسجيل المنتج ومقاساته وألوانه وكمياته من صفحة استلام المخزون، ثم اختر رمزه هنا لإعداد عرضه.</p>
@@ -528,7 +585,7 @@ export default function CatalogPage({
               <option value="">اختر تصنيفاً</option>
               {categories.map((item) => (
                 <option key={item.id} value={item.id}>
-                  {item.parentId ? `${categories.find((parent) => parent.id === item.parentId)?.nameAr ?? ""} / ${item.nameAr}` : item.nameAr}
+                  {categoryPath(categories, item.id) || item.nameAr}
                 </option>
               ))}
             </select>
@@ -597,7 +654,10 @@ export default function CatalogPage({
           </fieldset>
           <fieldset className="grant-editor">
             <legend>المقاسات والألوان المسجلة في المخزون</legend>
-            <p className="muted">تظهر التركيبات المسجلة فقط. اختيار مقاس أو لون يحدد كل تركيباته الموجودة، ويمكنك ضبط كل تركيبة على حدة. نفاد الكمية يوقف الطلب تلقائياً دون تغيير هذه الاختيارات.</p>
+            <p className="muted">حدّد المقاس واللون اللذين يظهران في المتجر. نفاد الكمية يوقف الطلب تلقائياً.</p>
+            <details className="business-disclosure">
+              <summary>تحديد جماعي حسب المقاس أو اللون</summary>
+              <p className="catalog-bulk-warning">يغيّر كل التركيبات المسجلة لهذا المقاس أو اللون</p>
             <div className="grid two">
               <fieldset>
                 <legend>المقاسات المعروضة على الموقع</legend>
@@ -626,6 +686,7 @@ export default function CatalogPage({
                 })}
               </fieldset>
             </div>
+            </details>
             <p>التركيبات المحددة للعرض</p>
             {product.variants.map((variant, index) => (
               <div className="variant-row" key={variant.key}>
@@ -678,16 +739,50 @@ export default function CatalogPage({
         </form> : <section className="card"><p className="muted">اختر رمز منتج لعرض تفاصيله وتعديل بياناته.</p></section>}
         </div>
       </div>
-      <section className="card">
+      <section className="card catalog-browse">
         <h2>المنتجات</h2>
+        {desktop ? <p id="catalog-browse-count" data-testid="catalog-browse-count">المطابق: {matchedProducts.length} من {products.length}</p> : null}
+        {desktop ? (
+          <div className="merchandise-filters" role="group" aria-label="تنظيم المنتجات" data-testid="catalog-browse-filters">
+            <div className="field">
+              <label htmlFor="catalog-browse-category">الفئة</label>
+              <select
+                id="catalog-browse-category"
+                value={browseCategoryId}
+                aria-describedby="catalog-browse-count"
+                onChange={(event) => setBrowseCategoryId(event.target.value)}
+              >
+                <option value="">كل الفئات</option>
+                {categoryOptions.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+              </select>
+            </div>
+            <div className="field">
+              <label htmlFor="catalog-browse-query">الاسم أو رمز SKU</label>
+              <input
+                id="catalog-browse-query"
+                value={browseQuery}
+                autoComplete="off"
+                placeholder="اسم أو رمز"
+                aria-describedby="catalog-browse-count"
+                onChange={(event) => setBrowseQuery(event.target.value)}
+              />
+            </div>
+            <div className="merchandise-filter-meta">
+              {browseActive ? <button type="button" onClick={() => { setBrowseCategoryId(""); setBrowseQuery(""); }}>مسح التصفية</button> : null}
+            </div>
+          </div>
+        ) : null}
         {products.length === 0 ? (
           <EmptyState title="لسه مفيش منتجات" message="ابدأ بإضافة أول صنف من صفحة استلام المخزون." />
+        ) : listedProducts.length === 0 ? (
+          <p data-testid="catalog-browse-empty">لا توجد منتجات مطابقة.</p>
         ) : (
           <div className="staff-list">
-            {products.map((item) => (
+            {listedProducts.map((item) => (
               <article className="staff-item" key={item.id}>
                 <strong>{item.nameAr}</strong>
                 <p className="muted">رمز المنتج: {item.code} — {item.category.nameAr}</p>
+                <p className="category-path">المسار: {categoryPath(categories, item.category.id) || item.category.nameAr}</p>
                 <p>حالة الموقع: {publicationLabel(item.publication)}</p>
                 <p>السعر الافتراضي: {formatEgpFromPiasters(item.defaultSellingPricePiasters)}</p>
                 <p>
@@ -708,6 +803,7 @@ export default function CatalogPage({
           </div>
         )}
       </section>
+      </div>
     </main>
   );
 

@@ -170,8 +170,7 @@ test("cart keeps variant details and edited quantities through reload and a late
   await expect(summary).toContainText("Items3");
   await expect(summary).toContainText(`Estimated total${money(80_000)}`);
   await expect(summary).toContainText("Before discounts and delivery. Review the final total at checkout.");
-  await expect(summary).toContainText("We check the whole bag when the price is reviewed");
-  await expect(summary).toContainText("The bag does not reserve the items.");
+  await expect(summary).toContainText("Items in your bag are not reserved.");
   const checkoutLink = page.getByRole("link", { name: "Checkout" });
   await expect(checkoutLink).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath("cart-phone-390.png"), fullPage: true });

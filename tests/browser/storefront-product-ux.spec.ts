@@ -179,7 +179,7 @@ test("stock repair roundtrip retains the checkout draft and requires a fresh quo
   expect(await page.evaluate(() => localStorage.getItem("bravos-guest-checkout-v1"))).toBeNull();
   await expect(form.getByRole("button", { name: "Place order request" })).toHaveCount(0);
   const context = form.locator('[aria-label="Preliminary order summary"]');
-  await expect(context).toContainText("Before discounts and the delivery fee");
+  await expect(context).toContainText("Preliminary total");
   expect((await context.boundingBox())!.y).toBeLessThan((await form.locator("fieldset").first().boundingBox())!.y);
   await notice.getByRole("link", { name: "Edit bag" }).click();
   await expect(page.getByRole("heading", { name: "Bag", exact: true })).toBeVisible();

@@ -1430,39 +1430,42 @@ export default function LookupPage({
         <section className="card pos-selection" data-testid="lookup-result">
           <h2>{product.nameAr}</h2>
           <p className="muted">رمز المنتج: {product.code}</p>
-          <div className="pos-variant-fields">
-          <div className="field">
-            <label htmlFor="lookupSize">المقاس</label>
-            <select
-              id="lookupSize"
-              ref={sizeInputRef}
-              value={sizeId}
-              onChange={(event) => {
-                setSizeId(event.target.value);
-                setColorId("");
-              }}
-            >
-              <option value="">اختر مقاساً</option>
-              {sizes.map((item) => (
-                <option key={item.id} value={item.id}>{item.nameAr}</option>
-              ))}
-            </select>
-          </div>
-          <div className="field">
-            <label htmlFor="lookupColor">اللون</label>
-            <select id="lookupColor" value={colorId} onChange={(event) => setColorId(event.target.value)} disabled={!sizeId}>
-              <option value="">اختر لوناً</option>
-              {colors.map((item) => (
-                <option key={item.id} value={item.id}>{item.nameAr}</option>
-              ))}
-            </select>
-          </div>
-          </div>
           <div className="pos-pairs" role="group" aria-label="اختيارات الصنف المتاحة">
             {product.variants.map((variant) => <button key={variant.id} type="button" aria-pressed={selected?.id === variant.id} onClick={() => { setSizeId(variant.size.id); setColorId(variant.color.id); }}>
               {variant.size.nameAr} / {variant.color.nameAr}{(effectiveByVariant[variant.id] ?? variant.availableQuantity) <= 0 ? " — غير متوفر" : ""}
             </button>)}
           </div>
+          <details className="business-disclosure">
+            <summary>اختيار المقاس واللون من القوائم</summary>
+            <div className="pos-variant-fields">
+            <div className="field">
+              <label htmlFor="lookupSize">المقاس</label>
+              <select
+                id="lookupSize"
+                ref={sizeInputRef}
+                value={sizeId}
+                onChange={(event) => {
+                  setSizeId(event.target.value);
+                  setColorId("");
+                }}
+              >
+                <option value="">اختر مقاساً</option>
+                {sizes.map((item) => (
+                  <option key={item.id} value={item.id}>{item.nameAr}</option>
+                ))}
+              </select>
+            </div>
+            <div className="field">
+              <label htmlFor="lookupColor">اللون</label>
+              <select id="lookupColor" value={colorId} onChange={(event) => setColorId(event.target.value)} disabled={!sizeId}>
+                <option value="">اختر لوناً</option>
+                {colors.map((item) => (
+                  <option key={item.id} value={item.id}>{item.nameAr}</option>
+                ))}
+              </select>
+            </div>
+            </div>
+          </details>
           {selected ? (
             <div className="pos-selected-summary" data-testid="selected-variant">
               <div>
@@ -1485,8 +1488,10 @@ export default function LookupPage({
         setSizeId("");
         setColorId("");
         window.requestAnimationFrame(() => {
-          sizeInputRef.current?.focus({ preventScroll: true });
-          sizeInputRef.current?.closest("section")?.scrollIntoView({ block: "nearest", behavior: "instant" });
+          const pair = sizeInputRef.current?.closest("section")?.querySelector<HTMLButtonElement>(".pos-pairs button");
+          if (!pair) return;
+          pair.focus({ preventScroll: true });
+          pair.scrollIntoView({ block: "nearest", behavior: "instant" });
         });
       }} />
       </div>

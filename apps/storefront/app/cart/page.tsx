@@ -62,7 +62,7 @@ export default function CartPage() {
       setAvailabilityNotice({
         text: changed
           ? "Product details were updated. Review the changes and notices before you continue."
-          : "Product details and prices were updated. The whole bag is checked again when the price is reviewed.",
+          : "Product details checked. Review the final total at checkout.",
         failed: false,
       });
     } catch {

@@ -56,7 +56,7 @@ test("manager selects a delivered online purchase and reviews refund components 
 
   const details = page.getByTestId("return-details");
   await expect(details).toContainText(`الطلب: ${delivered.reference}`);
-  await expect(details).toContainText("فرع التجهيز: أبشواي · فرع الاستلام: أبشواي");
+  await expect(details).toContainText("فرع التجهيز: أبشواي · فرع استلام المرتجع: أبشواي");
   await expect(details).toContainText("سبب الإرجاع: العميل رجع الطلب");
   const history = page.locator(".return-history").getByRole("button").filter({ hasText: delivered.reference });
   await expect(history).toContainText("مرتجع طلب أونلاين");
@@ -64,8 +64,8 @@ test("manager selects a delivered online purchase and reviews refund components 
   await expect(details).toContainText("البضاعة 700 ج.م.");
   await expect(details).toContainText("رسوم التوصيل 30 ج.م.");
   await expect(details).toContainText("الإجمالي 730 ج.م.");
-  await details.getByRole("button", { name: "تأكيد الاستلام والفحص وترحيل الإرجاع" }).click();
-  await expect(page.getByRole("status")).toContainText("تم ترحيل الإرجاع");
+  await details.getByRole("button", { name: "تأكيد استلام وفحص المرتجع" }).click();
+  await expect(page.getByRole("status")).toContainText("تم تأكيد المرتجع وإعادة القطع الصالحة للبيع إلى المخزون");
 
   const exchange = page.getByRole("form", { name: "إتمام استبدال" });
   await exchange.getByLabel("صنف الاستبدال").selectOption(replacement.variantId);
@@ -89,7 +89,7 @@ test("manager selects a delivered online purchase and reviews refund components 
   await refundDraft.getByLabel("الكمية المستلمة").fill("1");
   await expect(page.getByTestId("refund-suggestion")).toContainText("الإجمالي: 290 ج.م.");
   await refundDraft.getByRole("button", { name: "حفظ المسودة" }).click();
-  await page.getByTestId("return-details").getByRole("button", { name: "تأكيد الاستلام والفحص وترحيل الإرجاع" }).click();
+  await page.getByTestId("return-details").getByRole("button", { name: "تأكيد استلام وفحص المرتجع" }).click();
   await expect(page.getByTestId("return-details")).toContainText("الاسترداد النقدي مستحق");
   const paymentResponse = page.waitForResponse((response) => (
     response.request().method() === "POST"
