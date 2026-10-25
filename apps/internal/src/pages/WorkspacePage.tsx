@@ -623,7 +623,7 @@ export function WorkspacePage({
         </Link>
       ) : null}
       {workspace.capabilities.cashier && ready ? (
-        <p className="theme-hook" data-testid="offline-ready" role="status">جاهز للعمل دون اتصال</p>
+        <p className="quiet-status" data-testid="offline-ready" role="status">جاهز للعمل دون اتصال</p>
       ) : null}
       {workspace.capabilities.cashier && !ready ? (
         <p className="quiet-status" data-testid="offline-not-ready">نقطة البيع بتتجهز</p>

@@ -421,6 +421,15 @@ button.danger:focus-visible:not(:disabled) {
   margin-bottom: 1rem;
 }
 
+.opening-import-templates {
+  min-width: 0;
+}
+
+.opening-import-templates code {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
 .opening-import-counts {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));

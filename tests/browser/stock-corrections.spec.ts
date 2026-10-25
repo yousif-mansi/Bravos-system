@@ -200,3 +200,260 @@ function cairoDate() {
     day: "2-digit",
   }).format(new Date());
 }
+
+const stockOrigin = "http://127.0.0.1:5174";
+const lateSaleId = "62300000-0000-4000-8000-0000000000a1";
+const lateVariantMedium = "62300000-0000-4000-8000-0000000000b1";
+const lateVariantLarge = "62300000-0000-4000-8000-0000000000b2";
+const lateVariantUnknown = "62300000-0000-4000-8000-0000000000b3";
+const lateBranchUnknown = "62300000-0000-4000-8000-0000000000ff";
+const lateCorrectionId = "62300000-0000-4000-8000-0000000000c1";
+const lateHistoryId = "62300000-0000-4000-8000-0000000000c2";
+const lateReconciliationId = "62300000-0000-4000-8000-0000000000d1";
+const lateAt = "2026-10-22T10:00:00.000Z";
+
+test("failed stock reads stay explicit and a list retry shows same-sale variant and branch identity", async ({ page }) => {
+  await signInOwner(page);
+  const workspaceResponse = await page.request.get(`${stockOrigin}/api/internal/workspace`);
+  expect(workspaceResponse.ok()).toBeTruthy();
+  const workspace = await workspaceResponse.json() as {
+    activeBranch: { id: string; nameAr: string } | null;
+    authorizedBranches: Array<{ id: string; nameAr: string }>;
+  };
+  const active = workspace.activeBranch;
+  const other = workspace.authorizedBranches.find((branch) => branch.id !== active?.id);
+  expect(active?.id).toBeTruthy();
+  expect(other?.id).toBeTruthy();
+  expect(active!.nameAr).not.toBe(other!.nameAr);
+  expect(lateBranchUnknown).not.toBe(active!.id);
+  expect(lateBranchUnknown).not.toBe(other!.id);
+
+  const writes: string[] = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    const watched = url.pathname.startsWith("/api/internal/inventory/") || url.pathname.startsWith("/api/internal/catalog/");
+    if (watched && request.method() !== "GET") writes.push(`${request.method()} ${url.pathname}`);
+  });
+
+  let mode: "fail" | "hold" | "ready" = "fail";
+  let heldReads = 0;
+  let releaseHold = () => {};
+  let hold = new Promise<void>(() => {});
+  const reads = stockReadPayload(active!.id, other!.id);
+
+  await page.route(/\/api\/internal\/(?:inventory\/(?:count-coordination|stock-pause|batches|stock-corrections|stock-reconciliation-cases|stock-reconciliations)|catalog\/pos-snapshot)(?:\?|$)/, async (route) => {
+    const request = route.request();
+    if (request.method() !== "GET") {
+      await route.continue();
+      return;
+    }
+    if (mode === "fail") {
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ error: { code: "UNAVAILABLE", messageAr: "تعذر قراءة قوائم المخزون." } }),
+      });
+      return;
+    }
+    if (mode === "hold") {
+      heldReads += 1;
+      await hold;
+    }
+    const path = new URL(request.url()).pathname;
+    if (!Object.hasOwn(reads, path)) throw new Error(`unexpected stock read ${path}`);
+    await route.fulfill({ json: reads[path] });
+  });
+
+  try {
+    await page.goto(`${stockOrigin}/stock-corrections`);
+    await expect(page.getByRole("heading", { name: "تصحيح كميات المخزون" })).toBeVisible();
+    await expect(page.getByRole("alert")).toContainText("تعذر قراءة قوائم المخزون.");
+    await expect(page.getByText("تعذر قراءة تنسيق العد. أعد تحميل القوائم قبل بدء توقف أو تصحيح.")).toBeVisible();
+    await expect(page.getByText("تعذر تحميل حالات المبيعات المتأخرة.")).toBeVisible();
+    await expect(page.getByText("تعذر تحميل سجل التصحيحات.")).toBeVisible();
+    await expect(page.getByText("تعذر تحميل سجل المصالحات.")).toBeVisible();
+    await expect(page.getByText("مفيش حاجة للمراجعة")).toHaveCount(0);
+    await expect(page.getByText("لسه مفيش تصحيحات")).toHaveCount(0);
+    await expect(page.getByText("لا توجد مصالحات.")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "مزامنة النقاط وبدء التوقف" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "استرداد تنسيق نشط" })).toHaveCount(0);
+    await expect(page.getByTestId("stock-load-retry")).toHaveText("إعادة تحميل قوائم المخزون");
+    expect(writes).toEqual([]);
+
+    heldReads = 0;
+    mode = "hold";
+    hold = new Promise<void>((resolve) => { releaseHold = resolve; });
+    await page.getByTestId("stock-load-retry").click();
+    await expect(page.locator("main").getByRole("status")).toContainText("جارٍ تحميل المخزون والتصحيحات");
+    await expect(page.getByTestId("stock-load-retry")).toHaveText("جارٍ تحميل القوائم…");
+    await expect(page.getByTestId("stock-load-retry")).toBeDisabled();
+    await expect.poll(() => heldReads).toBeGreaterThanOrEqual(7);
+    await expect(page.getByText("مفيش حاجة للمراجعة")).toHaveCount(0);
+    await expect(page.getByText("لسه مفيش تصحيحات")).toHaveCount(0);
+    await expect(page.getByText("لا توجد مصالحات.")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "مزامنة النقاط وبدء التوقف" })).toHaveCount(0);
+    await expect(page.locator("main").getByRole("alert")).toHaveCount(0);
+    expect(writes).toEqual([]);
+
+    mode = "ready";
+    releaseHold();
+    const cases = page.getByTestId("stock-reconciliation-case");
+    await expect(cases).toHaveCount(3);
+    const medium = cases.filter({ hasText: "SKU-LATE — قميص العد / M / أسود" });
+    const large = cases.filter({ hasText: "SKU-LATE — قميص العد / L / أبيض" });
+    const unknown = cases.filter({ hasText: lateVariantUnknown });
+    await expect(medium).toHaveCount(1);
+    await expect(large).toHaveCount(1);
+    await expect(unknown).toHaveCount(1);
+    await expect(medium.getByTestId("reconciliation-identity")).toContainText(`الفرع: ${active!.nameAr}`);
+    await expect(large.getByTestId("reconciliation-identity")).toContainText(`الفرع: ${other!.nameAr}`);
+    await expect(medium).toContainText("المباع: 2");
+    await expect(large).toContainText("المباع: 1");
+    await expect(unknown.getByTestId("reconciliation-identity")).toContainText(`تعذر مطابقة الصنف ${lateVariantUnknown} مع قائمة نقطة البيع المحملة.`);
+    await expect(unknown.getByTestId("reconciliation-identity")).toContainText("تعذر مطابقة الفرع مع الفروع المتاحة.");
+    await expect(unknown.getByTestId("reconciliation-identity")).not.toContainText("SKU-LATE");
+    expect(await medium.locator("details").textContent()).toContain(lateSaleId);
+    expect(await medium.locator("details").textContent()).toContain(lateVariantMedium);
+    expect(await medium.locator("details").textContent()).toContain(active!.id);
+    expect(await large.locator("details").textContent()).toContain(lateSaleId);
+    expect(await large.locator("details").textContent()).toContain(lateVariantLarge);
+    expect(await large.locator("details").textContent()).toContain(other!.id);
+    expect(await unknown.locator("details").textContent()).toContain(lateBranchUnknown);
+    expect(await identityPrecedesCountAction(medium)).toBe(true);
+    expect(await identityPrecedesCountAction(large)).toBe(true);
+
+    const history = page.getByTestId("stock-correction-row");
+    await expect(history).toContainText("SKU-HIST");
+    await expect(history).toContainText("قميص السجل");
+    await expect(history).toContainText("/ L / أبيض");
+    await expect(history).toContainText(other!.nameAr);
+    await expect(history).toContainText("من 3 إلى 1");
+    await expect(history).not.toContainText("قميص العد");
+    expect(await history.locator("details").textContent()).toContain(lateVariantLarge);
+    expect(await history.locator("details").textContent()).toContain(other!.id);
+
+    const reconciled = page.getByTestId("stock-reconciliation-row");
+    await expect(reconciled.getByTestId("reconciliation-history-identity")).toContainText("SKU-LATE — قميص العد / M / أسود");
+    await expect(reconciled.getByTestId("reconciliation-history-identity")).toContainText(`الفرع: ${active!.nameAr}`);
+    await expect(reconciled.getByTestId("reconciliation-history-identity")).toContainText("كان داخل العدد");
+    await expect(reconciled.getByTestId("reconciliation-history-identity")).not.toContainText("SKU-HIST");
+    expect(await reconciled.locator("details").textContent()).toContain(lateSaleId);
+    expect(await reconciled.locator("details").textContent()).toContain(lateVariantMedium);
+    expect(await reconciled.locator("details").textContent()).toContain(active!.id);
+
+    await expect(page.getByText("مفيش حاجة للمراجعة")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "مزامنة النقاط وبدء التوقف" })).toBeVisible();
+    expect(writes).toEqual([]);
+  } finally {
+    releaseHold();
+  }
+});
+
+function stockReadPayload(activeBranchId: string, otherBranchId: string): Record<string, unknown> {
+  const staff = {
+    id: "62300000-0000-4000-8000-000000000099",
+    loginName: "owner",
+    displayName: "مدير الاختبار",
+    role: "manager",
+    disabled: false,
+  };
+  const lateCase = (variantId: string, branchId: string, sold: number) => ({
+    correctionId: lateCorrectionId,
+    branchId,
+    saleId: lateSaleId,
+    saleOperationId: "62300000-0000-4000-8000-0000000000a2",
+    variantId,
+    deviceId: "till-late-identity",
+    sourceSnapshotId: "62300000-0000-4000-8000-0000000000e1",
+    sourceSnapshotIssuedAt: lateAt,
+    occurredAt: lateAt,
+    recordedAt: lateAt,
+    boundaryAt: lateAt,
+    timing: "before_count",
+    soldQuantity: sold,
+    allocatedQuantity: sold,
+    unallocatedQuantity: 0,
+    costsIncomplete: false,
+    alreadyCountedQuantity: 0,
+    maximumCountedQuantity: 1,
+  });
+  return {
+    "/api/internal/inventory/count-coordination": null,
+    "/api/internal/inventory/stock-pause": null,
+    "/api/internal/inventory/batches": [],
+    "/api/internal/catalog/pos-snapshot": [{
+      id: "62300000-0000-4000-8000-000000000010",
+      code: "SKU-LATE",
+      nameAr: "قميص العد",
+      descriptionAr: "",
+      variants: [
+        { id: lateVariantMedium, size: { id: "62300000-0000-4000-8000-0000000000s1", nameAr: "M" }, color: { id: "62300000-0000-4000-8000-0000000000c8", nameAr: "أسود" }, sellingPricePiasters: 10000, availableQuantity: 3 },
+        { id: lateVariantLarge, size: { id: "62300000-0000-4000-8000-0000000000s2", nameAr: "L" }, color: { id: "62300000-0000-4000-8000-0000000000c9", nameAr: "أبيض" }, sellingPricePiasters: 10000, availableQuantity: 1 },
+      ],
+    }],
+    "/api/internal/inventory/stock-reconciliation-cases": [
+      lateCase(lateVariantMedium, activeBranchId, 2),
+      lateCase(lateVariantLarge, otherBranchId, 1),
+      lateCase(lateVariantUnknown, lateBranchUnknown, 1),
+    ],
+    "/api/internal/inventory/stock-corrections": [{
+      id: lateHistoryId,
+      branchId: otherBranchId,
+      operationId: "62300000-0000-4000-8000-0000000000c3",
+      coordinationId: lateCorrectionId,
+      variantId: lateVariantLarge,
+      variant: {
+        id: lateVariantLarge,
+        product: { id: "62300000-0000-4000-8000-000000000011", code: "SKU-HIST", nameAr: "قميص السجل" },
+        size: { id: "62300000-0000-4000-8000-0000000000s2", nameAr: "L" },
+        color: { id: "62300000-0000-4000-8000-0000000000c9", nameAr: "أبيض" },
+      },
+      previousAvailableQuantity: 3,
+      correctedAvailableQuantity: 1,
+      quantityDelta: -2,
+      reason: "سجل هوية التصحيح",
+      positiveSourceBatchId: null,
+      changedBy: staff,
+      changedAt: lateAt,
+      boundaryStockVersion: 4,
+      coordinationBoundaryAt: lateAt,
+      boundaryAt: lateAt,
+      devices: [],
+      batches: [],
+    }],
+    "/api/internal/inventory/stock-reconciliations": [{
+      id: lateReconciliationId,
+      branchId: activeBranchId,
+      operationId: "62300000-0000-4000-8000-0000000000d2",
+      correctionId: lateCorrectionId,
+      saleId: lateSaleId,
+      variantId: lateVariantMedium,
+      resolution: "included_in_count",
+      quantity: 2,
+      previousAvailableQuantity: 4,
+      resultingAvailableQuantity: 6,
+      resolvedBy: staff,
+      resolvedAt: lateAt,
+      batches: [],
+    }],
+  };
+}
+
+async function identityPrecedesCountAction(article: ReturnType<Page["getByTestId"]>) {
+  return article.evaluate((node) => {
+    const identity = node.querySelector("[data-testid='reconciliation-identity']");
+    const button = Array.from(node.querySelectorAll("button")).find((item) => item.textContent?.includes("تسجيل الكمية الداخلة في العد"));
+    if (!identity || !button) return false;
+    return Boolean(identity.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+}
+
+async function signInOwner(page: Page) {
+  await page.goto(`${stockOrigin}/login`);
+  await page.getByLabel("اسم الدخول").fill("owner");
+  await page.getByLabel("كلمة المرور").fill("e2e-owner-pass");
+  await page.getByRole("button", { name: "دخول" }).click();
+  await expect(page.getByRole("heading", { name: "اختيار الفرع النشط" })).toBeVisible();
+  await page.getByRole("button", { name: "أبشواي" }).click();
+  await expect(page).toHaveURL(/\/workspace$/);
+}

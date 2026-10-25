@@ -21,11 +21,13 @@ export default function SalesPage({
   const [error, setError] = useState("");
   const [sales, setSales] = useState<SaleDto[]>([]);
   const [confirmedOrders, setConfirmedOrders] = useState<OnlineOrderDto[]>([]);
+  const [ordersPhase, setOrdersPhase] = useState<"loading" | "ready" | "error">("loading");
   const [selected, setSelected] = useState<SaleDto | ManagerSaleDto | null>(null);
   const generationRef = useRef(accountGeneration());
   const detailRequest = useRef(0);
   const detailFeedback = useRevealFeedback<HTMLDivElement>();
   const [loading, setLoading] = useState(true);
+  const [salesLoaded, setSalesLoaded] = useState(false);
   const [loadingSaleId, setLoadingSaleId] = useState<string | null>(null);
   const [failedSaleId, setFailedSaleId] = useState<string | null>(null);
   const [notice, setNotice] = useState("");
@@ -42,7 +44,9 @@ export default function SalesPage({
       setNotice("");
       if (payload.staffId !== workspace.staff.id) {
         setSales([]);
+        setSalesLoaded(false);
         setConfirmedOrders([]);
+        setOrdersPhase("loading");
         setSelected(null);
       } else {
         setReloadRevision((current) => current + 1);
@@ -58,7 +62,9 @@ export default function SalesPage({
     const role = workspace.staff.role;
     const stillCurrent = () => !cancelled && generationRef.current === generation;
     setSales([]);
+    setSalesLoaded(false);
     setConfirmedOrders([]);
+    setOrdersPhase(role === "manager" ? "loading" : "ready");
     setSelected(null);
     setError("");
     setLoading(true);
@@ -86,12 +92,22 @@ export default function SalesPage({
           }
           byId.set(sale.id, sale);
         }
+        setSalesLoaded(true);
+      } else {
+        setSalesLoaded(false);
       }
       const rows = [...byId.values()];
       setSales(rows);
       setLoading(false);
-      if (ordersResult.status === "fulfilled" && role === "manager") {
-        setConfirmedOrders(ordersResult.value.filter((order) => order.confirmedAt !== null));
+      if (role === "manager") {
+        if (ordersResult.status === "fulfilled") {
+          setConfirmedOrders(ordersResult.value.filter((order) => order.confirmedAt !== null));
+          setOrdersPhase("ready");
+        } else {
+          setOrdersPhase("error");
+        }
+      } else {
+        setOrdersPhase("ready");
       }
       if (requestedResult.status === "fulfilled" && requestedResult.value) {
         setSelected(requestedResult.value);
@@ -172,9 +188,9 @@ export default function SalesPage({
       <div className="grid two">
         <section className="card">
           <h2>مبيعات الفروع</h2>
-          {!loading && sales.length === 0 ? (
+          {!loading && salesLoaded && sales.length === 0 ? (
             <EmptyState title="مفيش مبيعات تظهر" message="أول ما تبيع، العملية هتظهر هنا." />
-          ) : (
+          ) : sales.length > 0 ? (
             <ul data-testid="sale-list">
               {sales.map((sale) => (
                 <li key={sale.id}>
@@ -185,12 +201,15 @@ export default function SalesPage({
                 </li>
               ))}
             </ul>
-          )}
+          ) : null}
         </section>
         {workspace.staff.role === "manager" ? (
           <section className="card" data-testid="confirmed-online-sales">
             <h2>الطلبات الإلكترونية بعد التأكيد وحالات الإلغاء</h2>
-            {confirmedOrders.length === 0 ? <p className="muted">لا توجد طلبات تم تأكيدها بعد.</p> : (
+            {ordersPhase === "loading" ? <p role="status">جارٍ تحميل الطلبات المؤكدة…</p> : ordersPhase === "error" ? <>
+              <p className="error" role="alert">تعذر تحميل الطلبات المؤكدة. أعد محاولة التحميل.</p>
+              <button type="button" className="secondary" disabled={loading || Boolean(loadingSaleId)} onClick={() => setReloadRevision((current) => current + 1)}>إعادة تحميل الطلبات المؤكدة</button>
+            </> : confirmedOrders.length === 0 ? <p className="muted">لا توجد طلبات تم تأكيدها بعد.</p> : (
               <ul>
                 {confirmedOrders.map((order) => (
                   <li key={order.id}>

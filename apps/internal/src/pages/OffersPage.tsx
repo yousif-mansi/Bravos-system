@@ -1,4 +1,4 @@
-import { type FormEvent, useEffect, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import type {
   AutomaticOfferDiscountType,
@@ -87,12 +87,31 @@ export default function OffersPage({
   const [categories, setCategories] = useState<CategoryDto[]>([]);
   const [form, setForm] = useState<FormState>(emptyForm);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [pending, setPending] = useState(false);
+  const [loadPending, setLoadPending] = useState(false);
+  const [action, setAction] = useState<"save" | "toggle" | "refresh" | null>(null);
+  const [togglingId, setTogglingId] = useState<string | null>(null);
+  const actionRef = useRef(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [listStale, setListStale] = useState(false);
+  const [refreshError, setRefreshError] = useState("");
   const [loaded, setLoaded] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
   const editFeedback = useRevealFeedback<HTMLFormElement>();
+
+  function begin(next: "save" | "toggle" | "refresh", offerId?: string) {
+    if (actionRef.current) return false;
+    actionRef.current = true;
+    setAction(next);
+    setTogglingId(offerId ?? null);
+    return true;
+  }
+
+  function finish() {
+    actionRef.current = false;
+    setAction(null);
+    setTogglingId(null);
+  }
 
   const productByCategory = useMemo(() => {
     const groups = new Map<string, ManagerProductDto[]>();
@@ -109,7 +128,7 @@ export default function OffersPage({
   }, []);
 
   async function refresh() {
-    setPending(true);
+    setLoadPending(true);
     setLoadFailed(false);
     setError("");
     try {
@@ -120,11 +139,27 @@ export default function OffersPage({
       setProducts(productRows);
       setCategories(categoryRows);
       setLoaded(true);
+      setListStale(false);
+      setRefreshError("");
     } catch (caught) {
       setLoadFailed(true);
       setError(caught instanceof ApiError ? caught.messageAr : "تعذر تحميل العروض.");
     } finally {
-      setPending(false);
+      setLoadPending(false);
+    }
+  }
+
+  async function reloadOffers() {
+    if (!begin("refresh")) return;
+    try {
+      setOffers(await listAutomaticOffers());
+      setListStale(false);
+      setRefreshError("");
+    } catch (caught) {
+      setListStale(true);
+      setRefreshError(refreshFailureText(caught));
+    } finally {
+      finish();
     }
   }
 
@@ -140,6 +175,7 @@ export default function OffersPage({
   }
 
   function edit(offer: AutomaticOfferDto) {
+    if (actionRef.current || listStale) return;
     setEditingId(offer.id);
     setForm({
       nameAr: offer.nameAr,
@@ -230,65 +266,86 @@ export default function OffersPage({
 
   async function submit(event: FormEvent) {
     event.preventDefault();
+    if (actionRef.current) return;
     setError("");
     setNotice("");
+    setRefreshError("");
     const body = payload();
     if (!body) return;
-    setPending(true);
+    if (!begin("save")) return;
+    const savingId = editingId;
     try {
-      if (editingId) {
-        await updateAutomaticOffer(editingId, body);
-        setNotice("تم تحديث العرض.");
-      } else {
-        await createAutomaticOffer(body);
-        setNotice("تم إنشاء العرض.");
+      try {
+        if (savingId) await updateAutomaticOffer(savingId, body);
+        else await createAutomaticOffer(body);
+      } catch (caught) {
+        setError(caught instanceof ApiError ? caught.messageAr : "تعذر حفظ العرض.");
+        return;
       }
+      setNotice(savingId ? "تم تحديث العرض." : "تم إنشاء العرض.");
       setEditingId(null);
       editFeedback.clearHighlight();
       setForm(emptyForm());
-      setOffers(await listAutomaticOffers());
-    } catch (caught) {
-      setError(caught instanceof ApiError ? caught.messageAr : "تعذر حفظ العرض.");
+      try {
+        setOffers(await listAutomaticOffers());
+        setListStale(false);
+        setRefreshError("");
+      } catch (caught) {
+        setListStale(true);
+        setRefreshError(refreshFailureText(caught));
+      }
     } finally {
-      setPending(false);
+      finish();
     }
   }
 
   async function toggleActive(offer: AutomaticOfferDto) {
-    setPending(true);
+    if (listStale || !begin("toggle", offer.id)) return;
     setError("");
+    setNotice("");
+    setRefreshError("");
     try {
-      await updateAutomaticOffer(offer.id, {
-        nameAr: offer.nameAr,
-        discountType: offer.discountType,
-        percentageBasisPoints: offer.percentageBasisPoints,
-        fixedDiscountPiasters: offer.fixedDiscountPiasters,
-        bundlePricePiasters: offer.bundlePricePiasters,
-        bundleItems: offer.bundleItems,
-        buyQuantity: offer.buyQuantity,
-        rewardQuantity: offer.rewardQuantity,
-        rewardPercentageBasisPoints: offer.rewardPercentageBasisPoints,
-        buyProductIds: offer.buyProductIds,
-        buyCategoryIds: offer.buyCategoryIds,
-        rewardProductIds: offer.rewardProductIds,
-        rewardCategoryIds: offer.rewardCategoryIds,
-        startsOn: offer.startsOn,
-        endsOn: offer.endsOn,
-        active: !offer.active,
-        allowCoupon: offer.allowCoupon,
-        productIds: offer.productIds,
-        categoryIds: offer.categoryIds,
-      });
-      setOffers(await listAutomaticOffers());
+      try {
+        await updateAutomaticOffer(offer.id, {
+          nameAr: offer.nameAr,
+          discountType: offer.discountType,
+          percentageBasisPoints: offer.percentageBasisPoints,
+          fixedDiscountPiasters: offer.fixedDiscountPiasters,
+          bundlePricePiasters: offer.bundlePricePiasters,
+          bundleItems: offer.bundleItems,
+          buyQuantity: offer.buyQuantity,
+          rewardQuantity: offer.rewardQuantity,
+          rewardPercentageBasisPoints: offer.rewardPercentageBasisPoints,
+          buyProductIds: offer.buyProductIds,
+          buyCategoryIds: offer.buyCategoryIds,
+          rewardProductIds: offer.rewardProductIds,
+          rewardCategoryIds: offer.rewardCategoryIds,
+          startsOn: offer.startsOn,
+          endsOn: offer.endsOn,
+          active: !offer.active,
+          allowCoupon: offer.allowCoupon,
+          productIds: offer.productIds,
+          categoryIds: offer.categoryIds,
+        });
+      } catch (caught) {
+        setError(caught instanceof ApiError ? caught.messageAr : "تعذر تغيير حالة العرض.");
+        return;
+      }
       setNotice(offer.active ? "تم إيقاف العرض." : "تم تفعيل العرض.");
-    } catch (caught) {
-      setError(caught instanceof ApiError ? caught.messageAr : "تعذر تغيير حالة العرض.");
+      try {
+        setOffers(await listAutomaticOffers());
+        setListStale(false);
+        setRefreshError("");
+      } catch (caught) {
+        setListStale(true);
+        setRefreshError(refreshFailureText(caught));
+      }
     } finally {
-      setPending(false);
+      finish();
     }
   }
 
-  if (!loaded) return <main className="shell"><header className="page-hero"><h1>العروض التلقائية</h1></header><section className="card">{loadFailed ? <><p className="error" role="alert">{error}</p><button type="button" disabled={pending} onClick={() => void refresh()}>إعادة تحميل العروض</button></> : <p role="status">جارٍ تحميل العروض…</p>}</section></main>;
+  if (!loaded) return <main className="shell"><header className="page-hero"><h1>العروض التلقائية</h1></header><section className="card">{loadFailed ? <><p className="error" role="alert">{error}</p><button type="button" disabled={loadPending} onClick={() => void refresh()}>إعادة تحميل العروض</button></> : <p role="status">جارٍ تحميل العروض…</p>}</section></main>;
 
   return (
     <main className="shell">
@@ -297,8 +354,11 @@ export default function OffersPage({
       </header>
       {error ? <div className="error" role="alert">{error}</div> : null}
       {notice ? <div className="notice" role="status">{notice}</div> : null}
+      {listStale && refreshError ? <p className="error" role="alert">{refreshError}</p> : null}
+      {listStale ? <button type="button" className="secondary" aria-busy={action === "refresh"} disabled={action !== null} onClick={() => void reloadOffers()}>{action === "refresh" ? "جارٍ تحديث القائمة…" : "إعادة تحميل العروض"}</button> : null}
 
-      <form ref={editFeedback.regionRef} className={`card reveal-feedback${editFeedback.highlighted ? " is-highlighted" : ""}`} aria-label={editingId ? "تعديل العرض التلقائي" : "إنشاء عرض تلقائي"} onSubmit={(event) => void submit(event)}>
+      <form ref={editFeedback.regionRef} className={`card reveal-feedback${editFeedback.highlighted ? " is-highlighted" : ""}`} aria-label={editingId ? "تعديل العرض التلقائي" : "إنشاء عرض تلقائي"} aria-busy={action === "save"} onSubmit={(event) => void submit(event)}>
+        <fieldset disabled={action !== null}>
         <h2 ref={editFeedback.headingRef} tabIndex={-1}>{editingId ? `تعديل العرض: ${form.nameAr}` : "عرض جديد"}</h2>
         <div className="field"><label htmlFor="offerName">اسم العرض</label><input id="offerName" value={form.nameAr} onChange={(event) => setForm({ ...form, nameAr: event.target.value })} /></div>
         <div className="grid two">
@@ -344,25 +404,31 @@ export default function OffersPage({
           <label><input type="checkbox" checked={form.allowCoupon} onChange={(event) => setForm({ ...form, allowCoupon: event.target.checked })} /> يسمح بجمع كوبون مؤهل لاحقاً</label>
         </div>
         <div className="actions">
-          <button type="submit" disabled={pending}>{pending ? "جارٍ الحفظ…" : "حفظ العرض"}</button>
-          {editingId ? <button className="secondary" type="button" onClick={() => { setEditingId(null); setForm(emptyForm()); editFeedback.clearHighlight(); }}>إلغاء التعديل</button> : null}
+          <button type="submit" disabled={action !== null}>{action === "save" ? "جارٍ الحفظ…" : "حفظ العرض"}</button>
+          {editingId ? <button className="secondary" type="button" disabled={action !== null} onClick={() => { if (actionRef.current) return; setEditingId(null); setForm(emptyForm()); editFeedback.clearHighlight(); }}>إلغاء التعديل</button> : null}
         </div>
+        </fieldset>
       </form>
 
       <section className="card stacked-form" aria-label="العروض المحفوظة">
         <h2>العروض المحفوظة</h2>
-        {offers.length === 0 ? <EmptyState title="لسه مفيش عروض" message="أنشئ أول عرض من النموذج فوق." /> : (
+        {!listStale && offers.length === 0 ? <EmptyState title="لسه مفيش عروض" message="أنشئ أول عرض من النموذج فوق." /> : offers.length > 0 ? (
           <div className="staff-list">{offers.map((offer) => <article className="staff-item" key={offer.id} data-testid="offer-row">
             <h3>{offer.nameAr}</h3>
             <p>{offerSummary(offer)} — {offer.startsOn} إلى {offer.endsOn}</p>
             <p>{offer.active ? "مفعل" : "متوقف"} — {offer.allowCoupon ? "يسمح بالكوبون" : "لا يسمح بالكوبون"}</p>
-            <div className="actions"><button type="button" className="secondary" onClick={() => edit(offer)}>تعديل</button><button type="button" className={offer.active ? "danger" : "secondary"} onClick={() => void toggleActive(offer)}>{offer.active ? "إيقاف" : "تفعيل"}</button></div>
+            <div className="actions"><button type="button" className="secondary" disabled={action !== null || listStale} onClick={() => edit(offer)}>تعديل</button><button type="button" className={offer.active ? "danger" : "secondary"} disabled={action !== null || listStale} aria-busy={togglingId === offer.id} onClick={() => void toggleActive(offer)}>{togglingId === offer.id ? "جارٍ تغيير الحالة…" : offer.active ? "إيقاف" : "تفعيل"}</button></div>
           </article>)}</div>
-        )}
+        ) : null}
       </section>
       <CouponManager products={products} categories={categories} />
     </main>
   );
+}
+
+function refreshFailureText(caught: unknown) {
+  const detail = caught instanceof ApiError ? caught.messageAr : "تعذر تحديث قائمة العروض.";
+  return `تعذر تحديث قائمة العروض. ${detail} البيانات الظاهرة قديمة حتى تنجح إعادة التحميل.`;
 }
 
 function offerSummary(offer: AutomaticOfferDto): string {
