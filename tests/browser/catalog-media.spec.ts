@@ -87,7 +87,12 @@ test("manager publishes product media and customers see only selectable stocked 
   if (!stocked) throw new Error("Expected the stocked media test variant.");
 
   await page.goto("http://127.0.0.1:3001");
-  await page.locator(`[data-category-rail="${product.category.id}"]`).scrollIntoViewIfNeeded();
+  await expect(async () => {
+    const rail = page.locator(`[data-category-rail="${product.category.id}"]`);
+    await expect(rail).toHaveCount(1);
+    await expect(rail).toBeVisible();
+    await rail.scrollIntoViewIfNeeded();
+  }).toPass({ timeout: 15000 });
   const outOfStockCard = page.getByRole("link", { name: /قميص برافوس المصور/ });
   await expect(outOfStockCard).toContainText("Out of Stock");
   await outOfStockCard.click();
@@ -113,7 +118,12 @@ test("manager publishes product media and customers see only selectable stocked 
   expect(receipt.status).toBe(201);
 
   await page.goto("http://127.0.0.1:3001");
-  await page.locator(`[data-category-rail="${product.category.id}"]`).scrollIntoViewIfNeeded();
+  await expect(async () => {
+    const rail = page.locator(`[data-category-rail="${product.category.id}"]`);
+    await expect(rail).toHaveCount(1);
+    await expect(rail).toBeVisible();
+    await rail.scrollIntoViewIfNeeded();
+  }).toPass({ timeout: 15000 });
   const card = page.getByRole("link", { name: /قميص برافوس المصور/ });
   await expect(card).toContainText("In Stock");
   await card.click();
