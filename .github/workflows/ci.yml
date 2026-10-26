@@ -123,6 +123,34 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Install the locked Playwright Chromium
         run: pnpm exec playwright install chromium
+      - name: Allow Next.js typegen writes on storefront checkout files
+        shell: pwsh
+        run: |
+          $root = $env:GITHUB_WORKSPACE
+          if ([string]::IsNullOrWhiteSpace($root)) { throw 'GITHUB_WORKSPACE is required' }
+          $rootFull = [System.IO.Path]::GetFullPath($root)
+          $identity = $null
+          try {
+            $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+            $sid = $identity.User
+            $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($sid, [System.Security.AccessControl.FileSystemRights]::Write, [System.Security.AccessControl.AccessControlType]::Allow)
+            foreach ($rel in @('apps/storefront/tsconfig.json', 'apps/storefront/next-env.d.ts')) {
+              $full = [System.IO.Path]::GetFullPath((Join-Path $rootFull $rel))
+              $prefix = if ($rootFull.EndsWith([char]92)) { $rootFull } else { $rootFull + [char]92 }
+              if (-not $full.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) { throw "Path escaped workspace: $full" }
+              $item = Get-Item -LiteralPath $full -Force
+              if ($item.PSIsContainer -or $item.Attributes.HasFlag([System.IO.FileAttributes]::ReparsePoint) -or $item.Attributes.HasFlag([System.IO.FileAttributes]::Directory)) { throw "Not a regular leaf file: $full" }
+              $acl = Get-Acl -LiteralPath $full
+              Write-Host "file=$full attributes=$($item.Attributes) owner=$($acl.Owner) sddl=$($acl.Sddl)"
+              if ($item.Attributes.HasFlag([System.IO.FileAttributes]::ReadOnly) -or $item.Attributes.HasFlag([System.IO.FileAttributes]::Hidden)) { throw "ReadOnly or Hidden is set on $full; refusing to change attributes" }
+              $fileInfo = New-Object System.IO.FileInfo($full)
+              $writableAcl = [System.IO.FileSystemAclExtensions]::GetAccessControl($fileInfo, [System.Security.AccessControl.AccessControlSections]::Access)
+              $writableAcl.AddAccessRule($rule) | Out-Null
+              [System.IO.FileSystemAclExtensions]::SetAccessControl($fileInfo, $writableAcl)
+            }
+          } finally {
+            if ($identity) { $identity.Dispose() }
+          }
       - name: Run the complete browser suite on its isolated stack
         shell: pwsh
         run: |
