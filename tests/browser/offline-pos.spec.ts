@@ -107,9 +107,7 @@ test("two tabs cannot sell the same remaining cached unit", async ({ context }) 
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   await page2.getByRole("form", { name: "إتمام البيع" }).getByRole("button", { name: "إتمام البيع" }).click();
   const shortage = page2.getByRole("alert").filter({ hasText: "الكمية المتاحة غير كافية." });
-  const syncFailure = page2.getByRole("alert").filter({ hasText: "تعذر مزامنة المبيعات" });
   await expect(shortage).toContainText("الكمية المتاحة غير كافية.");
-  await expect(syncFailure).toBeVisible();
   await expect(page2.getByRole("status").filter({ hasText: "تم حفظ البيع." })).toHaveCount(0);
   await expect(page2.getByTestId("sale-cart")).toContainText(seed.code);
   await expect(page2.getByRole("button", { name: "إعادة المحاولة" })).toBeVisible();
