@@ -89,3 +89,23 @@ The isolated E2E API harness records catalog request start/end timing and pool c
 | Three affected browser files, final rerun | 16 passed in 3.8m | `remaining-three-files-final.log`; artifacts in `browser-focus-final-results/` |
 
 The first local failure was the newly added expectation that an explicitly refreshed button retained focus while being temporarily disabled. The original post-upload heading-focus assertion passed. Main corrected its premature progress statement and had Grok replace that new expectation with a background-poll check: a changed record count must actually render while the history control retains focus. No application behavior was changed to satisfy that fixture. Historical navigation delays remain unassigned to a root cause; local API reads observed at roughly 4–5ms with zero pool waiting do not explain the old remote stalls.
+
+## Security-audit follow-up after d409532
+
+Fresh Windows run `40571597579` stopped at the production audit: `better-auth@1.7.3` was flagged by critical `GHSA-965c-763c-88jm` and high `GHSA-r4xp-prcw-77qf`, alongside two low findings. The HTTP and browser jobs were **skipped**, not passed or failed. Evidence is retained in `.scratch/pr53-repair-20261027/remote-d409532-failure.log`.
+
+Main verified npm registry availability of `better-auth@1.7.7` and its aligned core package, plus the [official v1.7.7 release](https://github.com/better-auth/better-auth/releases/tag/v1.7.7). The release documents no database migration. The actual Bravos configuration registers username/admin plugins and exposes four allow-listed auth routes; Magic Link, social/Generic OAuth and OAuth Proxy are not configured. This is code-level applicability evidence for these reported paths, not a general exploit assessment or grounds for waiving the audit.
+
+Grok changed only both exact dependency pins and their generated lock graph. Core/adapters/telemetry align at 1.7.7. Natural transitive updates include the auth fetch, crypto, Kysely, store and cookie-parser packages. Independent review found no scope/version-alignment blocker. No auth source, route, permission, session policy, schema, audit exclusion or threshold changed.
+
+| Security-patch gate | Result | Evidence under `.scratch/pr53-repair-20261027/` |
+| --- | --- | --- |
+| Frozen lockfile installation | Passed | `auth-frozen-install.log` |
+| Production audit | Zero advisories at all severities | `auth-production-audit.json` |
+| All workspace typechecks, serialized | Passed | `auth-typecheck.log` |
+| API production build | Passed | `auth-api-build.log` |
+| Staff access / restore / release-path HTTP regressions | 35 passed across three files, 212.73s | `auth-http.log` |
+| Staff-access / session-transition browser regressions | 5 passed in 55.5s | `auth-browser.log` |
+| Complete remote CI at the security-patch revision | Pending fresh CI after publication | No pass claimed |
+
+The earlier 16-case storefront/feedback pass and the later dependency gates are distinct scopes. The two historical remote navigation delays still require the next complete run and, if they recur, the retained API/RSC diagnostic timings. No merge, deployment or production-launch approval is implied.
