@@ -58,7 +58,7 @@ export function subscribePosStockChanges(listener: (change: PosStockChange) => v
 export function saleFromOffline(record: OfflineCompletedSale): SaleDto {
   return {
     id: record.id,
-    reference: null,
+    reference: record.reference ?? null,
     operationId: record.operationId,
     branch: record.branch,
     soldByStaffId: record.soldByStaffId,
@@ -234,6 +234,7 @@ export async function applySyncedSale(local: OfflineCompletedSale, synced: Synce
         finalTotalPiasters: synced.finalTotalPiasters,
         discrepancy: synced.discrepancy,
         lines: synced.lines,
+        reference: synced.reference,
       },
     ],
   });

@@ -1,0 +1,113 @@
+.product-label-open {
+  min-height: 36px;
+  padding: 0.4rem 0.75rem;
+  font-size: 0.92rem;
+}
+
+.product-label-status {
+  margin: 0.35rem 0 0;
+}
+
+.product-label-fields {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-inline-size: 0;
+}
+
+.product-label-dialog {
+  width: min(32rem, calc(100vw - 1.5rem));
+  max-width: 90vw;
+  margin: auto;
+  padding: 1rem 1.1rem 1.15rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text-primary);
+  font-family: inherit;
+  box-shadow: var(--shadow);
+}
+
+.product-label-dialog::backdrop {
+  background: color-mix(in srgb, var(--background-primary) 72%, transparent);
+}
+
+.product-label-dialog h2 {
+  margin: 0 0 0.35rem;
+  font-size: 1.15rem;
+}
+
+.product-label-identity {
+  margin: 0 0 0.8rem;
+}
+
+.product-label-identity p {
+  margin: 0.15rem 0;
+}
+
+.product-label-preview {
+  position: relative;
+  background: #fff;
+  color: #000;
+  min-height: 40mm;
+  margin-bottom: 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: auto;
+}
+
+.product-label-preview[aria-busy="true"] {
+  color: #333;
+  background: #fff;
+}
+
+.product-label-preview[aria-busy="true"] > p {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  margin: 0;
+}
+
+.product-label-preview-host {
+  min-width: 0;
+}
+
+.product-label-preview[aria-busy="true"] .product-label-preview-host {
+  visibility: hidden;
+}
+
+.product-label-dialog .field input[aria-invalid="true"],
+.product-label-dialog .field select[aria-invalid="true"] {
+  border-color: var(--danger);
+  background: var(--surface-danger);
+}
+
+.product-label-size {
+  margin: 0.7rem 0 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.55rem 0.75rem 0.7rem;
+  background: var(--surface-muted);
+}
+
+.product-label-size[data-invalid="true"] {
+  border-color: var(--danger);
+}
+
+.product-label-size summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.product-label-note {
+  margin: 0.35rem 0 0;
+}
+
+@media (max-width: 640px) {
+  .product-label-dialog {
+    width: 90vw;
+    max-width: 90vw;
+    padding: 0.85rem;
+  }
+}

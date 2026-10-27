@@ -4,6 +4,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import type { ManagerSaleDto, OnlineOrderDto, SaleDto, WorkspaceDto } from "@bravos/contracts";
 import { ApiError, getSale, listOnlineOrders, listSales } from "../api.ts";
 import { pos, saleFromOffline } from "../pos.ts";
+import { releaseReceiptPrintResources } from "../receipts/index.ts";
 import { formatEgpFromPiasters } from "../money.ts";
 import { EmptyState } from "../ui/EmptyState.tsx";
 import { useRevealFeedback } from "../ui/useRevealFeedback.ts";
@@ -37,6 +38,7 @@ export default function SalesPage({
   useEffect(() => {
     return subscribeAccount((payload) => {
       generationRef.current = payload.generation;
+      releaseReceiptPrintResources();
       detailRequest.current += 1;
       setLoading(false);
       setLoadingSaleId(null);
@@ -130,6 +132,12 @@ export default function SalesPage({
       detailRequest.current += 1;
     };
   }, [requestedSaleId, workspace.staff.id, workspace.staff.role, reloadRevision]);
+
+  useEffect(() => {
+    return () => {
+      releaseReceiptPrintResources();
+    };
+  }, [selected?.id, workspace.staff.id]);
 
   async function openSale(id: string) {
     const generation = generationRef.current;
@@ -227,7 +235,7 @@ export default function SalesPage({
         {selected ? (
           <div ref={detailFeedback.regionRef} className={`reveal-feedback${detailFeedback.highlighted ? " is-highlighted" : ""}`} data-testid="sale-detail-region" aria-busy={Boolean(loadingSaleId)}>
             <h2 ref={detailFeedback.headingRef} tabIndex={-1}>بيع {selected.reference ?? "غير مزامن"}</h2>
-            <SaleSummary sale={selected} />
+            <SaleSummary key={selected.id} sale={selected} printDisabled={Boolean(loadingSaleId)} />
             {managerSale ? <Link className="button secondary" to={`/corrections?target=sale&id=${selected.id}`}>تصحيح تسجيل هذا البيع</Link> : null}
             {managerSale ? (
               <section className="card" data-testid="sale-costs">

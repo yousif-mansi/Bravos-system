@@ -10,7 +10,7 @@ import type { CompleteOfflineSaleInput, OfflineCompletedSale, OfflinePosStore } 
 export type RecoveredSaleAck = Pick<
   SaleDto,
   "id" | "operationId" | "recordedAt" | "soldByStaffId" | "finalTotalPiasters" | "lines" | "discrepancy"
-> & { acknowledgement: SaleAcknowledgementDto };
+> & { acknowledgement: SaleAcknowledgementDto; reference?: string | null };
 
 export function createOfflinePosServices(store: OfflinePosStore) {
   return {

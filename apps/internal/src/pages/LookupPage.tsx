@@ -1,6 +1,6 @@
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CashierProductLookupDto, CashierVariantDto, PosPriceSnapshotDto, SaleDto, SalePaymentDto, StockPauseDto, WorkspaceDto } from "@bravos/contracts";
-import { SaleSummary } from "./SaleSummary.tsx";
+import { printCompletedBranchReceipt, receiptPrintFailureMessage, SaleSummary } from "./SaleSummary.tsx";
 import { ApiError, acceptOfflineSale, completeSale, getStockPause, getWorkspace, issuePosSnapshot, lookupProductByCode, lookupSaleOperation, prepareSale } from "../api.ts";
 import { egpInputToPiasters, formatEgpFromPiasters } from "../money.ts";
 import {
@@ -22,6 +22,14 @@ import { getRestorePause } from "../restore-api.ts";
 import { isNetworkFailure } from "../session.ts";
 import { EmptyState } from "../ui/EmptyState.tsx";
 import { ProductBrowser } from "./pos/ProductBrowser.tsx";
+import {
+  findCachedProductByCode,
+  focusManualSizeChoice,
+  isolateScanSubmit,
+  useProductCodeScanner,
+} from "./pos/useProductCodeScanner.ts";
+import { ProductLabelAction } from "../labels/ProductLabelAction.tsx";
+import { releaseReceiptPrintResources } from "../receipts/index.ts";
 import "./pos/pos-workspace.css";
 import {
   createPendingSale,
@@ -110,6 +118,8 @@ export default function LookupPage({
   const [onlineEgp, setOnlineEgp] = useState("");
   const [quote, setQuote] = useState<SaleDto | null>(null);
   const [completed, setCompleted] = useState<SaleDto | null>(null);
+  const [receiptError, setReceiptError] = useState("");
+  const [receiptStatus, setReceiptStatus] = useState("");
   const [handedOver, setHandedOver] = useState(false);
   const [pendingSale, setPendingSale] = useState<PendingSale | null>(null);
   const [frozenPayload, setFrozenPayload] = useState<SalePayload | null>(null);
@@ -144,6 +154,8 @@ export default function LookupPage({
   const contextKey = `${workspace.staff.id}:${workspace.activeBranch?.id ?? ""}`;
   const contextRef = useRef(contextKey);
   const sizeInputRef = useRef<HTMLSelectElement>(null);
+  const { scanInputRef, onScanKeyDown, focusScanInput } = useProductCodeScanner();
+  const [sizeFocusNonce, setSizeFocusNonce] = useState(0);
   contextRef.current = contextKey;
   cartRef.current = cart;
 
@@ -254,7 +266,13 @@ export default function LookupPage({
   }, [refreshBrowse]);
 
   useEffect(() => {
+    if (sizeFocusNonce === 0) return;
+    focusManualSizeChoice(sizeInputRef.current);
+  }, [sizeFocusNonce]);
+
+  useEffect(() => {
     return subscribeAccount((payload) => {
+      releaseReceiptPrintResources();
       if (payload.staffId !== workspace.staff.id) {
         browseAuthorizationBlockedRef.current = true;
         setBrowseProducts([]);
@@ -263,6 +281,8 @@ export default function LookupPage({
         setCart([]);
         setQuote(null);
         setCompleted(null);
+        setReceiptError("");
+        setReceiptStatus("");
         setPendingSale(null);
         pendingSaleRef.current = null;
         foreignRecoveryRef.current = null;
@@ -271,6 +291,12 @@ export default function LookupPage({
       }
     });
   }, [workspace.staff.id]);
+
+  useEffect(() => {
+    return () => {
+      releaseReceiptPrintResources();
+    };
+  }, [contextKey]);
 
   useEffect(() => {
     let cancelled = false;
@@ -505,7 +531,7 @@ export default function LookupPage({
   }
 
   async function onSearch(event: FormEvent) {
-    event.preventDefault();
+    isolateScanSubmit(event);
     const capturedContext = contextKey;
     const epoch = accountGeneration();
     const stillCurrent = () => browseMountedRef.current && contextRef.current === capturedContext && accountGeneration() === epoch;
@@ -521,7 +547,7 @@ export default function LookupPage({
         }
         const snapshot = await pos.loadSnapshot(workspace.staff.id);
         found = snapshot?.staffId === workspace.staff.id && snapshot.branch.id === workspace.activeBranch?.id
-          ? snapshot.products.find((item) => item.code === code.trim())
+          ? findCachedProductByCode(snapshot.products, code) ?? null
           : null;
         if (!found) {
           throw new ApiError(404, "NOT_FOUND", "المنتج غير موجود.");
@@ -532,12 +558,15 @@ export default function LookupPage({
       setProduct(found);
       setSizeId("");
       setColorId("");
+      setCode("");
+      setSizeFocusNonce((nonce) => nonce + 1);
     } catch (caught) {
       if (!stillCurrent()) return;
       setProduct(null);
       setSizeId("");
       setColorId("");
       setError(caught instanceof ApiError ? caught.messageAr : "تعذر البحث عن المنتج.");
+      focusScanInput();
     } finally {
       if (stillCurrent()) setPending("");
     }
@@ -579,6 +608,7 @@ export default function LookupPage({
       return;
     }
     setCart((current) => [...current, { key: crypto.randomUUID(), product, variant: selected, quantity: 1 }]);
+    focusScanInput();
   }
 
   function updateQuantity(key: string, quantity: number) {
@@ -879,7 +909,33 @@ export default function LookupPage({
     }
   }
 
-  async function submit(kind: "prepare" | "complete") {
+  async function printPersistedReceipt(sale: SaleDto, generation: number, staffId: string, branchId: string | undefined) {
+    const expectedContext = `${staffId}:${branchId ?? ""}`;
+    const stillCurrent = () =>
+      browseMountedRef.current
+      && accountGeneration() === generation
+      && contextRef.current === expectedContext;
+    if (!stillCurrent() || !sale.physicallyCompleted) {
+      return;
+    }
+    setReceiptError("");
+    setReceiptStatus("جارٍ تجهيز الإيصال…");
+    try {
+      await printCompletedBranchReceipt(sale);
+      if (!stillCurrent()) {
+        return;
+      }
+      setReceiptStatus("تم طلب طباعة الإيصال. إذا لم يخرج، يمكنك إعادة الطباعة.");
+    } catch (caught) {
+      if (!stillCurrent()) {
+        return;
+      }
+      setReceiptStatus("");
+      setReceiptError(receiptPrintFailureMessage(caught));
+    }
+  }
+
+  async function submit(kind: "prepare" | "complete", options?: { print?: boolean }) {
     if (inFlightRef.current) {
       return;
     }
@@ -887,6 +943,10 @@ export default function LookupPage({
     setPending(kind);
     setError("");
     setNotice("");
+    if (kind === "complete") {
+      setReceiptError("");
+      setReceiptStatus("");
+    }
     const epoch = revisionEpochRef.current;
     submitEpochRef.current = epoch;
     const generation = accountGeneration();
@@ -1026,6 +1086,8 @@ export default function LookupPage({
       };
     }
     submittedRef.current = local;
+    const printAfterPersist = Boolean(physical && options?.print);
+    let persistedForPrint: SaleDto | null = null;
     if (physical && !local.occurredAt) {
       local = { ...local, occurredAt: new Date().toISOString(), physicallyCompleted: true, payload };
       submittedRef.current = local;
@@ -1136,8 +1198,10 @@ export default function LookupPage({
         const saved = await persistPhysicalSale(nextPending, payload);
         await acceptSale(saved, "تم حفظ البيع.");
         void syncPersistedSale(saved.id);
-        return;
-      }
+        if (printAfterPersist && saved.physicallyCompleted) {
+          persistedForPrint = saved;
+        }
+      } else {
       await assertLocalCartStock(cart);
       let result: SaleDto;
       try {
@@ -1190,6 +1254,7 @@ export default function LookupPage({
       revisionBlockRef.current = false;
       setRevisionBlock(false);
       setNotice("تم قبول الأسعار من الخادم. يمكنك تعديل السلة أو تأكيد التسليم والدفع.");
+      }
     } catch (caught) {
       const current = submittedRef.current ?? pendingSaleRef.current;
       if (caught instanceof PosStorageError) {
@@ -1293,6 +1358,14 @@ export default function LookupPage({
     } finally {
       inFlightRef.current = false;
       setPending("");
+    }
+    if (persistedForPrint) {
+      await printPersistedReceipt(
+        persistedForPrint,
+        generation,
+        workspace.staff.id,
+        workspace.activeBranch?.id,
+      );
     }
   }
 
@@ -1417,18 +1490,43 @@ export default function LookupPage({
       {notice ? <div className="notice" role="status">{notice}</div> : null}
       <div className="pos-layout">
       <div className="pos-discovery">
-      <form className="card pos-scanner" aria-label="البحث برمز المنتج" onSubmit={(event) => void onSearch(event)}>
+      <form
+        className="card pos-scanner"
+        aria-label="البحث برمز المنتج"
+        aria-busy={pending === "search"}
+        onSubmit={(event) => void onSearch(event)}
+      >
         <div className="field">
           <label htmlFor="lookupCode">رمز المنتج</label>
-          <input id="lookupCode" value={code} onChange={(event) => setCode(event.target.value)} placeholder="الكود الكامل للبحث المباشر" required />
+          <input
+            id="lookupCode"
+            ref={scanInputRef}
+            value={code}
+            onChange={(event) => setCode(event.target.value)}
+            onKeyDown={onScanKeyDown}
+            placeholder="الكود الكامل للبحث المباشر"
+            autoComplete="off"
+            autoCorrect="off"
+            spellCheck={false}
+            enterKeyHint="search"
+            aria-describedby="lookupCodeHint"
+            required
+          />
+          <p id="lookupCodeHint" className="muted">
+            امسح الباركود أو اكتب رمز المنتج، ثم اختر المقاس واللون.
+          </p>
         </div>
-        <button type="submit" disabled={Boolean(pending)}>
+        <button type="submit" disabled={Boolean(pending)} aria-disabled={Boolean(pending)}>
           {pending === "search" ? "جارٍ البحث…" : "بحث"}
         </button>
+        {pending === "search" ? <span className="sr-only" role="status">جارٍ البحث عن المنتج…</span> : null}
       </form>
       {product ? (
         <section className="card pos-selection" data-testid="lookup-result">
-          <h2>{product.nameAr}</h2>
+          <div className="pos-section-heading">
+            <h2>{product.nameAr}</h2>
+            <ProductLabelAction product={{ id: product.id, code: product.code, nameAr: product.nameAr }} />
+          </div>
           <p className="muted">رمز المنتج: {product.code}</p>
           <div className="pos-pairs" role="group" aria-label="اختيارات الصنف المتاحة">
             {product.variants.map((variant) => <button key={variant.id} type="button" aria-pressed={selected?.id === variant.id} onClick={() => { setSizeId(variant.size.id); setColorId(variant.color.id); }}>
@@ -1487,12 +1585,7 @@ export default function LookupPage({
         setProduct(item);
         setSizeId("");
         setColorId("");
-        window.requestAnimationFrame(() => {
-          const pair = sizeInputRef.current?.closest("section")?.querySelector<HTMLButtonElement>(".pos-pairs button");
-          if (!pair) return;
-          pair.focus({ preventScroll: true });
-          pair.scrollIntoView({ block: "nearest", behavior: "instant" });
-        });
+        setSizeFocusNonce((nonce) => nonce + 1);
       }} />
       </div>
 
@@ -1615,8 +1708,26 @@ export default function LookupPage({
               إلغاء عرض السعر
             </button>
           ) : null}
-          <button type="button" className="pos-complete" disabled={((Boolean(stockPause) || Boolean(restorePause)) && !handedOver && !pendingSale?.physicallyCompleted) || Boolean(pending) || revisionBlock || (!quote && !pendingSale?.physicallyCompleted)} onClick={() => void submit("complete")}>
-            {pending === "complete" ? "جارٍ الحفظ…" : "إتمام البيع"}
+          <button
+            type="button"
+            className="pos-complete"
+            data-testid="complete-sale"
+            aria-labelledby="complete-without-print-label"
+            aria-describedby="complete-without-print"
+            disabled={((Boolean(stockPause) || Boolean(restorePause)) && !handedOver && !pendingSale?.physicallyCompleted) || Boolean(pending) || revisionBlock || (!quote && !pendingSale?.physicallyCompleted)}
+            onClick={() => void submit("complete")}
+          >
+            <span id="complete-without-print-label">{pending === "complete" ? "جارٍ الحفظ…" : "إتمام البيع"}</span>
+            <span id="complete-without-print">بدون طباعة</span>
+          </button>
+          <button
+            type="button"
+            className="pos-complete"
+            data-testid="complete-sale-print"
+            disabled={((Boolean(stockPause) || Boolean(restorePause)) && !handedOver && !pendingSale?.physicallyCompleted) || Boolean(pending) || revisionBlock || (!quote && !pendingSale?.physicallyCompleted)}
+            onClick={() => void submit("complete", { print: true })}
+          >
+            {pending === "complete" ? "جارٍ الحفظ…" : "حفظ البيع وطباعة الإيصال"}
           </button>
           {pendingSale ? (
             <>
@@ -1644,7 +1755,9 @@ export default function LookupPage({
       </form>
       </div>
 
-      {completed ? <SaleSummary sale={completed} /> : null}
+      {receiptStatus ? <p className="notice" role="status" data-testid="pos-receipt-status">{receiptStatus}</p> : null}
+      {receiptError ? <p className="error" role="alert" data-testid="pos-receipt-error">{receiptError}</p> : null}
+      {completed ? <SaleSummary key={completed.id} sale={completed} /> : null}
     </main>
   );
 }

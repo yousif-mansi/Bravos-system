@@ -1,7 +1,82 @@
+import { useEffect, useRef, useState } from "react";
 import type { SaleDto } from "@bravos/contracts";
+import { accountGeneration } from "../account-session.ts";
 import { formatEgpFromPiasters } from "../money.ts";
+import {
+  printSaleReceipt,
+  receiptPhoneWarning,
+  ReceiptPrintError,
+  resolveReceiptOptions,
+} from "../receipts/index.ts";
 
-export function SaleSummary({ sale }: { sale: SaleDto }) {
+const RECEIPT_PRINT_REQUESTED =
+  "تم طلب طباعة الإيصال. إذا لم يخرج، يمكنك إعادة الطباعة.";
+
+export function receiptPrintFailureMessage(error: unknown): string {
+  if (error instanceof ReceiptPrintError) {
+    return error.message;
+  }
+  return "تعذرت طباعة الإيصال. البيع محفوظ. يمكنك إعادة طباعة الإيصال.";
+}
+
+export async function printCompletedBranchReceipt(sale: SaleDto): Promise<void> {
+  await printSaleReceipt(sale);
+}
+
+export function SaleSummary({
+  sale,
+  printDisabled = false,
+}: {
+  sale: SaleDto;
+  printDisabled?: boolean;
+}) {
+  const [printError, setPrintError] = useState("");
+  const [printStatus, setPrintStatus] = useState("");
+  const [printing, setPrinting] = useState(false);
+  const mountedRef = useRef(true);
+  const saleIdRef = useRef(sale.id);
+  saleIdRef.current = sale.id;
+  const options = resolveReceiptOptions();
+  const phoneWarning = receiptPhoneWarning(options);
+  const canReprint = sale.physicallyCompleted === true;
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  async function reprint(): Promise<void> {
+    if (printDisabled || printing || !canReprint) {
+      return;
+    }
+    const saleId = sale.id;
+    const generation = accountGeneration();
+    const jobLive = () =>
+      mountedRef.current && saleIdRef.current === saleId && accountGeneration() === generation;
+    setPrintError("");
+    setPrintStatus("جارٍ تجهيز الإيصال…");
+    setPrinting(true);
+    try {
+      await printCompletedBranchReceipt(sale);
+      if (!jobLive()) {
+        return;
+      }
+      setPrintStatus(RECEIPT_PRINT_REQUESTED);
+    } catch (caught) {
+      if (!jobLive()) {
+        return;
+      }
+      setPrintStatus("");
+      setPrintError(receiptPrintFailureMessage(caught));
+    } finally {
+      if (mountedRef.current && saleIdRef.current === saleId) {
+        setPrinting(false);
+      }
+    }
+  }
+
   return (
     <section className="card" data-testid="sale-details">
       <h2>تفاصيل البيع</h2>
@@ -53,6 +128,23 @@ export function SaleSummary({ sale }: { sale: SaleDto }) {
           </li>
         ))}
       </ul>
+      {canReprint ? (
+        <div className="actions">
+          {phoneWarning ? <p className="muted" data-testid="receipt-phone-warning">{phoneWarning}</p> : null}
+          {printStatus ? <p className="notice" role="status" data-testid="receipt-print-status">{printStatus}</p> : null}
+          {printError ? <p className="error" role="alert" data-testid="receipt-print-error">{printError}</p> : null}
+          <button
+            type="button"
+            className="secondary"
+            data-testid="reprint-receipt"
+            disabled={printDisabled || printing}
+            aria-busy={printing}
+            onClick={() => void reprint()}
+          >
+            {printing ? "جارٍ تجهيز الإيصال…" : "طباعة الإيصال"}
+          </button>
+        </div>
+      ) : null}
     </section>
   );
 }

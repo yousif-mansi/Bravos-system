@@ -151,6 +151,7 @@ function normalizeCompletedSale(sale: OfflineCompletedSale): OfflineCompletedSal
   const { restoreGeneration, ...recorded } = sale;
   return {
     ...recorded,
+    ...(sale.reference !== undefined ? { reference: sale.reference } : {}),
     // A connected sale may not know its restore generation; the server then uses the current one.
     ...(typeof restoreGeneration === "number" && Number.isSafeInteger(restoreGeneration) && restoreGeneration >= 0
       ? { restoreGeneration }
@@ -489,6 +490,9 @@ async function acknowledgeMatchingOperations(
         payloadFingerprint: digest,
         syncStatus: "acknowledged",
         recordedAt: remote?.recordedAt ?? local.recordedAt,
+        reference: remote && Object.prototype.hasOwnProperty.call(remote, "reference")
+          ? remote.reference ?? null
+          : local.reference ?? null,
         lines: local.lines.map((line) => {
           const remoteLine =
             remote?.lines.find((item) => item.id === line.id) ??
@@ -998,8 +1002,8 @@ export function createDexiePosStore(options?: { databaseName?: string }): Offlin
       if (!snapshot) {
         return null;
       }
-      const needle = code.trim();
-      return snapshot.products.find((product) => product.code === needle) ?? null;
+      const needle = code.normalize("NFC").trim().toLowerCase();
+      return snapshot.products.find((product) => product.code.normalize("NFC").trim().toLowerCase() === needle) ?? null;
     },
 
     async availableQuantity(branchId, variantId, cachedAvailable) {

@@ -71,6 +71,8 @@ export type OfflineCompletedSale = {
   physicallyCompleted: true;
   payloadFingerprint: string | null;
   couponUsageAccountedSnapshotIssuedAt?: string | null;
+  /** Server sale reference once acknowledged. Optional metadata; never part of the digest. */
+  reference?: string | null;
   lines: OfflineSaleLine[];
 };
 
@@ -163,7 +165,9 @@ export type DeviceStockCache = {
 
 export type OfflineAcknowledgement = SaleAcknowledgementDto & {
   sales?: Array<
-    Pick<SaleDto, "id" | "operationId" | "recordedAt" | "soldByStaffId" | "finalTotalPiasters" | "lines" | "discrepancy">
+    Pick<SaleDto, "id" | "operationId" | "recordedAt" | "soldByStaffId" | "finalTotalPiasters" | "lines" | "discrepancy"> & {
+      reference?: string | null;
+    }
   >;
 };
 

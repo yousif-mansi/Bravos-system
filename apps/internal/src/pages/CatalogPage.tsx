@@ -24,6 +24,7 @@ import {
   uploadProductImage,
 } from "../api.ts";
 import { egpInputToPiasters, formatEgpFromPiasters, piastersToEgpInput } from "../money.ts";
+import { ProductLabelAction } from "../labels/ProductLabelAction.tsx";
 import { EmptyState } from "../ui/EmptyState.tsx";
 import { useRevealFeedback } from "../ui/useRevealFeedback.ts";
 
@@ -797,6 +798,10 @@ export default function CatalogPage({
                   >
                     تعديل
                   </button>
+                  <ProductLabelAction
+                    product={{ id: item.id, code: item.code, nameAr: item.nameAr }}
+                    disabled={Boolean(productPending)}
+                  />
                 </div>
               </article>
             ))}
