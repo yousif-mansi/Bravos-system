@@ -4,6 +4,7 @@ import type { SaleDto, WorkspaceDto } from "@bravos/contracts";
 test("same-account refresh during initial sales loading starts a fresh read and rejects stale rows", async ({ page }) => {
   await signIn(page);
   const workspace = await (await page.request.get("http://127.0.0.1:5174/api/internal/workspace")).json() as WorkspaceDto;
+  expect(workspace.activeBranch?.code).toBe("abshway");
   const stale = feedbackSale(workspace, "OLD");
   const fresh = feedbackSale(workspace, "NEW");
   let holdStale = true;
@@ -25,6 +26,7 @@ test("same-account refresh during initial sales loading starts a fresh read and 
   await page.getByRole("link", { name: "المبيعات", exact: true }).click();
   const loading = page.getByRole("status").filter({ hasText: "جارٍ تحميل المبيعات" });
   await expect(loading).toBeVisible();
+  await expect.poll(() => releaseStale.length).toBeGreaterThan(0);
   holdStale = false;
   await page.evaluate((staffId) => window.dispatchEvent(new CustomEvent("bravos-account", { detail: { eventId: crypto.randomUUID(), generation: 0, staffId } })), workspace.staff.id);
   const list = page.getByTestId("sale-list");
@@ -164,6 +166,7 @@ async function signIn(page: Page) {
   await page.getByLabel("كلمة المرور").fill("e2e-owner-pass");
   await page.getByRole("button", { name: "دخول" }).click();
   await page.getByRole("button", { name: "أبشواي" }).click();
+  await expect(page.getByTestId("active-branch")).toContainText("أبشواي");
 }
 
 async function expectGreenChecked(checkbox: ReturnType<Page["getByRole"]>) {

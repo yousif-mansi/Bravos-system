@@ -86,6 +86,9 @@ test("pinned unpaid cart is rejected after shared cache reaches zero and earlier
   await expect.poll(async () =>
     (await staffApi(page2, "GET", "/api/internal/sales")).body.some((sale: { id: string }) => sale.id === completed?.id),
   ).toBe(true);
+  await expect.poll(async () =>
+    (await readPrivacyState(page2)).sales.find((sale) => sale.id === completed?.id)?.syncStatus,
+  ).toBe("acknowledged");
   await expect(page2.getByTestId("unsynced-count")).toContainText("مبيعات غير مزامنة: 0");
   const afterAck = await readPrivacyState(page2);
   expect(afterAck.sales.find((sale) => sale.id === completed?.id)?.syncStatus).toBe("acknowledged");
@@ -111,6 +114,7 @@ test("a new local sale during an outstanding ack rebases newer stock first witho
   await page.getByRole("button", { name: "تسجيل الخروج" }).click();
   await signInAsCashier(page);
   await expect(page.getByTestId("offline-ready")).toBeVisible({ timeout: 30_000 });
+  await context.route("**/api/internal/sales/pos-snapshots", (route) => route.abort("failed"));
   await page.getByRole("link", { name: "البحث عن منتج" }).click();
   await page.route("**/api/internal/sales/prepare", (route) => route.abort("failed"));
   await page.route("**/api/internal/sales", (route) => route.abort("failed"));
@@ -125,9 +129,9 @@ test("a new local sale during an outstanding ack rebases newer stock first witho
   expect(baseline.sales.filter((sale) => sale.syncStatus === "pending")).toHaveLength(1);
   expect(baseline.effects).toHaveLength(1);
   const baselineVersion = baseline.stockCache.version ?? 0;
-  await page.unroute("**/api/internal/sales/accepted");
   const held: HeldAccepted[] = [];
   await attachHeldAccepted(context, held);
+  await page.unroute("**/api/internal/sales/accepted");
   const workspace = await context.newPage();
   await workspace.goto("http://127.0.0.1:5174/workspace");
   await expect.poll(() => held.length).toBe(1);

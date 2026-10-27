@@ -6,6 +6,7 @@ import { afterAll, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { buildApp, type BuiltApp } from "../../apps/api/src/app.ts";
 import { ensureOwner } from "../../apps/api/src/bootstrap.ts";
 import { applyMigrations } from "@bravos/persistence";
+import { createInventoryTransaction, createPostgresInventoryStore } from "@bravos/inventory/node";
 import { startPostgresCluster, type PostgresCluster } from "@bravos/testkit";
 
 const INTERNAL_ORIGIN = "http://127.0.0.1:5173";
@@ -780,8 +781,9 @@ test("public catalog exposes safe live variant availability across restocking an
   if (!stockedVariant || !emptyVariant) {
     throw new Error("Expected the two public catalog variants.");
   }
+  const receiptOperationId = crypto.randomUUID();
   const receipt = await api(manager, "POST", "/api/internal/receiving/receipts", {
-    operationId: crypto.randomUUID(),
+    operationId: receiptOperationId,
     branchId: abshwayId,
     receiptDate: "2026-09-14",
     lines: [{ variantId: stockedVariant.id, quantity: 3, unitCostPiasters: 17000 }],
@@ -800,6 +802,89 @@ test("public catalog exposes safe live variant availability across restocking an
     orderable: false,
     sellingPricePiasters: 34000,
   });
+
+  const inventory = createPostgresInventoryStore(built.pool);
+  const variantIds = [stockedVariant.id, emptyVariant.id];
+  const expectBranchQuantities = async (abshwayQuantity: number, fayoumQuantity: number) => {
+    const byBranch = await inventory.quantitiesByBranchFor(variantIds);
+    expect([...byBranch.keys()].sort()).toEqual([abshwayId, fayoumId].sort());
+    expect(byBranch.get(abshwayId)).toEqual(new Map([
+      [stockedVariant.id, abshwayQuantity], [emptyVariant.id, 0],
+    ]));
+    expect(byBranch.get(fayoumId)).toEqual(new Map([
+      [stockedVariant.id, fayoumQuantity], [emptyVariant.id, 0],
+    ]));
+  };
+  // Fayoum has no batch balance yet; both branches must still include every requested variant.
+  await expectBranchQuantities(3, 0);
+  expect(await inventory.quantitiesByBranchFor([])).toEqual(new Map());
+
+  for (const [branchId, quantity, unitCostPiasters] of [
+    [abshwayId, 2, 18000],
+    [fayoumId, 4, 19000],
+  ] as const) {
+    const additionalReceipt = await api(manager, "POST", "/api/internal/receiving/receipts", {
+      operationId: crypto.randomUUID(),
+      branchId,
+      receiptDate: "2026-09-14",
+      lines: [{ variantId: stockedVariant.id, quantity, unitCostPiasters }],
+    });
+    expect(additionalReceipt.status).toBe(201);
+  }
+  // Two separate cost batches in Abshway sum once; another branch cannot inflate its balance.
+  await expectBranchQuantities(5, 4);
+  const expectPublicQuantity = async (quantity: number) => {
+    const detail = await api(undefined, "GET", `/api/public/catalog/products/${created.body.id}`);
+    expect(detail.status).toBe(200);
+    expect(detail.body.variants.find((item: { id: string }) => item.id === stockedVariant.id))
+      .toMatchObject({ availableQuantity: quantity, orderable: true });
+    const list = await api(undefined, "GET", "/api/public/catalog/products");
+    expect(list.status).toBe(200);
+    expect(list.body.find((item: { id: string }) => item.id === created.body.id).variants
+      .find((item: { id: string }) => item.id === stockedVariant.id).availableQuantity).toBe(quantity);
+  };
+  await expectPublicQuantity(5); // One branch can supply five, not the combined nine.
+
+  // Seed two independent late-sale holds without changing the received batch balances.
+  const holdOperationIds = [crypto.randomUUID(), crypto.randomUUID()] as const;
+  for (const operationId of holdOperationIds) {
+    await built.pool.query(
+      `INSERT INTO inventory_operation (id, kind, payload_fingerprint, actor_staff_id)
+       SELECT $1, 'sale', $2, actor_staff_id FROM inventory_operation WHERE id = $3`,
+      [operationId, "a".repeat(64), receiptOperationId],
+    );
+    await built.pool.query(
+      `INSERT INTO inventory_discrepancy
+         (id, operation_id, variant_id, branch_id, requested_quantity, allocated_quantity,
+          unallocated_quantity, recorded_at)
+       VALUES ($1, $2, $3, $4, 1, 0, 1, now())`,
+      [crypto.randomUUID(), operationId, stockedVariant.id, abshwayId],
+    );
+  }
+  await expectBranchQuantities(0, 4);
+  await expectPublicQuantity(4);
+  const resolveHold = async (operationId: string) => {
+    const client = await built.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const resolved = await createInventoryTransaction(client).resolveDiscrepancy({
+        operationId, branchId: abshwayId, variantId: stockedVariant.id, allocatedQuantity: 1,
+      });
+      expect(resolved).toBeNull();
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  };
+  await resolveHold(holdOperationIds[0]);
+  await expectBranchQuantities(0, 4); // The remaining positive hold still blocks only Abshway.
+  await expectPublicQuantity(4);
+  await resolveHold(holdOperationIds[1]);
+  await expectBranchQuantities(5, 4); // Clearing the final hold restores the original sum once.
+  await expectPublicQuantity(5);
   const publicImage = await publicRaw("GET", `/api/public/catalog/media/${uploaded.body.ref}`);
   expect(publicImage.statusCode).toBe(200);
   expect(publicImage.headers["content-type"]).toBe("image/png");
@@ -869,8 +954,50 @@ test("public catalog exposes safe live variant availability across restocking an
   await api(cashier, "POST", "/api/internal/active-branch", { branchId: abshwayId });
   const pos = await api(cashier, "GET", "/api/internal/catalog/lookup?code=PUBLIC-17");
   expect(pos.status).toBe(200);
-  expect(pos.body.variants.find((variant: { id: string }) => variant.id === stockedVariant.id).availableQuantity).toBe(3);
+  expect(pos.body.variants.find((variant: { id: string }) => variant.id === stockedVariant.id).availableQuantity).toBe(5);
   expect(pos.body).not.toHaveProperty("publication");
+});
+
+test("public category browsing filters products while retaining every published category option", async () => {
+  const manager = await signIn("owner", "owner-pass-1");
+  const seed = await seedTaxonomy(manager);
+  const secondCategory = await api(manager, "POST", "/api/internal/catalog/categories", { nameAr: "بناطيل" });
+  const hiddenCategory = await api(manager, "POST", "/api/internal/catalog/categories", { nameAr: "داخلي" });
+  const emptyCategory = await api(manager, "POST", "/api/internal/catalog/categories", { nameAr: "فارغ" });
+  expect(secondCategory.status).toBe(201);
+  expect(hiddenCategory.status).toBe(201);
+  expect(emptyCategory.status).toBe(201);
+  const first = await api(manager, "POST", "/api/internal/catalog/products", productWrite(seed, {
+    code: "BROWSE-AVAILABLE", publication: "available",
+  }));
+  const second = await api(manager, "POST", "/api/internal/catalog/products", productWrite(seed, {
+    code: "BROWSE-PREVIEW", categoryId: secondCategory.body.id, publication: "coming_soon",
+  }));
+  const hidden = await api(manager, "POST", "/api/internal/catalog/products", productWrite(seed, {
+    code: "BROWSE-HIDDEN", categoryId: hiddenCategory.body.id,
+  }));
+  expect(first.status).toBe(201);
+  expect(second.status).toBe(201);
+  expect(hidden.status).toBe(201);
+  const expectedCategoryIds = [seed.categoryId, secondCategory.body.id].sort();
+  const unfiltered = await api(undefined, "GET", "/api/public/storefront/catalog");
+  expect(unfiltered.status).toBe(200);
+  expect(unfiltered.body.products.map((item: { id: string }) => item.id).sort())
+    .toEqual([first.body.id, second.body.id].sort());
+  expect(unfiltered.body.categories.map((item: { id: string }) => item.id).sort()).toEqual(expectedCategoryIds);
+
+  for (const [categoryId, expectedProductIds] of [
+    [seed.categoryId, [first.body.id]],
+    [secondCategory.body.id, [second.body.id]],
+    [hiddenCategory.body.id, []],
+    [emptyCategory.body.id, []],
+    [crypto.randomUUID(), []],
+  ] as Array<[string, string[]]>) {
+    const filtered = await api(undefined, "GET", `/api/public/storefront/catalog?categoryId=${categoryId}`);
+    expect(filtered.status).toBe(200);
+    expect(filtered.body.products.map((item: { id: string }) => item.id)).toEqual(expectedProductIds);
+    expect(filtered.body.categories).toEqual(unfiltered.body.categories);
+  }
 });
 
 const UNEXPECTED_OPERATION_SQL = `DO $bravos_diag$

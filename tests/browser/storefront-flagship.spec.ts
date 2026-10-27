@@ -1,4 +1,4 @@
-import { expect, test, type Locator, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page, type TestInfo } from "@playwright/test";
 
 const API = "http://127.0.0.1:3011";
 const STAFF = "http://127.0.0.1:5174";
@@ -238,6 +238,7 @@ test("category rows keep native keyboard focus clear after horizontal scrolling"
   test.setTimeout(240_000);
   const seeded = await seedCategoryPieces(page, 6);
   await page.goto(STORE + "/");
+  await expect(page.getByLabel("Sort", { exact: true })).toBeEnabled();
   const row = categoryRow(page, seeded.categoryName);
   await revealAllCards(row, seeded.ids.length);
   const rail = row.locator("ul[role='list']");
@@ -254,6 +255,7 @@ test("category rows keep native keyboard focus clear after horizontal scrolling"
   const hrefs = await cards.evaluateAll((nodes) => nodes.map((node) => node.getAttribute("href")));
   expect(hrefs.every((href) => typeof href === "string" && href.length > 0)).toBe(true);
   expect(new Set(hrefs).size).toBe(seeded.ids.length);
+  const documentJump = { attached: false };
 
   for (const width of [320, 390, 768, 1440]) {
     await page.setViewportSize({ width, height: 900 });
@@ -262,14 +264,12 @@ test("category rows keep native keyboard focus clear after horizontal scrolling"
       await focusCategoryEntry(page, rail, position);
       const documentY = await page.evaluate(() => window.scrollY);
       for (let index = 0; index < hrefs.length; index += 1) {
-        await page.keyboard.press("Tab");
-        await expectRailCardFullyVisible(page, rail, hrefs[index]!, documentY);
+        await pressTabKeepingDocumentY(page, rail, "Tab", hrefs[index]!, documentY, testInfo, documentJump);
         if (width === 390 && position === "start" && index === 0) await page.screenshot({ path: testInfo.outputPath("rail-focus-390-leading.png") });
         if (width === 390 && position === "end" && index === hrefs.length - 1) await page.screenshot({ path: testInfo.outputPath("rail-focus-390-trailing.png") });
       }
       for (let index = hrefs.length - 2; index >= 0; index -= 1) {
-        await page.keyboard.press("Shift+Tab");
-        await expectRailCardFullyVisible(page, rail, hrefs[index]!, documentY);
+        await pressTabKeepingDocumentY(page, rail, "Shift+Tab", hrefs[index]!, documentY, testInfo, documentJump);
       }
     }
     await focusCategoryEntry(page, rail, "start");
@@ -297,8 +297,7 @@ test("category rows keep native keyboard focus clear after horizontal scrolling"
       }, minimumWheelPosition)).toBe(true);
       await expect(cards.nth(0)).toBeFocused();
       await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(documentY);
-      await page.keyboard.press("Tab");
-      await expectRailCardFullyVisible(page, rail, hrefs[1]!, documentY);
+      await pressTabKeepingDocumentY(page, rail, "Tab", hrefs[1]!, documentY, testInfo, documentJump);
     }
   }
 
@@ -306,6 +305,7 @@ test("category rows keep native keyboard focus clear after horizontal scrolling"
   try {
     const touchPage = await touchContext.newPage();
     await touchPage.goto(STORE + "/");
+    await expect(touchPage.getByLabel("Sort", { exact: true })).toBeEnabled();
     const touchRow = categoryRow(touchPage, seeded.categoryName);
     await revealAllCards(touchRow, seeded.ids.length);
     const touchRail = touchRow.locator("ul[role='list']");
@@ -329,8 +329,7 @@ test("category rows keep native keyboard focus clear after horizontal scrolling"
 
         // Keep the actual swipe position and residual native scrolling. Enter
         // the cards with Tab; resetting the rail here would mask the regression.
-        await touchPage.keyboard.press("Tab");
-        await expectRailCardFullyVisible(touchPage, touchRail, hrefs[0]!, documentY);
+        await pressTabKeepingDocumentY(touchPage, touchRail, "Tab", hrefs[0]!, documentY, testInfo, documentJump);
         await expect.poll(async () => {
           const before = await touchRail.evaluate((element) => element.scrollLeft);
           await touchPage.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
@@ -339,8 +338,7 @@ test("category rows keep native keyboard focus clear after horizontal scrolling"
         await expectRailCardFullyVisible(touchPage, touchRail, hrefs[0]!, documentY);
         await touchPage.screenshot({ path: testInfo.outputPath("rail-touch-keyboard-" + width + "-leading.png") });
         for (let index = 1; index < hrefs.length; index += 1) {
-          await touchPage.keyboard.press("Tab");
-          await expectRailCardFullyVisible(touchPage, touchRail, hrefs[index]!, documentY);
+          await pressTabKeepingDocumentY(touchPage, touchRail, "Tab", hrefs[index]!, documentY, testInfo, documentJump);
         }
       }
     } finally { await session.detach(); }
@@ -836,6 +834,106 @@ async function focusCategoryEntry(page: Page, rail: Locator, position: "start" |
     if (!await control.isEnabled()) continue;
     await page.keyboard.press("Tab");
     await expect(control).toBeFocused();
+  }
+  // Native tabbing can leave the rail partly below the viewport, and rows
+  // above can still be finishing layout. Fit and settle before the caller
+  // records document Y. Leave the rail's horizontal position untouched.
+  await expect.poll(() => rail.evaluate(async (element) => {
+    const frames = () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    const read = () => {
+      const header = document.querySelector("header.store-header");
+      const headerBottom = header instanceof HTMLElement ? header.getBoundingClientRect().bottom : 0;
+      const railRect = element.getBoundingClientRect();
+      const section = element.closest("section");
+      const sectionRect = section instanceof HTMLElement ? section.getBoundingClientRect() : railRect;
+      const viewport = window.innerHeight;
+      const room = viewport - headerBottom;
+      const target = sectionRect.height <= room + 1 ? sectionRect : railRect;
+      let delta = 0;
+      if (target.height > room + 1) delta = target.top - headerBottom;
+      else if (target.top < headerBottom - 0.5) delta = target.top - headerBottom;
+      else if (target.bottom > viewport + 0.5) delta = target.bottom - viewport;
+      return { headerBottom, railRect, sectionRect, viewport, delta, scrollY: window.scrollY, scrollLeft: element.scrollLeft };
+    };
+    const beforeLeft = element.scrollLeft;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const sample = read();
+      if (Math.abs(sample.delta) < 0.5) break;
+      window.scrollBy({ top: sample.delta, left: 0, behavior: "instant" });
+      await frames();
+    }
+    const placed = read();
+    await frames();
+    const settled = read();
+    const railFits = settled.railRect.height > settled.viewport - settled.headerBottom + 1
+      ? Math.abs(settled.railRect.top - settled.headerBottom) <= 1
+      : settled.railRect.top >= settled.headerBottom - 1 && settled.railRect.bottom <= settled.viewport + 1;
+    return Math.abs(placed.delta) < 0.5
+      && Math.abs(settled.delta) < 0.5
+      && railFits
+      && settled.scrollY === placed.scrollY
+      && settled.railRect.top === placed.railRect.top
+      && settled.railRect.height === placed.railRect.height
+      && settled.sectionRect.top === placed.sectionRect.top
+      && settled.sectionRect.height === placed.sectionRect.height
+      && settled.scrollLeft === beforeLeft
+      && element.scrollLeft === beforeLeft;
+  })).toBe(true);
+}
+
+async function readRailFocusGeometry(page: Page, rail: Locator) {
+  return rail.evaluate((element) => {
+    const rectOf = (node: Element | null) => {
+      if (!(node instanceof HTMLElement)) return null;
+      const rect = node.getBoundingClientRect();
+      return { top: rect.top, right: rect.right, bottom: rect.bottom, left: rect.left, width: rect.width, height: rect.height };
+    };
+    const active = document.activeElement;
+    const header = document.querySelector("header.store-header");
+    const section = element.closest("section");
+    const pendingRowReads = [...document.querySelectorAll("section[data-category-rail]")].flatMap((row) => {
+      const busy = row.getAttribute("aria-busy") === "true";
+      const status = row.querySelector("[role='status']")?.textContent?.trim() ?? "";
+      if (!busy && status.length === 0) return [];
+      return [{ id: row.getAttribute("data-category-rail"), busy, status }];
+    });
+    return {
+      documentY: window.scrollY,
+      activeHref: active instanceof HTMLAnchorElement ? active.getAttribute("href") : null,
+      activeTag: active instanceof HTMLElement ? active.tagName : null,
+      scrollLeft: element.scrollLeft,
+      header: rectOf(header),
+      row: rectOf(section),
+      rail: rectOf(element),
+      card: rectOf(active instanceof HTMLElement && element.contains(active) ? active : null),
+      pendingRowReads,
+    };
+  });
+}
+
+async function pressTabKeepingDocumentY(
+  page: Page,
+  rail: Locator,
+  key: "Tab" | "Shift+Tab",
+  href: string,
+  documentY: number,
+  testInfo: TestInfo,
+  failure: { attached: boolean },
+) {
+  const before = await readRailFocusGeometry(page, rail);
+  try {
+    await page.keyboard.press(key);
+    await expectRailCardFullyVisible(page, rail, href, documentY);
+  } catch (error) {
+    if (!failure.attached) {
+      failure.attached = true;
+      const after = await readRailFocusGeometry(page, rail);
+      await testInfo.attach("rail-tab-document-y", {
+        body: JSON.stringify({ key, href, expectedDocumentY: documentY, before, after }, null, 2),
+        contentType: "application/json",
+      });
+    }
+    throw error;
   }
 }
 

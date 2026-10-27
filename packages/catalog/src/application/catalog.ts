@@ -307,28 +307,27 @@ export function createCatalogServices(ports: {
     async browsePublicProducts(input: { categoryId?: unknown }): Promise<PublicCatalogBrowseDto> {
       const categoryId = optionalBrowseCategory(input.categoryId);
       const products = await ports.store.listPublishedProducts();
-      const ids = products.flatMap((product) => product.variants.map((variant) => variant.id));
-      const quantities = await publicQuantitiesFor(ids);
       const categories = [...new Map(products.map((product) => [product.category.id, {
         id: product.category.id,
         nameAr: product.category.nameAr,
       }])).values()].sort((left, right) => left.nameAr.localeCompare(right.nameAr, "ar"));
+      const matching = products.filter((product) => !categoryId || product.category.id === categoryId);
+      const ids = matching.flatMap((product) => product.variants.map((variant) => variant.id));
+      const quantities = await publicQuantitiesFor(ids);
       return {
         categories,
-        products: products
-          .filter((product) => !categoryId || product.category.id === categoryId)
-          .map((product) => {
-            const detail = toPublicProduct(product, quantities);
-            const prices = detail.variants.map((variant) => variant.sellingPricePiasters);
-            return {
-              id: detail.id,
-              nameAr: detail.nameAr,
-              category: detail.category,
-              availability: detail.availability,
-              previewImageRef: detail.imageRefs[0] ?? null,
-              lowestSellingPricePiasters: prices.length > 0 ? Math.min(...prices) : null,
-            };
-          }),
+        products: matching.map((product) => {
+          const detail = toPublicProduct(product, quantities);
+          const prices = detail.variants.map((variant) => variant.sellingPricePiasters);
+          return {
+            id: detail.id,
+            nameAr: detail.nameAr,
+            category: detail.category,
+            availability: detail.availability,
+            previewImageRef: detail.imageRefs[0] ?? null,
+            lowestSellingPricePiasters: prices.length > 0 ? Math.min(...prices) : null,
+          };
+        }),
       };
     },
 

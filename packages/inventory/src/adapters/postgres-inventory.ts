@@ -1598,17 +1598,25 @@ async function quantitiesByBranchFor(queryable: Queryable, variantIds: string[])
   if (variantIds.length === 0) return byBranch;
   const result = await queryable.query<{ branch_id: string; variant_id: string; available_quantity: number }>(
     `SELECT branch.id AS branch_id, variants.variant_id,
-            CASE WHEN EXISTS (
-              SELECT 1 FROM inventory_discrepancy d
-              WHERE d.branch_id=branch.id AND d.variant_id=variants.variant_id AND d.unallocated_quantity>0
-            ) THEN 0 ELSE COALESCE((
-              SELECT SUM(balance.remaining_quantity)::int
-              FROM inventory_batch_balance balance
-              JOIN inventory_batch batch ON batch.id=balance.batch_id
-              WHERE balance.branch_id=branch.id AND batch.variant_id=variants.variant_id
-            ),0) END::int AS available_quantity
-     FROM branch CROSS JOIN UNNEST($1::uuid[]) AS variants(variant_id)
-     ORDER BY branch.id,variants.variant_id`, [variantIds],
+            CASE
+              WHEN held.variant_id IS NOT NULL THEN 0
+              ELSE COALESCE(stock.remaining, 0)
+            END::int AS available_quantity
+     FROM branch
+     CROSS JOIN UNNEST($1::uuid[]) AS variants(variant_id)
+     LEFT JOIN (
+       SELECT balance.branch_id, batch.variant_id, SUM(balance.remaining_quantity) AS remaining
+       FROM inventory_batch batch
+       JOIN inventory_batch_balance balance ON balance.batch_id=batch.id
+       WHERE batch.variant_id = ANY($1::uuid[])
+       GROUP BY balance.branch_id, batch.variant_id
+     ) stock ON stock.branch_id = branch.id AND stock.variant_id = variants.variant_id
+     LEFT JOIN (
+       SELECT DISTINCT branch_id, variant_id
+       FROM inventory_discrepancy
+       WHERE variant_id = ANY($1::uuid[]) AND unallocated_quantity > 0
+     ) held ON held.branch_id = branch.id AND held.variant_id = variants.variant_id
+     ORDER BY branch.id, variants.variant_id`, [variantIds],
   );
   for (const row of result.rows) {
     const quantities = byBranch.get(row.branch_id) ?? new Map<string, number>();

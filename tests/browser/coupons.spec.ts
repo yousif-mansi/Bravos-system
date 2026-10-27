@@ -222,7 +222,8 @@ test("a last-use race preserves the paid prepared sale and exposes the coupon di
       employeeDiscountPiasters: 0,
       lines: [{ variantId: catalog.variantId, quantity: 1 }],
     };
-    expect((await staffApi(manager, "POST", "/api/internal/sales/prepare", competing)).status).toBe(201);
+    const prepared = await staffApi(manager, "POST", "/api/internal/sales/prepare", competing);
+    expect(prepared.status, JSON.stringify(prepared.body)).toBe(201);
     expect((await staffApi(manager, "POST", "/api/internal/sales", { ...competing, physicallyCompleted: true })).status).toBe(201);
   } finally {
     await manager.context().close();
@@ -278,6 +279,7 @@ async function signIn(page: Page, loginName: string, password: string, navigate 
   await page.getByLabel("كلمة المرور").fill(password);
   await page.getByRole("button", { name: "دخول" }).click();
   await page.getByRole("button", { name: "أبشواي" }).click();
+  await expect(page.getByTestId("active-branch")).toContainText("أبشواي");
 }
 
 async function seedProduct(page: Page, code: string, label: string, price: number, quantity: number) {

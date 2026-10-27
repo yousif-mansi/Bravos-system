@@ -7,6 +7,7 @@ test("manager uses the separate Arabic Returns picker, posts inspection, and rec
   await page.getByRole("button", { name: "دخول" }).click();
   await expect(page.getByRole("heading", { name: "اختيار الفرع النشط" })).toBeVisible();
   await page.getByRole("button", { name: "أبشواي" }).click();
+  await expect(page.getByTestId("active-branch")).toContainText("أبشواي");
   const branchId = (await staffApi(page, "GET", "/api/internal/workspace")).body.activeBranch.id as string;
 
   const category = await staffApi(page, "POST", "/api/internal/catalog/categories", { nameAr: "مرتجعات المتصفح" });

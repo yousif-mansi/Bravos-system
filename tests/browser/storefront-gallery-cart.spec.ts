@@ -437,9 +437,11 @@ async function receiveCartStock(page: Page, lines: Array<{ variantId: string; qu
 
 async function addProductToCart(page: Page, productId: string, quantity: number) {
   await page.goto(`http://127.0.0.1:3001/products/${productId}`);
+  await expect(page.getByRole("button", { name: "Preview bag", exact: true })).toBeEnabled();
   const panel = page.locator(".purchase-panel");
   await panel.getByLabel("Quantity").fill(String(quantity));
-  await panel.getByRole("button", { name: "Add to bag", exact: true }).click();
+  await expect(panel.getByLabel("Quantity")).toHaveValue(String(quantity));
+  await page.getByRole("button", { name: "Add to bag", exact: true }).click();
   await expect(panel.getByRole("status")).toContainText("Added to your bag.");
 }
 

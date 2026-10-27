@@ -25,12 +25,14 @@ test("storefront activity appears as anonymous aggregate counts and stays manage
   });
 
   await page.goto("http://127.0.0.1:3001");
+  await expect(page.getByLabel("Sort", { exact: true })).toBeEnabled();
   await page.locator(`[data-category-rail="${product.categoryId}"]`).scrollIntoViewIfNeeded();
   await page.getByRole("link", { name: new RegExp(product.nameAr) }).click();
   await page.getByLabel("Quantity").fill("2");
   await page.getByRole("button", { name: "Add to bag" }).click();
   await expect(page.getByRole("status")).toContainText("Added to your bag.");
   await page.getByLabel("Primary").getByRole("link", { name: "Shop", exact: true }).click();
+  await expect(page.getByLabel("Sort", { exact: true })).toBeEnabled();
   await page.locator(`[data-category-rail="${nextProduct.categoryId}"]`).scrollIntoViewIfNeeded();
   await page.getByRole("link", { name: new RegExp(nextProduct.nameAr) }).click();
   await expect(page.getByRole("heading", { name: nextProduct.nameAr })).toBeVisible();
