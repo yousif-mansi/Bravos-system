@@ -60,6 +60,18 @@ _Avoid_: Barcode, variant code when referring to the product-level search code
 A completed sale in which a customer has received the merchandise and paid at a BRAVOS branch, using cash, a manually received wallet/InstaPay payment, or both. It is attributed to that branch and the employee who performed it.
 _Avoid_: Online order
 
+**Product barcode**:
+A machine-readable representation of the existing product code, identifying the whole product. It does not identify a size/color variant.
+_Avoid_: New product identifier, variant barcode
+
+**Product label**:
+A tag showing a product's existing code and barcode for identification. Printing additional copies does not create merchandise, record a sale or change stock.
+_Avoid_: Sales receipt, individual-unit serial number
+
+**Sales receipt**:
+A customer-facing record of one completed branch sale, showing its purchased items, accepted amounts and identifying reference. Printing or reprinting it does not complete another sale.
+_Avoid_: Online order acknowledgement, tax invoice
+
 **Split payment**:
 A physical sale paid partly in cash and partly through a manually received online transfer, with both amounts together covering the amount due.
 _Avoid_: Partial payment, payment-provider settlement

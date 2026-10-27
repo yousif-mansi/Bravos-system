@@ -1,5 +1,9 @@
 # BRAVOS — Complete Business & Product Requirements
 
+> **Scope addition — 2026-10-27:** Phase 1 also includes generating product-code barcodes and preparing printing for a third USB barcode-label printer. Existing codes remain the identifiers; labels do not encode size/color or change stock. Software completion and integration checks precede physical tests. This supersedes the earlier hardware plan's label-generation exclusion.
+
+> **Scope addition — 2026-10-26:** USB barcode scanners using the existing product code and Arabic thermal receipts for connected/disconnected branch POS are now authorized. This supersedes the older barcode and printed-receipt exclusions only. See [POS hardware preparation](docs/planning/pos-hardware-preparation-2026-10-26.md) for the approved two-phase scope; variant selection, sale completion, stock, payments and permissions retain their existing rules.
+
 > **Latest correction — 2026-09-29:** The user explicitly replaced the central-inventory and cash-only branch-sale rules after testing. [Phase 1 operational updates](docs/planning/phase-1-operational-updates.md) records the new branch inventory, inventory-first workflow, payment allocation, online recognition, references, returns lookup, and UI requirements, plus pending follow-up decisions. It takes precedence over conflicting historical text below.
 
 > **Document purpose:** This file is the authoritative business requirements brief for the BRAVOS system and online store.  
