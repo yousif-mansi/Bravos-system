@@ -60,3 +60,32 @@ The full run additionally exposed branch-selection/readiness gaps in Coupons, Re
 The initial row detachment and input reset do not by themselves establish an application hydration defect; their exact browser mechanism remains unproven. Four of the original five cases passed in the full run; keyboard stopped at its earlier readiness gap before the focus traversal. The follow-up 21-case run includes the corrected keyboard scenario at all its supported widths. These scopes are reported separately: there is **no fresh local 188/188 claim** after the final test-only readiness edits.
 
 The owner authorized publication and then requested Grok to repair the fresh CI failures. Main reviewed the final diffs and local evidence before updating the existing PRs. PR54's 38 hardware files remain separate. A complete remote CI pass at the updated PR53 revision, followed by the applicable hardware checks and explicit merge approvals, remains required. No deployment or merge is authorized by this report.
+
+## PR53 verification at a5f9cc6 — follow-up investigation
+
+Remote Windows run `40497536283` completed with static/build/audit success, **261 HTTP tests passed across 34 files**, and **185 browser tests passed / 3 failed**. This supersedes no earlier red run; all scopes remain separate.
+
+Remaining browser failures:
+- `staff-secondary-feedback.spec.ts`: newly created restore-preview heading was visible but did not receive focus after the upload form disappeared.
+- `storefront-flagship.spec.ts`: price-desc navigation did not commit within the unchanged 15-second URL assertion; Next recorded the requested route at 19.5 seconds.
+- `storefront-journey-analytics.spec.ts`: category price-asc navigation did not commit within the unchanged assertion; Next recorded it at 23.4 seconds.
+
+The sort request paths were correct. The historical timing log does not distinguish upstream reads, response streaming, or runner scheduling. Identical sort routes later completed in about 100 milliseconds. No unreleased browser route hold was found by independent read-only review. Sorting itself is in-memory and is not sent to the public catalog API. The installed Next fetch implementation deduplicates identical GET requests, including `cache: "no-store"`; metadata/page calls alone are not evidence of duplicate upstream requests. Root-cause and repair verification remain in progress. No complete browser pass or merge readiness is claimed.
+
+### Bounded focus correction and navigation diagnostics
+
+Grok's first storefront proposal used a private Next history marker and an optimistic client wrapper. Main rejected it because it could expose the destination before its content committed and leave incomplete history state. All related storefront application changes were removed before verification. No navigation rewrite, timeout increase, cache change or weakened URL assertion was retained.
+
+The retained application change is limited to `useRevealFeedback`: an explicit reveal stays pending until a connected target commits, is consumed once in a layout effect, and does not refocus on later refreshes. Existing cancellation, reduced-motion and highlight cleanup remain. The restore upload fixture holds the creation response without exposing it through background GETs, then checks the original heading focus and background-update focus retention.
+
+The isolated E2E API harness records catalog request start/end timing and pool counts. Two storefront tests record document/RSC timing and page errors on failure, emitting JSON into CI logs as well as attachments. These diagnostics make no extra API/database reads, send no deduplication-breaking headers and do not run in the ordinary application stack.
+
+| Follow-up gate | Result | Evidence |
+| --- | --- | --- |
+| Staff application typecheck | Passed | `.scratch/pr53-repair-20261027/focus-typecheck.log` |
+| Staff production build | Passed | `.scratch/pr53-repair-20261027/focus-build.log` |
+| Architecture/private imports | Passed | `.scratch/pr53-repair-20261027/focus-architecture.log` |
+| Three affected browser files, first run | 15 passed / 1 failed in 4.4m | `remaining-three-files.log`; artifacts remain in `browser-readiness-results/` |
+| Three affected browser files, final rerun | 16 passed in 3.8m | `remaining-three-files-final.log`; artifacts in `browser-focus-final-results/` |
+
+The first local failure was the newly added expectation that an explicitly refreshed button retained focus while being temporarily disabled. The original post-upload heading-focus assertion passed. Main corrected its premature progress statement and had Grok replace that new expectation with a background-poll check: a changed record count must actually render while the history control retains focus. No application behavior was changed to satisfy that fixture. Historical navigation delays remain unassigned to a root cause; local API reads observed at roughly 4–5ms with zero pool waiting do not explain the old remote stalls.

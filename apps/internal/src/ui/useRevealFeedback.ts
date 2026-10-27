@@ -1,28 +1,34 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 /** Reveals an already available section after an action changes what it shows. */
 export function useRevealFeedback<T extends HTMLElement = HTMLElement>() {
   const regionRef = useRef<T>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const [highlighted, setHighlighted] = useState(false);
-  const frameRef = useRef<number | null>(null);
+  const [, setRevealNonce] = useState(0);
+  const pendingRef = useRef(false);
   const timerRef = useRef<number | null>(null);
 
+  useLayoutEffect(() => {
+    if (!pendingRef.current) return;
+    const heading = headingRef.current?.isConnected ? headingRef.current : null;
+    const region = regionRef.current?.isConnected ? regionRef.current : null;
+    if (!heading && !region) return;
+    pendingRef.current = false;
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    region?.scrollIntoView({ behavior: reducedMotion ? "auto" : "smooth", block: "start" });
+    heading?.focus({ preventScroll: true });
+  });
+
   useEffect(() => () => {
-    if (frameRef.current !== null) window.cancelAnimationFrame(frameRef.current);
     if (timerRef.current !== null) window.clearTimeout(timerRef.current);
   }, []);
 
   function reveal() {
-    if (frameRef.current !== null) window.cancelAnimationFrame(frameRef.current);
+    pendingRef.current = true;
     if (timerRef.current !== null) window.clearTimeout(timerRef.current);
     setHighlighted(true);
-    frameRef.current = window.requestAnimationFrame(() => {
-      const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-      regionRef.current?.scrollIntoView({ behavior: reducedMotion ? "auto" : "smooth", block: "start" });
-      headingRef.current?.focus({ preventScroll: true });
-      frameRef.current = null;
-    });
+    setRevealNonce((nonce) => nonce + 1);
     timerRef.current = window.setTimeout(() => {
       setHighlighted(false);
       timerRef.current = null;
@@ -30,8 +36,7 @@ export function useRevealFeedback<T extends HTMLElement = HTMLElement>() {
   }
 
   function clearHighlight() {
-    if (frameRef.current !== null) window.cancelAnimationFrame(frameRef.current);
-    frameRef.current = null;
+    pendingRef.current = false;
     if (timerRef.current !== null) window.clearTimeout(timerRef.current);
     timerRef.current = null;
     setHighlighted(false);

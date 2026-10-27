@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { recordStorefrontNavigation } from "./storefront-navigation-diagnostics.ts";
 import type { AnalyticsSummaryDto, ManagerProductDto } from "@bravos/contracts";
 import type {
   CheckoutQuoteDto, PublicAnalyticsEventRequest, PublicOrderSubmissionDto,
@@ -67,6 +68,8 @@ test("full shopping journey preserves aggregate analytics across desktop and mob
   const browsing: Counts = { visits: 1, productViews: 1, successfulCartAdditions: 0, acceptedOrderSubmissions: 0, completedOnlineSales: 0 };
 
   await page.setViewportSize({ width: 1440, height: 1000 });
+  const navigation = recordStorefrontNavigation(page, STORE);
+  try {
   await page.goto(STORE);
   await expect(page.getByRole("heading", { name: "Shop by category", exact: true })).toBeVisible();
   await expect(page.getByLabel("Sort")).toBeEnabled();
@@ -191,6 +194,16 @@ test("full shopping journey preserves aggregate analytics across desktop and mob
   const eventReplay = await page.request.post(`${STORE}/api/public/analytics/events`, { headers: { origin: STORE }, data: additions[0] });
   expect(eventReplay.status()).toBe(200);
   expect(await summary(page, day)).toEqual(accepted);
+  } catch (error) {
+    console.log("e2e:storefront-navigation " + JSON.stringify(navigation.diagnostics));
+    await test.info().attach("storefront-navigation.json", {
+      body: JSON.stringify(navigation.diagnostics, null, 2),
+      contentType: "application/json",
+    });
+    throw error;
+  } finally {
+    navigation.cleanup();
+  }
 });
 
 async function signInManager(page: Page) {

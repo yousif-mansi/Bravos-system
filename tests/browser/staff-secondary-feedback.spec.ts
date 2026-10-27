@@ -147,11 +147,16 @@ test("restore history selection reveals the preview above it while polling prese
 test("restore explicit upload reveals the created preview after its form disappears", async ({ page }) => {
   await signIn(page);
   let created: Record<string, unknown> | null = null;
+  const releaseCreate = deferred();
+  const createStarted = deferred();
   await page.route("**/api/internal/restore/state", (route) => route.fulfill({ json: { currentGeneration: 0, pause: null } }));
   await page.route("**/api/internal/sales/restore-deferred", (route) => route.fulfill({ json: [] }));
   await page.route("**/api/internal/restore/previews", async (route) => {
     if (route.request().method() === "POST") {
-      created = { id, operationId: route.request().postDataJSON().operationId, previewFingerprint: "a".repeat(64), status: "paused", backupId: "created-feedback-backup", totalRecordCount: 0, sourceGeneration: 0, expectedGeneration: 0, createdAt: date, differences: [], devices: [], blockingReasons: [] };
+      const candidate = { id, operationId: route.request().postDataJSON().operationId, previewFingerprint: "a".repeat(64), status: "paused", backupId: "created-feedback-backup", totalRecordCount: 0, sourceGeneration: 0, expectedGeneration: 0, createdAt: date, differences: [], devices: [], blockingReasons: [] };
+      createStarted.resolve();
+      await releaseCreate.promise;
+      created = candidate;
       await route.fulfill({ status: 201, json: created });
     } else await route.fulfill({ json: created ? [created] : [] });
   });
@@ -162,8 +167,22 @@ test("restore explicit upload reveals the created preview after its form disappe
   await upload.getByLabel("كلمة حماية نسخة البيانات الحالية", { exact: true }).fill("feedback password 61");
   await upload.getByLabel("تأكيد كلمة حماية نسخة البيانات الحالية").fill("feedback password 61");
   await upload.getByRole("button", { name: "فك النسخة وإنشاء المعاينة" }).click();
+  await createStarted.promise;
+  await expect(upload).toBeVisible();
+  await expect(page.getByRole("heading", { name: "معاينة النسخة", exact: true })).toHaveCount(0);
+  releaseCreate.resolve();
   await expect(upload).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: "معاينة النسخة", exact: true })).toBeFocused();
+  const heading = page.getByRole("heading", { name: "معاينة النسخة", exact: true });
+  await expect(heading).toBeFocused();
+  const region = page.getByRole("region", { name: "تفاصيل معاينة الاستعادة" });
+  await expect(region.getByRole("button", { name: "تحديث الحالة", exact: true })).toBeEnabled();
+  const history = page.locator(".restore-history-item");
+  await history.focus();
+  created = { ...created, totalRecordCount: 1 };
+  const recordCount = page.locator(".restore-metadata div").filter({ has: page.getByText("إجمالي السجلات", { exact: true }) }).locator("dd");
+  await expect(recordCount).toHaveText("1");
+  await expect(history).toBeFocused();
+  await expect(heading).not.toBeFocused();
 });
 
 test("opening import explicit creation reveals its preview after the upload form disappears", async ({ page }) => {

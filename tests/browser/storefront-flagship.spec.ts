@@ -1,4 +1,5 @@
 import { expect, test, type Locator, type Page, type TestInfo } from "@playwright/test";
+import { recordStorefrontNavigation } from "./storefront-navigation-diagnostics.ts";
 
 const API = "http://127.0.0.1:3011";
 const STAFF = "http://127.0.0.1:5174";
@@ -353,6 +354,8 @@ test("category rows progressively reach every product, retry failed reads, and p
   const catalog = await response.json() as { products: CatalogProduct[] };
   expect(catalog.products.map((product) => product.id).sort()).toEqual([...seeded.ids].sort());
   await page.addInitScript(() => { Object.defineProperty(window, "IntersectionObserver", { value: undefined, configurable: true }); });
+  const navigation = recordStorefrontNavigation(page, STORE);
+  try {
 
   let requests = 0;
   let failFirst!: () => void;
@@ -462,6 +465,16 @@ test("category rows progressively reach every product, retry failed reads, and p
     const focused = await sortedRow.getByRole("heading").getByRole("link").getAttribute("href");
     expect(focused).toContain("category=" + seeded.categoryId);
     expect(focused).toContain("sort=" + order);
+  }
+  } catch (error) {
+    console.log("e2e:storefront-navigation " + JSON.stringify(navigation.diagnostics));
+    await test.info().attach("storefront-navigation.json", {
+      body: JSON.stringify(navigation.diagnostics, null, 2),
+      contentType: "application/json",
+    });
+    throw error;
+  } finally {
+    navigation.cleanup();
   }
 });
 

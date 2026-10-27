@@ -21,6 +21,51 @@ if (path.dirname(controlFile) !== localDir) {
 
 type BuiltApp = Awaited<ReturnType<typeof buildApp>>;
 
+const catalogStarts = new Map<string, number>();
+
+function isPublicCatalogRequest(url: string): boolean {
+  return (url.split("?", 1)[0] ?? url) === "/api/public/storefront/catalog";
+}
+
+function poolCounts(pool: BuiltApp["pool"]): { waiting: number; idle: number; total: number } {
+  return { waiting: pool.waitingCount, idle: pool.idleCount, total: pool.totalCount };
+}
+
+function registerCatalogTiming(appBuilt: BuiltApp): void {
+  appBuilt.app.addHook("onRequest", (request, _reply, done) => {
+    if (!isPublicCatalogRequest(request.url)) {
+      done();
+      return;
+    }
+    catalogStarts.set(request.id, performance.now());
+    console.log(`e2e:catalog-timing ${JSON.stringify({
+      event: "start",
+      id: request.id,
+      url: request.url,
+      pool: poolCounts(appBuilt.pool),
+    })}`);
+    done();
+  });
+
+  appBuilt.app.addHook("onResponse", (request, reply, done) => {
+    if (!isPublicCatalogRequest(request.url)) {
+      done();
+      return;
+    }
+    const startedAt = catalogStarts.get(request.id);
+    catalogStarts.delete(request.id);
+    console.log(`e2e:catalog-timing ${JSON.stringify({
+      event: "end",
+      id: request.id,
+      url: request.url,
+      statusCode: reply.statusCode,
+      elapsedMs: startedAt === undefined ? null : Math.round(performance.now() - startedAt),
+      pool: poolCounts(appBuilt.pool),
+    })}`);
+    done();
+  });
+}
+
 let cluster: PostgresCluster | undefined;
 let built: BuiltApp | undefined;
 let controlServer: Server | undefined;
@@ -160,6 +205,7 @@ async function main(): Promise<void> {
     ownerRecoveryOutboxDir: outboxDir,
     productMediaDir,
   });
+  registerCatalogTiming(built);
   try {
     await ensureOwner(built.services, {
       loginName: "owner",
