@@ -1,4 +1,4 @@
-import { type FormEvent, useEffect, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import type { BranchDto, StaffAccountDto, WorkspaceDto } from "@bravos/contracts";
 import {
@@ -39,41 +39,95 @@ export default function StaffPage({
   const [pendingAction, setPendingAction] = useState("");
   const [loading, setLoading] = useState(true);
   const [loadFailed, setLoadFailed] = useState(false);
+  const [listStale, setListStale] = useState(false);
+  const [refreshError, setRefreshError] = useState("");
   const [loadRevision, setLoadRevision] = useState(0);
-
-  async function refresh() {
-    setStaff(await listStaff());
-  }
+  const listReloadRef = useRef(false);
+  const createRef = useRef(false);
 
   useEffect(() => {
-    setLoading(true); setLoadFailed(false); setError("");
-    void refresh().catch((caught: unknown) => {
+    let cancelled = false;
+    setLoading(true);
+    setLoadFailed(false);
+    setError("");
+    void listStaff().then((rows) => {
+      if (cancelled) return;
+      setStaff(rows);
+      setListStale(false);
+      setRefreshError("");
+    }).catch((caught: unknown) => {
+      if (cancelled) return;
       setError(caught instanceof ApiError ? caught.messageAr : "تعذر تحميل الموظفين.");
       setLoadFailed(true);
-    }).finally(() => setLoading(false));
+    }).finally(() => {
+      if (!cancelled) setLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [loadRevision]);
+
+  async function reloadStaffList() {
+    if (listReloadRef.current) return;
+    listReloadRef.current = true;
+    setLoading(true);
+    try {
+      setStaff(await listStaff());
+      setListStale(false);
+      setLoadFailed(false);
+      setRefreshError("");
+    } catch (caught) {
+      setListStale(true);
+      setRefreshError(staffRefreshFailureText(caught));
+    } finally {
+      listReloadRef.current = false;
+      setLoading(false);
+    }
+  }
+
+  async function commitStaffChange(success: string, failure: string, write: () => Promise<unknown>) {
+    setError("");
+    setNotice("");
+    setRefreshError("");
+    try {
+      await write();
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.messageAr : failure);
+      return false;
+    }
+    setNotice(success);
+    try {
+      setStaff(await listStaff());
+      setListStale(false);
+      setLoadFailed(false);
+      setRefreshError("");
+    } catch (caught) {
+      setListStale(true);
+      setRefreshError(staffRefreshFailureText(caught));
+    }
+    return true;
+  }
 
   async function onCreate(event: FormEvent) {
     event.preventDefault();
-    setError("");
-    setNotice("");
+    if (createRef.current || pendingCreate) return;
+    createRef.current = true;
     setPendingCreate(true);
     try {
-      await createStaff({
+      const saved = await commitStaffChange("تم إنشاء الحساب.", "تعذر إنشاء الحساب.", () => createStaff({
         loginName,
         displayName,
         password,
         grants: toGrantPayload(branches, createGrants),
-      });
-      setLoginName("");
-      setDisplayName("");
-      setPassword("");
-      setCreateGrants(emptyDrafts(branches));
-      setNotice("تم إنشاء الحساب.");
-      await refresh();
-    } catch (caught) {
-      setError(caught instanceof ApiError ? caught.messageAr : "تعذر إنشاء الحساب.");
+      }));
+      if (saved) {
+        setLoginName("");
+        setDisplayName("");
+        setPassword("");
+        setCreateGrants(emptyDrafts(branches));
+      }
     } finally {
+      createRef.current = false;
       setPendingCreate(false);
     }
   }
@@ -85,8 +139,9 @@ export default function StaffPage({
       </header>
       {error ? <div className="error" role="alert">{error}</div> : null}
       {notice ? <div className="notice" role="status">{notice}</div> : null}
+      {listStale && refreshError ? <p className="error" role="alert">{refreshError}</p> : null}
       {loading ? <p role="status">جارٍ تحميل الموظفين…</p> : null}
-      {loadFailed ? <button className="secondary" type="button" disabled={loading} onClick={() => setLoadRevision((current) => current + 1)}>إعادة تحميل الموظفين</button> : null}
+      {loadFailed || listStale ? <button className="secondary" type="button" aria-busy={listStale && loading} disabled={loading || pendingCreate || Boolean(pendingAction)} onClick={() => { if (listStale) void reloadStaffList(); else setLoadRevision((current) => current + 1); }}>{listStale && loading ? "جارٍ تحديث القائمة…" : "إعادة تحميل الموظفين"}</button> : null}
       <div className="grid two">
         <form className="card" aria-label="إنشاء حساب موظف" onSubmit={(event) => void onCreate(event)}>
           <h2>إنشاء حساب موظف</h2>
@@ -117,7 +172,7 @@ export default function StaffPage({
         </form>
         <section className="card">
           <h2>الحسابات</h2>
-          {!loading && !loadFailed && staff.length === 0 ? (
+          {!loading && !loadFailed && !listStale && staff.length === 0 ? (
             <EmptyState title="لسه مفيش موظفين" message="أنشئ أول حساب من النموذج جنب القائمة." />
           ) : (
             <div className="staff-list">
@@ -138,6 +193,7 @@ export default function StaffPage({
                       }}
                       onReset={async (staffId) => {
                         setError("");
+                        setNotice("");
                         setPendingAction(`reset-${staffId}`);
                         try {
                           await resetStaffPassword(staffId, resetPassword);
@@ -151,27 +207,17 @@ export default function StaffPage({
                         }
                       }}
                       onDisable={async (staffId) => {
-                        setError("");
                         setPendingAction(`disable-${staffId}`);
                         try {
-                          await disableStaff(staffId);
-                          setNotice("تم تعطيل الحساب.");
-                          await refresh();
-                        } catch (caught) {
-                          setError(caught instanceof ApiError ? caught.messageAr : "تعذر التعطيل.");
+                          await commitStaffChange("تم تعطيل الحساب.", "تعذر التعطيل.", () => disableStaff(staffId));
                         } finally {
                           setPendingAction("");
                         }
                       }}
                       onSaveGrants={async (staffId, grants) => {
-                        setError("");
                         setPendingAction(`grants-${staffId}`);
                         try {
-                          await setStaffGrants(staffId, grants);
-                          setNotice("تم حفظ صلاحيات الفروع.");
-                          await refresh();
-                        } catch (caught) {
-                          setError(caught instanceof ApiError ? caught.messageAr : "تعذر حفظ الصلاحيات.");
+                          await commitStaffChange("تم حفظ صلاحيات الفروع.", "تعذر حفظ الصلاحيات.", () => setStaffGrants(staffId, grants));
                         } finally {
                           setPendingAction("");
                         }
@@ -374,6 +420,11 @@ function GrantEditor({
       })}
     </fieldset>
   );
+}
+
+function staffRefreshFailureText(caught: unknown) {
+  const detail = caught instanceof ApiError ? caught.messageAr : "تعذر تحديث قائمة الموظفين.";
+  return `تعذر تحديث قائمة الموظفين. ${detail} البيانات الظاهرة قديمة حتى تنجح إعادة التحميل.`;
 }
 
 function forBranch(nameAr: string): string {

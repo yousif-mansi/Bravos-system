@@ -9,11 +9,13 @@ import {
   ApiError,
   changeSaleCorrection,
   getSaleCorrection,
+  listSales,
   type SaleCorrectionWrite,
 } from "../api.ts";
 import {
   changeReturnCorrection,
   getReturnCorrection,
+  listReturns,
   type ReturnCorrectionWrite,
 } from "../returns-api.ts";
 import { egpInputToPiasters, formatEgpFromPiasters, piastersToEgpInput } from "../money.ts";
@@ -30,6 +32,7 @@ import {
 
 type Detail = SaleCorrectionDetailDto | ReturnCorrectionDetailDto;
 type LineEdit = { quantity: number; paid: string; sellableQuantity: number; stockDelta: number };
+type BoundReadableReference = { targetType: "sale" | "return"; id: string; reference: string };
 
 export default function CorrectionsPage({ workspace }: { workspace: WorkspaceDto; onChanged: (workspace: WorkspaceDto | null) => void }) {
   const [searchParams] = useSearchParams();
@@ -52,6 +55,8 @@ export default function CorrectionsPage({ workspace }: { workspace: WorkspaceDto
   const [failedLoad, setFailedLoad] = useState<{ target: "sale" | "return"; id: string } | null>(null);
   const detailFeedback = useRevealFeedback<HTMLElement>();
   const loadVersion = useRef(0);
+  const knownReferenceRef = useRef<BoundReadableReference | null>(null);
+  const [knownReference, setKnownReference] = useState<string | null>(null);
   useEffect(() => () => { loadVersion.current += 1; }, [workspace.staff.id]);
   const [uncertainAttempt, setUncertainAttempt] = useState<CorrectionAttempt | null>(() => readCorrectionAttempt(workspace.staff.id));
 
@@ -76,7 +81,7 @@ export default function CorrectionsPage({ workspace }: { workspace: WorkspaceDto
     await loadRecord(target, recordId.trim(), true);
   }
 
-  async function loadRecord(nextTarget: "sale" | "return", id: string, reveal = false) {
+  async function loadRecord(nextTarget: "sale" | "return", entered: string, reveal = false) {
     const version = ++loadVersion.current;
     const epoch = accountGeneration();
     const stillCurrent = () => version === loadVersion.current && epoch === accountGeneration();
@@ -86,22 +91,55 @@ export default function CorrectionsPage({ workspace }: { workspace: WorkspaceDto
     setError("");
     setNotice("");
     try {
-      const value = nextTarget === "sale" ? await getSaleCorrection(id) : await getReturnCorrection(id);
+      const resolved = await resolveCorrectionTarget(nextTarget, entered, stillCurrent);
+      if (!stillCurrent() || resolved.kind === "stale") return;
+      if (resolved.kind === "none") {
+        setFailedLoad({ target: nextTarget, id: entered });
+        setError(nextTarget === "sale"
+          ? "لا يوجد بيع مكتمل بهذا المرجع. راجع المرجع في المبيعات، أو افتح التصحيح من رابط البيع."
+          : "لا يوجد إرجاع بهذا المرجع. راجع المرجع في المرتجعات، أو افتح التصحيح من رابط الإرجاع.");
+        return;
+      }
+      if (resolved.kind === "ambiguous") {
+        setFailedLoad({ target: nextTarget, id: entered });
+        setError("هذا المرجع يطابق أكثر من تسجيل. افتح التسجيل المطلوب من المبيعات أو المرتجعات حتى لا يُختار تسجيل خاطئ.");
+        return;
+      }
+      if (!isRecordId(resolved.id)) {
+        setFailedLoad({ target: nextTarget, id: entered });
+        setError("تعذر فتح هذا التسجيل لأن معرّفه غير صالح. افتحه من صفحة المبيعات أو المرتجعات.");
+        return;
+      }
+      const readablePromise: Promise<string | null | "stale"> = resolved.enrich
+        ? (nextTarget === "sale" ? lookupSaleReference(resolved.id, stillCurrent) : lookupReturnReference(resolved.id, stillCurrent))
+          .catch(() => null)
+        : Promise.resolve(resolved.readableReference);
+      const value = nextTarget === "sale" ? await getSaleCorrection(resolved.id) : await getReturnCorrection(resolved.id);
       if (!stillCurrent()) return;
-      select(value);
+      const found = await readablePromise;
+      if (!stillCurrent() || found === "stale") return;
+      select(value, found);
       if (reveal) detailFeedback.reveal();
     } catch (caught) {
       if (!stillCurrent()) return;
-      setFailedLoad({ target: nextTarget, id });
+      setFailedLoad({ target: nextTarget, id: entered });
       showError(caught);
     } finally {
       if (version === loadVersion.current) { setBusy(false); setLoadingDetails(false); }
     }
   }
 
-  function select(value: Detail) {
+  function select(value: Detail, readableReference?: string | null) {
+    const cached = knownReferenceRef.current;
+    const cachedForRecord = cached?.id === value.id && cached.targetType === value.targetType ? cached.reference : null;
+    const supplied = readableReference === undefined ? cachedForRecord : readableReference;
+    const nextReference = supplied && supplied !== value.id ? supplied : null;
+    knownReferenceRef.current = nextReference
+      ? { targetType: value.targetType, id: value.id, reference: nextReference }
+      : null;
+    setKnownReference(nextReference);
     setDetail(value);
-    setRecordId(value.id);
+    setRecordId(nextReference ?? value.id);
     setChangeType("correction");
     setReason("");
     setCashDirection("none");
@@ -254,7 +292,7 @@ export default function CorrectionsPage({ workspace }: { workspace: WorkspaceDto
       <section className="card">
         <h2>فتح التسجيل الأصلي</h2>
         <form aria-label="فتح تسجيل للتصحيح" className="grid two" onSubmit={(event) => void load(event)}>
-          <div className="field"><label htmlFor="correction-target">نوع التسجيل</label><select id="correction-target" disabled={busy} value={target} onChange={(event) => { setTarget(event.target.value as "sale" | "return"); setDetail(null); setFailedLoad(null); }}><option value="sale">بيع فرع مكتمل</option><option value="return">إرجاع مرحّل</option></select></div>
+          <div className="field"><label htmlFor="correction-target">نوع التسجيل</label><select id="correction-target" disabled={busy} value={target} onChange={(event) => { setTarget(event.target.value as "sale" | "return"); setDetail(null); setFailedLoad(null); knownReferenceRef.current = null; setKnownReference(null); }}><option value="sale">بيع فرع مكتمل</option><option value="return">إرجاع مرحّل</option></select></div>
           <div className="field"><label htmlFor="correction-record">مرجع التسجيل</label><input id="correction-record" disabled={busy} value={recordId} onChange={(event) => { setRecordId(event.target.value); setFailedLoad(null); }} /></div>
           <button type="submit" disabled={busy}>{loadingDetails ? "جارٍ فتح التفاصيل…" : "فتح التفاصيل"}</button>
         </form>
@@ -264,7 +302,7 @@ export default function CorrectionsPage({ workspace }: { workspace: WorkspaceDto
         <>
           <section ref={detailFeedback.regionRef} className={`card reveal-feedback${detailFeedback.highlighted ? " is-highlighted" : ""}`} data-testid="correction-details">
             <h2 ref={detailFeedback.headingRef} tabIndex={-1}>الأصل والقيمة المستخدمة حالياً</h2>
-            <p>المرجع: {detail.reference}</p>
+            <p data-testid="correction-reference">المرجع: {knownReference ?? detail.reference}</p>
             {detail.targetType === "return" ? <p>مصدر الشراء: {detail.source.kind === "delivered_online_order" ? "طلب أونلاين مُسلّم" : "بيع فرع مكتمل"}</p> : null}
             <p>القيمة الأصلية المسجلة: {formatEgpFromPiasters(originalAmount ?? 0)}</p>
             <p>القيمة المستخدمة حالياً: {currentAmount === null || currentAmount === undefined ? "ملغاة" : formatEgpFromPiasters(currentAmount)}</p>
@@ -320,4 +358,103 @@ export default function CorrectionsPage({ workspace }: { workspace: WorkspaceDto
       ) : null}
     </main>
   );
+}
+
+// Correction detail `reference` is the record id. Readable POS/RET numbers come from the authorized lists.
+const RECORD_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const RETURN_PAGE_LIMIT = 100;
+
+type ReferenceResolution =
+  | { kind: "stale" }
+  | { kind: "none" }
+  | { kind: "ambiguous" }
+  | { kind: "ready"; id: string; readableReference: string | null; enrich: boolean };
+
+function isRecordId(value: string) {
+  return RECORD_ID_PATTERN.test(value);
+}
+
+function readableListReference(reference: string | null | undefined, id: string) {
+  if (typeof reference !== "string" || reference.trim() === "" || reference === id) return null;
+  return reference;
+}
+
+async function resolveCorrectionTarget(
+  target: "sale" | "return",
+  entered: string,
+  stillCurrent: () => boolean,
+): Promise<ReferenceResolution> {
+  if (isRecordId(entered)) return { kind: "ready", id: entered, readableReference: null, enrich: true };
+  return target === "sale" ? findExactSales(entered, stillCurrent) : findExactReturns(entered, stillCurrent);
+}
+
+async function findExactSales(reference: string, stillCurrent: () => boolean): Promise<ReferenceResolution> {
+  if (!stillCurrent()) return { kind: "stale" };
+  const sales = await listSales();
+  if (!stillCurrent()) return { kind: "stale" };
+  if (!Array.isArray(sales)) throw new Error("تعذر قراءة قائمة المبيعات.");
+  const matches = new Map<string, string>();
+  for (const sale of sales) {
+    if (sale.reference === reference && typeof sale.id === "string") matches.set(sale.id, sale.reference);
+  }
+  return resolutionFromMatches(matches);
+}
+
+async function findExactReturns(reference: string, stillCurrent: () => boolean): Promise<ReferenceResolution> {
+  const seenCursors = new Set<string>();
+  const matches = new Map<string, string>();
+  let cursor: string | undefined;
+  for (;;) {
+    if (!stillCurrent()) return { kind: "stale" };
+    const page = await listReturns(cursor ? { limit: RETURN_PAGE_LIMIT, cursor } : { limit: RETURN_PAGE_LIMIT });
+    if (!stillCurrent()) return { kind: "stale" };
+    if (!page || !Array.isArray(page.items)) throw new Error("تعذر قراءة قائمة المرتجعات.");
+    for (const item of page.items) {
+      if (item?.reference === reference && typeof item.id === "string") matches.set(item.id, item.reference);
+    }
+    if (matches.size > 1) return { kind: "ambiguous" };
+    const next = page.nextCursor;
+    if (next === null || next === undefined || next === "") break;
+    if (typeof next !== "string" || !isRecordId(next) || seenCursors.has(next) || page.items.length === 0) {
+      throw new Error("تعذر متابعة صفحات المرتجعات. أعد تحميل التفاصيل.");
+    }
+    seenCursors.add(next);
+    cursor = next;
+  }
+  return resolutionFromMatches(matches);
+}
+
+function resolutionFromMatches(matches: Map<string, string>): ReferenceResolution {
+  if (matches.size === 0) return { kind: "none" };
+  if (matches.size > 1) return { kind: "ambiguous" };
+  const [id, reference] = [...matches.entries()][0]!;
+  return { kind: "ready", id, readableReference: reference, enrich: false };
+}
+
+async function lookupSaleReference(id: string, stillCurrent: () => boolean): Promise<string | null | "stale"> {
+  if (!stillCurrent()) return "stale";
+  const sales = await listSales();
+  if (!stillCurrent()) return "stale";
+  if (!Array.isArray(sales)) return null;
+  const sale = sales.find((item) => item.id === id);
+  return sale ? readableListReference(sale.reference, id) : null;
+}
+
+async function lookupReturnReference(id: string, stillCurrent: () => boolean): Promise<string | null | "stale"> {
+  const seenCursors = new Set<string>();
+  let cursor: string | undefined;
+  for (;;) {
+    if (!stillCurrent()) return "stale";
+    const page = await listReturns(cursor ? { limit: RETURN_PAGE_LIMIT, cursor } : { limit: RETURN_PAGE_LIMIT });
+    if (!stillCurrent()) return "stale";
+    if (!page || !Array.isArray(page.items)) return null;
+    for (const item of page.items) {
+      if (item?.id === id) return readableListReference(item.reference, id);
+    }
+    const next = page.nextCursor;
+    if (next === null || next === undefined || next === "") return null;
+    if (typeof next !== "string" || !isRecordId(next) || seenCursors.has(next) || page.items.length === 0) return null;
+    seenCursors.add(next);
+    cursor = next;
+  }
 }

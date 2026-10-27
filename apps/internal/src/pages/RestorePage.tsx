@@ -568,6 +568,11 @@ export default function RestorePage({
 
       {error ? <div className="error" role="alert">{error}</div> : null}
       {notice ? <div className="notice" role="status">{notice}</div> : null}
+      {!selected ? (
+        <button className="secondary" type="button" disabled={Boolean(busy) || refreshing} onClick={() => void refreshExplicitly()}>
+          {refreshing ? "جارٍ تحديث الحالة…" : "تحديث الحالة"}
+        </button>
+      ) : null}
 
       <section className="card restore-warning" aria-labelledby="restore-warning-title">
         <h2 id="restore-warning-title">الاستعادة لا تستبدل النشاط الأحدث بصمت</h2>

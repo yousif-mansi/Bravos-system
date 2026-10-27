@@ -79,10 +79,14 @@ export default function StockCorrectionsPage({ workspace }: { workspace: Workspa
   const [reconciliationQuantities, setReconciliationQuantities] = useState<Record<string, string>>({});
   const reconciliationOperations = useRef(new Map<string, string>());
   const correctionInFlight = useRef(false);
+  const readVersion = useRef(0);
   const correctionFeedback = useRevealFeedback<HTMLFormElement>();
   const activeBranch = workspace.activeBranch;
+  const [readState, setReadState] = useState<"loading" | "ready" | "error">("loading");
+  const [listRetrying, setListRetrying] = useState(false);
 
   async function load() {
+    const version = readVersion.current;
     const [coordination, pause, catalog, batches, corrections, cases, reconciliations] = await Promise.all([
       getCountCoordination(),
       getStockPause(),
@@ -92,6 +96,7 @@ export default function StockCorrectionsPage({ workspace }: { workspace: Workspa
       listStockReconciliationCases(),
       listStockReconciliations(),
     ]);
+    if (version !== readVersion.current) return null;
     const next = { coordination, pause, catalog, batches, corrections, cases, reconciliations };
     setData(next);
     const saved = readCorrectionAttempt(workspace.staff.id);
@@ -102,7 +107,36 @@ export default function StockCorrectionsPage({ workspace }: { workspace: Workspa
     return next;
   }
 
+  async function retryReads() {
+    const version = ++readVersion.current;
+    setListRetrying(true);
+    setInitialLoading(true);
+    setReadState("loading");
+    setError("");
+    setNotice("");
+    try {
+      const next = await load();
+      if (version !== readVersion.current) return;
+      if (!next) {
+        setReadState("error");
+        setError("تعذر تحميل تصحيحات المخزون.");
+        return;
+      }
+      setReadState("ready");
+    } catch (caught) {
+      if (version !== readVersion.current) return;
+      setReadState("error");
+      setError(message(caught, "تعذر تحميل تصحيحات المخزون."));
+    } finally {
+      if (version === readVersion.current) {
+        setInitialLoading(false);
+        setListRetrying(false);
+      }
+    }
+  }
+
   useEffect(() => {
+    const version = ++readVersion.current;
     const saved = readCorrectionAttempt(workspace.staff.id);
     if (saved) {
       setCorrectionAttempt(saved);
@@ -117,10 +151,29 @@ export default function StockCorrectionsPage({ workspace }: { workspace: Workspa
       setReason("");
       setPositiveSourceBatchId("");
     }
+    setListRetrying(false);
     setInitialLoading(true);
+    setReadState("loading");
+    setError("");
     void load()
-      .catch((caught) => setError(message(caught, "تعذر تحميل تصحيحات المخزون.")))
-      .finally(() => setInitialLoading(false));
+      .then((next) => {
+        if (version !== readVersion.current) return;
+        if (!next) {
+          setReadState("error");
+          setError("تعذر تحميل تصحيحات المخزون.");
+          return;
+        }
+        setReadState("ready");
+      })
+      .catch((caught) => {
+        if (version !== readVersion.current) return;
+        setReadState("error");
+        setError(message(caught, "تعذر تحميل تصحيحات المخزون."));
+      })
+      .finally(() => {
+        if (version === readVersion.current) setInitialLoading(false);
+      });
+    return () => { readVersion.current += 1; };
   }, [workspace.staff.id, activeBranch?.id]);
 
   useEffect(() => {
@@ -193,6 +246,7 @@ export default function StockCorrectionsPage({ workspace }: { workspace: Workspa
   async function recover() {
     await run("recover", async () => {
       const refreshed = await load();
+      if (!refreshed) return;
       if (refreshed.coordination?.status === "active") {
         setStartOperationId("");
         setNotice("استُرد تنسيق العد النشط. أكمل تأكيد نقاط البيع أو ألغِ التوقف.");
@@ -378,15 +432,23 @@ export default function StockCorrectionsPage({ workspace }: { workspace: Workspa
       {error ? <div className="error" role="alert">{error}</div> : null}
       {notice ? <div className="notice" role="status">{notice}</div> : null}
       {initialLoading ? <p role="status">جارٍ تحميل المخزون والتصحيحات…</p> : null}
+      {readState === "error" || listRetrying ? (
+        <p>
+          <button type="button" data-testid="stock-load-retry" disabled={initialLoading || listRetrying || Boolean(pending)} onClick={() => void retryReads()}>
+            {initialLoading || listRetrying ? "جارٍ تحميل القوائم…" : "إعادة تحميل قوائم المخزون"}
+          </button>
+        </p>
+      ) : null}
 
       <section className="card">
         <h2>تنسيق العد القصير</h2>
-        {data.pause ? (
+        {readState === "error" ? <p>تعذر قراءة تنسيق العد. أعد تحميل القوائم قبل بدء توقف أو تصحيح.</p> : null}
+        {readState === "ready" && data.pause ? (
           <div className="error" data-testid="manager-stock-pause">
             المخزون متوقف عند الإصدار {data.pause.boundaryStockVersion} حتى {formatDate(data.pause.expiresAt)}.
           </div>
         ) : null}
-        {!coordination ? (
+        {readState === "ready" && !coordination ? (
           <div className="actions">
             <button type="button" disabled={Boolean(pending) || !activeBranch || initialLoading} onClick={() => void start()}>
               {pending === "start" ? "جارٍ البدء…" : startOperationId ? "إعادة محاولة بدء التوقف" : "مزامنة النقاط وبدء التوقف"}
@@ -395,7 +457,7 @@ export default function StockCorrectionsPage({ workspace }: { workspace: Workspa
               استرداد تنسيق نشط
             </button>
           </div>
-        ) : (
+        ) : readState === "ready" && coordination ? (
           <>
             <p>حد المخزون: {coordination.boundaryStockVersion} — بدأ {formatDate(coordination.boundaryAt)} — ينتهي {formatDate(coordination.expiresAt)}</p>
             {coordination.devices.length === 0 ? <p className="muted">لا توجد نقاط بيع معروفة.</p> : (
@@ -433,10 +495,10 @@ export default function StockCorrectionsPage({ workspace }: { workspace: Workspa
               </button>
             </div>
           </>
-        )}
+        ) : null}
       </section>
 
-      {coordination ? (
+      {readState === "ready" && coordination ? (
         <form ref={correctionFeedback.regionRef} className={`card reveal-feedback${correctionFeedback.highlighted ? " is-highlighted" : ""}`} aria-label="تصحيح الكمية الفعلية" onSubmit={(event) => { event.preventDefault(); void finalize(); }}>
           <h2 ref={correctionFeedback.headingRef} tabIndex={-1}>الكمية الفعلية</h2>
           <p data-testid="correction-form-branch">الفرع: <strong>{workspace.authorizedBranches.find((branch) => branch.id === (correctionAttempt?.branchId ?? activeBranch?.id))?.nameAr ?? "—"}</strong></p>
@@ -511,9 +573,10 @@ export default function StockCorrectionsPage({ workspace }: { workspace: Workspa
 
       <section className="card">
         <h2>المبيعات المتأخرة بعد التصحيح</h2>
-        {data.cases.length === 0 ? <EmptyState title="مفيش حاجة للمراجعة" message="بعد التصحيح أي فرق هيظهر هنا." /> : data.cases.map((item) => (
+        {readState === "ready" && data.cases.length === 0 ? <EmptyState title="مفيش حاجة للمراجعة" message="بعد التصحيح أي فرق هيظهر هنا." /> : null}
+        {readState === "error" ? <p>تعذر تحميل حالات المبيعات المتأخرة.</p> : null}
+        {readState === "ready" ? data.cases.map((item) => (
           <article className="history-item" key={`${item.correctionId}-${item.saleId}-${item.variantId}`} data-testid="stock-reconciliation-case">
-            <p><strong>البيع {item.saleId}</strong></p>
             <p data-testid="late-sale-timing">
               {item.timing === "before_count"
                 ? "بيع قبل حد العد: قد تكون وحداته داخلة في الكمية التي عُدّت."
@@ -530,6 +593,17 @@ export default function StockCorrectionsPage({ workspace }: { workspace: Workspa
             ) : (
               <p className="notice">تكلفة البيع مكتملة.</p>
             )}
+            <VariantBranchIdentity
+              variant={catalogVariant(data.catalog, item.variantId)}
+              branchName={branchLabel(workspace, item.branchId)}
+              unresolvedVariantId={item.variantId}
+              audit={[
+                { label: "البيع", value: item.saleId },
+                { label: "الصنف", value: item.variantId },
+                { label: "الفرع", value: item.branchId },
+                { label: "التصحيح", value: item.correctionId },
+              ]}
+            />
             <div className="actions">
               {item.maximumCountedQuantity > 0 ? (
                 <div className="field">
@@ -575,14 +649,24 @@ export default function StockCorrectionsPage({ workspace }: { workspace: Workspa
               ) : null}
             </div>
           </article>
-        ))}
+        )) : null}
       </section>
 
       <section className="card" data-testid="stock-correction-history">
         <h2>سجل التصحيحات</h2>
-        {data.corrections.length === 0 ? <EmptyState title="لسه مفيش تصحيحات" message="أول تصحيح هيتسجل هنا." /> : data.corrections.map((item) => (
+        {readState === "ready" && data.corrections.length === 0 ? <EmptyState title="لسه مفيش تصحيحات" message="أول تصحيح هيتسجل هنا." /> : null}
+        {readState === "error" ? <p>تعذر تحميل سجل التصحيحات.</p> : null}
+        {readState === "ready" ? data.corrections.map((item) => {
+          const branchName = branchLabel(workspace, item.branchId);
+          return (
           <article className="history-item" key={item.id} data-testid="stock-correction-row">
-            <p><strong>{item.variant.product.code}</strong> — {workspace.authorizedBranches.find((branch) => branch.id === item.branchId)?.nameAr ?? "فرع غير معروف"} — من {item.previousAvailableQuantity} إلى {item.correctedAvailableQuantity} ({signed(item.quantityDelta)})</p>
+            <p><strong>{item.variant.product.code}</strong> — {item.variant.product.nameAr} / {item.variant.size.nameAr} / {item.variant.color.nameAr} — {branchName ?? "تعذر مطابقة الفرع مع الفروع المتاحة."} — من {item.previousAvailableQuantity} إلى {item.correctedAvailableQuantity} ({signed(item.quantityDelta)})</p>
+            <details>
+              <summary>معرّفات المراجعة</summary>
+              <p>الصنف: {item.variantId}</p>
+              <p>الفرع: {item.branchId}</p>
+              <p>التصحيح: {item.id}</p>
+            </details>
             <p>{item.reason}</p>
             <p className="muted">{item.changedBy.displayName} — {formatDate(item.changedAt)} — حد المخزون {item.boundaryStockVersion}</p>
             <p>نقاط البيع المؤكدة: {item.devices.filter((device) => device.acknowledgedAt).length} من {item.devices.length}</p>
@@ -594,14 +678,35 @@ export default function StockCorrectionsPage({ workspace }: { workspace: Workspa
               ))}</ul>
             ) : null}
           </article>
-        ))}
+          );
+        }) : null}
       </section>
 
       <section className="card">
         <h2>سجل مصالحات المبيعات المتأخرة</h2>
-        {data.reconciliations.length === 0 ? <p className="empty">لا توجد مصالحات.</p> : data.reconciliations.map((item) => (
+        {readState === "ready" && data.reconciliations.length === 0 ? <p className="empty">لا توجد مصالحات.</p> : null}
+        {readState === "error" ? <p>تعذر تحميل سجل المصالحات.</p> : null}
+        {readState === "ready" ? data.reconciliations.map((item) => {
+          const variant = catalogVariant(data.catalog, item.variantId);
+          const branchName = branchLabel(workspace, item.branchId);
+          return (
           <article className="history-item" key={item.id} data-testid="stock-reconciliation-row">
-            <p><strong>{item.saleId}</strong> — {item.quantity} — {item.resolution === "included_in_count" ? "كان داخل العدد" : "رُبط بمصدر تكلفة"}</p>
+            <p data-testid="reconciliation-history-identity">
+              <strong>{variant ? `${variant.code} — ${variant.nameAr} / ${variant.sizeNameAr} / ${variant.colorNameAr}` : `تعذر مطابقة الصنف ${item.variantId} مع قائمة نقطة البيع المحملة.`}</strong>
+              {" — "}
+              {branchName ? `الفرع: ${branchName}` : "تعذر مطابقة الفرع مع الفروع المتاحة."}
+              {" — "}
+              {item.quantity}
+              {" — "}
+              {item.resolution === "included_in_count" ? "كان داخل العدد" : "رُبط بمصدر تكلفة"}
+            </p>
+            <details>
+              <summary>معرّفات المراجعة</summary>
+              <p>البيع: {item.saleId}</p>
+              <p>الصنف: {item.variantId}</p>
+              <p>الفرع: {item.branchId}</p>
+              <p>التصحيح: {item.correctionId}</p>
+            </details>
             <p>المتاح من {item.previousAvailableQuantity} إلى {item.resultingAvailableQuantity} — {item.resolvedBy.displayName} — {formatDate(item.resolvedAt)}</p>
             {item.batches.length > 0 ? <ul>{item.batches.map((batch) => (
               <li key={`${batch.batchId}-${batch.direction}`}>
@@ -609,9 +714,57 @@ export default function StockCorrectionsPage({ workspace }: { workspace: Workspa
               </li>
             ))}</ul> : null}
           </article>
-        ))}
+          );
+        }) : null}
       </section>
     </main>
+  );
+}
+
+function catalogVariant(catalog: CashierProductLookupDto[], variantId: string) {
+  for (const product of catalog) {
+    const variant = product.variants.find((item) => item.id === variantId);
+    if (!variant) continue;
+    return {
+      code: product.code,
+      nameAr: product.nameAr,
+      sizeNameAr: variant.size.nameAr,
+      colorNameAr: variant.color.nameAr,
+    };
+  }
+  return null;
+}
+
+function branchLabel(workspace: WorkspaceDto, branchId: string) {
+  return workspace.authorizedBranches.find((branch) => branch.id === branchId)?.nameAr
+    ?? (workspace.activeBranch?.id === branchId ? workspace.activeBranch.nameAr : null);
+}
+
+function VariantBranchIdentity({
+  variant,
+  branchName,
+  unresolvedVariantId,
+  audit,
+}: {
+  variant: { code: string; nameAr: string; sizeNameAr: string; colorNameAr: string } | null;
+  branchName: string | null;
+  unresolvedVariantId: string;
+  audit: Array<{ label: string; value: string }>;
+}) {
+  return (
+    <div data-testid="reconciliation-identity">
+      <p>
+        {variant
+          ? `${variant.code} — ${variant.nameAr} / ${variant.sizeNameAr} / ${variant.colorNameAr}`
+          : `تعذر مطابقة الصنف ${unresolvedVariantId} مع قائمة نقطة البيع المحملة.`}
+        {" · "}
+        {branchName ? `الفرع: ${branchName}` : "تعذر مطابقة الفرع مع الفروع المتاحة."}
+      </p>
+      <details>
+        <summary>معرّفات المراجعة</summary>
+        {audit.map((row) => <p key={row.label}>{row.label}: {row.value}</p>)}
+      </details>
+    </div>
   );
 }
 

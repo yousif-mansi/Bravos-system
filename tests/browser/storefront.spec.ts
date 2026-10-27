@@ -187,7 +187,7 @@ test("cart preserves corrupt storage and reports unavailable persistence", async
     window.localStorage.setItem(key, value);
   }, { key: storageKey, value: corruptValue });
   await page.goto("http://127.0.0.1:3001/cart");
-  await expect(page.locator("p[role='alert']")).toContainText("The original data was left unchanged");
+  await expect(page.locator("#main-content").locator("p[role='alert']")).toContainText("The original data was left unchanged");
   await expect.poll(() => page.evaluate((key) => window.localStorage.getItem(key), storageKey)).toBe(corruptValue);
   await expect(page.getByText("Review your selections, then add delivery details to see the final price.", { exact: true })).toHaveCount(0);
 
@@ -197,7 +197,7 @@ test("cart preserves corrupt storage and reports unavailable persistence", async
     Storage.prototype.setItem = () => { throw new DOMException("blocked", "SecurityError"); };
   });
   await blockedPage.goto("http://127.0.0.1:3001/cart");
-  await expect(blockedPage.locator("p[role='alert']")).toContainText("This browser can't save the bag right now");
+  await expect(blockedPage.locator("#main-content").locator("p[role='alert']")).toContainText("This browser can't save the bag right now");
   await expect(blockedPage.getByLabel("Bag not saved")).toBeVisible();
   await expect(blockedPage.getByText("Review your selections, then add delivery details to see the final price.", { exact: true })).toHaveCount(0);
   await blockedPage.close();

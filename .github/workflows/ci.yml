@@ -60,6 +60,8 @@ jobs:
         run: node --check scripts/measure-storefront-performance.mjs
       - name: Run pure performance and bundle guard script tests
         run: node --test tests/scripts/storefront-performance.test.mjs tests/scripts/check-bundles.test.mjs tests/scripts/embedded-postgres-stage-error.test.mjs tests/scripts/windows-postgres-start.test.mjs
+      - name: Check the Windows restricted runner contract
+        run: node --test tests/scripts/windows-restricted-runner.test.mjs
       - name: Check sample catalog intake guards without accessing business data
         run: node --import tsx --test tests/scripts/sample-catalog.test.mjs
       - name: Build API, internal app and storefront; check bundle separation
@@ -89,7 +91,12 @@ jobs:
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
       - name: Run all PostgreSQL and HTTP tests, including migrations
-        run: pnpm test:http
+        shell: pwsh
+        run: |
+          & ./scripts/run-windows-restricted.ps1 -FilePath (Get-Command node).Source -ArgumentList @('--import','tsx','scripts/windows-postgres-smoke.ts')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & ./scripts/run-windows-restricted.ps1 -FilePath (Get-Command node).Source -ArgumentList @('--run','test:http')
+          exit $LASTEXITCODE
 
   browser:
     name: Chromium browser acceptance
@@ -116,5 +123,38 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Install the locked Playwright Chromium
         run: pnpm exec playwright install chromium
+      - name: Allow Next.js typegen writes on storefront checkout files
+        shell: pwsh
+        run: |
+          $root = $env:GITHUB_WORKSPACE
+          if ([string]::IsNullOrWhiteSpace($root)) { throw 'GITHUB_WORKSPACE is required' }
+          $rootFull = [System.IO.Path]::GetFullPath($root)
+          $identity = $null
+          try {
+            $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+            $sid = $identity.User
+            $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($sid, [System.Security.AccessControl.FileSystemRights]::Write, [System.Security.AccessControl.AccessControlType]::Allow)
+            foreach ($rel in @('apps/storefront/tsconfig.json', 'apps/storefront/next-env.d.ts')) {
+              $full = [System.IO.Path]::GetFullPath((Join-Path $rootFull $rel))
+              $prefix = if ($rootFull.EndsWith([char]92)) { $rootFull } else { $rootFull + [char]92 }
+              if (-not $full.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) { throw "Path escaped workspace: $full" }
+              $item = Get-Item -LiteralPath $full -Force
+              if ($item.PSIsContainer -or $item.Attributes.HasFlag([System.IO.FileAttributes]::ReparsePoint) -or $item.Attributes.HasFlag([System.IO.FileAttributes]::Directory)) { throw "Not a regular leaf file: $full" }
+              $acl = Get-Acl -LiteralPath $full
+              Write-Host "file=$full attributes=$($item.Attributes) owner=$($acl.Owner) sddl=$($acl.Sddl)"
+              if ($item.Attributes.HasFlag([System.IO.FileAttributes]::ReadOnly) -or $item.Attributes.HasFlag([System.IO.FileAttributes]::Hidden)) { throw "ReadOnly or Hidden is set on $full; refusing to change attributes" }
+              $fileInfo = New-Object System.IO.FileInfo($full)
+              $writableAcl = [System.IO.FileSystemAclExtensions]::GetAccessControl($fileInfo, [System.Security.AccessControl.AccessControlSections]::Access)
+              $writableAcl.AddAccessRule($rule) | Out-Null
+              [System.IO.FileSystemAclExtensions]::SetAccessControl($fileInfo, $writableAcl)
+            }
+          } finally {
+            if ($identity) { $identity.Dispose() }
+          }
       - name: Run the complete browser suite on its isolated stack
-        run: pnpm test:browser --reporter=line
+        shell: pwsh
+        run: |
+          & ./scripts/run-windows-restricted.ps1 -FilePath (Get-Command node).Source -ArgumentList @('--import','tsx','scripts/windows-postgres-smoke.ts')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & ./scripts/run-windows-restricted.ps1 -FilePath (Get-Command node).Source -ArgumentList @('--run','test:browser','--','--reporter=line')
+          exit $LASTEXITCODE

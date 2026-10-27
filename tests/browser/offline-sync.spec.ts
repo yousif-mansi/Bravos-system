@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page, type Route } from "@playwright/test";
 import { openLookupLists } from "./support/open-lookup-lists";
 
 test("delayed web crypto still saves a local sale and acks two operations in one transaction", async ({ page }) => {
@@ -188,6 +188,8 @@ test("an older acknowledgement that is not in the newer proof still rebases with
   await page.getByRole("button", { name: "تسجيل الخروج" }).click();
   await signInAsCashier(page);
   await expect(page.getByTestId("offline-ready")).toBeVisible({ timeout: 30_000 });
+  const abortPosSnapshots = (route: Route) => route.abort("failed");
+  await context.route("**/api/internal/sales/pos-snapshots", abortPosSnapshots);
   await page.getByRole("link", { name: "البحث عن منتج" }).click();
   await page.route("**/api/internal/sales/prepare", (route) => route.abort("failed"));
   await page.route("**/api/internal/sales", (route) => route.abort("failed"));
@@ -201,7 +203,6 @@ test("an older acknowledgement that is not in the newer proof still rebases with
   const captured: CapturedAccepted[] = [];
   await attachCapturedAccepted(context, captured);
   const workspace = await context.newPage();
-  await workspace.route("**/api/internal/sales/pos-snapshots", (route) => route.abort("failed"));
   await workspace.goto("http://127.0.0.1:5174/workspace");
   await expect.poll(() => captured.length).toBe(1);
   expect(captured[0]?.saleId).toBe(saleB?.id);
@@ -249,7 +250,7 @@ test("an older acknowledgement that is not in the newer proof still rebases with
   });
   expect(afterNewer.effects.some((effect) => effect.operationId === saleC?.operationId)).toBe(true);
   expect((afterNewer.stockCache.availability?.[seed.variantId] ?? 0) - 1).toBe(1);
-  await workspace.unroute("**/api/internal/sales/pos-snapshots");
+  await context.unroute("**/api/internal/sales/pos-snapshots", abortPosSnapshots);
   capturedA?.release();
   await expect.poll(async () => (await readPrivacyState(page)).sales.find((sale) => sale.id === saleA?.id)?.syncStatus).toBe(
     "acknowledged",
