@@ -1,6 +1,8 @@
 .returnLink {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
+  min-width: 44px;
   min-height: 44px;
   margin-top: 8px;
   color: var(--store-ink);

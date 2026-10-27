@@ -185,7 +185,7 @@ test("storefront route presentation remains reachable across supported widths an
       }
       if (route.name === "not-found") {
         await expect(page.getByRole("heading", { name: "Product not found" })).toBeVisible();
-        await expectTargetSize(page.getByRole("link", { name: "Shop" }));
+        await expectTargetSize(page.locator("#main-content").getByRole("link", { name: "Shop", exact: true }));
       }
       await expectTargetCoverage(page);
       const geometry = await page.evaluate(presentationProbe, { marker, address, width });
@@ -399,11 +399,16 @@ function presentationProbe({ marker, address, width }: { marker: string; address
     }
     // A link scrolled fully out of the category rail is not visible content. Keep wrap checks for anything still shown.
     if (railClip.fullyHidden) continue;
+    const titleClamp = productCardTitleClamp(element, style);
+    if (titleClamp.applies && !titleClamp.valid) {
+      violations.push({ kind: "product-title-clamp", text: clip(element), detail: titleClamp.detail });
+    }
+    const omitHorizontalClip = titleClamp.applies && titleClamp.valid;
     const clips = style.overflowX === "hidden" || style.overflowX === "clip";
-    if ((clips || element instanceof HTMLTextAreaElement) && element.scrollWidth > element.clientWidth + 1) {
+    if (!omitHorizontalClip && (clips || element instanceof HTMLTextAreaElement) && element.scrollWidth > element.clientWidth + 1) {
       violations.push({ kind: "clipped-text", text: clip(element), detail: `${element.scrollWidth} > ${element.clientWidth}` });
     }
-    if (style.overflowX === "visible" && element.scrollWidth > element.clientWidth + 1 && element.clientWidth > 0) {
+    if (!omitHorizontalClip && style.overflowX === "visible" && element.scrollWidth > element.clientWidth + 1 && element.clientWidth > 0) {
       violations.push({ kind: "content-wider-than-box", text: clip(element), detail: `${element.scrollWidth} > ${element.clientWidth}` });
     }
   }
@@ -498,6 +503,39 @@ function presentationProbe({ marker, address, width }: { marker: string; address
 
   function clip(element: Element) {
     return (element.textContent || "").trim().replace(/\s+/g, " ").slice(0, 80);
+  }
+
+  // a.product-card h3 is a deliberate two-line clamp. Skip the horizontal scrollWidth check only after the clamp contract holds.
+  function productCardTitleClamp(element: HTMLElement, style: CSSStyleDeclaration) {
+    const none = { applies: false, valid: false, detail: "" };
+    if (element.tagName !== "H3" || !element.matches("a.product-card h3")) return none;
+    const card = element.closest("a.product-card");
+    if (!(card instanceof HTMLAnchorElement) || card.querySelector("h3") !== element) return none;
+    const clamp = (style.getPropertyValue("-webkit-line-clamp") || style.lineClamp || "").trim();
+    const text = (element.textContent || "").replace(/\s+/g, " ").trim();
+    const title = element.getAttribute("title");
+    const maxHeight = Number.parseFloat(style.maxHeight);
+    const lineHeight = Number.parseFloat(style.lineHeight);
+    const height = element.getBoundingClientRect().height;
+    const box = element.getBoundingClientRect();
+    const bounds = [element.parentElement, card]
+      .filter((node): node is HTMLElement => node instanceof HTMLElement)
+      .map((node) => node.getBoundingClientRect());
+    const contained = bounds.length === 2 && bounds.every((limit) => box.left >= limit.left - 1 && box.right <= limit.right + 1 && box.top >= limit.top - 1 && box.bottom <= limit.bottom + 1);
+    const wraps = style.whiteSpace !== "nowrap" && style.whiteSpace !== "pre" && (style.overflowWrap === "anywhere" || style.overflowWrap === "break-word");
+    const orient = style.getPropertyValue("-webkit-box-orient");
+    const reasons: string[] = [];
+    if (clamp !== "2") reasons.push(`clamp ${clamp || "none"}`);
+    if (!text || title !== text) reasons.push("text/title");
+    if (element.getAttribute("dir") !== "auto") reasons.push(`dir ${element.getAttribute("dir") ?? "missing"}`);
+    if (style.textAlign !== "center") reasons.push(`align ${style.textAlign}`);
+    if (!wraps) reasons.push(`wrap ${style.whiteSpace}/${style.overflowWrap}`);
+    if (orient !== "vertical") reasons.push(`clamp orientation ${orient || "missing"}`);
+    if (style.overflowX !== "hidden" && style.overflowX !== "clip") reasons.push(`overflow ${style.overflowX}`);
+    if (!Number.isFinite(maxHeight) || !Number.isFinite(lineHeight) || Math.abs(maxHeight - lineHeight * 2) > 1) reasons.push("two-line max-height");
+    if (!Number.isFinite(maxHeight) || Math.abs(height - maxHeight) > 1) reasons.push(`height ${Math.round(height)}`);
+    if (!contained) reasons.push("box");
+    return { applies: true, valid: reasons.length === 0, detail: reasons.join(", ") };
   }
 
   // CollectionControls renders nav "Filter by category" with overflow-x auto. Focus scrolls a clipped link into that rail.

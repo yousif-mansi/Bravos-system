@@ -27,6 +27,14 @@ test(`keyboard at ${width}px reaches gallery, cart recovery actions and checkout
     await expect(cover).toHaveAttribute("alt", "");
     await expect.poll(() => cover.evaluate((img: HTMLImageElement) => [img.naturalWidth, img.naturalHeight])).toEqual([2048, 774]);
     await expect(hero.locator("a, button, p")).toHaveCount(0);
+    await cover.evaluate(async (img: HTMLImageElement) => {
+      const targets = [img, img.parentElement].filter((node): node is Element => node instanceof Element);
+      const finite = targets.flatMap((node) => node.getAnimations()).filter((animation) => {
+        const iterations = animation.effect?.getComputedTiming().iterations;
+        return iterations === undefined || Number.isFinite(iterations);
+      });
+      await Promise.all(finite.map((animation) => animation.finished));
+    });
     const coverBox = await cover.boundingBox();
     expect(coverBox).not.toBeNull();
     expect(coverBox!.width).toBeLessThanOrEqual(width);

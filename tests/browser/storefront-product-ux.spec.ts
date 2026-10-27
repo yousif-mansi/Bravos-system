@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page, type TestInfo } from "@playwright/test";
 
 const STAFF = "http://127.0.0.1:5174";
 const STORE = "http://127.0.0.1:3001";
@@ -15,7 +15,7 @@ test("collection heading follows category and clearing filters restores the cate
   await expect(page.getByRole("link", { name: `Remove category: ${product.category.nameAr}`, exact: true })).toBeVisible();
   await page.getByRole("link", { name: "Clear category", exact: true }).click();
   const catalogTitle = page.locator("#catalog-title");
-  await expect(page.locator("#catalog-title")).toHaveText("Shop by category");
+  await expectCatalogTitle(catalogTitle, "Shop by category", testInfo);
   await expect(page).toHaveURL(`${STORE}/#catalog-title`);
   await expect.poll(async () => catalogTitle.evaluate((element) => {
     const box = element.getBoundingClientRect();
@@ -72,14 +72,14 @@ test("collection heading follows category and clearing filters restores the cate
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goBack();
   await expect(page).toHaveURL(`${STORE}/?category=${product.category.id}`);
-  await expect(page.locator("#catalog-title")).toHaveText(product.category.nameAr);
+  await expectCatalogTitle(page.locator("#catalog-title"), product.category.nameAr, testInfo);
   await page.goForward();
   await expect(page).toHaveURL(`${STORE}/#catalog-title`);
-  await expect(page.locator("#catalog-title")).toHaveText("Shop by category");
+  await expectCatalogTitle(page.locator("#catalog-title"), "Shop by category", testInfo);
   for (const categoryId of ["stale-category", crypto.randomUUID()]) {
     await page.goto(`${STORE}/?category=${categoryId}`);
     await expect(page.getByRole("region", { name: "Products", exact: true })).toHaveCount(0);
-    await expect(page.locator("#catalog-title")).toHaveText("Unavailable category");
+    await expectCatalogTitle(page.locator("#catalog-title"), "Unavailable category", testInfo);
     await expect(page.getByRole("heading", { name: "No matching products", exact: true })).toBeVisible();
     await expect(page.getByRole("link", { name: "Remove category: Unavailable category", exact: true })).toBeVisible();
     const recovery = page.getByRole("link", { name: "Categories", exact: true });
@@ -87,7 +87,7 @@ test("collection heading follows category and clearing filters restores the cate
     await expect(page.getByRole("link", { name: "Clear category", exact: true })).toBeVisible();
     await recovery.click();
     await expect(page).toHaveURL(`${STORE}/#catalog-title`);
-    await expect(page.locator("#catalog-title")).toHaveText("Shop by category");
+    await expectCatalogTitle(page.locator("#catalog-title"), "Shop by category", testInfo);
   }
 });
 
@@ -272,6 +272,51 @@ test("missing delivery areas explain the blocked decision before customer fields
     for (const area of active) expect((await staffApi(page, "PUT", `/api/internal/delivery-areas/${area.id}`, { nameAr: area.nameAr, feePiasters: area.feePiasters, active: true })).status).toBe(200);
   }
 });
+
+async function expectCatalogTitle(locator: Locator, text: string, testInfo: TestInfo) {
+  try {
+    await expect(locator).toHaveCount(1);
+    await expect(locator).toHaveText(text);
+  } catch (error) {
+    const diagnostic = await locator.evaluateAll((nodes) => nodes.map((node) => {
+      const element = node as HTMLElement;
+      const hiddenAncestor = element.closest("[hidden], [inert]");
+      let ancestor: HTMLElement | null = element;
+      const ancestors: Array<{ tag: string; id: string; className: string; hidden: boolean; inert: boolean; display: string; visibility: string; contentVisibility: string }> = [];
+      while (ancestor) {
+        const style = getComputedStyle(ancestor);
+        ancestors.push({
+          tag: ancestor.tagName,
+          id: ancestor.id,
+          className: ancestor.className,
+          hidden: ancestor.hidden,
+          inert: ancestor.inert,
+          display: style.display,
+          visibility: style.visibility,
+          contentVisibility: style.contentVisibility,
+        });
+        ancestor = ancestor.parentElement;
+      }
+      const box = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return {
+        outerHTML: element.outerHTML,
+        rect: { x: box.x, y: box.y, width: box.width, height: box.height },
+        visibility: style.visibility,
+        display: style.display,
+        contentVisibility: style.contentVisibility,
+        hidden: element.hidden,
+        closestHiddenOrInert: hiddenAncestor instanceof HTMLElement ? hiddenAncestor.outerHTML.slice(0, 500) : null,
+        ancestors,
+      };
+    })).catch((diagnosticError: unknown) => ({ diagnosticError: String(diagnosticError) }));
+    await testInfo.attach("catalog-title-nodes", {
+      body: JSON.stringify(diagnostic, null, 2),
+      contentType: "application/json",
+    });
+    throw error;
+  }
+}
 
 async function setup(page: Page) {
   await page.goto(`${STAFF}/login`);
