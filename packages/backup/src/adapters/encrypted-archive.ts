@@ -5,8 +5,8 @@ import {
   randomBytes,
   scrypt as nodeScrypt,
 } from "node:crypto";
-import { BACKUP_SECTION_NAMES, type BackupSectionName } from "@bravos/contracts";
-import { BACKUP_TABLE_SECTIONS, EXPECTED_BACKUP_TABLES } from "../application/backup.ts";
+import { BACKUP_SECTION_NAMES, OPERATIONAL_STOCK_SCHEMA, type BackupSectionName } from "@bravos/contracts";
+import { BACKUP_TABLE_SECTIONS, KNOWN_BACKUP_SCHEMAS, RECEIPT_NUMBERING_SCHEMA, expectedBackupTables } from "../application/backup.ts";
 import type { BackupCryptoPort, DecodedBackupArchive } from "../application/ports.ts";
 import { canonicalJson, canonicalJsonUtf8ByteLength } from "../domain/canonical-json.ts";
 import { BackupArchiveError } from "../domain/errors.ts";
@@ -188,15 +188,11 @@ function validatePayload(value: unknown): DecodedBackupArchive {
   validateKnownTills(manifest.knownUnsynchronizedTills);
   // Format 1 retains explicit schema profiles. A previous schema can be authenticated and
   // diagnosed by restore, but cannot be silently interpreted as the current schema.
-  const knownSchemas = [
-    "028_aggregate_analytics.sql", "029_restore.sql", "030_branch_inventory.sql",
-    "031_sale_payments.sql", "032_catalog_online_variants.sql",
-    "033_human_references.sql", "034_order_recognition_branch.sql", "035_return_reason.sql",
-  ];
-  const schemaNumber = knownSchemas.indexOf(manifest.schemaVersion as string) + 28;
-  if (schemaNumber < 28) {
+  const schemaIndex = (KNOWN_BACKUP_SCHEMAS as readonly string[]).indexOf(manifest.schemaVersion as string);
+  if (schemaIndex < 0) {
     throw new Error("Unsupported backup schema version. Use a backup made by a compatible server.");
   }
+  const schemaNumber = schemaIndex + 28;
   const legacy028 = manifest.schemaVersion === "028_aggregate_analytics.sql" && manifest.sourceGeneration === null;
   const generationAware = schemaNumber >= 29 && isCount(manifest.sourceGeneration);
   if (!legacy028 && !generationAware) throw new Error("Unsupported backup schema or generation profile.");
@@ -207,9 +203,10 @@ function validatePayload(value: unknown): DecodedBackupArchive {
   } else if ("salesSaleReferenceSequence" in manifest || "returnsReturnReferenceSequence" in manifest) {
     throw new Error("Backup reference sequences do not match its schema version.");
   }
-  const expectedTables = new Set([...EXPECTED_BACKUP_TABLES].filter((name) =>
-    !(legacy028 && name === "sales_restore_deferred_completion")
-    && !(schemaNumber < 30 && name === "inventory_batch_balance")));
+  const expectedTables = expectedBackupTables(
+    manifest.schemaVersion as string,
+    legacy028 ? null : manifest.sourceGeneration as number,
+  );
   const data = value.data;
   const sectionKeys = Object.keys(data);
   if (sectionKeys.length !== BACKUP_SECTION_NAMES.length || BACKUP_SECTION_NAMES.some((name) => !isRecord(data[name]))) {
@@ -246,6 +243,7 @@ function validatePayload(value: unknown): DecodedBackupArchive {
     }
     total += sectionCount;
   }
+  validateReceiptProfile(manifest, data);
   if (seenTables.size !== expectedTables.size || [...expectedTables].some((name) => !seenTables.has(name))
     || manifest.totalRecordCount !== total) {
     throw new Error("Backup table inventory or total count is incomplete.");
@@ -254,6 +252,129 @@ function validatePayload(value: unknown): DecodedBackupArchive {
   validateActorProjection((data.identity as Record<string, unknown>).identity_actor);
   return value as unknown as DecodedBackupArchive;
 }
+
+const RECEIPT_REGISTRY_FIELDS = ["created_at", "created_by_staff_id", "device_id", "id", "prefix", "restore_generation"];
+const BIGINT_MAX = 9223372036854775807n;
+const RECEIPT_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function validateReceiptProfile(manifest: Record<string, unknown>, data: Record<string, unknown>): void {
+  const sales = data.sales;
+  if (!isRecord(sales) || !Array.isArray(sales.sales_sale)) throw new Error("Missing sales table for receipt profile validation.");
+  const registryPresent = Object.prototype.hasOwnProperty.call(sales, "sales_receipt_registration");
+  const sequencePresent = Object.prototype.hasOwnProperty.call(manifest, "salesReceiptPrefixSequence");
+  if (manifest.schemaVersion === RECEIPT_NUMBERING_SCHEMA || manifest.schemaVersion === OPERATIONAL_STOCK_SCHEMA) {
+    if (!registryPresent) throw new Error("Receipt numbering backup is missing sales_receipt_registration.");
+    validateRegistryRows(sales.sales_receipt_registration);
+    if (!sequencePresent) throw new Error("Receipt numbering backup is missing the receipt prefix sequence.");
+    validateReceiptPrefixSequence(manifest.salesReceiptPrefixSequence);
+    validateSaleReceiptIdentities(sales.sales_sale, "required");
+    return;
+  }
+  if (registryPresent) throw new Error("Historical backup must not contain sales_receipt_registration.");
+  if (sequencePresent) throw new Error("Historical backup must not contain a receipt prefix sequence.");
+  validateSaleReceiptIdentities(sales.sales_sale, "forbidden");
+}
+
+function validateReceiptPrefixSequence(value: unknown): void {
+  if (!isRecord(value) || Object.keys(value).length !== 2
+    || typeof value.lastValue !== "string" || !isCanonicalBigint(value.lastValue, 1n)
+    || typeof value.isCalled !== "boolean") {
+    throw new Error("Invalid receipt prefix sequence in backup manifest.");
+  }
+}
+
+function validateSaleReceiptIdentities(value: unknown[], mode: "required" | "forbidden"): void {
+  for (const row of value) {
+    if (!isRecord(row)) throw new Error("Invalid sales row in backup.");
+    const present = Object.prototype.hasOwnProperty.call(row, "receipt_identity");
+    if (mode === "forbidden") {
+      if (present) throw new Error("Historical sale row must not contain receipt_identity.");
+      continue;
+    }
+    if (!present) throw new Error("Receipt numbering sale row is missing receipt_identity.");
+    validateReceiptIdentity(row.receipt_identity);
+  }
+}
+
+function validateReceiptIdentity(value: unknown): void {
+  if (value === null) return;
+  if (!isRecord(value) || (value.status !== "assigned" && value.status !== "conflict")) {
+    throw new Error("Invalid receipt identity in backup.");
+  }
+  if (value.status === "conflict") {
+    if (Object.prototype.hasOwnProperty.call(value, "reference") && !isAllowedConflictReference(value.reference)) {
+      throw new Error("Invalid receipt identity in backup.");
+    }
+    return;
+  }
+  if (typeof value.registrationId !== "string" || !RECEIPT_UUID.test(value.registrationId)
+    || typeof value.deviceId !== "string" || !RECEIPT_UUID.test(value.deviceId)
+    || typeof value.prefix !== "string" || !isCanonicalBigint(value.prefix, 1n)
+    || typeof value.sequence !== "string" || !isCanonicalDecimal(value.sequence)
+    || value.reference !== canonicalReceiptReference(value.prefix, value.sequence)) {
+    throw new Error("Invalid receipt identity in backup.");
+  }
+}
+
+function validateRegistryRows(value: unknown): void {
+  if (!Array.isArray(value)) throw new Error("Invalid receipt registration row in backup.");
+  const ids = new Set<string>();
+  const prefixes = new Set<string>();
+  for (const row of value) {
+    if (!isRecord(row)) throw new Error("Invalid receipt registration row in backup.");
+    const keys = Object.keys(row).sort();
+    if (keys.length !== RECEIPT_REGISTRY_FIELDS.length || keys.some((key, index) => key !== RECEIPT_REGISTRY_FIELDS[index])) {
+      throw new Error("Invalid receipt registration row in backup.");
+    }
+    if (typeof row.id !== "string" || !RECEIPT_UUID.test(row.id)
+      || typeof row.device_id !== "string" || !RECEIPT_UUID.test(row.device_id)
+      || typeof row.prefix !== "string" || !isCanonicalBigint(row.prefix, 1n)
+      || typeof row.created_at !== "string" || row.created_at.length === 0 || CONTROL_CHARS.test(row.created_at)
+      || typeof row.created_by_staff_id !== "string" || row.created_by_staff_id.length === 0 || CONTROL_CHARS.test(row.created_by_staff_id)
+      || typeof row.restore_generation !== "string" || !isCanonicalBigint(row.restore_generation, 0n)) {
+      throw new Error("Invalid receipt registration row in backup.");
+    }
+    const id = row.id.toLowerCase();
+    if (ids.has(id) || prefixes.has(row.prefix)) throw new Error("Invalid receipt registration row in backup.");
+    ids.add(id);
+    prefixes.add(row.prefix);
+  }
+}
+
+function isAllowedConflictReference(value: unknown): boolean {
+  if (value === null) return true;
+  if (typeof value !== "string" || CONTROL_CHARS.test(value)) return false;
+  // A canonical printed claim is kept at its full length. Other text stays within the sanitized 80-character claim.
+  if (isCanonicalReceiptReference(value)) return true;
+  const length = [...value].length;
+  return length >= 1 && length <= 80;
+}
+
+function isCanonicalDecimal(value: string): boolean {
+  return /^[1-9][0-9]*$/.test(value);
+}
+
+function isCanonicalReceiptReference(value: string): boolean {
+  const match = /^BRV-(\d{3,})-(\d{6,})$/.exec(value);
+  const prefix = match?.[1]?.replace(/^0+/, "");
+  const sequence = match?.[2]?.replace(/^0+/, "");
+  if (!prefix || !sequence || !isCanonicalDecimal(prefix) || !isCanonicalDecimal(sequence)) return false;
+  return value === canonicalReceiptReference(prefix, sequence);
+}
+
+function canonicalReceiptReference(prefix: string, sequence: string): string {
+  const prefixText = prefix.length >= 3 ? prefix : prefix.padStart(3, "0");
+  const sequenceText = sequence.length >= 6 ? sequence : sequence.padStart(6, "0");
+  return `BRV-${prefixText}-${sequenceText}`;
+}
+
+function isCanonicalBigint(value: string, min: bigint): boolean {
+  if (!/^(0|[1-9]\d*)$/.test(value)) return false;
+  const parsed = BigInt(value);
+  return parsed >= min && parsed <= BIGINT_MAX;
+}
+
+const CONTROL_CHARS = /[\u0000-\u001F\u007F]/;
 
 function validateReferenceSequence(value: unknown, label: string): void {
   if (!isRecord(value) || Object.keys(value).length !== 2

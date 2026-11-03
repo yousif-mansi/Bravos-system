@@ -2,15 +2,23 @@ import { useEffect, useRef, useState } from "react";
 import type { SaleDto } from "@bravos/contracts";
 import { accountGeneration } from "../account-session.ts";
 import { formatEgpFromPiasters } from "../money.ts";
+import { customerReceiptNumber, RECEIPT_NUMBER_CONFLICT } from "../receipt-number.ts";
 import {
   printSaleReceipt,
   receiptPhoneWarning,
   ReceiptPrintError,
   resolveReceiptOptions,
+  type ReceiptPrintResult,
 } from "../receipts/index.ts";
 
 const RECEIPT_PRINT_REQUESTED =
   "تم طلب طباعة الإيصال. إذا لم يخرج، يمكنك إعادة الطباعة.";
+const RECEIPT_CONNECTOR_SUBMITTED =
+  "أُرسل الإيصال إلى طابعة الإيصالات. هذا تسليم لبرنامج الطباعة فقط، وليس خروج الورق. إذا لم يخرج، تحقق من الطابعة ثم أعد الطباعة.";
+
+export function receiptPrintStatus(result: ReceiptPrintResult): string {
+  return result.channel === "connector" ? RECEIPT_CONNECTOR_SUBMITTED : RECEIPT_PRINT_REQUESTED;
+}
 
 export function receiptPrintFailureMessage(error: unknown): string {
   if (error instanceof ReceiptPrintError) {
@@ -19,8 +27,11 @@ export function receiptPrintFailureMessage(error: unknown): string {
   return "تعذرت طباعة الإيصال. البيع محفوظ. يمكنك إعادة طباعة الإيصال.";
 }
 
-export async function printCompletedBranchReceipt(sale: SaleDto): Promise<void> {
-  await printSaleReceipt(sale);
+export async function printCompletedBranchReceipt(
+  sale: SaleDto,
+  onProgress?: (message: string) => void,
+): Promise<ReceiptPrintResult> {
+  return onProgress ? printSaleReceipt(sale, {}, onProgress) : printSaleReceipt(sale);
 }
 
 export function SaleSummary({
@@ -59,11 +70,13 @@ export function SaleSummary({
     setPrintStatus("جارٍ تجهيز الإيصال…");
     setPrinting(true);
     try {
-      await printCompletedBranchReceipt(sale);
+      const result = await printCompletedBranchReceipt(sale, (message) => {
+        if (jobLive()) setPrintStatus(message);
+      });
       if (!jobLive()) {
         return;
       }
-      setPrintStatus(RECEIPT_PRINT_REQUESTED);
+      setPrintStatus(receiptPrintStatus(result));
     } catch (caught) {
       if (!jobLive()) {
         return;
@@ -80,7 +93,12 @@ export function SaleSummary({
   return (
     <section className="card" data-testid="sale-details">
       <h2>تفاصيل البيع</h2>
-      <p>{sale.reference ? `رقم البيع: ${sale.reference}` : `رقم مؤقت لحين المزامنة: ${sale.operationId}`}</p>
+      <p>رقم الإيصال: {customerReceiptNumber({
+        receiptReference: sale.receiptReference ?? null,
+        reference: sale.reference,
+        blockedIds: [sale.id, sale.operationId],
+      })}</p>
+      {sale.receiptNumberingConflict ? <p data-testid="receipt-number-conflict">{RECEIPT_NUMBER_CONFLICT}</p> : null}
       <p>الموظف: {sale.soldByDisplayName}</p>
       <p>الفرع: {sale.branch.nameAr}</p>
       <p>وقت الحدوث: {formatTime(sale.occurredAt)}</p>

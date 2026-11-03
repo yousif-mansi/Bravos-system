@@ -307,6 +307,7 @@ export function createOnlineOrderServices(ports: {
           lines: accepted.quote.lines.map((line) => ({
             lineId: line.id,
             variantId: line.variantId,
+            productId: line.productId,
             quantity: line.quantity,
           })),
         });
@@ -610,22 +611,29 @@ async function evaluateQuote(
   const area = await store.getArea(request.deliveryAreaId);
   if (!area?.active) throw new UnsupportedDeliveryAreaError();
   const ids = request.lines.map((line) => line.variantId);
-  const [catalogLines, quantitiesByBranch] = await Promise.all([
-    dependencies.catalog.getLines(ids), availabilityBranchId
-      ? dependencies.inventory.quantitiesFor(availabilityBranchId, ids).then((quantities) => new Map([[availabilityBranchId, quantities]]))
-      : dependencies.inventory.quantitiesByBranchFor(ids),
-  ]);
+  const catalogLines = await dependencies.catalog.getLines(ids);
   const catalogById = new Map(catalogLines.map((line) => [line.variantId, line]));
   for (const line of request.lines) {
     const catalog = catalogById.get(line.variantId);
     if (!catalog || catalog.publication !== "available" || !catalog.onlineVisible) throw new VariantNotOrderableError();
   }
-  if (![...quantitiesByBranch.values()].some((quantities) => request.lines.every(
-    (line) => (quantities.get(line.variantId) ?? 0) >= line.quantity,
-  ))) throw new InsufficientStockError();
-  const quantities = new Map(ids.map((variantId) => [variantId, Math.max(0,
-    ...[...quantitiesByBranch.values()].map((branch) => branch.get(variantId) ?? 0),
-  )]));
+  const demand = new Map<string, number>();
+  for (const line of request.lines) {
+    const productId = catalogById.get(line.variantId)!.productId;
+    demand.set(productId, (demand.get(productId) ?? 0) + line.quantity);
+  }
+  const productIds = [...demand.keys()];
+  const poolsByBranch = availabilityBranchId
+    ? new Map([[availabilityBranchId, await dependencies.inventory.productQuantitiesFor(availabilityBranchId, productIds)]])
+    : await dependencies.inventory.productQuantitiesByRetailBranch(productIds);
+  const canFulfill = [...poolsByBranch.values()].some((pools) =>
+    [...demand.entries()].every(([productId, quantity]) => (pools.get(productId) ?? 0) >= quantity),
+  );
+  if (!canFulfill) throw new InsufficientStockError();
+  const quantities = new Map(ids.map((variantId) => {
+    const productId = catalogById.get(variantId)!.productId;
+    return [variantId, Math.max(0, ...[...poolsByBranch.values()].map((branch) => branch.get(productId) ?? 0))];
+  }));
   const pricingLines = request.lines.map((line) => {
     const catalog = catalogById.get(line.variantId)!;
     return { variantId: line.variantId, productId: catalog.productId, categoryId: catalog.categoryId,

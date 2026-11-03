@@ -1,4 +1,5 @@
-import type { ReceiptDto } from "@bravos/contracts";
+import { WAREHOUSE_BRANCH_ID, type ReceiptDto, type SupplierDto, type SupplierPurchaseDto } from "@bravos/contracts";
+import type { ReceivePayload } from "@bravos/inventory";
 import {
   ForbiddenError,
   isManager,
@@ -21,8 +22,9 @@ import type {
   VerifiedAuth,
 } from "./ports.ts";
 
-const RECEIPT_KEYS = new Set(["operationId", "branchId", "receiptDate", "lines"]);
-const LINE_KEYS = new Set(["variantId", "quantity", "unitCostPiasters"]);
+const RECEIPT_KEYS = new Set(["operationId", "branchId", "receiptDate", "lines", "supplierId"]);
+const VARIANT_LINE_KEYS = new Set(["variantId", "quantity", "unitCostPiasters"]);
+const PRODUCT_LINE_KEYS = new Set(["productId", "quantity", "unitCostPiasters"]);
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
 
@@ -78,6 +80,8 @@ export function createReceivingServices(ports: {
       id: record.id,
       branchId: record.branchId,
       operationId: record.operationId,
+      supplierId: record.supplierId,
+      supplierNameAr: record.supplierNameAr,
       receiptDate: record.receiptDate,
       receivedByStaffId: record.receivedByStaffId,
       recordedAt: record.recordedAt.toISOString(),
@@ -149,12 +153,13 @@ export function createReceivingServices(ports: {
     async finalize(auth: VerifiedAuth | null, input: unknown): Promise<FinalizeReceiptResult> {
       const staff = await requireManager(auth);
       const command = parseReceiptWrite(input);
+      const payload = receivePayload(command);
 
       const outcome = await ports.uow.run(async (tx) => {
         await tx.inventory.lockStockClock("update");
         const claimed = await tx.inventory.claimReceiveOperation({
           operationId: command.operationId,
-          payload: { branchId: command.branchId, receiptDate: command.receiptDate, lines: command.lines },
+          payload,
           actorStaffId: staff.id,
         });
         if (claimed.kind === "replay") {
@@ -165,11 +170,22 @@ export function createReceivingServices(ports: {
           return { record: existing, created: false };
         }
         await tx.inventory.assertStockMutationAllowed();
+        if (command.supplierId && !await tx.references.supplierName(command.supplierId)) {
+          throw new ReceivingValidationError("المورد المحدد غير موجود.");
+        }
 
         const receiptId = crypto.randomUUID();
-        const prepared = command.lines.map((line) => ({
-          ...line,
-          id: crypto.randomUUID(),
+        const prepared = await Promise.all(command.lines.map(async (line) => {
+          const variantId = line.kind === "variant"
+            ? line.variantId
+            : await tx.references.operationalVariantId(line.productId);
+          if (!variantId) throw new ReceivingValidationError("المنتج المحدد غير موجود.");
+          return {
+            id: crypto.randomUUID(),
+            variantId,
+            quantity: line.quantity,
+            unitCostPiasters: line.unitCostPiasters,
+          };
         }));
         const batches = await tx.inventory.receiveBatches({
           branchId: command.branchId,
@@ -202,6 +218,7 @@ export function createReceivingServices(ports: {
           id: receiptId,
           branchId: command.branchId,
           operationId: command.operationId,
+          supplierId: command.supplierId,
           receiptDate: command.receiptDate,
           receivedByStaffId: staff.id,
           recordedAt: claimed.recordedAt,
@@ -309,6 +326,49 @@ export function createReceivingServices(ports: {
       return Promise.all(rows.map((row) => hydrate(row)));
     },
 
+    async listSuppliers(auth: VerifiedAuth | null): Promise<SupplierDto[]> {
+      await requireManager(auth);
+      return ports.receipts.listSuppliers();
+    },
+
+    async createSupplier(auth: VerifiedAuth | null, input: unknown): Promise<SupplierDto> {
+      const staff = await requireManager(auth);
+      const body = expectObject(input, "بيانات المورد غير صالحة.");
+      assertAllowedKeys(body, new Set(["nameAr"]), "بيانات المورد غير صالحة.");
+      const nameAr = parseSupplierName(body.nameAr);
+      const created = await ports.receipts.insertSupplier({
+        id: crypto.randomUUID(),
+        nameAr,
+        nameKey: nameAr.toLocaleLowerCase("ar-EG"),
+        actorStaffId: staff.id,
+      });
+      if (created === "duplicate") throw new ReceivingValidationError("المورد موجود بالفعل.");
+      return created;
+    },
+
+    async listPurchases(auth: VerifiedAuth | null, supplierId: string | null): Promise<SupplierPurchaseDto[]> {
+      await requireManager(auth);
+      const filter = supplierId === null ? null : assertUuid(supplierId, "المورد المحدد غير موجود.");
+      const rows = await ports.receipts.list();
+      const receipts = await Promise.all(rows.map((row) => hydrate(row)));
+      return receipts.filter((receipt) => filter === null || receipt.supplierId === filter).map((receipt) => ({
+        receiptId: receipt.id,
+        supplierId: receipt.supplierId,
+        supplierNameAr: receipt.supplierNameAr,
+        receiptDate: receipt.receiptDate,
+        branchId: receipt.branchId,
+        totalCostPiasters: receipt.lines.reduce(
+          (sum, line) => checkedCost(sum, line.effectiveQuantity, line.effectiveUnitCostPiasters),
+          0,
+        ),
+        products: receipt.lines.map((line) => ({
+          nameAr: line.variant.product.nameAr,
+          quantity: line.effectiveQuantity,
+          unitCostPiasters: line.effectiveUnitCostPiasters,
+        })),
+      }));
+    },
+
     async get(auth: VerifiedAuth | null, id: string): Promise<ReceiptDto> {
       await requireManager(auth);
       const receiptId = assertUuid(id, "إذن الاستلام غير موجود.");
@@ -391,31 +451,81 @@ async function sha256(value: string): Promise<string> {
   return Array.from(new Uint8Array(digest), (item) => item.toString(16).padStart(2, "0")).join("");
 }
 
+type ParsedReceiptLine =
+  | { kind: "variant"; variantId: string; quantity: number; unitCostPiasters: number }
+  | { kind: "product"; productId: string; quantity: number; unitCostPiasters: number };
+
 function parseReceiptWrite(input: unknown): {
   operationId: string;
   branchId: string;
+  supplierId: string | null;
   receiptDate: string;
-  lines: Array<{ variantId: string; quantity: number; unitCostPiasters: number }>;
+  lines: ParsedReceiptLine[];
 } {
   const body = expectObject(input, "بيانات الاستلام غير صالحة.");
   assertAllowedKeys(body, RECEIPT_KEYS, "بيانات الاستلام غير صالحة.");
   if (!Array.isArray(body.lines) || body.lines.length === 0) {
     throw new ReceivingValidationError("يجب تحديد صنف واحد على الأقل.");
   }
+  const lines = body.lines.map(parseReceiptLine);
+  const productIntake = lines[0]?.kind === "product";
+  if (lines.some((line) => (line.kind === "product") !== productIntake)) {
+    throw new ReceivingValidationError("بيانات صنف الاستلام غير صالحة.");
+  }
+  const branchId = assertUuid(body.branchId, "فرع الاستلام غير صالح.");
+  if (productIntake && branchId !== WAREHOUSE_BRANCH_ID) {
+    throw new ReceivingValidationError("استلام المنتج يدخل المخزن المركزي فقط.");
+  }
   return {
     operationId: assertUuid(body.operationId, "معرّف العملية غير صالح."),
-    branchId: assertUuid(body.branchId, "فرع الاستلام غير صالح."),
+    branchId,
+    supplierId: body.supplierId === undefined || body.supplierId === null
+      ? null
+      : assertUuid(body.supplierId, "المورد المحدد غير موجود."),
     receiptDate: assertCairoDate(body.receiptDate),
-    lines: body.lines.map((item) => {
-      const line = expectObject(item, "بيانات صنف الاستلام غير صالحة.");
-      assertAllowedKeys(line, LINE_KEYS, "بيانات صنف الاستلام غير صالحة.");
-      return {
-        variantId: assertUuid(line.variantId, "المتغير المحدد غير موجود."),
-        quantity: assertQuantity(line.quantity, "الكمية غير صالحة."),
-        unitCostPiasters: assertPiasters(line.unitCostPiasters, "تكلفة الشراء غير صالحة."),
-      };
-    }),
+    lines,
   };
+}
+
+function parseReceiptLine(item: unknown): ParsedReceiptLine {
+  const line = expectObject(item, "بيانات صنف الاستلام غير صالحة.");
+  const productLine = Object.prototype.hasOwnProperty.call(line, "productId");
+  assertAllowedKeys(line, productLine ? PRODUCT_LINE_KEYS : VARIANT_LINE_KEYS, "بيانات صنف الاستلام غير صالحة.");
+  const quantity = assertQuantity(line.quantity, "الكمية غير صالحة.");
+  const unitCostPiasters = assertPiasters(line.unitCostPiasters, "تكلفة الشراء غير صالحة.");
+  if (productLine) {
+    return { kind: "product", productId: assertUuid(line.productId, "المنتج المحدد غير موجود."), quantity, unitCostPiasters };
+  }
+  return { kind: "variant", variantId: assertUuid(line.variantId, "المتغير المحدد غير موجود."), quantity, unitCostPiasters };
+}
+
+function receivePayload(command: ReturnType<typeof parseReceiptWrite>): ReceivePayload {
+  const lines = command.lines[0]?.kind === "product"
+    ? command.lines.flatMap((line) => line.kind === "product"
+      ? [{ productId: line.productId, quantity: line.quantity, unitCostPiasters: line.unitCostPiasters }]
+      : [])
+    : command.lines.flatMap((line) => line.kind === "variant"
+      ? [{ variantId: line.variantId, quantity: line.quantity, unitCostPiasters: line.unitCostPiasters }]
+      : []);
+  return {
+    branchId: command.branchId,
+    receiptDate: command.receiptDate,
+    lines,
+    ...(command.supplierId ? { supplierId: command.supplierId } : {}),
+  };
+}
+
+function parseSupplierName(value: unknown): string {
+  if (typeof value !== "string") throw new ReceivingValidationError("اسم المورد غير صالح.");
+  const name = value.trim();
+  if ([...name].length < 1 || [...name].length > 80) throw new ReceivingValidationError("اسم المورد غير صالح.");
+  return name;
+}
+
+function checkedCost(sum: number, quantity: number, unitCostPiasters: number): number {
+  const next = sum + quantity * unitCostPiasters;
+  if (!Number.isSafeInteger(next)) throw new ReceivingValidationError("تعذر حساب تكلفة المشترى.");
+  return next;
 }
 
 function assertCairoDate(value: unknown): string {

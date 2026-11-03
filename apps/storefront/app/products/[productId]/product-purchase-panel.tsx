@@ -38,8 +38,8 @@ export function ProductPurchasePanel({ product, gallery, introduction, sizeGuide
   const colors = colorChoices(product.variants);
   const sizes = selected ? sizesForColor(product.variants, selected.color.id) : [];
   const alreadyInCart = useMemo(
-    () => cart.items.find((item) => item.variantId === variantId)?.quantity ?? 0,
-    [cart.items, variantId],
+    () => cart.items.reduce((sum, item) => sum + (item.productId === product.id ? item.quantity : 0), 0),
+    [cart.items, product.id],
   );
   const remaining = Math.max(0, (selected?.availableQuantity ?? 0) - alreadyInCart);
   const addDisabled = !product.orderable || !selected || remaining === 0 || !Number.isInteger(quantity) || quantity < 1 || quantity > remaining || adding;
@@ -138,14 +138,14 @@ export function ProductPurchasePanel({ product, gallery, introduction, sizeGuide
             ) : (
               <p className={styles.pricePrompt}>
                 {product.variants.length > 0
-                  ? "Each size and color keeps its own price. None can be ordered."
+                  ? "Size and color share one price and one available quantity. None can be ordered."
                   : "No size and color can be ordered."}
               </p>
             )}
           </div>
           {selected ? (
             <>
-              <p className={styles.selectionHint}>Choose a color, then a size.</p>
+              <p className={styles.selectionHint}>Choose a color, then a size. Every option uses the same available quantity.</p>
               <fieldset className={styles.choiceGroup} disabled={!product.orderable}>
                 <legend className={styles.choiceLegend}>Color</legend>
                 <div className={styles.choiceList}>

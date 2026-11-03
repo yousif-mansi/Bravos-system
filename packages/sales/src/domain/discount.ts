@@ -24,6 +24,9 @@ export type VariantLineAllocation = {
   automaticOfferDiscountPiasters: number;
   couponDiscountPiasters: number;
   employeeDiscountPiasters: number;
+  acceptedMinimumUnitPiasters?: number | null;
+  // Set only for the operational variant so allocation can include historical batches.
+  stockProductId?: string;
   units: Array<{
     unitIndex: number;
     quantity: number;
@@ -379,6 +382,43 @@ export function priceSaleLines(
       addMoney(couponDiscountPiasters, employeeDiscountPiasters),
     ),
   };
+}
+
+// Called after priceSaleLines has merged repeated lines. A missing floor is the old-queue path.
+// Zero is a real floor. The requested discount is never rewritten.
+export function assertUnitFloors(
+  lines: Array<{ variantId: string; units: Array<{ paidPiasters: number; quantity: number }> }>,
+  floors: ReadonlyMap<string, number | null | undefined>,
+): void {
+  for (const line of lines) {
+    const floor = floors.get(line.variantId);
+    if (typeof floor !== "number") continue;
+    for (const unit of line.units) {
+      if (!Number.isSafeInteger(unit.quantity) || unit.quantity < 1) continue;
+      const paidPerUnit = Math.floor((unit.paidPiasters * unit.quantity) / unit.quantity);
+      if (paidPerUnit < floor) {
+        throw new SalesValidationError(
+          `الخصم المطلوب ينزل سعر القطعة عن الحد الأدنى للبيع (${formatMinimumPounds(floor)} جنيه). لم يتم تغيير الخصم.`,
+        );
+      }
+    }
+  }
+}
+
+export function stampAcceptedFloors<T extends { variantId: string; units: Array<{ paidPiasters: number; quantity: number }> }>(
+  lines: T[],
+  floors: ReadonlyMap<string, number | null | undefined>,
+): Array<T & { acceptedMinimumUnitPiasters: number | null }> {
+  assertUnitFloors(lines, floors);
+  return lines.map((line) => {
+    const floor = floors.get(line.variantId);
+    return { ...line, acceptedMinimumUnitPiasters: typeof floor === "number" ? floor : null };
+  });
+}
+
+function formatMinimumPounds(piasters: number): string {
+  const pounds = piasters / 100;
+  return Number.isInteger(pounds) ? String(pounds) : pounds.toFixed(2);
 }
 
 type EffectRange = {

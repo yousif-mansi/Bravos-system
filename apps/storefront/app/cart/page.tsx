@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import type { PublicProductDto } from "@bravos/contracts/public";
 import { useCart } from "./cart-provider";
 import { CartLine } from "./cart-line";
+import { cartWithinSharedPool, lineQuantityCap } from "./shared-pool";
 import { CartSummary } from "./cart-summary";
 import styles from "./cart.module.css";
 
@@ -114,6 +115,7 @@ export default function CartPage() {
               <CartLine
                 key={item.variantId}
                 item={item}
+                lineCap={lineQuantityCap(cart.items, item.variantId)}
                 onQuantityChange={(variantId, quantity, maximum) => void cart.setQuantity(variantId, quantity, maximum)}
                 onRemove={(variantId) => void cart.remove(variantId)}
               />
@@ -123,7 +125,7 @@ export default function CartPage() {
             itemCount={cart.itemCount}
             merchandiseTotal={total}
             checking={checking}
-            canCheckout={cart.items.every((item) => item.orderable && item.quantity <= item.knownAvailableQuantity)}
+            canCheckout={cartWithinSharedPool(cart.items)}
             onRefresh={() => void revalidateCart()}
           />
         </div>

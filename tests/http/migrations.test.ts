@@ -56,7 +56,7 @@ test("apply, down the latest migration, and reapply works with multiple migratio
       "031_sale_payments.sql",
       "032_catalog_online_variants.sql",
       "033_human_references.sql",
-      "034_order_recognition_branch.sql", "035_return_reason.sql",
+      "034_order_recognition_branch.sql", "035_return_reason.sql", "036_receipt_numbering.sql", "037_operational_stock.sql",
     ]);
     expect(await listAppliedMigrations(pool)).toEqual(first);
     expect(await tableNames(pool)).toEqual(
@@ -419,7 +419,7 @@ test("008 down expands counted unit ranges into one legacy row per ordinal", asy
       "031_sale_payments.sql",
       "032_catalog_online_variants.sql",
       "033_human_references.sql",
-      "034_order_recognition_branch.sql", "035_return_reason.sql",
+      "034_order_recognition_branch.sql", "035_return_reason.sql", "036_receipt_numbering.sql", "037_operational_stock.sql",
     ]);
     const restored = await pool.query<{ unit_index: number; quantity: number; paid_piasters: number }>(
       `SELECT unit_index, quantity, paid_piasters FROM sales_sale_unit ORDER BY unit_index`,
@@ -463,7 +463,7 @@ test("029 refuses to discard restore history or retained sales during rollback",
     expect(await constraintDeferrable(pool, "expense_operation_expense_fk")).toBe(false);
     expect(await applyMigrations(pool)).toEqual([
       "029_restore.sql", "030_branch_inventory.sql", "031_sale_payments.sql",
-      "032_catalog_online_variants.sql", "033_human_references.sql", "034_order_recognition_branch.sql", "035_return_reason.sql",
+      "032_catalog_online_variants.sql", "033_human_references.sql", "034_order_recognition_branch.sql", "035_return_reason.sql", "036_receipt_numbering.sql", "037_operational_stock.sql",
     ]);
     expect(await unguardedBusinessTables(pool)).toEqual([]);
     expect(await constraintDeferrable(pool, "expense_operation_expense_fk")).toBe(true);
@@ -497,7 +497,7 @@ test("028 refuses to discard retained analytics events during rollback", async (
     expect(await applyMigrations(pool)).toEqual([
       "028_aggregate_analytics.sql", "029_restore.sql", "030_branch_inventory.sql",
       "031_sale_payments.sql", "032_catalog_online_variants.sql", "033_human_references.sql",
-      "034_order_recognition_branch.sql", "035_return_reason.sql",
+      "034_order_recognition_branch.sql", "035_return_reason.sql", "036_receipt_numbering.sql", "037_operational_stock.sql",
     ]);
   } finally {
     await pool.end();
@@ -564,7 +564,7 @@ test("020 backfills each legacy till from its latest snapshot without inventing 
       "031_sale_payments.sql",
       "032_catalog_online_variants.sql",
       "033_human_references.sql",
-      "034_order_recognition_branch.sql", "035_return_reason.sql",
+      "034_order_recognition_branch.sql", "035_return_reason.sql", "036_receipt_numbering.sql", "037_operational_stock.sql",
     ]);
     const knownTills = await pool.query<{
       device_id: string;
@@ -762,6 +762,86 @@ test("migration inspection and apply fail closed on a gap in recorded history", 
   }
 });
 
+test("receipt identity check allows SQL NULL and canonical conflict text, and rejects malformed jsonb", async () => {
+  // JSON null is a jsonb value and must fail the check. SQL NULL stays allowed.
+  const databaseName = `bravos_migrate_${crypto.randomUUID().replaceAll("-", "")}`;
+  await cluster.createDatabase(databaseName);
+  const pool = new Pool({ connectionString: cluster.connectionString(databaseName), max: 2 });
+  try {
+    await applyMigrations(pool);
+    const saleId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa01";
+    const fingerprint = "ab".repeat(32);
+    await pool.query(`
+      INSERT INTO "user" (id, name, email, "emailVerified", "createdAt", "updatedAt")
+      VALUES ('receipt-shape', 'Shape', 'receipt-shape@bravos.test', true, now(), now())
+    `);
+    await pool.query(`
+      INSERT INTO staff_profile (staff_id, display_name_ar, is_owner)
+      VALUES ('receipt-shape', 'شكل', false)
+    `);
+    await pool.query(`
+      INSERT INTO sales_sale (
+        id, operation_id, branch_id, sold_by_staff_id, sold_by_display_name,
+        occurred_at, original_total_piasters, employee_discount_piasters,
+        final_total_piasters, payload_fingerprint, physically_completed, cash_received_piasters
+      ) VALUES (
+        $1, 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbb01', '11111111-1111-4111-8111-111111111111',
+        'receipt-shape', 'شكل', now(), 1000, 0, 1000, $2, true, 1000
+      )
+    `, [saleId, fingerprint]);
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const assigned = {
+        status: "assigned",
+        registrationId: "11111111-1111-4111-8111-111111111111",
+        deviceId: "22222222-2222-4222-8222-222222222222",
+        prefix: "1",
+        sequence: "1",
+        reference: "BRV-001-000001",
+      };
+      const longReference = `BRV-001-${"9".repeat(80)}`;
+      for (const rejected of [
+        "'{}'::jsonb",
+        "'null'::jsonb",
+        `'${JSON.stringify({ status: "assigned" })}'::jsonb`,
+        `'${JSON.stringify({ ...assigned, registrationId: null })}'::jsonb`,
+        `'${JSON.stringify({ ...assigned, deviceId: null })}'::jsonb`,
+        `'${JSON.stringify({ ...assigned, prefix: null })}'::jsonb`,
+        `'${JSON.stringify({ ...assigned, sequence: null })}'::jsonb`,
+        `'${JSON.stringify({ ...assigned, reference: null })}'::jsonb`,
+        `'${JSON.stringify({ status: "conflict", reference: "x".repeat(81) })}'::jsonb`,
+        `'${JSON.stringify({ status: "conflict", reference: "bad\nref" })}'::jsonb`,
+      ]) {
+        await client.query("SAVEPOINT receipt_shape");
+        await expect(client.query(`UPDATE sales_sale SET receipt_identity = ${rejected} WHERE id = $1`, [saleId]))
+          .rejects.toMatchObject({ code: "23514" });
+        await client.query("ROLLBACK TO SAVEPOINT receipt_shape");
+      }
+      for (const accepted of [
+        JSON.stringify(assigned),
+        JSON.stringify({ status: "conflict", reference: null }),
+        JSON.stringify({ status: "conflict", reference: "desk" }),
+        JSON.stringify({ ...assigned, numberingConflict: true }),
+        JSON.stringify({ status: "conflict", reference: longReference }),
+      ]) {
+        await client.query("UPDATE sales_sale SET receipt_identity = $2::jsonb WHERE id = $1", [saleId, accepted]);
+      }
+      await client.query("UPDATE sales_sale SET receipt_identity = NULL WHERE id = $1", [saleId]);
+      const stored = await client.query<{ receipt_identity: unknown }>(
+        "SELECT receipt_identity FROM sales_sale WHERE id = $1",
+        [saleId],
+      );
+      expect(stored.rows[0]?.receipt_identity).toBeNull();
+      await client.query("ROLLBACK");
+    } finally {
+      client.release();
+    }
+  } finally {
+    await pool.end();
+  }
+});
+
 async function tableNames(pool: Pool): Promise<string[]> {
   const result = await pool.query<{ tablename: string }>(
     `SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename`,
@@ -830,6 +910,7 @@ async function unguardedBusinessTables(pool: Pool): Promise<string[]> {
   const exempt = new Set([
     "schema_migrations", "session", "account", "verification", "owner_recovery_challenge", "staff_session_branch",
     "sales_pos_snapshot", "sales_pos_snapshot_price", "inventory_known_till", "inventory_count_coordination_device",
+    "sales_receipt_registration",
     "sales_restore_deferred_completion", "restore_preview", "restore_runtime", "restore_preview_till", "restore_activation",
   ]);
   const result = await pool.query<{ tablename: string }>(

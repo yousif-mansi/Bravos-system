@@ -14,6 +14,10 @@
   --checkbox-checked: #26a269;
   --warning: #c4a35a;
   --danger: #b56a5c;
+  --confirm-bg: #146c43;
+  --confirm-ink: #f7fbf8;
+  --warn-action-bg: #e0b44a;
+  --warn-action-ink: #1c1404;
   --control-border: #7c8799;
   --primary-action-bg: #c6b48a;
   --primary-action-ink: #090b0f;
@@ -60,6 +64,10 @@
   --checkbox-checked: #168052;
   --warning: #8a6420;
   --danger: #8b3d32;
+  --confirm-bg: #0f6b3c;
+  --confirm-ink: #ffffff;
+  --warn-action-bg: #c4922a;
+  --warn-action-ink: #1c1404;
   --control-border: #877d6d;
   --primary-action-bg: #765f35;
   --primary-action-ink: #ffffff;

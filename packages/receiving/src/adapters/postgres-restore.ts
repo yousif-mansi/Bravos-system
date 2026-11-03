@@ -5,6 +5,7 @@ type Queryable = {
 };
 
 const TABLE_NAMES = [
+  "supplier",
   "receiving_receipt",
   "receiving_receipt_line",
   "receiving_correction",

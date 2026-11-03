@@ -303,6 +303,26 @@ const forbidden = [
     pattern: /@bravos\/(catalog|inventory|receiving|sales|expenses|persistence)/,
     message: "Storefront configuration cannot import other business features.",
   },
+  {
+    from: ["apps/internal", "apps/storefront"],
+    pattern: /@bravos\/print-connector|apps\/print-connector/,
+    message: "Staff and storefront cannot import the print connector server.",
+  },
+  {
+    from: ["packages/print-contracts"],
+    pattern: /from ["']node:|@bravos\/(?!print-contracts\b)|apps\/(api|internal|storefront|print-connector)/,
+    message: "Print contracts stay free of apps, business packages, and Node IO.",
+  },
+  {
+    from: ["apps/print-connector"],
+    pattern: /@bravos\/(?!print-contracts\b)|apps\/(api|internal|storefront)|packages\/(identity|catalog|inventory|receiving|pricing|sales|expenses|returns|corrections|storefront-config|opening-import|backup|restore|reporting|analytics|report-export|persistence|online-orders)|from ["']pg["']/,
+    message: "The print connector may depend only on @bravos/print-contracts.",
+  },
+  {
+    from: ["apps", "packages"],
+    pattern: /print-contracts\/src\//,
+    message: "Deep print-contracts imports are not part of the public interface.",
+  },
 ];
 
 const files = [];

@@ -7,14 +7,16 @@ import styles from "./cart.module.css";
 
 type CartLineProps = {
   item: CartItem;
+  lineCap?: number;
   onQuantityChange: (variantId: string, quantity: number, maximum: number) => void;
   onRemove: (variantId: string) => void;
 };
 
-export function CartLine({ item, onQuantityChange, onRemove }: CartLineProps) {
+export function CartLine({ item, lineCap, onQuantityChange, onRemove }: CartLineProps) {
   const [failedImageRef, setFailedImageRef] = useState<string | null>(null);
+  const cap = lineCap ?? item.knownAvailableQuantity;
   const unavailable = !item.orderable || item.knownAvailableQuantity === 0;
-  const excessive = item.quantity > item.knownAvailableQuantity;
+  const excessive = item.quantity > cap;
 
   return (
     <article className={`cart-line ${styles.line}`}>
@@ -28,8 +30,8 @@ export function CartLine({ item, onQuantityChange, onRemove }: CartLineProps) {
         <p className={styles.variant}>Size: <span dir="auto">{item.sizeNameAr}</span> <span aria-hidden="true">·</span> Color: <span dir="auto">{item.colorNameAr}</span></p>
         <p className={styles.unitPrice}>Unit price <strong>{formatEgp(item.unitPricePiasters)}</strong></p>
         {unavailable ? <p className={`stock-warning ${styles.stockWarning}`} role="alert">This selection is unavailable right now. Remove it or wait for stock to return.</p> : null}
-        {excessive && item.knownAvailableQuantity > 0 ? (
-          <p className={`stock-warning ${styles.stockWarning}`} role="alert">Only {item.knownAvailableQuantity} available now.</p>
+        {excessive && cap > 0 ? (
+          <p className={`stock-warning ${styles.stockWarning}`} role="alert">Only {cap} of this item can stay in the bag with the other options.</p>
         ) : null}
       </div>
       <div className={styles.actions}>
@@ -46,12 +48,12 @@ export function CartLine({ item, onQuantityChange, onRemove }: CartLineProps) {
             className="remove-line"
             type="button"
             aria-label="Increase quantity"
-            disabled={unavailable || excessive || item.quantity >= item.knownAvailableQuantity}
+            disabled={unavailable || excessive || item.quantity >= cap}
             onClick={() => onQuantityChange(item.variantId, item.quantity + 1, item.knownAvailableQuantity)}
           >+</button>
         </div>
-        {excessive && item.knownAvailableQuantity > 0 ? (
-          <button className={`fit-stock ${styles.fitStock}`} type="button" onClick={() => onQuantityChange(item.variantId, item.knownAvailableQuantity, item.knownAvailableQuantity)}>Fit to available</button>
+        {excessive && cap > 0 ? (
+          <button className={`fit-stock ${styles.fitStock}`} type="button" onClick={() => onQuantityChange(item.variantId, cap, item.knownAvailableQuantity)}>Fit to available</button>
         ) : null}
         <button className={`remove-line ${styles.remove}`} type="button" onClick={() => onRemove(item.variantId)}>Remove</button>
       </div>

@@ -6,6 +6,9 @@ import type {
   CategoryDto,
   CouponDto,
   CouponWriteDto,
+  CustomerHistoryDto,
+  CustomerListDto,
+  CustomerSummaryDto,
   CountCoordinationAcknowledgementDto,
   CountCoordinationDto,
   ColorDto,
@@ -26,14 +29,20 @@ import type {
   OpeningImportPreviewDto,
   OpeningImportPreviewRequest,
   PosPriceSnapshotDto,
+  ProductLocationStockDto,
   ReceiptDto,
   SaleAcknowledgementDto,
   SaleCorrectionDetailDto,
   SaleDto,
+  SaleReceiptClaimInput,
   SizeDto,
   StaffAccountDto,
   StockCorrectionDto,
+  StockLocationDto,
   StockPauseDto,
+  StockTransferDto,
+  SupplierDto,
+  SupplierPurchaseDto,
   StockReconciliationCaseDto,
   StockReconciliationDto,
   StorefrontContactsDto,
@@ -263,6 +272,7 @@ export function createProduct(input: {
   descriptionAr: string;
   categoryId: string;
   defaultSellingPricePiasters: number;
+  minimumSellingPricePiasters?: number | null;
   publication: "available" | "coming_soon" | "hidden";
   imageRefs: string[];
   sizeGuideAr: string | null;
@@ -289,6 +299,7 @@ export function updateProduct(
     descriptionAr: string;
     categoryId: string;
     defaultSellingPricePiasters: number;
+    minimumSellingPricePiasters?: number | null;
     publication: "available" | "coming_soon" | "hidden";
     imageRefs: string[];
     sizeGuideAr: string | null;
@@ -636,7 +647,8 @@ export function finalizeReceipt(input: {
   operationId: string;
   branchId: string;
   receiptDate: string;
-  lines: Array<{ variantId: string; quantity: number; unitCostPiasters: number }>;
+  supplierId?: string;
+  lines: Array<{ productId?: string; variantId?: string; quantity: number; unitCostPiasters: number }>;
 }) {
   return request<ReceiptDto>("/api/internal/receiving/receipts", {
     method: "POST",
@@ -788,6 +800,7 @@ export type SaleWrite = {
   occurredAt?: string | null;
   pendingOperationIds?: string[];
   restoreGeneration?: number;
+  receiptClaim?: SaleReceiptClaimInput;
   lines: Array<{ variantId: string; quantity: number; listedUnitPricePiasters?: number }>;
 };
 
@@ -795,10 +808,18 @@ export function listCashierCatalog() {
   return request<CashierProductLookupDto[]>("/api/internal/catalog/pos-snapshot");
 }
 
-export function issuePosSnapshot(deviceId: string, pendingOperationIds: string[] = []) {
+export function issuePosSnapshot(
+  deviceId: string,
+  pendingOperationIds: string[] = [],
+  receiptRegistrationId?: string,
+) {
   return request<PosPriceSnapshotDto>("/api/internal/sales/pos-snapshots", {
     method: "POST",
-    body: JSON.stringify({ deviceId, pendingOperationIds }),
+    body: JSON.stringify({
+      deviceId,
+      pendingOperationIds,
+      ...(receiptRegistrationId ? { receiptRegistrationId } : {}),
+    }),
   });
 }
 
@@ -945,4 +966,60 @@ export function changeSaleCorrection(saleId: string, input: SaleCorrectionWrite)
     method: "POST",
     body: JSON.stringify(input),
   });
+}
+
+export function listCustomers(input: { q?: string; limit?: number; cursor?: string } = {}) {
+  const params = new URLSearchParams();
+  if (input.q) params.set("q", input.q);
+  if (input.limit) params.set("limit", String(input.limit));
+  if (input.cursor) params.set("cursor", input.cursor);
+  const query = params.toString();
+  return request<CustomerListDto>(`/api/internal/customers${query ? `?${query}` : ""}`);
+}
+
+export function lookupCustomer(input: { phone: string; name?: string }) {
+  const params = new URLSearchParams({ phone: input.phone });
+  if (input.name) params.set("name", input.name);
+  return request<{ customer: CustomerSummaryDto | null }>(`/api/internal/customers/lookup?${params.toString()}`);
+}
+
+export function customerHistory(customerId: string, period: "month" | "year") {
+  return request<CustomerHistoryDto>(`/api/internal/customers/${customerId}/history?period=${period}`);
+}
+
+export function listStockLocations() {
+  return request<StockLocationDto[]>("/api/internal/inventory/locations");
+}
+
+export function listProductLocationStock() {
+  return request<ProductLocationStockDto[]>("/api/internal/inventory/product-locations");
+}
+
+export function transferStock(input: {
+  operationId: string;
+  sourceBranchId: string;
+  destinationBranchId: string;
+  productId: string;
+  quantity: number;
+}) {
+  return request<StockTransferDto>("/api/internal/inventory/transfers", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function listSuppliers() {
+  return request<SupplierDto[]>("/api/internal/suppliers");
+}
+
+export function createSupplier(nameAr: string) {
+  return request<SupplierDto>("/api/internal/suppliers", {
+    method: "POST",
+    body: JSON.stringify({ nameAr }),
+  });
+}
+
+export function listPurchases(supplierId?: string) {
+  const query = supplierId ? `?supplierId=${encodeURIComponent(supplierId)}` : "";
+  return request<SupplierPurchaseDto[]>(`/api/internal/purchases${query}`);
 }

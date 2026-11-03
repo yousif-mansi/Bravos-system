@@ -7,12 +7,17 @@ import type {
   BackupUnitOfWork,
   DecodedBackupArchive,
 } from "@bravos/backup";
-import type {
-  BackupTableSnapshot,
-  RestoreDeviceDto,
-  RestoreDifferenceDto,
-  RestorePreviewDto,
-  RestoreStateDto,
+import {
+  OPERATIONAL_COLOR_ID,
+  OPERATIONAL_SIZE_ID,
+  OPERATIONAL_STOCK_SCHEMA,
+  WAREHOUSE_BRANCH_CODE,
+  WAREHOUSE_BRANCH_ID,
+  type BackupTableSnapshot,
+  type RestoreDeviceDto,
+  type RestoreDifferenceDto,
+  type RestorePreviewDto,
+  type RestoreStateDto,
 } from "@bravos/contracts";
 import { Pool, type PoolClient, type QueryResultRow } from "pg";
 import { assertCrossFeatureLinks, type RestoreTables } from "../domain/archive-links.ts";
@@ -36,6 +41,8 @@ const TABLE_ORDER = [
   "pricing_automatic_offer_bundle_item", "pricing_automatic_offer_buy_product", "pricing_automatic_offer_buy_category",
   "pricing_automatic_offer_reward_product", "pricing_automatic_offer_reward_category", "pricing_coupon",
   "pricing_coupon_product", "pricing_coupon_category",
+  "sales_receipt_registration",
+  "customer",
   "sales_pos_snapshot", "sales_pos_snapshot_price", "sales_sale", "sales_sale_line", "sales_sale_unit",
   "sales_restore_deferred_completion",
   "inventory_settings", "inventory_variant_setting", "inventory_stock_clock", "inventory_operation", "inventory_batch",
@@ -43,6 +50,8 @@ const TABLE_ORDER = [
   "inventory_movement", "inventory_allocation", "inventory_discrepancy", "inventory_known_till",
   "inventory_count_coordination", "inventory_count_coordination_device", "inventory_stock_correction",
   "inventory_stock_correction_batch", "inventory_stock_reconciliation", "inventory_stock_reconciliation_batch",
+  "inventory_transfer",
+  "supplier",
   "receiving_receipt", "receiving_receipt_line", "receiving_correction", "receiving_correction_line",
   "online_order", "online_order_line", "online_order_agreement_quote", "online_order_operation",
   "online_order_contact_attempt", "online_order_agreed_revision", "online_order_confirmation",
@@ -76,7 +85,23 @@ type ReferenceSequences = {
   onlineOrder: SequenceState;
   physicalSale: SequenceState;
   return: SequenceState;
+  receiptPrefix: SequenceState;
 };
+
+const RECEIPT_SCHEMA = "036_receipt_numbering.sql";
+const RETURN_REASON_SCHEMA = "035_return_reason.sql";
+const ORDER_RECOGNITION_SCHEMA = "034_order_recognition_branch.sql";
+const RECEIPT_REGISTRY = "sales_receipt_registration";
+const INITIAL_RECEIPT_PREFIX: SequenceState = { lastValue: "1", isCalled: false };
+const OPERATIONAL_EPOCH = "2026-11-01T00:00:00.000Z";
+type SchemaBridge =
+  | "exact"
+  | "return-reason"
+  | "receipt"
+  | "return-reason-and-receipt"
+  | "operational"
+  | "receipt-and-operational"
+  | "return-reason-and-receipt-and-operational";
 
 export type RestoreStoreFactories = {
   features(queryable: Queryable): RestoreFeatureSet;
@@ -187,18 +212,9 @@ export function createPostgresRestoreStore(input: {
     async stageAndPause(stageInput) {
       const replay = await getPreviewByOperation(pool, stageInput.operationId);
       if (replay) return { value: await dto(assertReplay(replay, stageInput.payloadFingerprint)), created: false };
-      const upgradeReasonless = await assertSupportedSchema(pool, stageInput.archive.manifest.schemaVersion);
-      // Uploaded bytes and section hashes were authenticated before this boundary.
-      // Retain their manifest/checksum as source provenance; stage the exact target
-      // rows and let the existing preview fingerprint protect their reconciliation.
-      const archive = upgradeReasonless ? {
-        manifest: stageInput.archive.manifest,
-        data: { ...stageInput.archive.data, returns: { ...stageInput.archive.data.returns,
-          returns_return: await factories.features(pool).returns.upgradeReasonlessRestoreRows(
-            stageInput.archive.data.returns.returns_return ?? [],
-          ).catch((error: unknown) => { throw asDataError(error, "سجل المرتجع لا يطابق إصدار النسخة القديم."); }),
-        } },
-      } : stageInput.archive;
+      const bridge = await schemaBridge(pool, stageInput.archive.manifest.schemaVersion);
+      // Uploaded bytes and section hashes stay on the caller's manifest. Bridges copy rows only.
+      const archive = await bridgedArchive(stageInput.archive, bridge, factories.features(pool));
       const archiveTables = flattenData(archive.data);
       assertArchiveTables(archiveTables, factories.features(pool));
       assertCrossFeatureLinks(archiveTables);
@@ -415,17 +431,33 @@ export function createPostgresRestoreStore(input: {
         await assertTillsReady(client, preview, features);
 
         await client.query("SELECT set_config('bravos.restore_activation', $1, true)", [preview.id]);
+        await client.query("SELECT set_config('bravos.restore_loading', 'on', true)");
         const liveReaders = factories.liveReaders(client);
         const liveSequences: ReferenceSequences = {
           onlineOrder: await liveReaders.onlineOrders.readReferenceSequence(),
           physicalSale: await liveReaders.sales.readReferenceSequence(),
           return: await liveReaders.returns.readReferenceSequence(),
+          receiptPrefix: await liveReaders.sales.readReceiptPrefixSequence(),
         };
         const liveControl = tablesByName([
           ...await liveReaders.sales.readBackupTables(),
           ...await liveReaders.inventory.readBackupTables(),
         ]);
+        const liveIdentity = tablesByName(await liveReaders.identity.readBackupTables());
         const data = mergeControlRows(staged.tables, liveControl);
+        const registry = unionReceiptRegistrations(
+          data.get(RECEIPT_REGISTRY) ?? [],
+          liveControl.get(RECEIPT_REGISTRY) ?? [],
+        );
+        if (registry.conflicts > 0) {
+          throw new RestoreValidationError("سجل بادئات الإيصالات يحتوي على تسجيل تغيّر أو على بادئة واحدة لأكثر من تسجيل. ألغِ المعاينة ولا تُستبدل السجلات.");
+        }
+        data.set(RECEIPT_REGISTRY, registry.rows);
+        closeReceiptCreators(data, liveIdentity);
+        await features.sales.assertAssignedReceiptIdentities({
+          registrations: data.get(RECEIPT_REGISTRY) ?? [],
+          sales: data.get("sales_sale") ?? [],
+        });
         assertCrossFeatureLinks(data);
         await clearAll(features);
         await insertAll(features, data);
@@ -474,7 +506,7 @@ async function createStage(databaseUrl: string, name: string, archive: DecodedBa
   const stage = new Pool({ connectionString: databaseUrlFor(databaseUrl, name), max: 1 });
   try {
     await factories.migrate(stage);
-    await loadStage(stage, flattenData(archive.data), manifestSequences(archive.manifest), factories);
+    await loadStage(stage, flattenData(archive.data), restoreSequences(archive.manifest), factories);
   } finally {
     await stage.end();
   }
@@ -509,24 +541,34 @@ async function reconcileStage(
       const archivedRows = staged.tables.get(tableName) ?? [];
       const liveRows = liveIsBootstrap ? [] : live.get(tableName) ?? [];
       const rows = new Map<string, Record<string, unknown>>();
-      for (const row of archivedRows) rows.set(rowKey(row, primaryKey), row);
       let liveOnly = 0;
       let conflicting = 0;
-      for (const row of liveRows) {
-        const key = rowKey(row, primaryKey);
-        const archived = rows.get(key);
-        if (!archived) liveOnly += 1;
-        else if (canonicalRow(archived) !== canonicalRow(row) && !(tableName in CONTROL_TABLE_KEYS) && tableName !== "inventory_stock_clock") {
-          conflicting += 1;
+      let restoredRows: Array<Record<string, unknown>>;
+      if (tableName === RECEIPT_REGISTRY) {
+        const union = unionReceiptRegistrations(archivedRows, liveRows);
+        conflicting = union.conflicts;
+        const archivedIds = new Set(archivedRows.map((row) => String(row.id).toLowerCase()));
+        liveOnly = liveRows.filter((row) => !archivedIds.has(String(row.id).toLowerCase())).length;
+        restoredRows = union.rows;
+      } else {
+        for (const row of archivedRows) rows.set(rowKey(row, primaryKey), row);
+        for (const row of liveRows) {
+          const key = rowKey(row, primaryKey);
+          const archived = rows.get(key);
+          if (!archived) liveOnly += 1;
+          else if (canonicalRow(archived) !== canonicalRow(row) && !(tableName in CONTROL_TABLE_KEYS) && tableName !== "inventory_stock_clock") {
+            conflicting += 1;
+          }
+          rows.set(key, tableName === "inventory_stock_clock" ? laterStockClock(archived, row) : row);
         }
-        rows.set(key, tableName === "inventory_stock_clock" ? laterStockClock(archived, row) : row);
+        restoredRows = [...rows.values()];
       }
-      merged.set(tableName, [...rows.values()]);
+      merged.set(tableName, restoredRows);
       counts.set(tableName, {
         archived: archivedRows.length,
         live: (live.get(tableName) ?? []).length,
-        restored: rows.size,
-        archiveOnly: rows.size - liveRows.length,
+        restored: restoredRows.length,
+        archiveOnly: restoredRows.length - liveRows.length,
         liveOnly,
         conflicting,
       });
@@ -552,6 +594,9 @@ async function reconcileStage(
     });
 
     const blockers: string[] = [];
+    if ((counts.get(RECEIPT_REGISTRY)?.conflicting ?? 0) > 0) {
+      blockers.push("سجل بادئات الإيصالات يحتوي على تسجيل تغيّر أو على بادئة واحدة لأكثر من تسجيل. لا يمكن دمجه دون استبدال.");
+    }
     const conflictingSections = differences.filter((difference) => difference.conflictingRecordCount > 0);
     if (conflictingSections.length > 0) {
       blockers.push(`تحتوي النسخة والبيانات الحالية على قيم مختلفة لنفس السجلات في: ${conflictingSections.map((difference) => difference.section).join("، ")}. `
@@ -563,10 +608,12 @@ async function reconcileStage(
     if (collidingLogin) {
       blockers.push("يوجد في البيانات الحالية حساب موظف يستخدم اسم دخول حساب آخر داخل النسخة. استعد النسخة في قاعدة بيانات جديدة أو ألغِ المعاينة.");
     }
+    const receiptBlocker = await receiptIdentityBlocker(merged, factories, stage);
+    if (receiptBlocker) blockers.push(receiptBlocker);
     if (blockers.length > 0) return { differences, blockers };
 
     assertCrossFeatureLinks(merged);
-    const sequences = liveIsBootstrap ? staged.sequences : laterSequences(staged.sequences, manifestSequences(liveArchive.manifest));
+    const sequences = liveIsBootstrap ? staged.sequences : laterSequences(staged.sequences, restoreSequences(liveArchive.manifest));
     await loadStage(stage, merged, sequences, factories);
     return { differences, blockers };
   } finally {
@@ -578,6 +625,7 @@ async function loadStage(stage: Pool, data: RestoreTables, sequences: ReferenceS
   const client = await stage.connect();
   try {
     await client.query("BEGIN");
+    await client.query("SELECT set_config('bravos.restore_loading', 'on', true)");
     const features = factories.features(client);
     await clearAll(features);
     await insertAll(features, data);
@@ -762,24 +810,37 @@ function rowKey(row: Record<string, unknown>, keys: string[]) {
 }
 
 // A database that only holds the first-run owner and default settings is a disaster-recovery target.
+// Live receipt registrations are business facts and never count as disposable bootstrap data.
 function isPristineBootstrap(tables: RestoreTables): boolean {
+  if ((tables.get(RECEIPT_REGISTRY) ?? []).length > 0) return false;
   const seedTables = new Set(["identity_actor", "branch", "staff_profile", "staff_branch_grant", "staff_operation", "inventory_settings",
     "inventory_stock_clock", "online_order_settings"]);
   for (const [tableName, rows] of tables) {
-    if (!seedTables.has(tableName) && rows.length > 0) return false;
+    if (!seedTables.has(tableName) && rows.length > 0 && !isOperationalBootstrap(tableName, rows)) return false;
   }
   const actors = tables.get("identity_actor") ?? [];
   const profiles = tables.get("staff_profile") ?? [];
   const operations = tables.get("staff_operation") ?? [];
   const clock = tables.get("inventory_stock_clock") ?? [];
   const settings = tables.get("online_order_settings") ?? [];
+  const branches = tables.get("branch") ?? [];
+  const warehouseCount = branches.filter((row) => row.code === WAREHOUSE_BRANCH_CODE || row.kind === "warehouse").length;
+  const branchShape = (branches.length === 2 && warehouseCount === 0) || (branches.length === 3 && warehouseCount === 1);
   return actors.length === 1 && actors[0]?.role === "manager"
     && profiles.length === 1 && profiles[0]?.is_owner === true && profiles[0]?.staff_id === actors[0]?.id
     && operations.length <= 1 && operations.every((operation) => operation.staff_id === actors[0]?.id)
     && (tables.get("staff_branch_grant") ?? []).every((grant) => grant.staff_id === actors[0]?.id)
-    && (tables.get("branch") ?? []).length === 2
+    && branchShape
     && clock.length === 1 && String(clock[0]?.version) === "0"
     && settings.length === 1 && settings[0]?.changed_by_staff_id === null;
+}
+
+// A fresh 037 database always contains the warehouse branch and the two sentinel size/color rows.
+function isOperationalBootstrap(tableName: string, rows: Array<Record<string, unknown>>): boolean {
+  if (rows.length !== 1) return false;
+  if (tableName === "catalog_size") return String(rows[0]?.id).toLowerCase() === OPERATIONAL_SIZE_ID;
+  if (tableName === "catalog_color") return String(rows[0]?.id).toLowerCase() === OPERATIONAL_COLOR_ID;
+  return false;
 }
 
 function laterStockClock(archived: Record<string, unknown> | undefined, live: Record<string, unknown>) {
@@ -811,33 +872,197 @@ async function failuresOf(work: Array<Promise<unknown>>): Promise<unknown[]> {
   return results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
 }
 
-// Keep exact schema compatibility except the named 034 -> 035 nullable-reason
-// bridge. Central stock, references, payment and generation semantics are unchanged
-// in that one profile; all other mismatches still fail.
-async function assertSupportedSchema(queryable: Queryable, schemaVersion: string) {
-  const result = await queryable.query<{ id: string }>("SELECT id FROM schema_migrations ORDER BY id DESC LIMIT 1");
-  const latest = result.rows[0]?.id;
-  if (schemaVersion === latest) return false;
-  if (latest === "035_return_reason.sql" && schemaVersion === "034_order_recognition_branch.sql") return true;
+// Named bridges only. 037 is exact. 036 adds the operational columns and seed rows.
+// 035 also adds an empty registry and a null receipt identity. 034 also adds the nullable
+// return reason. Older profiles still fail. The stored manifest is never rewritten.
+async function schemaBridge(queryable: Queryable, schemaVersion: string): Promise<SchemaBridge> {
+  const latest = (await queryable.query<{ id: string }>("SELECT id FROM schema_migrations ORDER BY id DESC LIMIT 1")).rows[0]?.id;
+  if (schemaVersion === latest) return "exact";
+  if (latest === OPERATIONAL_STOCK_SCHEMA && schemaVersion === RECEIPT_SCHEMA) return "operational";
+  if (latest === OPERATIONAL_STOCK_SCHEMA && schemaVersion === RETURN_REASON_SCHEMA) return "receipt-and-operational";
+  if (latest === OPERATIONAL_STOCK_SCHEMA && schemaVersion === ORDER_RECOGNITION_SCHEMA) return "return-reason-and-receipt-and-operational";
+  if (latest === RETURN_REASON_SCHEMA && schemaVersion === ORDER_RECOGNITION_SCHEMA) return "return-reason";
+  if (latest === RECEIPT_SCHEMA && schemaVersion === RETURN_REASON_SCHEMA) return "receipt";
+  if (latest === RECEIPT_SCHEMA && schemaVersion === ORDER_RECOGNITION_SCHEMA) return "return-reason-and-receipt";
   throw new RestoreValidationError("إصدار مخطط النسخة لا يطابق إصدار هذا الخادم. استخدم نسخة من الإصدار نفسه أو حدّث الخادم أولاً.");
 }
 
+async function bridgedArchive(
+  archive: DecodedBackupArchive,
+  bridge: SchemaBridge,
+  features: RestoreFeatureSet,
+): Promise<DecodedBackupArchive> {
+  if (bridge === "exact") {
+    try {
+      await features.sales.assertAssignedReceiptIdentities({
+        registrations: archive.data.sales.sales_receipt_registration ?? [],
+        sales: archive.data.sales.sales_sale ?? [],
+      });
+    } catch (error) {
+      throw asDataError(error, "هويات الإيصالات المخصصة لا تطابق سجل البادئات.");
+    }
+    return archive;
+  }
+  const data: BackupData = structuredClone(archive.data);
+  const operational = bridge === "operational" || bridge === "receipt-and-operational" || bridge === "return-reason-and-receipt-and-operational";
+  const returnReason = bridge === "return-reason" || bridge === "return-reason-and-receipt" || bridge === "return-reason-and-receipt-and-operational";
+  const receipt = bridge === "receipt" || bridge === "return-reason-and-receipt" || bridge === "receipt-and-operational" || bridge === "return-reason-and-receipt-and-operational";
+  try {
+    // Operational columns are added before the receipt check so a 034/035 sale already
+    // carries customer_id when its pre-036 column set is compared.
+    if (operational) applyOperationalBridge(data);
+    if (returnReason) {
+      data.returns.returns_return = await features.returns.upgradeReasonlessRestoreRows(data.returns.returns_return ?? []);
+    }
+    if (receipt) {
+      data.sales.sales_sale = await features.sales.upgradeReceiptlessRestoreRows(data.sales.sales_sale ?? []);
+      data.sales.sales_receipt_registration = [];
+    }
+    if (receipt || operational) {
+      await features.sales.assertAssignedReceiptIdentities({
+        registrations: data.sales.sales_receipt_registration ?? [],
+        sales: data.sales.sales_sale ?? [],
+      });
+    }
+  } catch (error) {
+    throw asDataError(error, bridge === "return-reason"
+      ? "سجل المرتجع لا يطابق إصدار النسخة القديم."
+      : operational
+        ? "بيانات النسخة القديمة لا تطابق جسر المخزون التشغيلي."
+        : "بيانات الإيصالات أو المرتجعات لا تطابق إصدار النسخة القديم.");
+  }
+  return { manifest: archive.manifest, data };
+}
+
+// Fills 037 columns and the rows a migrated database always contains. Does not rewrite history.
+function applyOperationalBridge(data: BackupData): void {
+  const branches = (data.identity.branch ?? []).map((row) => withMissingColumn(
+    row,
+    "kind",
+    row.code === WAREHOUSE_BRANCH_CODE ? "warehouse" : "retail",
+  ));
+  if (!branches.some((row) => String(row.id).toLowerCase() === WAREHOUSE_BRANCH_ID || row.code === WAREHOUSE_BRANCH_CODE)) {
+    const template = branches[0];
+    if (!template) throw new RestoreValidationError("النسخة القديمة لا تحتوي على فرع يمكن استخدامه لبناء المخزن.");
+    branches.push({
+      ...template,
+      id: WAREHOUSE_BRANCH_ID,
+      code: WAREHOUSE_BRANCH_CODE,
+      name_ar: "المخزن المركزي",
+      kind: "warehouse",
+      created_at: OPERATIONAL_EPOCH,
+    });
+  }
+  data.identity.branch = branches;
+
+  data.catalog.catalog_size = withSentinel(data.catalog.catalog_size, OPERATIONAL_SIZE_ID, "internal-operational-size");
+  data.catalog.catalog_color = withSentinel(data.catalog.catalog_color, OPERATIONAL_COLOR_ID, "internal-operational-color");
+  data.catalog.catalog_product = (data.catalog.catalog_product ?? []).map((row) =>
+    withMissingColumn(row, "minimum_selling_price_piasters", null));
+
+  const variants = (data.catalog.catalog_product_variant ?? []).map((row) => withMissingColumn(row, "purpose", "website_option"));
+  const variantTemplate = variants[0];
+  for (const product of data.catalog.catalog_product ?? []) {
+    const productId = String(product.id);
+    if (variants.some((row) => String(row.product_id).toLowerCase() === productId.toLowerCase() && row.purpose === "operational")) continue;
+    const blank = variantTemplate ?? {
+      id: OPERATIONAL_EPOCH,
+      product_id: product.id,
+      size_id: OPERATIONAL_SIZE_ID,
+      color_id: OPERATIONAL_COLOR_ID,
+      selling_price_piasters_override: null,
+      online_visible: false,
+      created_at: OPERATIONAL_EPOCH,
+      updated_at: OPERATIONAL_EPOCH,
+      purpose: "operational",
+    };
+    variants.push({
+      ...blank,
+      id: operationalVariantId(productId),
+      product_id: product.id,
+      size_id: OPERATIONAL_SIZE_ID,
+      color_id: OPERATIONAL_COLOR_ID,
+      selling_price_piasters_override: null,
+      online_visible: false,
+      purpose: "operational",
+      created_at: OPERATIONAL_EPOCH,
+      updated_at: OPERATIONAL_EPOCH,
+    });
+  }
+  data.catalog.catalog_product_variant = variants;
+
+  const productByVariant = new Map(variants.map((row) => [String(row.id).toLowerCase(), row.product_id]));
+  data.inventory.inventory_batch = (data.inventory.inventory_batch ?? []).map((row) => {
+    if (Object.prototype.hasOwnProperty.call(row, "product_id")) return row;
+    const productId = productByVariant.get(String(row.variant_id).toLowerCase());
+    if (productId === undefined) throw new RestoreValidationError("دفعة مخزون تشير إلى خيار غير موجود في النسخة.");
+    return { ...row, product_id: productId };
+  });
+  data.inventory.inventory_allocation = (data.inventory.inventory_allocation ?? []).map((row) =>
+    withMissingColumn(row, "requested_variant_id", null));
+  data.inventory.inventory_transfer = data.inventory.inventory_transfer ?? [];
+  data.receiving.supplier = data.receiving.supplier ?? [];
+  data.receiving.receiving_receipt = (data.receiving.receiving_receipt ?? []).map((row) =>
+    withMissingColumn(row, "supplier_id", null));
+  data.sales.customer = data.sales.customer ?? [];
+  data.sales.sales_sale = (data.sales.sales_sale ?? []).map((row) => withMissingColumn(row, "customer_id", null));
+  data.sales.sales_sale_line = (data.sales.sales_sale_line ?? []).map((row) =>
+    withMissingColumn(row, "accepted_minimum_unit_piasters", null));
+  data.sales.sales_pos_snapshot_price = (data.sales.sales_pos_snapshot_price ?? []).map((row) =>
+    withMissingColumn(row, "minimum_unit_price_piasters", null));
+}
+
+function withSentinel(rows: Array<Record<string, unknown>> | undefined, id: string, nameAr: string): Array<Record<string, unknown>> {
+  const list = [...(rows ?? [])];
+  if (list.some((row) => String(row.id).toLowerCase() === id)) return list;
+  const template = list[0] ?? { id, name_ar: nameAr, created_at: OPERATIONAL_EPOCH, updated_at: OPERATIONAL_EPOCH };
+  list.push({ ...template, id, name_ar: nameAr, created_at: OPERATIONAL_EPOCH, updated_at: OPERATIONAL_EPOCH });
+  return list;
+}
+
+function withMissingColumn(row: Record<string, unknown>, key: string, value: unknown): Record<string, unknown> {
+  if (Object.prototype.hasOwnProperty.call(row, key)) return row;
+  return { ...row, [key]: value };
+}
+
+// Same bytes as 037_operational_stock.sql: md5('operational:' || product_id) with a version-4 shape.
+function operationalVariantId(productId: string): string {
+  const hex = createHash("md5").update(`operational:${productId.toLowerCase()}`).digest("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
 function metadataSequences(metadata: BackupSnapshotMetadata): ReferenceSequences {
+  if (!metadata.salesReceiptPrefixSequence) {
+    throw new RestoreValidationError("بيانات النسخة لا تحتوي على تسلسل بادئة الإيصال.");
+  }
   return {
     onlineOrder: metadata.onlineOrderReferenceSequence,
     physicalSale: metadata.salesSaleReferenceSequence,
     return: metadata.returnsReturnReferenceSequence,
+    receiptPrefix: metadata.salesReceiptPrefixSequence,
   };
 }
 
-function manifestSequences(manifest: BackupManifest): ReferenceSequences {
+function restoreSequences(manifest: BackupManifest): ReferenceSequences {
   if (!manifest.salesSaleReferenceSequence || !manifest.returnsReturnReferenceSequence) {
     throw new RestoreValidationError("إصدار النسخة لا يحتوي على مراجع البيع والمرتجعات المطلوبة لهذا الخادم.");
+  }
+  let receiptPrefix: SequenceState;
+  if (manifest.schemaVersion === RECEIPT_SCHEMA || manifest.schemaVersion === OPERATIONAL_STOCK_SCHEMA) {
+    if (!manifest.salesReceiptPrefixSequence) {
+      throw new RestoreValidationError("النسخة لا تحتوي على تسلسل بادئة الإيصال.");
+    }
+    receiptPrefix = manifest.salesReceiptPrefixSequence;
+  } else if (manifest.schemaVersion === RETURN_REASON_SCHEMA || manifest.schemaVersion === ORDER_RECOGNITION_SCHEMA) {
+    receiptPrefix = { ...INITIAL_RECEIPT_PREFIX };
+  } else {
+    throw new RestoreValidationError("إصدار مخطط النسخة لا يطابق إصدار هذا الخادم. استخدم نسخة من الإصدار نفسه أو حدّث الخادم أولاً.");
   }
   return {
     onlineOrder: manifest.onlineOrderReferenceSequence,
     physicalSale: manifest.salesSaleReferenceSequence,
     return: manifest.returnsReturnReferenceSequence,
+    receiptPrefix,
   };
 }
 
@@ -845,6 +1070,7 @@ async function restoreReferenceSequences(features: RestoreFeatureSet, sequences:
   await features.onlineOrders.restoreReferenceSequence(sequences.onlineOrder);
   await features.sales.restoreReferenceSequence(sequences.physicalSale);
   await features.returns.restoreReferenceSequence(sequences.return);
+  await features.sales.restoreReceiptPrefixSequence(sequences.receiptPrefix);
 }
 
 function laterSequences(left: ReferenceSequences, right: ReferenceSequences): ReferenceSequences {
@@ -852,7 +1078,96 @@ function laterSequences(left: ReferenceSequences, right: ReferenceSequences): Re
     onlineOrder: laterSequence(left.onlineOrder, right.onlineOrder),
     physicalSale: laterSequence(left.physicalSale, right.physicalSale),
     return: laterSequence(left.return, right.return),
+    receiptPrefix: laterSequence(left.receiptPrefix, right.receiptPrefix),
   };
+}
+
+function unionReceiptRegistrations(
+  archived: Array<Record<string, unknown>>,
+  live: Array<Record<string, unknown>>,
+): { rows: Array<Record<string, unknown>>; conflicts: number } {
+  const byId = new Map<string, Record<string, unknown>>();
+  let conflicts = 0;
+  const add = (row: Record<string, unknown>) => {
+    const id = String(row.id ?? "").toLowerCase();
+    const existing = byId.get(id);
+    if (!existing) {
+      byId.set(id, row);
+      return;
+    }
+    if (canonicalRow(existing) !== canonicalRow(row)) conflicts += 1;
+  };
+  for (const row of archived) add(row);
+  for (const row of live) add(row);
+  const rows = [...byId.values()];
+  const seenPrefix = new Map<string, string>();
+  for (const row of rows) {
+    const prefix = String(row.prefix);
+    const canonical = canonicalRow(row);
+    const previous = seenPrefix.get(prefix);
+    if (previous === undefined) seenPrefix.set(prefix, canonical);
+    else if (previous !== canonical) conflicts += 1;
+  }
+  return { rows, conflicts };
+}
+
+// Copies only a missing creator and that profile's staff ancestors. An existing staged row is kept.
+// A username collision, a second owner, or a missing live creator blocks the activation.
+function closeReceiptCreators(merged: RestoreTables, liveIdentity: RestoreTables): void {
+  const profiles = [...(merged.get("staff_profile") ?? [])];
+  const actors = [...(merged.get("identity_actor") ?? [])];
+  const profileById = new Map(profiles.map((row) => [String(row.staff_id), row]));
+  const liveProfiles = new Map((liveIdentity.get("staff_profile") ?? []).map((row) => [String(row.staff_id), row]));
+  const liveActors = new Map((liveIdentity.get("identity_actor") ?? []).map((row) => [String(row.id), row]));
+  const usernames = new Map(actors.map((row) => [String(row.username), String(row.id)]));
+  let owners = profiles.filter((row) => row.is_owner === true).length;
+  const pending = (merged.get(RECEIPT_REGISTRY) ?? [])
+    .map((row) => String(row.created_by_staff_id ?? ""))
+    .filter((staffId) => staffId.length > 0 && !profileById.has(staffId));
+  while (pending.length > 0) {
+    const staffId = pending.pop()!;
+    if (profileById.has(staffId)) continue;
+    const profile = liveProfiles.get(staffId);
+    const actor = liveActors.get(staffId);
+    if (!profile || !actor) {
+      throw new RestoreValidationError("تسجيل إيصال يشير إلى موظف غير موجود في النسخة أو البيانات الحالية. ألغِ المعاينة.");
+    }
+    const username = String(actor.username);
+    const existingUser = usernames.get(username);
+    if (existingUser && existingUser !== staffId) {
+      throw new RestoreValidationError("لا يمكن إبقاء تسجيل الإيصال لأن اسم دخول منشئه يطابق حسابًا آخر في النسخة.");
+    }
+    if (profile.is_owner === true && owners > 0) {
+      throw new RestoreValidationError("لا يمكن إبقاء تسجيل الإيصال لأن منشئه مالك بينما النسخة تحتوي مالكًا آخر.");
+    }
+    profiles.push(profile);
+    actors.push(actor);
+    profileById.set(staffId, profile);
+    usernames.set(username, staffId);
+    if (profile.is_owner === true) owners += 1;
+    for (const ancestor of [profile.created_by_staff_id, profile.last_changed_by_staff_id]) {
+      if (typeof ancestor === "string" && ancestor.length > 0 && !profileById.has(ancestor)) pending.push(ancestor);
+    }
+  }
+  merged.set("staff_profile", profiles);
+  merged.set("identity_actor", actors);
+}
+
+async function receiptIdentityBlocker(
+  tables: RestoreTables,
+  factories: RestoreStoreFactories,
+  queryable: Queryable,
+): Promise<string | null> {
+  try {
+    await factories.features(queryable).sales.assertAssignedReceiptIdentities({
+      registrations: tables.get(RECEIPT_REGISTRY) ?? [],
+      sales: tables.get("sales_sale") ?? [],
+    });
+    return null;
+  } catch (error) {
+    if (!isDataError(error)) throw error;
+    return "هويات الإيصالات المخصصة لا تطابق سجل البادئات المحتفظ به.";
+  }
 }
 
 function laterSequence(left: SequenceState, right: SequenceState): SequenceState {

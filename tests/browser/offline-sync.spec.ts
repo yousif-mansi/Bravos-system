@@ -15,14 +15,12 @@ test("delayed web crypto still saves a local sale and acks two operations in one
     await route.abort("failed");
   });
   await addAndPrice(page, seed, { customerPhone: "01016500001" });
-  await page.getByRole("form", { name: "إتمام البيع" }).getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await page.getByRole("form", { name: "إتمام البيع" }).getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   await expect.poll(async () =>
     salesForCode((await staffApi(page, "GET", "/api/internal/sales")).body, seed.code).length,
   ).toBe(1);
   await addAndPrice(page, seed, { customerPhone: "01016500002", waitForLookupResponse: true });
-  await page.getByRole("form", { name: "إتمام البيع" }).getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await page.getByRole("form", { name: "إتمام البيع" }).getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   await expect.poll(async () =>
@@ -76,7 +74,6 @@ test("pinned unpaid cart is rejected after shared cache reaches zero and earlier
   await addAndPrice(page, seed);
   await addAndPrice(page2, seed);
   const checkout2 = page2.getByRole("form", { name: "إتمام البيع" });
-  await checkout2.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkout2.getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page2.getByRole("status")).toContainText("تم حفظ البيع.");
   const completed = (await readPrivacyState(page2)).sales[0];
@@ -94,7 +91,6 @@ test("pinned unpaid cart is rejected after shared cache reaches zero and earlier
   expect(afterAck.sales.find((sale) => sale.id === completed?.id)?.syncStatus).toBe("acknowledged");
   expect(afterAck.stockCache.availability?.[seed.variantId]).toBe(0);
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
-  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("main").getByRole("alert").filter({ hasText: /^الكمية المتاحة غير كافية\.$/ }))
     .toContainText("الكمية المتاحة غير كافية.");
@@ -120,7 +116,6 @@ test("a new local sale during an outstanding ack rebases newer stock first witho
   await page.route("**/api/internal/sales", (route) => route.abort("failed"));
   await page.route("**/api/internal/sales/accepted", (route) => route.abort("failed"));
   await addAndPrice(page, seed, { customerName: "زبون أول", customerPhone: "01017000001" });
-  await page.getByRole("form", { name: "إتمام البيع" }).getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await page.getByRole("form", { name: "إتمام البيع" }).getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   const firstLocal = (await readPrivacyState(page)).sales[0];
@@ -143,7 +138,6 @@ test("a new local sale during an outstanding ack rebases newer stock first witho
   expect(afterFirstCapture.effects).toHaveLength(1);
   expect(afterFirstCapture.stockCache.version).toBe(baselineVersion);
   await addAndPrice(page, seed, { customerName: "زبون ثان", customerPhone: "01017000002", waitForLookupResponse: true });
-  await page.getByRole("form", { name: "إتمام البيع" }).getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await page.getByRole("form", { name: "إتمام البيع" }).getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   await expect.poll(() => held.length).toBe(2);
@@ -199,7 +193,6 @@ test("an older acknowledgement that is not in the newer proof still rebases with
   await page.route("**/api/internal/sales", (route) => route.abort("failed"));
   await page.route("**/api/internal/sales/accepted", (route) => route.abort("failed"));
   await addAndPrice(page, seed, { customerPhone: "01017500002" });
-  await page.getByRole("form", { name: "إتمام البيع" }).getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await page.getByRole("form", { name: "إتمام البيع" }).getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   const saleB = (await readPrivacyState(page)).sales[0];
@@ -212,7 +205,6 @@ test("an older acknowledgement that is not in the newer proof still rebases with
   expect(captured[0]?.saleId).toBe(saleB?.id);
   expect(captured[0]?.pendingOperationIds).toEqual([saleB?.operationId]);
   await addAndPrice(page, seed, { customerPhone: "01017500001", waitForLookupResponse: true });
-  await page.getByRole("form", { name: "إتمام البيع" }).getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await page.getByRole("form", { name: "إتمام البيع" }).getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   await expect.poll(() => captured.length).toBe(2);
@@ -227,7 +219,6 @@ test("an older acknowledgement that is not in the newer proof still rebases with
   expect(committedB?.stockVersion).toBeGreaterThan(committedA?.stockVersion ?? 0);
   expect(availabilityOf(committedB, seed.variantId)).toBe(2);
   await addAndPrice(page, seed, { customerPhone: "01017500003", waitForLookupResponse: true });
-  await page.getByRole("form", { name: "إتمام البيع" }).getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await page.getByRole("form", { name: "إتمام البيع" }).getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   await expect.poll(() => captured.length).toBe(3);
@@ -284,7 +275,6 @@ test("rebase storage failure leaves the sale unacknowledged and not shown as syn
   await page.route("**/api/internal/sales", (route) => route.abort("failed"));
   await page.route("**/api/internal/sales/accepted", (route) => route.abort("failed"));
   await addAndPrice(page, seed, { customerPhone: "01018000001" });
-  await page.getByRole("form", { name: "إتمام البيع" }).getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await page.getByRole("form", { name: "إتمام البيع" }).getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   const before = await readPrivacyState(page);
@@ -351,7 +341,6 @@ test("two tabs serialize synchronization of the same operation and deduct once",
   await page.route("**/api/internal/sales", (route) => route.abort("failed"));
   await page.route("**/api/internal/sales/accepted", (route) => route.abort("failed"));
   await addAndPrice(page, seed);
-  await page.getByRole("form", { name: "إتمام البيع" }).getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await page.getByRole("form", { name: "إتمام البيع" }).getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   const local = (await readPrivacyState(page)).sales[0];
@@ -398,7 +387,6 @@ test("lost acknowledgement is reconciled from an opaque later snapshot without l
     customerPhone: "01099887766",
     discountReason: "سبب سري للاختبار",
   });
-  await page.getByRole("form", { name: "إتمام البيع" }).getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await page.getByRole("form", { name: "إتمام البيع" }).getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   const original = (await readPrivacyState(page)).sales[0];
@@ -485,7 +473,6 @@ test("a conflicting phone, reason, or tender stays durable pending after another
     customerPhone: "01011111111",
     discountReason: "سبب أصلي",
   });
-  await page.getByRole("form", { name: "إتمام البيع" }).getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await page.getByRole("form", { name: "إتمام البيع" }).getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   const original = (await readPrivacyState(page)).sales[0];
@@ -584,7 +571,6 @@ test("account recovery preserves accepted and connected sales across revoke, exp
     customerPhone: "01055556666",
     discountReason: "سبب الاسترداد",
   });
-  await page.getByRole("form", { name: "إتمام البيع" }).getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await page.getByRole("form", { name: "إتمام البيع" }).getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   const acceptedSale = (await readPrivacyState(page)).sales[0];
@@ -598,7 +584,6 @@ test("account recovery preserves accepted and connected sales across revoke, exp
   await addAndPrice(page, seed, { waitForLookupResponse: true });
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await expect(page.getByTestId("accepted-prices")).toBeVisible();
-  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   const both = await readPrivacyState(page);

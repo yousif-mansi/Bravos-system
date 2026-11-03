@@ -1,4 +1,4 @@
-import type { BackupKnownUnsynchronizedTillDto, BackupTableSnapshot } from "@bravos/contracts";
+import { OPERATIONAL_STOCK_SCHEMA, type BackupKnownUnsynchronizedTillDto, type BackupTableSnapshot } from "@bravos/contracts";
 import type { QueryResultRow } from "pg";
 
 type Queryable = {
@@ -29,6 +29,8 @@ const TABLES = [
   { tableName: "inventory_delivered_return_allocation_effect", orderBy: "recorded_at, id" },
 ] as const;
 
+const TRANSFER_TABLE = { tableName: "inventory_transfer", orderBy: "recorded_at, id" } as const;
+
 type UnsynchronizedTillRow = {
   device_id: string;
   staff_id: string;
@@ -41,8 +43,11 @@ type UnsynchronizedTillRow = {
 export function createPostgresInventoryBackupReader(queryable: Queryable) {
   return {
     async readBackupTables(): Promise<BackupTableSnapshot[]> {
+      const tables = (await latestMigrationId(queryable)) === OPERATIONAL_STOCK_SCHEMA
+        ? [...TABLES, TRANSFER_TABLE]
+        : TABLES;
       const result: BackupTableSnapshot[] = [];
-      for (const table of TABLES) {
+      for (const table of tables) {
         // A known till's restore generation belongs to the destination database, so it is not archived.
         const columns = table.tableName === "inventory_known_till"
           ? "device_id, staff_id, latest_snapshot_id, latest_snapshot_at, stock_version, pending_operation_ids, included_operation_ids, synchronization_complete"
@@ -82,4 +87,10 @@ export function createPostgresInventoryBackupReader(queryable: Queryable) {
       }));
     },
   };
+}
+
+// 036 and older databases do not have inventory_transfer. Query it only on 037.
+async function latestMigrationId(queryable: Queryable): Promise<string | undefined> {
+  const rows = await queryable.query<{ id: string }>("SELECT id FROM schema_migrations ORDER BY id DESC LIMIT 1");
+  return rows.rows[0]?.id;
 }

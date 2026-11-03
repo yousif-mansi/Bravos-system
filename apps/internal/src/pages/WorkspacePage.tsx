@@ -10,18 +10,19 @@ import {
   getManagementReport,
   getStockPause,
   getWorkspace,
-  issuePosSnapshot,
   listLowStock,
   listOnlineOrders,
   recoverOfflineSale,
 } from "../api.ts";
 import { formatEgpFromPiasters } from "../money.ts";
 import { posCodeIsCached } from "../offline-ready.ts";
+import { PrinterConnectionPanel } from "../printing/PrinterConnectionPanel.tsx";
 import { acknowledgeRestoreDevice, getRestorePause } from "../restore-api.ts";
 import {
   acceptedPayload,
   cacheIssuedSnapshot,
   completedPayload,
+  issueStaffPosSnapshot,
   POS_SCHEMA_VERSION,
   pos,
   readPosReadiness,
@@ -287,7 +288,7 @@ export function WorkspacePage({
     return readyLabel;
   }
 
-  async function runSync(stillCurrent: () => boolean) {
+  async function runSync(stillCurrent: () => boolean, options?: { registerReceipt?: boolean }) {
     syncingRef.current = true;
     const staffId = workspace.staff.id;
     setSyncing(true);
@@ -355,13 +356,15 @@ export function WorkspacePage({
           setSyncError(result.error);
         }
       }
-      const deviceId = await pos.deviceId();
       if (!stillCurrent()) {
         return;
       }
       if (workspace.capabilities.cashier) {
         try {
-          const snapshot = await issuePosSnapshot(deviceId, await pos.listPendingOperationIds());
+          const snapshot = await issueStaffPosSnapshot(
+            await pos.listPendingOperationIds(),
+            options?.registerReceipt ? "register" : "passive",
+          );
           if (!stillCurrent()) {
             return;
           }
@@ -519,7 +522,7 @@ export function WorkspacePage({
     const staffId = workspace.staff.id;
     const epoch = accountGeneration();
     const stillCurrent = () => workspace.staff.id === staffId && accountGeneration() === epoch;
-    await runSync(stillCurrent);
+    await runSync(stillCurrent, { registerReceipt: true });
   }
 
   async function recoverNow() {
@@ -628,6 +631,7 @@ export function WorkspacePage({
       {workspace.capabilities.cashier && !ready ? (
         <p className="quiet-status" data-testid="offline-not-ready">نقطة البيع بتتجهز</p>
       ) : null}
+      <PrinterConnectionPanel />
 
       {observedPause ? (
         <div className="alert alert-danger" data-testid="stock-pause" role="alert">

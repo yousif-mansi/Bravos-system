@@ -7,6 +7,16 @@ import {
   type StockReconciliationSale,
   type StockReconciliationSalesPort,
 } from "@bravos/inventory";
+import { normalizeCustomerPhone } from "../domain/customer-phone.ts";
+import { SalesValidationError } from "../domain/errors.ts";
+import {
+  assignedReceiptDocument,
+  canonicalReceiptUuid,
+  conflictReceiptDocument,
+  formatReceiptReference,
+  readStoredReceiptIdentity,
+  sameAssignedReceiptClaim,
+} from "../domain/receipt-number.ts";
 import type {
   AutomaticPricingPort,
   DeferredCompletedSalePort,
@@ -102,8 +112,10 @@ export function createPostgresDeferredCompletedSaleStore(
 }
 
 function recoveryPayload(value: Record<string, unknown>): Record<string, unknown> {
-  const { kind, ...payload } = value;
-  if (kind !== "connected") return payload;
+  const payload = { ...value };
+  delete payload.kind;
+  delete payload.preparedSale;
+  if (value.kind !== "connected") return payload;
   return {
     saleId: payload.saleId,
     operationId: payload.operationId,
@@ -112,6 +124,8 @@ function recoveryPayload(value: Record<string, unknown>): Record<string, unknown
     occurredAt: payload.occurredAt,
     restoreGeneration: payload.restoreGeneration,
     ...(payload.payment ? { payment: payload.payment } : {}),
+    ...(payload.deviceId !== undefined && payload.deviceId !== null ? { deviceId: payload.deviceId } : {}),
+    ...(payload.receiptClaim !== undefined ? { receiptClaim: payload.receiptClaim } : {}),
   };
 }
 
@@ -161,6 +175,7 @@ type SaleRow = {
   recovered_at: Date | null;
   source_device_id: string | null;
   source_snapshot_id: string | null;
+  receipt_identity?: unknown;
 };
 
 type LineRow = {
@@ -178,6 +193,7 @@ type LineRow = {
   allocated_quantity: number;
   unallocated_quantity: number;
   line_index: number;
+  accepted_minimum_unit_piasters: number | null;
 };
 
 type UnitRow = {
@@ -199,8 +215,44 @@ export function createPostgresSaleStore(queryable: Queryable): SaleStore {
     async lockIdentities(saleId, operationId) {
       const keys = saleId === operationId ? [saleId] : [saleId, operationId].sort();
       for (const key of keys) {
-        await queryable.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [key]);
+        await queryable.query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))", [key]);
       }
+    },
+
+    async registerReceiptPrefix(input) {
+      const id = input.id.toLowerCase();
+      const deviceId = input.deviceId.toLowerCase();
+      await queryable.query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))", [id]);
+      const existing = await queryable.query<{ id: string; device_id: string; prefix: string }>(
+        "SELECT id, device_id, prefix FROM sales_receipt_registration WHERE id = $1",
+        [id],
+      );
+      const row = existing.rows[0];
+      if (row) {
+        if (row.device_id !== deviceId) {
+          throw new SalesValidationError("تسجيل الإيصال لا يطابق هذا الجهاز.");
+        }
+        return { registrationId: row.id, deviceId: row.device_id, prefix: row.prefix };
+      }
+      const allocated = await queryable.query<{ prefix: string }>(
+        "SELECT nextval('sales_receipt_prefix_seq')::text AS prefix",
+      );
+      const prefix = allocated.rows[0]?.prefix;
+      if (!prefix || !/^[1-9][0-9]*$/.test(prefix)) {
+        throw new Error("Receipt prefix sequence is missing.");
+      }
+      const inserted = await queryable.query<{ id: string; device_id: string; prefix: string }>(
+        `INSERT INTO sales_receipt_registration (
+           id, device_id, prefix, created_at, created_by_staff_id, restore_generation
+         ) VALUES ($1, $2, $3, now(), $4, $5)
+         RETURNING id, device_id, prefix`,
+        [id, deviceId, prefix, input.staffId, input.restoreGeneration],
+      );
+      const created = inserted.rows[0];
+      if (!created) {
+        throw new Error("Receipt registration was not stored.");
+      }
+      return { registrationId: created.id, deviceId: created.device_id, prefix: created.prefix };
     },
 
     async insert(input) {
@@ -284,6 +336,7 @@ export function createPostgresSaleStore(queryable: Queryable): SaleStore {
           }
           return { kind: "existing", record: existing };
         }
+        await linkCustomer(queryable, input.id, input.customerName, input.customerPhone, input.soldByStaffId);
         await insertLines(queryable, input.id, input.lines);
         await queryable.query("RELEASE SAVEPOINT sale_insert");
         const loaded = await loadById(queryable, input.id);
@@ -418,6 +471,84 @@ export function createPostgresSaleStore(queryable: Queryable): SaleStore {
         [variantIds],
       );
       return result.rows.map((row) => row.variant_id);
+    },
+    async attachReceiptClaim(input) {
+      const locked = await queryable.query<{ receipt_identity: unknown }>(
+        `SELECT receipt_identity FROM sales_sale WHERE id = $1 FOR UPDATE`,
+        [input.saleId],
+      );
+      if (!locked.rows[0]) {
+        throw new Error("Completed sale is missing for receipt attachment.");
+      }
+      const stored = readStoredReceiptIdentity(locked.rows[0].receipt_identity);
+      if (stored) {
+        if (
+          stored.status === "assigned"
+          && input.claim.kind === "valid"
+          && sameAssignedReceiptClaim(stored, input.claim.claim)
+        ) {
+          return requireLoadedSale(queryable, input.saleId);
+        }
+        if (stored.status === "assigned" && input.claim.kind !== "absent") {
+          await queryable.query(
+            `UPDATE sales_sale
+             SET receipt_identity = receipt_identity || $2::jsonb
+             WHERE id = $1 AND receipt_identity->>'status' = 'assigned'`,
+            [input.saleId, JSON.stringify({ numberingConflict: true })],
+          );
+        }
+        return requireLoadedSale(queryable, input.saleId);
+      }
+      if (input.claim.kind === "absent") {
+        return requireLoadedSale(queryable, input.saleId);
+      }
+      if (input.claim.kind === "malformed") {
+        await writeReceiptIdentity(
+          queryable,
+          input.saleId,
+          conflictReceiptDocument(input.claim.claimedReference),
+        );
+        return requireLoadedSale(queryable, input.saleId);
+      }
+      const claim = input.claim.claim;
+      const registration = await queryable.query<{ device_id: string; prefix: string }>(
+        `SELECT device_id, prefix FROM sales_receipt_registration WHERE id = $1`,
+        [claim.registrationId],
+      );
+      const registrationRow = registration.rows[0];
+      const sourceDevice = canonicalReceiptUuid(input.sourceDeviceId);
+      const registrationDevice = registrationRow ? canonicalReceiptUuid(registrationRow.device_id) : null;
+      let canonicalNumber = false;
+      try {
+        canonicalNumber = formatReceiptReference(claim.prefix, claim.sequence) === claim.reference;
+      } catch {
+        canonicalNumber = false;
+      }
+      const assignable = Boolean(
+        registrationRow
+        && registrationDevice === claim.deviceId
+        && registrationRow.prefix === claim.prefix
+        && sourceDevice !== null
+        && sourceDevice === claim.deviceId
+        && canonicalNumber,
+      );
+      if (!assignable) {
+        await writeReceiptIdentity(queryable, input.saleId, conflictReceiptDocument(claim.reference));
+        return requireLoadedSale(queryable, input.saleId);
+      }
+      await queryable.query("SAVEPOINT receipt_identity_attach");
+      try {
+        await queryable.query(
+          `UPDATE sales_sale SET receipt_identity = $2::jsonb WHERE id = $1`,
+          [input.saleId, JSON.stringify(assignedReceiptDocument(claim))],
+        );
+        await queryable.query("RELEASE SAVEPOINT receipt_identity_attach");
+      } catch (error) {
+        await queryable.query("ROLLBACK TO SAVEPOINT receipt_identity_attach");
+        if (!isReceiptIdentityViolation(error)) throw error;
+        await writeReceiptIdentity(queryable, input.saleId, conflictReceiptDocument(claim.reference));
+      }
+      return requireLoadedSale(queryable, input.saleId);
     },
   };
 }
@@ -610,8 +741,9 @@ async function insertLines(queryable: Queryable, saleId: string, lines: SaleLine
       `INSERT INTO sales_sale_line (
          id, sale_id, variant_id, quantity, listed_unit_price_piasters, original_piasters,
          discount_piasters, paid_piasters, automatic_offer_discount_piasters,
-         coupon_discount_piasters, employee_discount_piasters, allocated_quantity, unallocated_quantity, line_index
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+         coupon_discount_piasters, employee_discount_piasters, accepted_minimum_unit_piasters,
+         allocated_quantity, unallocated_quantity, line_index
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
       [
         line.id,
         saleId,
@@ -624,6 +756,7 @@ async function insertLines(queryable: Queryable, saleId: string, lines: SaleLine
         line.automaticOfferDiscountPiasters,
         line.couponDiscountPiasters,
         line.employeeDiscountPiasters,
+        line.acceptedMinimumUnitPiasters ?? null,
         line.allocatedQuantity,
         line.unallocatedQuantity,
         line.lineIndex,
@@ -706,6 +839,31 @@ async function loadDeferredCompletionProofs(
     }));
 }
 
+async function linkCustomer(
+  queryable: Queryable,
+  saleId: string,
+  customerName: string | null,
+  customerPhone: string | null,
+  actorStaffId: string,
+): Promise<void> {
+  const phone = normalizeCustomerPhone(customerPhone);
+  if (!phone) return;
+  const displayName = customerName?.trim() || "بدون اسم";
+  await queryable.query(
+    `INSERT INTO customer (id, normalized_phone, display_name, created_by_staff_id)
+     VALUES (gen_random_uuid(), $1, $2, $3)
+     ON CONFLICT (normalized_phone) DO NOTHING`,
+    [phone, displayName, actorStaffId],
+  );
+  const existing = await queryable.query<{ id: string }>(
+    `SELECT id FROM customer WHERE normalized_phone = $1`,
+    [phone],
+  );
+  const customerId = existing.rows[0]?.id;
+  if (!customerId) return;
+  await queryable.query(`UPDATE sales_sale SET customer_id = $2 WHERE id = $1 AND customer_id IS NULL`, [saleId, customerId]);
+}
+
 async function loadById(queryable: Queryable, id: string): Promise<SaleRecord | null> {
   const result = await queryable.query<SaleRow>(`SELECT * FROM sales_sale WHERE id = $1`, [id]);
   const row = result.rows[0];
@@ -777,6 +935,9 @@ async function loadLinesForSales(queryable: Queryable, saleIds: string[]): Promi
       automaticOfferDiscountPiasters: asSafeInteger(row.automatic_offer_discount_piasters),
       couponDiscountPiasters: asSafeInteger(row.coupon_discount_piasters),
       employeeDiscountPiasters: asSafeInteger(row.employee_discount_piasters),
+      acceptedMinimumUnitPiasters: row.accepted_minimum_unit_piasters === null
+        ? null
+        : asSafeInteger(row.accepted_minimum_unit_piasters),
       allocatedQuantity: row.allocated_quantity,
       unallocatedQuantity: row.unallocated_quantity,
       lineIndex: row.line_index,
@@ -845,6 +1006,7 @@ function toSale(row: SaleRow, lines: SaleLineWrite[]): SaleRecord {
     recoveredAt: row.recovered_at,
     sourceDeviceId: row.source_device_id,
     sourceSnapshotId: row.source_snapshot_id,
+    receiptIdentity: readStoredReceiptIdentity(row.receipt_identity),
     lines,
   };
 }
@@ -920,6 +1082,37 @@ function isUniqueViolation(error: unknown): boolean {
   return Boolean(error && typeof error === "object" && "code" in error && (error as { code?: string }).code === "23505");
 }
 
+function isReceiptIdentityViolation(error: unknown): boolean {
+  if (!error || typeof error !== "object" || !("code" in error)) return false;
+  const code = (error as { code?: string }).code;
+  if (code === "23505" || code === "23514") return true;
+  if (code !== "54000") return false;
+  const message = "message" in error && typeof (error as { message?: unknown }).message === "string"
+    ? (error as { message: string }).message
+    : "";
+  return /index row size/i.test(message)
+    || /index row requires .+ maximum size is/i.test(message);
+}
+
+async function writeReceiptIdentity(
+  queryable: Queryable,
+  saleId: string,
+  document: { status: "assigned" | "conflict" },
+): Promise<void> {
+  await queryable.query(
+    `UPDATE sales_sale SET receipt_identity = $2::jsonb WHERE id = $1`,
+    [saleId, JSON.stringify(document)],
+  );
+}
+
+async function requireLoadedSale(queryable: Queryable, saleId: string): Promise<SaleRecord> {
+  const loaded = await loadById(queryable, saleId);
+  if (!loaded) {
+    throw new Error("Completed sale is missing for receipt attachment.");
+  }
+  return loaded;
+}
+
 function asSafeInteger(value: number | string): number {
   const parsed = typeof value === "string" ? Number(value) : value;
   if (typeof parsed !== "number" || !Number.isSafeInteger(parsed)) {
@@ -971,9 +1164,17 @@ export function createPostgresPriceSnapshotStore(queryable: Queryable): PriceSna
       for (const price of input.prices) {
         await queryable.query(
           `INSERT INTO sales_pos_snapshot_price (
-             snapshot_id, variant_id, product_id, category_id, listed_unit_price_piasters
-           ) VALUES ($1, $2, $3, $4, $5)`,
-          [input.id, price.variantId, price.productId, price.categoryId, price.listedUnitPricePiasters],
+             snapshot_id, variant_id, product_id, category_id, listed_unit_price_piasters,
+             minimum_unit_price_piasters
+           ) VALUES ($1, $2, $3, $4, $5, $6)`,
+          [
+            input.id,
+            price.variantId,
+            price.productId,
+            price.categoryId,
+            price.listedUnitPricePiasters,
+            price.minimumUnitPricePiasters ?? null,
+          ],
         );
       }
       return input;
@@ -990,8 +1191,9 @@ export function createPostgresPriceSnapshotStore(queryable: Queryable): PriceSna
         product_id: string;
         category_id: string;
         listed_unit_price_piasters: number;
+        minimum_unit_price_piasters: number | null;
       }>(
-        `SELECT variant_id, product_id, category_id, listed_unit_price_piasters
+        `SELECT variant_id, product_id, category_id, listed_unit_price_piasters, minimum_unit_price_piasters
          FROM sales_pos_snapshot_price WHERE snapshot_id = $1`,
         [id],
       );
@@ -1011,6 +1213,7 @@ export function createPostgresPriceSnapshotStore(queryable: Queryable): PriceSna
           productId: item.product_id,
           categoryId: item.category_id,
           listedUnitPricePiasters: item.listed_unit_price_piasters,
+          minimumUnitPricePiasters: item.minimum_unit_price_piasters,
         })),
       };
     },
@@ -1018,11 +1221,41 @@ export function createPostgresPriceSnapshotStore(queryable: Queryable): PriceSna
 }
 
 export function createPostgresPhysicalSaleSourceCandidateReader(queryable: Queryable): PhysicalSaleSourceCandidateReader {
-  return { async list(search) {
-    const query = sourceSearchQuery(search);
-    return (await queryable.query<{ id: string; received_at_key: string }>(query.sql, query.params)).rows
-      .map((row) => ({ id: row.id, receivedAtKey: row.received_at_key }));
-  } };
+  return {
+    async list(search) {
+      const query = sourceSearchQuery(search);
+      const result = await queryable.query<{
+        id: string;
+        received_at_key: string;
+        receipt_reference: string | null;
+        receipt_numbering_conflict: boolean | null;
+      }>(query.sql, query.params);
+      return result.rows.map((row) => ({
+        id: row.id,
+        receivedAtKey: row.received_at_key,
+        ...receiptSearchMetadata(row),
+      }));
+    },
+    async projections(ids) {
+      if (ids.length === 0) return [];
+      const result = await queryable.query<{
+        id: string;
+        receipt_reference: string | null;
+        receipt_numbering_conflict: boolean | null;
+      }>(
+        `SELECT id,
+                NULLIF(receipt_identity->>'reference', '') AS receipt_reference,
+                (
+                  receipt_identity->>'status' = 'conflict'
+                  OR receipt_identity->>'numberingConflict' = 'true'
+                ) AS receipt_numbering_conflict
+         FROM sales_sale
+         WHERE id = ANY($1::uuid[])`,
+        [ids],
+      );
+      return result.rows.map((row) => ({ id: row.id, ...receiptSearchMetadata(row) }));
+    },
+  };
 }
 
 function sourceSearchQuery(search: PhysicalSaleSourceSearch) {
@@ -1031,7 +1264,7 @@ function sourceSearchQuery(search: PhysicalSaleSourceSearch) {
   const where = ["s.physically_completed = true"];
   if (search.reference) {
     const key = bind(search.reference);
-    where.push(`(s.reference ILIKE '%' || ${key} || '%' OR s.id::text ILIKE '%' || ${key} || '%' OR s.operation_id::text ILIKE '%' || ${key} || '%')`);
+    where.push(`(s.reference ILIKE '%' || ${key} || '%' OR s.id::text ILIKE '%' || ${key} || '%' OR s.operation_id::text ILIKE '%' || ${key} || '%' OR COALESCE(s.receipt_identity->>'reference', '') ILIKE '%' || ${key} || '%')`);
   }
   if (search.phone) where.push(`regexp_replace(translate(COALESCE(s.customer_phone,''), '٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹', '01234567890123456789'), '[^0-9]', '', 'g') LIKE '%' || ${bind(search.phone)} || '%'`);
   if (search.date) where.push(`(s.occurred_at AT TIME ZONE 'Africa/Cairo')::date = ${bind(search.date)}::date`);
@@ -1039,6 +1272,21 @@ function sourceSearchQuery(search: PhysicalSaleSourceSearch) {
   if (search.after) where.push(`(s.occurred_at,s.id,1) < (${bind(search.after.receivedAt)}::timestamptz,${bind(search.after.id)}::uuid,${bind(search.after.channel === "physical" ? 1 : 0)}::int)`);
   const limit = bind(search.limit ?? 100);
   return { sql: `SELECT s.id,
-    to_char(s.occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS received_at_key
+    to_char(s.occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS received_at_key,
+    NULLIF(s.receipt_identity->>'reference', '') AS receipt_reference,
+    (
+      s.receipt_identity->>'status' = 'conflict'
+      OR s.receipt_identity->>'numberingConflict' = 'true'
+    ) AS receipt_numbering_conflict
     FROM sales_sale s WHERE ${where.join(" AND ")} ORDER BY s.occurred_at DESC,s.id DESC LIMIT ${limit}`, params };
+}
+
+function receiptSearchMetadata(row: {
+  receipt_reference: string | null;
+  receipt_numbering_conflict: boolean | null;
+}): { receiptReference?: string; receiptNumberingConflict?: true } {
+  return {
+    ...(row.receipt_reference ? { receiptReference: row.receipt_reference } : {}),
+    ...(row.receipt_numbering_conflict ? { receiptNumberingConflict: true as const } : {}),
+  };
 }

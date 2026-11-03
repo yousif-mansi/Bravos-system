@@ -311,29 +311,25 @@ test("ten received at 100 then ten at 140 and a sale of three leaves seven old a
 test("employee deduction is nonnegative, permits zero, rejects negative, and allocates equally with caps", async () => {
   const manager = await signIn("owner", "owner-pass-1");
   await api(manager, "POST", "/api/internal/active-branch", { branchId: abshwayId });
-  const seed = await seedShirt(manager, { extraColor: true, price: 30000 });
-  const expensive = await api(manager, "PATCH", `/api/internal/catalog/products/${seed.productId}`, {
-    code: "TS-001",
-    nameAr: "تيشيرت أساسي",
+  const seed = await seedShirt(manager, { price: 30000 });
+  const secondColor = await api(manager, "POST", "/api/internal/catalog/colors", { nameAr: "أبيض الخصم" });
+  const secondSize = await api(manager, "POST", "/api/internal/catalog/sizes", { nameAr: "خصم" });
+  expect(secondColor.status).toBe(201);
+  expect(secondSize.status).toBe(201);
+  const cheaper = await api(manager, "POST", "/api/internal/catalog/products", {
+    code: "TS-200",
+    nameAr: "تيشيرت أقل",
     descriptionAr: "قطن",
     categoryId: seed.categoryId,
-    defaultSellingPricePiasters: 30000,
+    defaultSellingPricePiasters: 20000,
     publication: "hidden",
     imageRefs: [],
-    variants: [
-      { sizeId: seed.sizeId, colorId: seed.colorId, sellingPricePiastersOverride: 30000 },
-      {
-        sizeId: seed.sizeId,
-        colorId: (await api(manager, "GET", `/api/internal/catalog/products/${seed.productId}`)).body.variants.find(
-          (variant: { id: string }) => variant.id === seed.secondVariantId,
-        ).color.id,
-        sellingPricePiastersOverride: 20000,
-      },
-    ],
+    variants: [{ sizeId: secondSize.body.id, colorId: secondColor.body.id, sellingPricePiastersOverride: null }],
   });
-  expect(expensive.status).toBe(200);
+  expect(cheaper.status).toBe(201);
+  const cheaperVariantId = cheaper.body.variants[0].id as string;
   await receive(manager, seed.variantId, 12, 5000);
-  await receive(manager, seed.secondVariantId, 6, 5000);
+  await receive(manager, cheaperVariantId, 6, 5000);
 
   const equal = await api(manager, "POST", "/api/internal/sales", {
     saleId: crypto.randomUUID(),
@@ -343,7 +339,7 @@ test("employee deduction is nonnegative, permits zero, rejects negative, and all
     discountReason: "اتفاق مع الزبون",
     lines: [
       { variantId: seed.variantId, quantity: 1 },
-      { variantId: seed.secondVariantId, quantity: 1 },
+      { variantId: cheaperVariantId, quantity: 1 },
     ],
   });
   expect(equal.status).toBe(201);
@@ -370,7 +366,7 @@ test("employee deduction is nonnegative, permits zero, rejects negative, and all
     employeeDiscountPiasters: 6000,
     lines: [
       { variantId: seed.variantId, quantity: 2 },
-      { variantId: seed.secondVariantId, quantity: 1 },
+      { variantId: cheaperVariantId, quantity: 1 },
     ],
   });
   expect(multi.status).toBe(201);
@@ -385,7 +381,7 @@ test("employee deduction is nonnegative, permits zero, rejects negative, and all
   ).toEqual(
     [
       {
-        variantId: seed.secondVariantId,
+        variantId: cheaperVariantId,
         quantity: 1,
         units: [{ unitIndex: 0, quantity: 1, listedPiasters: 20000, discountPiasters: 2000, paidPiasters: 18000 }],
       },
@@ -663,7 +659,7 @@ test("a failing multi-line sale rolls back then the same identity can complete t
 test("accepted listed prices are server-authoritative and saved sales are not repriced", async () => {
   const manager = await signIn("owner", "owner-pass-1");
   await api(manager, "POST", "/api/internal/active-branch", { branchId: abshwayId });
-  const seed = await seedShirt(manager, { price: 25000, override: 22000 });
+  const seed = await seedShirt(manager, { price: 22000 });
   await receive(manager, seed.variantId, 6, 8000);
   const saleId = crypto.randomUUID();
   const operationId = crypto.randomUUID();
@@ -685,7 +681,7 @@ test("accepted listed prices are server-authoritative and saved sales are not re
     defaultSellingPricePiasters: 40000,
     publication: "hidden",
     imageRefs: [],
-    variants: [{ sizeId: seed.sizeId, colorId: seed.colorId, sellingPricePiastersOverride: 40000 }],
+    variants: [{ sizeId: seed.sizeId, colorId: seed.colorId, sellingPricePiastersOverride: null }],
   });
   expect(raised.status).toBe(200);
 
@@ -1190,7 +1186,7 @@ test("unresolved shortage stays unavailable after later receiving", async () => 
   const direct = await api(manager, "POST", "/api/internal/sales", saleBody(seed.variantId, 1));
   expect(direct.status).toBe(400);
   const low = await api(manager, "GET", "/api/internal/inventory/low-stock");
-  const row = low.body.find((item: { variantId: string }) => item.variantId === seed.variantId);
+  const row = low.body.find((item: { variantId: string; branchId: string }) => item.variantId === lookup.body.operationalVariantId && item.branchId === abshwayId);
   expect(row.availableQuantity).toBe(0);
   const batches = await api(manager, "GET", "/api/internal/inventory/batches");
   const costs = batches.body
@@ -1308,7 +1304,7 @@ test("authorized lookup of a prepared operation returns the accepted payload bef
   expect(listed.body).toEqual([]);
 });
 
-test("issued POS snapshot keeps original 300/200 prices after later catalog reprice", async () => {
+test("issued POS snapshot keeps the accepted product price after later catalog reprice", async () => {
   const manager = await signIn("owner", "owner-pass-1");
   await api(manager, "POST", "/api/internal/active-branch", { branchId: abshwayId });
   const seed = await seedShirt(manager, { extraColor: true, price: 30000 });
@@ -1326,7 +1322,7 @@ test("issued POS snapshot keeps original 300/200 prices after later catalog repr
     imageRefs: [],
     variants: [
       { sizeId: seed.sizeId, colorId: seed.colorId, sellingPricePiastersOverride: null },
-      { sizeId: seed.sizeId, colorId: whiteColorId, sellingPricePiastersOverride: 20000 },
+      { sizeId: seed.sizeId, colorId: whiteColorId, sellingPricePiastersOverride: null },
     ],
   });
   expect(priced.status).toBe(200);
@@ -1358,7 +1354,7 @@ test("issued POS snapshot keeps original 300/200 prices after later catalog repr
   expect(snapshotPrices).toEqual(
     [
       { id: seed.variantId, sellingPricePiasters: 30000 },
-      { id: seed.secondVariantId, sellingPricePiasters: 20000 },
+      { id: seed.secondVariantId, sellingPricePiasters: 30000 },
     ].sort((left, right) => (left.id < right.id ? -1 : 1)),
   );
   expect(JSON.stringify(snapshot.body)).not.toMatch(/cost|profit|purchase|batch|inventoryValue|unitCost/i);
@@ -1373,7 +1369,7 @@ test("issued POS snapshot keeps original 300/200 prices after later catalog repr
     imageRefs: [],
     variants: [
       { sizeId: seed.sizeId, colorId: seed.colorId, sellingPricePiastersOverride: null },
-      { sizeId: seed.sizeId, colorId: whiteColorId, sellingPricePiastersOverride: 80000 },
+      { sizeId: seed.sizeId, colorId: whiteColorId, sellingPricePiastersOverride: null },
     ],
   });
   expect(repriced.status).toBe(200);
@@ -1392,16 +1388,16 @@ test("issued POS snapshot keeps original 300/200 prices after later catalog repr
     discountReason: "اتفاق الصندوق",
     lines: [
       { variantId: seed.variantId, quantity: 1, listedUnitPricePiasters: 30000 },
-      { variantId: seed.secondVariantId, quantity: 1, listedUnitPricePiasters: 20000 },
+      { variantId: seed.secondVariantId, quantity: 1, listedUnitPricePiasters: 30000 },
     ],
   });
   expect(accepted.status, JSON.stringify(accepted.body)).toBe(201);
   expect(accepted.body.soldByDisplayName).toBe("كاشير دون اتصال");
   expect(accepted.body.branch.code).toBe("abshway");
   expect(accepted.body.occurredAt).toBe("2026-09-11T10:15:00.000Z");
-  expect(accepted.body.originalTotalPiasters).toBe(50000);
+  expect(accepted.body.originalTotalPiasters).toBe(60000);
   expect(accepted.body.employeeDiscountPiasters).toBe(5000);
-  expect(accepted.body.finalTotalPiasters).toBe(45000);
+  expect(accepted.body.finalTotalPiasters).toBe(55000);
   const paid = accepted.body.lines
     .map((line: { variantId: string; paidPiasters: number; listedUnitPricePiasters: number }) => ({
       variantId: line.variantId,
@@ -1413,7 +1409,7 @@ test("issued POS snapshot keeps original 300/200 prices after later catalog repr
     );
   expect(paid).toEqual(
     [
-      { variantId: seed.secondVariantId, listedUnitPricePiasters: 20000, paidPiasters: 17500 },
+      { variantId: seed.secondVariantId, listedUnitPricePiasters: 30000, paidPiasters: 27500 },
       { variantId: seed.variantId, listedUnitPricePiasters: 30000, paidPiasters: 27500 },
     ].sort((left, right) => (left.variantId < right.variantId ? -1 : 1)),
   );
@@ -1437,12 +1433,12 @@ test("issued POS snapshot keeps original 300/200 prices after later catalog repr
     discountReason: "اتفاق الصندوق",
     lines: [
       { variantId: seed.variantId, quantity: 1, listedUnitPricePiasters: 30000 },
-      { variantId: seed.secondVariantId, quantity: 1, listedUnitPricePiasters: 20000 },
+      { variantId: seed.secondVariantId, quantity: 1, listedUnitPricePiasters: 30000 },
     ],
   });
   expect(replay.status).toBe(200);
   expect(replay.body.id).toBe(accepted.body.id);
-  expect(replay.body.finalTotalPiasters).toBe(45000);
+  expect(replay.body.finalTotalPiasters).toBe(55000);
   expect(replay.body.lines.find((line: { variantId: string }) => line.variantId === seed.variantId).listedUnitPricePiasters).toBe(
     30000,
   );

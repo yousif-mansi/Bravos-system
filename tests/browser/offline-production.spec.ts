@@ -91,7 +91,6 @@ test("production precache serves first offline POS navigation and survives a sam
     const checkout = page.getByRole("form", { name: "إتمام البيع" });
     await checkout.getByLabel("خصم الموظف بالجنيه").fill("10");
     await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
-    await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
     await checkout.getByRole("button", { name: "إتمام البيع" }).click();
     await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
     await expect(page.getByTestId("sale-details")).toContainText("150");
@@ -215,8 +214,16 @@ test("production offline queue survives restart then automatically syncs after r
     await page.getByRole("button", { name: "دخول" }).click();
     await page.getByRole("button", { name: "أبشواي" }).click();
     await expect(page.getByTestId("offline-ready")).toBeVisible({ timeout: 45_000 });
-    await context.setOffline(true);
     await page.getByRole("link", { name: "البحث عن منتج" }).click();
+    await expect(page.getByRole("form", { name: "البحث برمز المنتج" })).toBeVisible();
+    await expect.poll(async () => {
+      const numbering = await readReceiptNumbering(page);
+      return Boolean(numbering?.prefix && numbering.nextSequence);
+    }, { timeout: 45_000 }).toBe(true);
+    const prepared = await readReceiptNumbering(page);
+    expect(prepared?.prefix).toBeTruthy();
+    expect(prepared?.nextSequence).toBeTruthy();
+    await context.setOffline(true);
     const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
     await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill("OFF-ACK");
     await lookup.getByRole("button", { name: "بحث" }).click();
@@ -226,7 +233,6 @@ test("production offline queue survives restart then automatically syncs after r
     await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
     const checkout = page.getByRole("form", { name: "إتمام البيع" });
     await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
-    await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
     await checkout.getByRole("button", { name: "إتمام البيع" }).click();
     await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
     const original = await readPosSales(page);
@@ -234,6 +240,19 @@ test("production offline queue survives restart then automatically syncs after r
     expect(original[0]?.syncStatus).toBe("pending");
     expect(original[0]?.finalTotalPiasters).toBe(15000);
     const originalId = original[0]?.id;
+    const receiptReference = original[0]?.receiptReference;
+    const receiptClaim = original[0]?.receiptClaim;
+    expect(receiptReference).toMatch(/^BRV-\d{3,}-\d{6,}$/);
+    expect(receiptClaim?.reference).toBe(receiptReference);
+    expect(receiptClaim?.prefix).toBe(prepared?.prefix);
+    expect(receiptClaim?.sequence).toBe(prepared?.nextSequence);
+    expect(receiptClaim?.registrationId).toBe(prepared?.registrationId);
+    expect(receiptClaim?.deviceId).toBe(prepared?.deviceId);
+    const counterAfterSale = await readReceiptNumbering(page);
+    expect(counterAfterSale?.prefix).toBe(prepared?.prefix);
+    expect(counterAfterSale?.registrationId).toBe(prepared?.registrationId);
+    expect(counterAfterSale?.deviceId).toBe(prepared?.deviceId);
+    expect(counterAfterSale?.nextSequence).not.toBe(prepared?.nextSequence);
     await page.close();
     await context.close();
     context = undefined;
@@ -243,15 +262,26 @@ test("production offline queue survives restart then automatically syncs after r
     const again = relaunched.page;
     await again.goto(`${PREVIEW_ORIGIN}/workspace`);
     await expect(again.getByTestId("unsynced-count")).toContainText("مبيعات غير مزامنة: 1", { timeout: 45_000 });
+    expect(await readReceiptNumbering(again)).toEqual(counterAfterSale);
     const restored = await readPosSales(again);
     expect(restored).toHaveLength(1);
     expect(restored[0]?.id).toBe(originalId);
     expect(restored[0]?.syncStatus).toBe("pending");
+    expect(restored[0]?.finalTotalPiasters).toBe(15000);
+    expect(restored[0]?.receiptReference).toBe(receiptReference);
+    expect(restored[0]?.receiptClaim).toEqual(receiptClaim);
+    expect(await readReceiptNumbering(again)).toEqual(counterAfterSale);
     await restarted.setOffline(false);
     await expect(again.getByTestId("unsynced-count")).toContainText("مبيعات غير مزامنة: 0", { timeout: 45_000 });
     await expect.poll(async () => (await readPosSales(again))[0]?.syncStatus).toBe("acknowledged");
+    const acknowledged = await readPosSales(again);
+    expect(acknowledged[0]?.receiptReference).toBe(receiptReference);
+    expect(acknowledged[0]?.receiptClaim).toEqual(receiptClaim);
+    expect(acknowledged[0]?.finalTotalPiasters).toBe(15000);
+    expect(await readReceiptNumbering(again)).toEqual(counterAfterSale);
     const listed = await staffApi(again, "GET", "/api/internal/sales");
     expect(listed.body.some((sale: { id: string }) => sale.id === originalId)).toBe(true);
+    expect(listed.body.find((sale: { id: string; receiptReference?: string }) => sale.id === originalId)?.receiptReference).toBe(receiptReference);
     const lookupAfter = await staffApi(again, "GET", `/api/internal/catalog/lookup?code=${encodeURIComponent("OFF-ACK")}`);
     expect(lookupAfter.body.variants[0].availableQuantity).toBe(1);
   } finally {
@@ -335,7 +365,6 @@ test("waiting service worker with an unknown schema defers activation", async ({
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
-  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   const queued = await readPosSales(page);
@@ -546,7 +575,6 @@ test("schema 2 individual paid units and signed-in session survive upgrade and o
     const checkout = page.getByRole("form", { name: "إتمام البيع" });
     await checkout.getByLabel("خصم الموظف بالجنيه").fill("1");
     await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
-    await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
     await checkout.getByRole("button", { name: "إتمام البيع" }).click();
     await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
     const snapshot = await page.evaluate(async () => {
@@ -747,7 +775,6 @@ test("schema 2 completed sales missing paid-unit allocations defer upgrade and k
     await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
     const checkout = page.getByRole("form", { name: "إتمام البيع" });
     await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
-    await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
     await checkout.getByRole("button", { name: "إتمام البيع" }).click();
     await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
     const original = await readPosSales(page);
@@ -953,7 +980,6 @@ test("explicit logout from catalog, staff and receiving pages blocks offline res
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
-  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   const queued = await readPosSales(page);
@@ -1060,7 +1086,6 @@ test("a fresh cashier login keeps an old cached session from becoming current af
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
-  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   const original = (await readPosSales(page))[0];
@@ -1387,6 +1412,52 @@ async function readPosSession(page: import("@playwright/test").Page) {
   });
 }
 
+async function readReceiptNumbering(page: import("@playwright/test").Page): Promise<{
+  registrationId?: string;
+  deviceId?: string;
+  prefix?: string;
+  nextSequence?: string;
+} | null> {
+  return page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open("bravos-pos");
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    try {
+      const value = await new Promise<string | null>((resolve, reject) => {
+        const request = db.transaction("meta", "readonly").objectStore("meta").get("receiptNumbering");
+        request.onsuccess = () => {
+          const row = request.result as { value?: unknown } | undefined;
+          resolve(typeof row?.value === "string" ? row.value : null);
+        };
+        request.onerror = () => reject(request.error);
+      });
+      if (!value) return null;
+      try {
+        const parsed = JSON.parse(value) as unknown;
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+        const record = parsed as Record<string, unknown>;
+        const numbering: {
+          registrationId?: string;
+          deviceId?: string;
+          prefix?: string;
+          nextSequence?: string;
+        } = {};
+        if (typeof record.registrationId === "string") numbering.registrationId = record.registrationId;
+        if (typeof record.deviceId === "string") numbering.deviceId = record.deviceId;
+        if (typeof record.prefix === "string") numbering.prefix = record.prefix;
+        if (typeof record.nextSequence === "string") numbering.nextSequence = record.nextSequence;
+        return numbering;
+      } catch {
+        return null;
+      }
+    } finally {
+      db.close();
+    }
+  });
+}
+
 async function readPosSales(page: import("@playwright/test").Page) {
   return page.evaluate(async () => {
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
@@ -1405,6 +1476,14 @@ async function readPosSales(page: import("@playwright/test").Page) {
         employeeDiscountPiasters: number;
         finalTotalPiasters: number;
         syncStatus?: string;
+        receiptReference?: string;
+        receiptClaim?: {
+          registrationId?: string;
+          deviceId?: string;
+          prefix?: string;
+          sequence?: string;
+          reference?: string;
+        };
         branch: { code: string };
       }>
     >((resolve, reject) => {

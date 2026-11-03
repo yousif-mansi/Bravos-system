@@ -1,10 +1,12 @@
-import type {
-  CategoryDto,
-  ColorDto,
-  ManagerProductDto,
-  ManagerVariantDto,
-  SizeDto,
-  VariantIdentityDto,
+import {
+  OPERATIONAL_COLOR_ID,
+  OPERATIONAL_SIZE_ID,
+  type CategoryDto,
+  type ColorDto,
+  type ManagerProductDto,
+  type ManagerVariantDto,
+  type SizeDto,
+  type VariantIdentityDto,
 } from "@bravos/contracts";
 import type { Pool, PoolClient } from "pg";
 import { CatalogValidationError, DuplicateProductCodeError, ReferencedVariantError } from "../domain/errors.ts";
@@ -35,6 +37,7 @@ type ProductRow = {
   category_name_ar: string;
   category_parent_id: string | null;
   default_selling_price_piasters: number;
+  minimum_selling_price_piasters: number | null;
   publication: PublicationStatus;
   image_refs: unknown;
   size_guide_ar: string | null;
@@ -62,6 +65,7 @@ type VariantIdentityRow = {
   size_name_ar: string;
   color_id: string;
   color_name_ar: string;
+  purpose?: "website_option" | "operational";
 };
 
 type ProductJoinRow = ProductRow & {
@@ -72,6 +76,7 @@ type ProductJoinRow = ProductRow & {
   color_name_ar: string | null;
   online_visible: boolean | null;
   selling_price_piasters_override: number | null;
+  variant_purpose: "website_option" | "operational" | null;
 };
 
 export function createPostgresCatalogStore(pool: Pool): CatalogStore {
@@ -123,7 +128,10 @@ export function createPostgresCatalogStore(pool: Pool): CatalogStore {
     },
 
     async listSizes() {
-      const result = await pool.query<NamedRow>(`SELECT id, name_ar FROM catalog_size ORDER BY name_ar`);
+      const result = await pool.query<NamedRow>(
+        `SELECT id, name_ar FROM catalog_size WHERE id <> $1 ORDER BY name_ar`,
+        [OPERATIONAL_SIZE_ID],
+      );
       return result.rows.map(toSize);
     },
 
@@ -159,7 +167,10 @@ export function createPostgresCatalogStore(pool: Pool): CatalogStore {
     },
 
     async listColors() {
-      const result = await pool.query<NamedRow>(`SELECT id, name_ar FROM catalog_color ORDER BY name_ar`);
+      const result = await pool.query<NamedRow>(
+        `SELECT id, name_ar FROM catalog_color WHERE id <> $1 ORDER BY name_ar`,
+        [OPERATIONAL_COLOR_ID],
+      );
       return result.rows.map(toColor);
     },
 
@@ -254,10 +265,10 @@ export function createPostgresCatalogStore(pool: Pool): CatalogStore {
         const inserted = await client.query<{ id: string }>(
           `INSERT INTO catalog_product (
              id, code, name_ar, description_ar, category_id,
-             default_selling_price_piasters, publication, image_refs, size_guide_ar,
+             default_selling_price_piasters, minimum_selling_price_piasters, publication, image_refs, size_guide_ar,
              created_by_staff_id, last_changed_by_staff_id, last_changed_at
            ) VALUES (
-             gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $9, now()
+             gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $10, now()
            ) RETURNING id`,
           [
             input.code,
@@ -265,6 +276,7 @@ export function createPostgresCatalogStore(pool: Pool): CatalogStore {
             input.descriptionAr,
             input.categoryId,
             input.defaultSellingPricePiasters,
+            input.minimumSellingPricePiasters,
             input.publication,
             JSON.stringify(input.imageRefs),
             input.sizeGuideAr,
@@ -305,7 +317,7 @@ export function createPostgresCatalogStore(pool: Pool): CatalogStore {
         }
         if (input.expectedVariantIds !== undefined) {
           const rows = await client.query<{ id: string }>(
-            `SELECT id FROM catalog_product_variant WHERE product_id = $1 ORDER BY id`,
+            `SELECT id FROM catalog_product_variant WHERE product_id = $1 AND purpose = 'website_option' ORDER BY id`,
             [id],
           );
           const actual = rows.rows.map((row) => row.id);
@@ -321,10 +333,11 @@ export function createPostgresCatalogStore(pool: Pool): CatalogStore {
                description_ar = $4,
                category_id = $5,
                default_selling_price_piasters = $6,
-               publication = $7,
-               image_refs = $8::jsonb,
-               size_guide_ar = $9,
-               last_changed_by_staff_id = $10,
+               minimum_selling_price_piasters = $7,
+               publication = $8,
+               image_refs = $9::jsonb,
+               size_guide_ar = $10,
+               last_changed_by_staff_id = $11,
                last_changed_at = now(),
                edit_revision = edit_revision + 1,
                updated_at = now()
@@ -337,6 +350,7 @@ export function createPostgresCatalogStore(pool: Pool): CatalogStore {
             input.descriptionAr,
             input.categoryId,
             input.defaultSellingPricePiasters,
+            input.minimumSellingPricePiasters,
             input.publication,
             JSON.stringify(input.imageRefs),
             input.sizeGuideAr,
@@ -374,7 +388,7 @@ export function createPostgresCatalogReportingReader(queryable: Queryable): Pick
 async function getVariantIdentities(queryable: Queryable, ids: string[]) {
   if (ids.length === 0) return [];
   const result = await queryable.query<VariantIdentityRow>(
-    `SELECT v.id, p.id AS product_id, p.code AS product_code, p.name_ar AS product_name_ar,
+    `SELECT v.id, v.purpose, p.id AS product_id, p.code AS product_code, p.name_ar AS product_name_ar,
             s.id AS size_id, s.name_ar AS size_name_ar,
             col.id AS color_id, col.name_ar AS color_name_ar
      FROM catalog_product_variant v
@@ -427,10 +441,7 @@ export function createPostgresCheckoutCatalogReader(queryable: Queryable) {
         productNameAr: row.product_name_ar,
         sizeNameAr: row.size_name_ar,
         colorNameAr: row.color_name_ar,
-        listedUnitPricePiasters: resolvedSellingPricePiasters(
-          asSafeInteger(row.default_selling_price_piasters),
-          row.selling_price_piasters_override === null ? null : asSafeInteger(row.selling_price_piasters_override),
-        ),
+        listedUnitPricePiasters: asSafeInteger(row.default_selling_price_piasters),
         publication: row.publication,
         onlineVisible: row.online_visible,
       }));
@@ -443,12 +454,15 @@ async function loadListedPrices(queryable: Queryable, ids: string[]) {
   const result = await queryable.query<VariantIdentityRow & {
     category_id: string;
     default_selling_price_piasters: number;
+    minimum_selling_price_piasters: number | null;
     selling_price_piasters_override: number | null;
+    purpose: "website_option" | "operational";
   }>(
-    `SELECT v.id, p.id AS product_id, p.code AS product_code, p.name_ar AS product_name_ar,
+    `SELECT v.id, v.purpose, p.id AS product_id, p.code AS product_code, p.name_ar AS product_name_ar,
             s.id AS size_id, s.name_ar AS size_name_ar,
             col.id AS color_id, col.name_ar AS color_name_ar,
-            p.category_id, p.default_selling_price_piasters, v.selling_price_piasters_override
+            p.category_id, p.default_selling_price_piasters, p.minimum_selling_price_piasters,
+            v.selling_price_piasters_override
      FROM catalog_product_variant v
      JOIN catalog_product p ON p.id = v.product_id
      JOIN catalog_size s ON s.id = v.size_id
@@ -460,10 +474,8 @@ async function loadListedPrices(queryable: Queryable, ids: string[]) {
     variantId: row.id,
     productId: row.product_id,
     categoryId: row.category_id,
-    listedUnitPricePiasters: resolvedSellingPricePiasters(
-      row.default_selling_price_piasters,
-      row.selling_price_piasters_override,
-    ),
+    listedUnitPricePiasters: row.default_selling_price_piasters,
+    minimumUnitPricePiasters: row.minimum_selling_price_piasters,
     identity: toVariantIdentity(row),
   }));
 }
@@ -473,13 +485,28 @@ async function replaceVariants(
   productId: string,
   variants: ProductWrite["variants"],
 ): Promise<void> {
-  const existing = await client.query<{ id: string; size_id: string; color_id: string; online_visible: boolean }>(
-    `SELECT id, size_id, color_id, online_visible FROM catalog_product_variant WHERE product_id = $1`,
+  const existing = await client.query<{
+    id: string;
+    size_id: string;
+    color_id: string;
+    online_visible: boolean;
+    purpose: "website_option" | "operational";
+    selling_price_piasters_override: number | null;
+  }>(
+    `SELECT id, size_id, color_id, online_visible, purpose, selling_price_piasters_override
+     FROM catalog_product_variant WHERE product_id = $1`,
     [productId],
   );
-  const keep = new Set<string>();
+  const keep = new Set(existing.rows.filter((row) => row.purpose === "operational").map((row) => row.id));
+  const websiteRows = existing.rows.filter((row) => row.purpose === "website_option");
   for (const variant of variants) {
-    const match = existing.rows.find(
+    if (variant.sellingPricePiastersOverride !== null) {
+      const match = websiteRows.find((row) => row.size_id === variant.sizeId && row.color_id === variant.colorId);
+      if (!match || match.selling_price_piasters_override !== variant.sellingPricePiastersOverride) {
+        throw new CatalogValidationError("لا يمكن تحديد سعر مستقل للمقاس أو اللون.");
+      }
+    }
+    const match = websiteRows.find(
       (row) => row.size_id === variant.sizeId && row.color_id === variant.colorId,
     );
     if (match) {
@@ -488,20 +515,20 @@ async function replaceVariants(
         `UPDATE catalog_product_variant
          SET selling_price_piasters_override = $2, online_visible = $3, updated_at = now()
          WHERE id = $1`,
-        [match.id, variant.sellingPricePiastersOverride, variant.onlineVisible ?? match.online_visible],
+        [match.id, match.selling_price_piasters_override, variant.onlineVisible ?? match.online_visible],
       );
     } else {
       const inserted = await client.query<{ id: string }>(
         `INSERT INTO catalog_product_variant (
-           id, product_id, size_id, color_id, selling_price_piasters_override, online_visible
-         ) VALUES (gen_random_uuid(), $1, $2, $3, $4, $5)
+           id, product_id, size_id, color_id, selling_price_piasters_override, online_visible, purpose
+         ) VALUES (gen_random_uuid(), $1, $2, $3, NULL, $4, 'website_option')
          RETURNING id`,
-        [productId, variant.sizeId, variant.colorId, variant.sellingPricePiastersOverride, variant.onlineVisible ?? true],
+        [productId, variant.sizeId, variant.colorId, variant.onlineVisible ?? true],
       );
       keep.add(mustRow(inserted.rows[0]).id);
     }
   }
-  const stale = existing.rows.filter((row) => !keep.has(row.id)).map((row) => row.id);
+  const stale = existing.rows.filter((row) => row.purpose === "website_option" && !keep.has(row.id)).map((row) => row.id);
   if (stale.length > 0) {
     await client.query(`DELETE FROM catalog_product_variant WHERE id = ANY($1::uuid[])`, [stale]);
   }
@@ -526,13 +553,17 @@ async function loadProducts(
 
 function foldProducts(rows: ProductJoinRow[]): ManagerProductDto[] {
   const order: string[] = [];
-  const grouped = new Map<string, { row: ProductRow; variants: ManagerVariantDto[] }>();
+  const grouped = new Map<string, { row: ProductRow; variants: ManagerVariantDto[]; operationalVariantId: string }>();
   for (const row of rows) {
     let group = grouped.get(row.id);
     if (!group) {
-      group = { row, variants: [] };
+      group = { row, variants: [], operationalVariantId: "" };
       grouped.set(row.id, group);
       order.push(row.id);
+    }
+    if (row.variant_purpose === "operational" && row.variant_id) {
+      group.operationalVariantId = row.variant_id;
+      continue;
     }
     if (row.variant_id && row.size_id && row.color_id && row.size_name_ar && row.color_name_ar) {
       group.variants.push(
@@ -557,7 +588,10 @@ function foldProducts(rows: ProductJoinRow[]): ManagerProductDto[] {
     if (!group) {
       throw new Error("Expected a catalog product group.");
     }
-    return toProduct(group.row, group.variants);
+    if (!group.operationalVariantId) {
+      throw new Error("Catalog product is missing its operational variant.");
+    }
+    return toProduct(group.row, group.variants, group.operationalVariantId);
   });
 }
 
@@ -572,6 +606,7 @@ function productJoinSelect(): string {
      c.name_ar AS category_name_ar,
      c.parent_id AS category_parent_id,
      p.default_selling_price_piasters,
+     p.minimum_selling_price_piasters,
      p.publication,
      p.image_refs,
      p.size_guide_ar,
@@ -583,6 +618,7 @@ function productJoinSelect(): string {
      v.color_id,
      col.name_ar AS color_name_ar,
      v.online_visible,
+     v.purpose AS variant_purpose,
      v.selling_price_piasters_override
    FROM catalog_product p
    JOIN catalog_category c ON c.id = p.category_id
@@ -610,14 +646,11 @@ function toVariant(row: VariantRow, defaultSellingPricePiasters: number): Manage
     color: { id: row.color_id, nameAr: row.color_name_ar },
     onlineVisible: row.online_visible,
     sellingPricePiastersOverride: row.selling_price_piasters_override,
-    sellingPricePiasters: resolvedSellingPricePiasters(
-      defaultSellingPricePiasters,
-      row.selling_price_piasters_override,
-    ),
+    sellingPricePiasters: defaultSellingPricePiasters,
   };
 }
 
-function toProduct(row: ProductRow, variants: ManagerVariantDto[]): ManagerProductDto {
+function toProduct(row: ProductRow, variants: ManagerVariantDto[], operationalVariantId: string): ManagerProductDto {
   return {
     id: row.id,
     editRevision: row.edit_revision,
@@ -630,6 +663,8 @@ function toProduct(row: ProductRow, variants: ManagerVariantDto[]): ManagerProdu
       parentId: row.category_parent_id,
     },
     defaultSellingPricePiasters: row.default_selling_price_piasters,
+    minimumSellingPricePiasters: row.minimum_selling_price_piasters,
+    operationalVariantId,
     publication: row.publication,
     imageRefs: Array.isArray(row.image_refs) ? row.image_refs.map((item) => String(item)) : [],
     sizeGuideAr: row.size_guide_ar,
@@ -677,15 +712,18 @@ function mapProductWriteError(error: unknown): never {
 }
 
 function toVariantIdentity(row: VariantIdentityRow): VariantIdentityDto {
+  const purpose = row.purpose ?? "website_option";
+  const operational = purpose === "operational";
   return {
     id: row.id,
+    purpose,
     product: {
       id: row.product_id,
       code: row.product_code,
       nameAr: row.product_name_ar,
     },
-    size: { id: row.size_id, nameAr: row.size_name_ar },
-    color: { id: row.color_id, nameAr: row.color_name_ar },
+    size: { id: row.size_id, nameAr: operational ? "" : row.size_name_ar },
+    color: { id: row.color_id, nameAr: operational ? "" : row.color_name_ar },
   };
 }
 

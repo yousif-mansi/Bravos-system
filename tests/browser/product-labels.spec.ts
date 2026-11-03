@@ -5,7 +5,14 @@ import { openLookupLists } from "./support/open-lookup-lists";
 // This origin belongs to the disposable browser-test API (3011), never the preview API (3012).
 const internal = "http://127.0.0.1:5174";
 const shots = ".scratch/pos-hardware-20261027/screenshots";
-type HardwarePrint = { kind: "labels" | "receipt"; text: string; labels: number; title: string; unsafeNodes: number };
+type HardwarePrint = {
+  kind: "labels" | "receipt";
+  text: string;
+  labels: number;
+  title: string;
+  unsafeNodes: number;
+  printArguments: number;
+};
 type HardwareWindow = Window & { __hardwarePrints?: HardwarePrint[] };
 type Sale = { id: string; finalTotalPiasters: number; lines: { variantId: string }[] };
 
@@ -69,14 +76,15 @@ async function stock(page: Page, code: string, variantId: string): Promise<numbe
 function installPrintHarness() {
   const root = window.top as HardwareWindow;
   root.__hardwarePrints ??= [];
-  window.print = () => {
-    const labels = document.querySelectorAll(".label").length;
+  window.print = (...args: unknown[]) => {
+    const labels = document.querySelectorAll("section.label").length;
     root.__hardwarePrints!.push({
       kind: labels ? "labels" : "receipt",
       text: document.body.textContent ?? "",
       labels,
       title: document.title,
       unsafeNodes: document.querySelectorAll("script, nav, a, img").length,
+      printArguments: args.length,
     });
     window.dispatchEvent(new Event("afterprint"));
   };
@@ -267,7 +275,6 @@ test("offline label printer to scanner to receipt flow synchronizes one sale and
     await page.locator("#lookupColor").selectOption(data.color.id);
     await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
     await checkout.getByRole("button", { name: "قبول الأسعار", exact: true }).click();
-    await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
     await page.getByTestId("complete-sale-print").click();
     await expect(page.getByTestId("sale-details")).toBeVisible();
     await expect(page.getByRole("status").filter({ hasText: "تم حفظ البيع" })).toBeVisible();
@@ -367,4 +374,329 @@ test("label font fetch failure can retry a fresh preview without changing sales 
   expect(await decodeRenderedBarcode(preview(page).locator(".bars svg"))).toBe(data.product.code);
   expect(await sales(page, data.variant.id)).toHaveLength(0);
   expect(await stock(page, data.product.code, data.variant.id)).toBe(2);
+});
+
+async function measureLabel(label: Locator) {
+  return label.evaluate((node) => {
+    const view = node.ownerDocument.defaultView!;
+    const body = node.ownerDocument.body;
+    const style = view.getComputedStyle(node);
+    const labelBox = node.getBoundingClientRect();
+    const bodyBox = body.getBoundingClientRect();
+    const padLeft = Number.parseFloat(style.paddingLeft);
+    const padRight = Number.parseFloat(style.paddingRight);
+    const padTop = Number.parseFloat(style.paddingTop);
+    const padBottom = Number.parseFloat(style.paddingBottom);
+    const innerLeft = labelBox.left + padLeft;
+    const innerRight = labelBox.right - padRight;
+    const innerTop = labelBox.top + padTop;
+    const innerBottom = labelBox.bottom - padBottom;
+    const innerMid = (innerLeft + innerRight) / 2;
+    const bars = node.querySelector(".bars");
+    const code = node.querySelector(".code");
+    const name = node.querySelector(".name");
+    if (!bars || !code) throw new Error("Label is missing its barcode or code");
+    const ink = (element: Element) => {
+      const range = node.ownerDocument.createRange();
+      range.selectNodeContents(element);
+      return range.getBoundingClientRect();
+    };
+    const barsBox = bars.getBoundingClientRect();
+    const codeBox = ink(code);
+    const nameBox = name ? ink(name) : null;
+    const first = node.children[0]?.getBoundingClientRect();
+    const last = node.children[node.children.length - 1]?.getBoundingClientRect();
+    const pxToMm = 25.4 / 96;
+    return {
+      pageDelta: Math.abs((labelBox.left + labelBox.width / 2) - (bodyBox.left + bodyBox.width / 2)),
+      barsDelta: Math.abs((barsBox.left + barsBox.width / 2) - innerMid),
+      codeDelta: Math.abs((codeBox.left + codeBox.width / 2) - innerMid),
+      nameDelta: nameBox ? Math.abs((nameBox.left + nameBox.width / 2) - innerMid) : 0,
+      topGap: first ? first.top - innerTop : 0,
+      bottomGap: last ? innerBottom - last.bottom : 0,
+      bodyWidth: bodyBox.width,
+      labelWidth: labelBox.width,
+      barsWidth: barsBox.width,
+      barHeightMm: barsBox.height * pxToMm,
+      codeMm: Number.parseFloat(view.getComputedStyle(code).fontSize) * pxToMm,
+      nameMm: name ? Number.parseFloat(view.getComputedStyle(name).fontSize) * pxToMm : 0,
+      moduleDots: (node as HTMLElement).dataset.moduleDots ?? "",
+      profile: (node as HTMLElement).dataset.labelProfile ?? "",
+      pageCss: node.ownerDocument.querySelector("style")?.textContent ?? "",
+      text: node.textContent ?? "",
+    };
+  });
+}
+
+async function expectPreviewFrameHeight(page: Page, heightMm: number) {
+  const height = await page.locator('iframe[title="معاينة الملصق"]').evaluate((node) => node.getBoundingClientRect().height);
+  expect(height).toBeCloseTo(heightMm * 96 / 25.4, 0);
+}
+
+function expectCenteredCompact(measured: Awaited<ReturnType<typeof measureLabel>>, dots: string) {
+  expect(measured.bodyWidth).toBeGreaterThan(measured.labelWidth + 16);
+  expect(measured.pageDelta).toBeLessThan(2);
+  expect(measured.barsDelta).toBeLessThan(2);
+  expect(measured.codeDelta).toBeLessThan(2);
+  expect(measured.nameDelta).toBeLessThan(4);
+  expect(Math.abs(measured.topGap)).toBeLessThan(3);
+  expect(Math.abs(measured.bottomGap)).toBeLessThan(3);
+  expect(measured.labelWidth - measured.barsWidth).toBeGreaterThan(16);
+  expect(measured.barHeightMm).toBeGreaterThanOrEqual(9.7);
+  expect(measured.codeMm).toBeGreaterThan((13 * 25.4) / 203);
+  expect(measured.nameMm).toBeGreaterThan((12 * 25.4) / 203);
+  expect(measured.moduleDots).toBe(dots);
+  expect(measured.profile).toBe("xp236b-38x25");
+  expect(measured.pageCss).toContain("size: 38mm 25mm");
+  expect(measured.pageCss).toContain("margin-left: auto");
+  expect(measured.pageCss).not.toContain("scaleX");
+  expect(measured.text).not.toContain("TEST");
+}
+
+test("XP-236B 38x25 preview is centered at wide and narrow widths without a stock or sale effect", async ({ page }) => {
+  await page.addInitScript(installPrintHarness);
+  const data = await seed(page);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto(`${internal}/catalog`);
+  const dialog = await openLabel(page, data.product.code);
+  await expect(dialog.getByTestId("product-label-profile")).toHaveValue("generic");
+  await dialog.getByTestId("product-label-profile").selectOption("xp236b-38x25");
+  await expect(dialog.getByTestId("product-label-paper")).toContainText("Xprinter XP-236B");
+  await expect(dialog.getByTestId("product-label-paper")).toContainText("38×25");
+  await expect(dialog.getByTestId("product-label-target")).toContainText("Xprinter XP-236B");
+  await expect(dialog.getByTestId("product-label-target")).toContainText("طابعة الإيصالات");
+  await expect(dialog.getByTestId("product-label-target")).toContainText("ربط هذا الجهاز");
+  await expect(dialog.getByTestId("product-label-target")).not.toContainText("لا يختار الطابعة");
+  await expect(dialog.getByRole("button", { name: "تأكيد" })).toHaveCount(0);
+  await dialog.locator("summary").click();
+  await expect(dialog.getByLabel("العرض بالملليمتر")).toHaveValue("38");
+  await expect(dialog.getByLabel("العرض بالملليمتر")).toBeDisabled();
+  await expect(dialog.getByLabel("الارتفاع بالملليمتر")).toHaveValue("25");
+  await expect(dialog.getByLabel("كثافة الطباعة")).toHaveValue("203");
+  await expect(dialog.getByTestId("product-label-print")).toBeEnabled();
+  await expectLabelBounds(preview(page).locator(".label"), 38, 25);
+  await expectPreviewFrameHeight(page, 25);
+  expectCenteredCompact(await measureLabel(preview(page).locator(".label")), "1");
+  expect(await decodeRenderedBarcode(preview(page).locator(".bars svg"))).toBe(data.product.code);
+  await expect(preview(page).locator(".code")).toHaveText(data.product.code);
+  await expect(preview(page).locator(".name")).toHaveText(data.product.nameAr);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  expectCenteredCompact(await measureLabel(preview(page).locator(".label")), "1");
+
+  const stored = await page.evaluate(() => ({
+    device: JSON.parse(localStorage.getItem("bravos.product-label.device") ?? "null") as { widthMm: number; heightMm: number; dpi: number } | null,
+    profile: localStorage.getItem("bravos.product-label.profile"),
+  }));
+  expect(stored.profile).toBe("xp236b-38x25");
+  expect(stored.device).toMatchObject({ widthMm: 80, heightMm: 40, dpi: 203 });
+  const posted: Array<{ url: string; body: { kind?: string; product?: { code?: string; name?: string }; paper?: { widthMm?: number; heightMm?: number }; profile?: string; dpi?: number } }> = [];
+  await page.route("http://127.0.0.1:17831/**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (request.method() === "GET" && path === "/health") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) });
+      return;
+    }
+    if (request.method() === "GET" && path === "/status") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ok: true,
+          paired: true,
+          staffOrigin: internal,
+          listen: { host: "127.0.0.1", port: 17831 },
+          routing: { label: "Xprinter XP-236B", receipt: "Bravos Receipts - Xprinter XP-80TS" },
+          implementation: "windows_native",
+          queue: { outstanding: 0, cap: 8, retained: 0, metadataCap: 50000, retentionMs: 1 },
+        }),
+      });
+      return;
+    }
+    if (request.method() === "POST" && path === "/jobs") {
+      const body = request.postDataJSON() as (typeof posted)[number]["body"];
+      posted.push({ url: request.url(), body });
+      await route.fulfill({
+        status: 202,
+        contentType: "application/json",
+        body: JSON.stringify({
+          job: {
+            id: body && "id" in body ? (body as { id: string }).id : "",
+            kind: body.kind,
+            phase: "submitted",
+            failureCode: null,
+            createdAt: "2026-10-27T00:00:00.000Z",
+            updatedAt: "2026-10-27T00:00:00.000Z",
+          },
+        }),
+      });
+      return;
+    }
+    await route.fulfill({ status: 404, contentType: "application/json", body: "{\"error\":\"not_found\"}" });
+  });
+  await page.evaluate(() => {
+    localStorage.setItem("bravos.print-connector.token", "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ");
+  });
+  await dialog.getByLabel("عدد النسخ").fill("2");
+  await dialog.getByLabel("عدد النسخ").fill("1");
+  await expect(dialog.getByTestId("product-label-target")).toContainText("طابعة الملصقات المربوطة");
+  await expect(dialog.getByTestId("product-label-target")).not.toContainText("نافذة المتصفح");
+  await dialog.getByTestId("product-label-print").click();
+  await expect(dialog.getByRole("status")).toContainText("برنامج الطباعة");
+  expect(await prints(page)).toHaveLength(0);
+  expect(posted).toHaveLength(1);
+  expect(posted[0]?.url).toBe("http://127.0.0.1:17831/jobs");
+  expect(posted[0]?.body).toMatchObject({
+    kind: "label",
+    profile: "compact",
+    dpi: 203,
+    paper: { widthMm: 38, heightMm: 25 },
+    product: { code: data.product.code, name: data.product.nameAr },
+  });
+  expect(JSON.stringify(posted[0]?.body)).not.toContain("TEST");
+  expect(await sales(page, data.variant.id)).toHaveLength(0);
+  expect(await stock(page, data.product.code, data.variant.id)).toBe(2);
+
+  await dialog.getByRole("button", { name: "إلغاء", exact: true }).click();
+  const again = await openLabel(page, data.product.code);
+  await expect(again.getByTestId("product-label-profile")).toHaveValue("xp236b-38x25");
+  await expect(again.getByLabel("العرض بالملليمتر")).toHaveValue("38");
+  expect(await sales(page, data.variant.id)).toHaveLength(0);
+  expect(await stock(page, data.product.code, data.variant.id)).toBe(2);
+});
+
+test("a saved custom label size stays independent of the one-time XP-236B choice", async ({ page }) => {
+  await page.addInitScript(installPrintHarness);
+  const data = await seed(page);
+  await page.evaluate(() => {
+    localStorage.setItem("bravos.product-label.device", JSON.stringify({ widthMm: 90, heightMm: 50, dpi: 300 }));
+    localStorage.removeItem("bravos.product-label.profile");
+  });
+  await page.goto(`${internal}/catalog`);
+  const dialog = await openLabel(page, data.product.code);
+  await dialog.locator("summary").click();
+  await expect(dialog.getByTestId("product-label-profile")).toHaveValue("generic");
+  await expect(dialog.getByLabel("العرض بالملليمتر")).toHaveValue("90");
+  await expect(dialog.getByLabel("الارتفاع بالملليمتر")).toHaveValue("50");
+  await expect(dialog.getByLabel("كثافة الطباعة")).toHaveValue("300");
+  await dialog.getByTestId("product-label-profile").selectOption("xp236b-38x25");
+  await expect(dialog.getByLabel("العرض بالملليمتر")).toHaveValue("38");
+  const during = await page.evaluate(() => JSON.parse(localStorage.getItem("bravos.product-label.device") ?? "null") as { widthMm: number; heightMm: number; dpi: number });
+  expect(during).toEqual({ widthMm: 90, heightMm: 50, dpi: 300 });
+  await dialog.getByRole("button", { name: "إلغاء", exact: true }).click();
+  const again = await openLabel(page, data.product.code);
+  await expect(again.getByTestId("product-label-profile")).toHaveValue("xp236b-38x25");
+  await again.getByTestId("product-label-profile").selectOption("generic");
+  await again.locator("summary").click();
+  await expect(again.getByLabel("العرض بالملليمتر")).toHaveValue("90");
+  await expect(again.getByLabel("الارتفاع بالملليمتر")).toHaveValue("50");
+  await expect(again.getByLabel("كثافة الطباعة")).toHaveValue("300");
+  await expect(again.getByLabel("العرض بالملليمتر")).toBeEnabled();
+  const restored = await page.evaluate(() => ({
+    device: localStorage.getItem("bravos.product-label.device"),
+    profile: localStorage.getItem("bravos.product-label.profile"),
+  }));
+  expect(restored.profile).toBeNull();
+  expect(JSON.parse(restored.device ?? "null")).toEqual({ widthMm: 90, heightMm: 50, dpi: 300 });
+  expect(await sales(page, data.variant.id)).toHaveLength(0);
+  expect(await stock(page, data.product.code, data.variant.id)).toBe(2);
+});
+
+test("compact 38x25 renders a full mixed-script name and rejects an honest overflow", async ({ page }) => {
+  test.skip(process.env.BRAVOS_HW_PRODUCTION === "1", "Direct source-module document checks run on the dev server; the offline flow also runs against the built PWA.");
+  await login(page);
+  const fit = {
+    id: "compact-label-fit",
+    code: "BRV-SAMPLE-001",
+    nameAr: "Tapered Twill Pants بنطال تويل",
+  };
+  await page.evaluate(async (product) => {
+    const labels = await import("/src/labels/index.ts");
+    const host = document.createElement("div");
+    host.id = "compact-label-fit";
+    host.style.width = "960px";
+    document.body.appendChild(host);
+    await labels.mountProductLabelPreview(host, product, {
+      widthMm: 38,
+      heightMm: 25,
+      copies: 1,
+      dpi: 203,
+      profile: "xp236b-38x25",
+    });
+  }, fit);
+  const frame = page.frameLocator("#compact-label-fit iframe");
+  await expect(frame.locator(".code")).toHaveText(fit.code);
+  await expect(frame.locator(".name")).toHaveText(fit.nameAr);
+  await expect(frame.locator("script, img, nav, a")).toHaveCount(0);
+  await expectLabelBounds(frame.locator(".label"), 38, 25);
+  const wide = await measureLabel(frame.locator(".label"));
+  expectCenteredCompact(wide, "1");
+  expect(wide.barsWidth).toBeCloseTo((209 * 96) / 203, 0);
+  expect(await decodeRenderedBarcode(frame.locator(".bars svg"))).toBe(fit.code);
+  const viewBox = await frame.locator(".bars svg").evaluate((node) => (node as SVGSVGElement).viewBox.baseVal.width);
+  expect(viewBox).toBe(209);
+
+  await page.evaluate(() => {
+    const host = document.getElementById("compact-label-fit");
+    if (host) host.style.width = "320px";
+  });
+  expectCenteredCompact(await measureLabel(frame.locator(".label")), "1");
+
+  const overflow = await page.evaluate(async (product) => {
+    const labels = await import("/src/labels/index.ts");
+    const frame = document.querySelector<HTMLIFrameElement>("#compact-label-fit iframe");
+    const doc = frame!.contentDocument!;
+    await doc.fonts.ready;
+    const name = doc.querySelector<HTMLElement>(".name")!;
+    const before = name.textContent;
+    name.style.fontSize = "8mm";
+    try {
+      labels.fitAndValidateLabelDocument(doc, labels.planLabelLayout(product, {
+        widthMm: 38,
+        heightMm: 25,
+        copies: 1,
+        dpi: 203,
+        profile: "xp236b-38x25",
+      }));
+      return { message: "", name: before };
+    } catch (error) {
+      return { message: error instanceof Error ? error.message : String(error), name: name.textContent };
+    }
+  }, fit);
+  expect(overflow.message).toMatch(/بارتفاع .* مم على الأقل/);
+  expect(overflow.name).toBe(fit.nameAr);
+
+  const rejected = await page.evaluate(async () => {
+    const labels = await import("/src/labels/index.ts");
+    const nameAr = `${"بنطال تويل المفصل ".repeat(24)}Extra English twill that must stay intact`;
+    const host = document.createElement("div");
+    host.id = "compact-label-reject";
+    document.body.appendChild(host);
+    try {
+      await labels.mountProductLabelPreview(host, {
+        id: "compact-label-reject",
+        code: "BRV-SAMPLE-001",
+        nameAr,
+      }, {
+        widthMm: 38,
+        heightMm: 25,
+        copies: 1,
+        dpi: 203,
+        profile: "xp236b-38x25",
+      });
+      return { ok: true, message: "", frames: host.querySelectorAll("iframe").length, nameAr };
+    } catch (error) {
+      return {
+        ok: false,
+        message: error instanceof Error ? error.message : String(error),
+        frames: host.querySelectorAll("iframe").length,
+        nameAr,
+      };
+    }
+  });
+  expect(rejected.ok).toBe(false);
+  expect(rejected.frames).toBe(0);
+  expect(rejected.message).toMatch(/بارتفاع .* مم على الأقل|بعرض .* مم على الأقل/);
+  expect(rejected.nameAr.endsWith("Extra English twill that must stay intact")).toBe(true);
 });

@@ -1,13 +1,14 @@
-import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import type { CashierProductLookupDto, CashierVariantDto, PosPriceSnapshotDto, SaleDto, SalePaymentDto, StockPauseDto, WorkspaceDto } from "@bravos/contracts";
-import { printCompletedBranchReceipt, receiptPrintFailureMessage, SaleSummary } from "./SaleSummary.tsx";
-import { ApiError, acceptOfflineSale, completeSale, getStockPause, getWorkspace, issuePosSnapshot, lookupProductByCode, lookupSaleOperation, prepareSale } from "../api.ts";
+import { printCompletedBranchReceipt, receiptPrintFailureMessage, receiptPrintStatus, SaleSummary } from "./SaleSummary.tsx";
+import { ApiError, acceptOfflineSale, completeSale, getStockPause, getWorkspace, lookupCustomer, lookupProductByCode, lookupSaleOperation, prepareSale } from "../api.ts";
 import { egpInputToPiasters, formatEgpFromPiasters } from "../money.ts";
 import {
   acceptedPayload,
   applySyncedSale,
   cacheIssuedSnapshot,
   completedPayload,
+  issueStaffPosSnapshot,
   offlineFromQuote,
   notifyPosStockChange,
   pos,
@@ -18,13 +19,13 @@ import {
 } from "../pos.ts";
 import { mergeVariantQuantities, SalesValidationError } from "@bravos/sales/browser";
 import { accountGeneration, subscribeAccount } from "../account-session.ts";
+import { preservedSummaryReceipt } from "../receipt-number.ts";
 import { getRestorePause } from "../restore-api.ts";
 import { isNetworkFailure } from "../session.ts";
 import { EmptyState } from "../ui/EmptyState.tsx";
 import { ProductBrowser } from "./pos/ProductBrowser.tsx";
 import {
   findCachedProductByCode,
-  focusManualSizeChoice,
   isolateScanSubmit,
   useProductCodeScanner,
 } from "./pos/useProductCodeScanner.ts";
@@ -62,9 +63,21 @@ type CartLine = {
   quantity: number;
 };
 
+function sellableVariant(product: CashierProductLookupDto): CashierVariantDto | null {
+  if (!product.operationalVariantId) return null;
+  return {
+    id: product.operationalVariantId,
+    size: { id: "", nameAr: "" },
+    color: { id: "", nameAr: "" },
+    sellingPricePiasters: product.sellingPricePiasters,
+    availableQuantity: product.availableQuantity,
+  };
+}
+
 function cachedQuantitiesFromSnapshot(snapshot: PosPriceSnapshotDto): Map<string, number> {
   const cached = new Map<string, number>();
   for (const product of snapshot.products) {
+    cached.set(product.operationalVariantId, product.availableQuantity);
     for (const variant of product.variants) {
       cached.set(variant.id, variant.availableQuantity);
     }
@@ -105,8 +118,7 @@ export default function LookupPage({
   const [browseProducts, setBrowseProducts] = useState<CashierProductLookupDto[]>([]);
   const [browseLoading, setBrowseLoading] = useState(true);
   const [browseMessage, setBrowseMessage] = useState("");
-  const [sizeId, setSizeId] = useState("");
-  const [colorId, setColorId] = useState("");
+  const [savedCustomer, setSavedCustomer] = useState<{ displayName: string; normalizedPhone: string } | null>(null);
   const [cart, setCart] = useState<CartLine[]>([]);
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
@@ -120,7 +132,7 @@ export default function LookupPage({
   const [completed, setCompleted] = useState<SaleDto | null>(null);
   const [receiptError, setReceiptError] = useState("");
   const [receiptStatus, setReceiptStatus] = useState("");
-  const [handedOver, setHandedOver] = useState(false);
+  const [searchError, setSearchError] = useState("");
   const [pendingSale, setPendingSale] = useState<PendingSale | null>(null);
   const [frozenPayload, setFrozenPayload] = useState<SalePayload | null>(null);
   const inFlightRef = useRef(false);
@@ -153,7 +165,7 @@ export default function LookupPage({
   const browseFingerprintRef = useRef("");
   const contextKey = `${workspace.staff.id}:${workspace.activeBranch?.id ?? ""}`;
   const contextRef = useRef(contextKey);
-  const sizeInputRef = useRef<HTMLSelectElement>(null);
+
   const { scanInputRef, onScanKeyDown, focusScanInput } = useProductCodeScanner();
   const [sizeFocusNonce, setSizeFocusNonce] = useState(0);
   contextRef.current = contextKey;
@@ -176,9 +188,8 @@ export default function LookupPage({
     browseNetworkRef.current = connected && navigator.onLine ? request : 0;
     try {
       if (connected && navigator.onLine) {
-        const deviceId = await pos.deviceId();
         if (!stillCurrent()) return;
-        const snapshot = await issuePosSnapshot(deviceId, await pos.listPendingOperationIds());
+        const snapshot = await issueStaffPosSnapshot(await pos.listPendingOperationIds(), "register");
         if (!stillCurrent() || snapshot.staffId !== staffId || snapshot.branch.id !== branchId) return;
         browseAuthorizationBlockedRef.current = false;
         await cacheIssuedSnapshot(staffId, snapshot);
@@ -201,9 +212,18 @@ export default function LookupPage({
         snapshot.includedOperationIds, pendingIds.sort()]);
       if (browseFingerprintRef.current === fingerprint) return;
       const quantities: Record<string, number> = {};
-      await Promise.all(snapshot.products.flatMap((item) => item.variants.map(async (variant) => {
-        quantities[variant.id] = await pos.availableQuantity(branchId, variant.id, variant.availableQuantity);
-      })));
+      await Promise.all(snapshot.products.flatMap((item) => [
+        (async () => {
+          quantities[item.operationalVariantId] = await pos.availableQuantity(
+            branchId,
+            item.operationalVariantId,
+            item.availableQuantity,
+          );
+        })(),
+        ...item.variants.map(async (variant) => {
+          quantities[variant.id] = await pos.availableQuantity(branchId, variant.id, variant.availableQuantity);
+        }),
+      ]));
       if (!stillCurrent()) return;
       browseFingerprintRef.current = fingerprint;
       setBrowseProducts(snapshot.products);
@@ -244,8 +264,6 @@ export default function LookupPage({
     setBrowseMessage("");
     setBrowseProducts([]);
     setProduct(null);
-    setSizeId("");
-    setColorId("");
     setEffectiveByVariant({});
     setBrowseLoading(true);
     const refreshConnected = () => void refreshBrowse(true);
@@ -267,7 +285,9 @@ export default function LookupPage({
 
   useEffect(() => {
     if (sizeFocusNonce === 0) return;
-    focusManualSizeChoice(sizeInputRef.current);
+    window.requestAnimationFrame(() => {
+      document.querySelector<HTMLButtonElement>("[data-testid='add-operational']")?.focus({ preventScroll: true });
+    });
   }, [sizeFocusNonce]);
 
   useEffect(() => {
@@ -287,7 +307,6 @@ export default function LookupPage({
         pendingSaleRef.current = null;
         foreignRecoveryRef.current = null;
         foreignRecoverySnapshotRef.current = null;
-        setHandedOver(false);
       }
     });
   }, [workspace.staff.id]);
@@ -360,8 +379,8 @@ export default function LookupPage({
     setQuote(null);
     setCompleted(null);
     setError("");
+    setSearchError("");
     setNotice("");
-    setHandedOver(false);
     pendingSaleRef.current = null;
     setPendingSale(null);
     foreignRecoveryRef.current = null;
@@ -465,7 +484,6 @@ export default function LookupPage({
             return;
           }
           if (stored.physicallyCompleted) {
-            setHandedOver(true);
             setError("تم تسليم البضاعة واستلام المبلغ. لا تطلب الدفع مرة أخرى. أعد المحاولة لحفظ البيع.");
             if (found && !found.physicallyCompleted) {
               setQuote(found);
@@ -491,7 +509,7 @@ export default function LookupPage({
             };
             pendingSaleRef.current = prepared;
             setPendingSale(prepared);
-            setNotice("تم استعادة الأسعار المقبولة. يمكنك التعديل أو تأكيد التسليم.");
+            setNotice("تم استعادة الأسعار المقبولة.");
             return;
           }
           if (stored.phase === "uncertain") {
@@ -521,8 +539,9 @@ export default function LookupPage({
     const capturedContext = contextKey;
     const epoch = accountGeneration();
     const next: Record<string, number> = {};
-    for (const variant of found.variants) {
-      next[variant.id] = await pos.availableQuantity(workspace.activeBranch.id, variant.id, variant.availableQuantity);
+    const variant = sellableVariant(found);
+    if (variant) {
+      next[variant.id] = await pos.availableQuantity(workspace.activeBranch.id, variant.id, found.availableQuantity);
     }
     if (browseMountedRef.current && contextRef.current === capturedContext && accountGeneration() === epoch) {
       setEffectiveByVariant((current) => ({ ...current, ...next }));
@@ -536,6 +555,7 @@ export default function LookupPage({
     const epoch = accountGeneration();
     const stillCurrent = () => browseMountedRef.current && contextRef.current === capturedContext && accountGeneration() === epoch;
     setError("");
+    setSearchError("");
     setPending("search");
     try {
       let found;
@@ -556,59 +576,56 @@ export default function LookupPage({
       await withLocalAvailability(found);
       if (!stillCurrent()) return;
       setProduct(found);
-      setSizeId("");
-      setColorId("");
       setCode("");
       setSizeFocusNonce((nonce) => nonce + 1);
     } catch (caught) {
       if (!stillCurrent()) return;
       setProduct(null);
-      setSizeId("");
-      setColorId("");
-      setError(caught instanceof ApiError ? caught.messageAr : "تعذر البحث عن المنتج.");
+      setSearchError(caught instanceof ApiError ? caught.messageAr : "تعذر البحث عن المنتج.");
       focusScanInput();
     } finally {
       if (stillCurrent()) setPending("");
     }
   }
 
-  const sizes = useMemo(() => {
-    if (!product) {
-      return [];
-    }
-    const unique = new Map<string, string>();
-    for (const variant of product.variants) {
-      unique.set(variant.size.id, variant.size.nameAr);
-    }
-    return [...unique.entries()].map(([id, nameAr]) => ({ id, nameAr }));
-  }, [product]);
-
-  const colors = useMemo(() => {
-    if (!product) {
-      return [];
-    }
-    const unique = new Map<string, string>();
-    for (const variant of product.variants) {
-      if (!sizeId || variant.size.id === sizeId) {
-        unique.set(variant.color.id, variant.color.nameAr);
-      }
-    }
-    return [...unique.entries()].map(([id, nameAr]) => ({ id, nameAr }));
-  }, [product, sizeId]);
-
-  const selected = product?.variants.find((variant) => variant.size.id === sizeId && variant.color.id === colorId) ?? null;
-  const selectedEffective =
-    selected ? Math.max(0, effectiveByVariant[selected.id] ?? selected.availableQuantity) : 0;
+  const selected = product ? sellableVariant(product) : null;
+  const selectedEffective = selected ? Math.max(0, effectiveByVariant[selected.id] ?? product?.availableQuantity ?? 0) : 0;
+  const selectedCartQuantity = product ? cart.filter((line) => line.product.id === product.id).reduce((sum, line) => sum + line.quantity, 0) : 0;
 
   function addSelected() {
     if (!product || !selected) {
+      if (product) setError("حدّث قائمة المنتجات قبل البيع.");
       return;
     }
-    if (!beginCartRevision()) {
-      return;
-    }
-    setCart((current) => [...current, { key: crypto.randomUUID(), product, variant: selected, quantity: 1 }]);
+    if (selectedCartQuantity >= selectedEffective) return;
+    if (!beginCartRevision()) return;
+    setCart((current) => {
+      const existing = current.find((line) => line.product.id === product.id);
+      if (existing) {
+        return current.map((line) => line.key === existing.key ? { ...line, quantity: line.quantity + 1 } : line);
+      }
+      return [...current, { key: crypto.randomUUID(), product, variant: selected, quantity: 1 }];
+    });
     focusScanInput();
+  }
+
+  async function findSavedCustomer() {
+    setError("");
+    if (!customerPhone.trim()) {
+      setError("أدخل الهاتف للبحث عن زبون محفوظ.");
+      return;
+    }
+    setPending("customer");
+    try {
+      const result = await lookupCustomer({ phone: customerPhone, ...(customerName.trim() ? { name: customerName } : {}) });
+      setSavedCustomer(result.customer);
+      setNotice(result.customer ? `زبون محفوظ: ${result.customer.displayName}` : "لا يوجد زبون محفوظ بهذا الهاتف. البيع المجهول ما زال متاحاً.");
+    } catch (caught) {
+      setSavedCustomer(null);
+      setError(caught instanceof ApiError ? caught.messageAr : "تعذر البحث عن الزبون.");
+    } finally {
+      setPending("");
+    }
   }
 
   function updateQuantity(key: string, quantity: number) {
@@ -676,7 +693,6 @@ export default function LookupPage({
     quoteOriginRef.current = null;
     quoteSnapshotRef.current = null;
     quoteCachedRef.current = null;
-    setHandedOver(false);
     const expectedId = pendingSaleRef.current?.saleId ?? null;
     invalidationTailRef.current = invalidationTailRef.current.then(() => abandonPreparedQuote(expectedId));
     return true;
@@ -728,13 +744,11 @@ export default function LookupPage({
       setCouponCode("");
       setDiscountEgp("0");
       setDiscountReason("");
-      setHandedOver(false);
       revisionBlockRef.current = false;
       setRevisionBlock(false);
     }
     if (recoveringForeign && !recoveringLocal) {
       setQuote(null);
-      setHandedOver(false);
     }
     setCompleted(sale);
     setNotice(messageAr);
@@ -837,6 +851,7 @@ export default function LookupPage({
           units: line.units,
           variant: {
             id: source.variant.id,
+            purpose: source.variant.id === source.product.operationalVariantId ? "operational" : "website_option",
             product: { id: source.product.id, code: source.product.code, nameAr: source.product.nameAr },
             size: source.variant.size,
             color: source.variant.color,
@@ -892,9 +907,13 @@ export default function LookupPage({
   }
 
   async function syncPersistedSale(saleId: string) {
-    const rows = await pos.listUnsynced(workspace.staff.id);
+    const generation = accountGeneration();
+    const staffId = workspace.staff.id;
+    const branchId = workspace.activeBranch?.id;
+    const expectedContext = `${staffId}:${branchId ?? ""}`;
+    const rows = await pos.listUnsynced(staffId);
     const local = rows.find((row) => row.id === saleId);
-    if (!local) {
+    if (!local || local.staffId !== staffId || local.branch.id !== branchId) {
       return;
     }
     try {
@@ -903,6 +922,13 @@ export default function LookupPage({
           ? await acceptOfflineSale(await acceptedPayload(local))
           : await completeSale(await completedPayload(local));
       await applySyncedSale(local, synced);
+      if (
+        browseMountedRef.current
+        && accountGeneration() === generation
+        && contextRef.current === expectedContext
+      ) {
+        setCompleted((current) => preservedSummaryReceipt(current, local.id, synced));
+      }
       await refreshBrowse();
     } catch (caught) {
       setError(`${syncOutcomeMessage(caught)} البيع المكتمل محفوظ محلياً وسيظل ضمن المبيعات غير المرسلة.`);
@@ -921,11 +947,13 @@ export default function LookupPage({
     setReceiptError("");
     setReceiptStatus("جارٍ تجهيز الإيصال…");
     try {
-      await printCompletedBranchReceipt(sale);
+      const result = await printCompletedBranchReceipt(sale, (message) => {
+        if (stillCurrent()) setReceiptStatus(message);
+      });
       if (!stillCurrent()) {
         return;
       }
-      setReceiptStatus("تم طلب طباعة الإيصال. إذا لم يخرج، يمكنك إعادة الطباعة.");
+      setReceiptStatus(receiptPrintStatus(result));
     } catch (caught) {
       if (!stillCurrent()) {
         return;
@@ -951,8 +979,8 @@ export default function LookupPage({
     submitEpochRef.current = epoch;
     const generation = accountGeneration();
     const physical = kind === "complete";
-    const alreadyCompleted = handedOver || pendingSaleRef.current?.physicallyCompleted === true;
-    if ((stockPause || restorePause) && (kind === "prepare" || !alreadyCompleted)) {
+    const alreadySaved = pendingSaleRef.current?.physicallyCompleted === true;
+    if ((stockPause || restorePause) && (kind === "prepare" || !alreadySaved)) {
       inFlightRef.current = false;
       setPending("");
       setError(restorePause
@@ -1007,12 +1035,6 @@ export default function LookupPage({
       inFlightRef.current = false;
       setPending("");
       setError("أكد الأسعار بعد تعديل السلة قبل إتمام البيع.");
-      return;
-    }
-    if (physical && !handedOver && !pendingSaleRef.current?.physicallyCompleted) {
-      inFlightRef.current = false;
-      setPending("");
-      setError("أكد تسليم البضاعة واستلام المبلغ قبل إتمام البيع.");
       return;
     }
     const payload =
@@ -1253,7 +1275,7 @@ export default function LookupPage({
       setQuote(result);
       revisionBlockRef.current = false;
       setRevisionBlock(false);
-      setNotice("تم قبول الأسعار من الخادم. يمكنك تعديل السلة أو تأكيد التسليم والدفع.");
+      setNotice("تم قبول الأسعار.");
       }
     } catch (caught) {
       const current = submittedRef.current ?? pendingSaleRef.current;
@@ -1377,7 +1399,6 @@ export default function LookupPage({
     }
     if (current.physicallyCompleted) {
       if (adoptQuote) {
-        setHandedOver(true);
         setError("تم تسليم البضاعة واستلام المبلغ. لا تطلب الدفع مرة أخرى. أعد المحاولة لحفظ البيع.");
       }
       if (found && !found.physicallyCompleted) {
@@ -1409,7 +1430,7 @@ export default function LookupPage({
       const prepared: PendingSale = { ...current, phase: "prepared" };
       pendingSaleRef.current = prepared;
       setPendingSale(prepared);
-      setNotice("تم استعادة الأسعار المقبولة. يمكنك التعديل أو تأكيد التسليم.");
+      setNotice("تم استعادة الأسعار المقبولة.");
       return;
     }
     setError("لم يُؤكد الحفظ بعد. أعد المحاولة أو تحقق لاحقاً.");
@@ -1468,7 +1489,6 @@ export default function LookupPage({
   const cartUnitCount = cart.reduce((sum, line) => sum + line.quantity, 0);
   const cartListedTotal = cart.reduce((sum, line) => sum + line.variant.sellingPricePiasters * line.quantity, 0);
   const checkoutHasDetails = cart.length > 0 || Boolean(quote) || Boolean(pendingSale);
-  const selectedCartQuantity = selected ? cart.filter((line) => line.variant.id === selected.id).reduce((sum, line) => sum + line.quantity, 0) : 0;
 
   return (
     <main className="shell pos-workspace">
@@ -1476,7 +1496,6 @@ export default function LookupPage({
         <h1>نقطة البيع<span className="sr-only"> البحث عن منتج</span></h1>
         <p className="pos-branch-context">أصناف ومخزون {workspace.activeBranch?.nameAr}</p>
       </header>
-      {error ? <div className="error" role="alert">{error}</div> : null}
       {stockPause ? (
         <div className="error" data-testid="stock-pause" role="alert">
           تغييرات المخزون متوقفة مؤقتاً لإجراء تصحيح كمية. لا تبدأ بيعاً جديداً ولا تسلّم بضاعة.
@@ -1487,7 +1506,6 @@ export default function LookupPage({
           العمل متوقف مؤقتاً لمراجعة استعادة نسخة البيانات. لا تبدأ بيعاً جديداً ولا تسلّم بضاعة.
         </div>
       ) : null}
-      {notice ? <div className="notice" role="status">{notice}</div> : null}
       <div className="pos-layout">
       <div className="pos-discovery">
       <form
@@ -1509,16 +1527,13 @@ export default function LookupPage({
             autoCorrect="off"
             spellCheck={false}
             enterKeyHint="search"
-            aria-describedby="lookupCodeHint"
             required
           />
-          <p id="lookupCodeHint" className="muted">
-            امسح الباركود أو اكتب رمز المنتج، ثم اختر المقاس واللون.
-          </p>
         </div>
-        <button type="submit" disabled={Boolean(pending)} aria-disabled={Boolean(pending)}>
+        <button type="submit" className="secondary" disabled={Boolean(pending)} aria-disabled={Boolean(pending)}>
           {pending === "search" ? "جارٍ البحث…" : "بحث"}
         </button>
+        {searchError ? <div className="error" role="alert">{searchError}</div> : null}
         {pending === "search" ? <span className="sr-only" role="status">جارٍ البحث عن المنتج…</span> : null}
       </form>
       {product ? (
@@ -1528,63 +1543,26 @@ export default function LookupPage({
             <ProductLabelAction product={{ id: product.id, code: product.code, nameAr: product.nameAr }} />
           </div>
           <p className="muted">رمز المنتج: {product.code}</p>
-          <div className="pos-pairs" role="group" aria-label="اختيارات الصنف المتاحة">
-            {product.variants.map((variant) => <button key={variant.id} type="button" aria-pressed={selected?.id === variant.id} onClick={() => { setSizeId(variant.size.id); setColorId(variant.color.id); }}>
-              {variant.size.nameAr} / {variant.color.nameAr}{(effectiveByVariant[variant.id] ?? variant.availableQuantity) <= 0 ? " — غير متوفر" : ""}
-            </button>)}
-          </div>
-          <details className="business-disclosure">
-            <summary>اختيار المقاس واللون من القوائم</summary>
-            <div className="pos-variant-fields">
-            <div className="field">
-              <label htmlFor="lookupSize">المقاس</label>
-              <select
-                id="lookupSize"
-                ref={sizeInputRef}
-                value={sizeId}
-                onChange={(event) => {
-                  setSizeId(event.target.value);
-                  setColorId("");
-                }}
-              >
-                <option value="">اختر مقاساً</option>
-                {sizes.map((item) => (
-                  <option key={item.id} value={item.id}>{item.nameAr}</option>
-                ))}
-              </select>
-            </div>
-            <div className="field">
-              <label htmlFor="lookupColor">اللون</label>
-              <select id="lookupColor" value={colorId} onChange={(event) => setColorId(event.target.value)} disabled={!sizeId}>
-                <option value="">اختر لوناً</option>
-                {colors.map((item) => (
-                  <option key={item.id} value={item.id}>{item.nameAr}</option>
-                ))}
-              </select>
-            </div>
-            </div>
-          </details>
           {selected ? (
             <div className="pos-selected-summary" data-testid="selected-variant">
               <div>
               <p>سعر البيع: {formatEgpFromPiasters(selected.sellingPricePiasters)}</p>
-              <p data-testid="available-quantity">الكمية المتاحة: {selectedEffective}</p>
+              <p data-testid="available-quantity">الكمية المتاحة في الفرع: {selectedEffective}</p>
+              {product.minimumSellingPricePiasters !== null ? <p>الحد الأدنى للبيع: {formatEgpFromPiasters(product.minimumSellingPricePiasters)}</p> : null}
               </div>
               {selectedEffective === 0 ? (
                 <p className="muted">غير متوفر في المخزون حتى يتم الاستلام.</p>
               ) : (
-                <button type="button" disabled={formLocked || Boolean(stockPause) || Boolean(restorePause) || selectedCartQuantity >= selectedEffective} onClick={addSelected}>إضافة إلى السلة</button>
+                <button type="button" data-testid="add-operational" disabled={formLocked || Boolean(stockPause) || Boolean(restorePause) || selectedCartQuantity >= selectedEffective} onClick={addSelected}>إضافة إلى السلة</button>
               )}
             </div>
           ) : (
-            <p className="muted">اختر المقاس واللون لعرض سعر البيع.</p>
+            <p className="muted">حدّث قائمة المنتجات قبل البيع.</p>
           )}
         </section>
       ) : null}
       <ProductBrowser key={contextKey} products={browseProducts} quantities={effectiveByVariant} selectedId={product?.id} loading={browseLoading} message={browseMessage} onRetry={() => void refreshBrowse(true)} onSelect={(item) => {
         setProduct(item);
-        setSizeId("");
-        setColorId("");
         setSizeFocusNonce((nonce) => nonce + 1);
       }} />
       </div>
@@ -1594,19 +1572,19 @@ export default function LookupPage({
         aria-label="إتمام البيع"
         onSubmit={(event) => {
           event.preventDefault();
-          void submit(handedOver || pendingSale?.physicallyCompleted ? "complete" : "prepare");
+          void submit(pendingSale?.physicallyCompleted ? "complete" : "prepare");
         }}
       >
         <div className="pos-section-heading pos-checkout-heading"><h2>سلة البيع</h2><span className="muted">{cartUnitCount} قطعة</span></div>
         <div className="pos-checkout-body">
         {cart.length === 0 ? (
-          <EmptyState title="السلة فاضية" message="اختر صنفاً من القائمة وحدد المقاس واللون." />
+          <EmptyState title="السلة فاضية" message="اختر صنفاً من القائمة وأضفه بالكمية المتاحة في الفرع." />
         ) : (
           <ul className="pos-cart" data-testid="sale-cart">
             {cart.map((line) => (
               <li key={line.key}>
                 <div><p className="pos-cart-name">{line.product.nameAr}</p>
-                <p className="pos-cart-meta">{line.product.code} · {line.variant.size.nameAr} / {line.variant.color.nameAr}</p>
+                <p className="pos-cart-meta">{line.product.code}</p>
                 <p className="pos-cart-meta">سعر الوحدة: {formatEgpFromPiasters(line.variant.sellingPricePiasters)}</p></div>
                 <div className="field">
                   <label htmlFor={`qty-${line.key}`}>الكمية</label>
@@ -1614,13 +1592,13 @@ export default function LookupPage({
                     id={`qty-${line.key}`}
                     type="number"
                     min={1}
-                    max={effectiveByVariant[line.variant.id] ?? line.variant.availableQuantity}
+                    max={Math.max(1, (effectiveByVariant[line.variant.id] ?? line.variant.availableQuantity) - cart.filter((item) => item.product.id === line.product.id && item.key !== line.key).reduce((sum, item) => sum + item.quantity, 0))}
                     value={line.quantity}
                     disabled={formLocked}
                     onChange={(event) => updateQuantity(line.key, Number(event.target.value))}
                   />
                 </div>
-                <button type="button" className="secondary" disabled={formLocked} onClick={() => updateQuantity(line.key, 0)}>
+                <button type="button" className="danger" disabled={formLocked} onClick={() => updateQuantity(line.key, 0)}>
                   حذف
                 </button>
               </li>
@@ -1634,7 +1612,11 @@ export default function LookupPage({
         </div>
         <div className="field">
           <label htmlFor="customerPhone">هاتف الزبون (اختياري)</label>
-          <input id="customerPhone" value={customerPhone} disabled={formLocked} onChange={(event) => { if (beginCartRevision()) setCustomerPhone(event.target.value); }} />
+          <input id="customerPhone" value={customerPhone} disabled={formLocked} onChange={(event) => { if (beginCartRevision()) { setSavedCustomer(null); setCustomerPhone(event.target.value); } }} />
+        </div>
+        <div className="form-actions">
+          <button type="button" className="secondary" disabled={formLocked || pending === "customer"} onClick={() => void findSavedCustomer()}>{pending === "customer" ? "جارٍ البحث…" : "بحث عن زبون محفوظ"}</button>
+          {savedCustomer ? <button type="button" disabled={formLocked} onClick={() => { if (beginCartRevision()) setCustomerName(savedCustomer.displayName); }}>استخدام الاسم المحفوظ: {savedCustomer.displayName}</button> : null}
         </div>
         <div className="field">
           <label htmlFor="couponCode">كود الكوبون</label>
@@ -1687,18 +1669,10 @@ export default function LookupPage({
         <div className="pos-checkout-footer">
         <p className="pos-cart-total"><span>{quote ? "الإجمالي المقبول" : "إجمالي الأصناف"}</span><strong>{formatEgpFromPiasters(quote?.finalTotalPiasters ?? cartListedTotal)}</strong></p>
         {!quote && cart.length > 0 ? <p className="pos-total-note">قبل العروض والكوبون وخصم الموظف. اقبل الأسعار لمعرفة المبلغ المستحق.</p> : null}
-        {checkoutHasDetails ? <div className="field pos-handover">
-          <label htmlFor="handedOver">
-            <input
-              id="handedOver"
-              type="checkbox"
-              checked={handedOver || pendingSale?.physicallyCompleted === true}
-              disabled={Boolean(stockPause) || Boolean(restorePause) || (!quote && !pendingSale?.physicallyCompleted)}
-              onChange={(event) => setHandedOver(event.target.checked)}
-            />
-            {" "}استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة
-          </label>
-        </div> : null}
+        {error ? <div className="error" role="alert">{error}</div> : null}
+        {notice ? <div className="notice" role="status">{notice}</div> : null}
+        {receiptStatus ? <p className="notice" role="status" data-testid="pos-receipt-status">{receiptStatus}</p> : null}
+        {receiptError ? <p className="error" role="alert" data-testid="pos-receipt-error">{receiptError}</p> : null}
         <div className="actions">
           <button type="button" disabled={Boolean(stockPause) || Boolean(restorePause) || Boolean(pending) || cart.length === 0 || formLocked} onClick={() => void submit("prepare")}>
             {pending === "prepare" ? "جارٍ قبول الأسعار…" : "قبول الأسعار"}
@@ -1710,11 +1684,11 @@ export default function LookupPage({
           ) : null}
           <button
             type="button"
-            className="pos-complete"
+            className="confirm pos-complete"
             data-testid="complete-sale"
             aria-labelledby="complete-without-print-label"
             aria-describedby="complete-without-print"
-            disabled={((Boolean(stockPause) || Boolean(restorePause)) && !handedOver && !pendingSale?.physicallyCompleted) || Boolean(pending) || revisionBlock || (!quote && !pendingSale?.physicallyCompleted)}
+            disabled={((Boolean(stockPause) || Boolean(restorePause)) && !pendingSale?.physicallyCompleted) || Boolean(pending) || revisionBlock || (!quote && !pendingSale?.physicallyCompleted)}
             onClick={() => void submit("complete")}
           >
             <span id="complete-without-print-label">{pending === "complete" ? "جارٍ الحفظ…" : "إتمام البيع"}</span>
@@ -1722,9 +1696,9 @@ export default function LookupPage({
           </button>
           <button
             type="button"
-            className="pos-complete"
+            className="confirm pos-complete"
             data-testid="complete-sale-print"
-            disabled={((Boolean(stockPause) || Boolean(restorePause)) && !handedOver && !pendingSale?.physicallyCompleted) || Boolean(pending) || revisionBlock || (!quote && !pendingSale?.physicallyCompleted)}
+            disabled={((Boolean(stockPause) || Boolean(restorePause)) && !pendingSale?.physicallyCompleted) || Boolean(pending) || revisionBlock || (!quote && !pendingSale?.physicallyCompleted)}
             onClick={() => void submit("complete", { print: true })}
           >
             {pending === "complete" ? "جارٍ الحفظ…" : "حفظ البيع وطباعة الإيصال"}
@@ -1755,8 +1729,6 @@ export default function LookupPage({
       </form>
       </div>
 
-      {receiptStatus ? <p className="notice" role="status" data-testid="pos-receipt-status">{receiptStatus}</p> : null}
-      {receiptError ? <p className="error" role="alert" data-testid="pos-receipt-error">{receiptError}</p> : null}
       {completed ? <SaleSummary key={completed.id} sale={completed} /> : null}
     </main>
   );

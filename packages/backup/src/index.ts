@@ -16,6 +16,8 @@ export type {
   BackupOnlineOrdersReader,
   BackupReferenceReader,
   BackupReaderSet,
+  BackupSalesReader,
+  BackupSequenceState,
   BackupSnapshotMetadata,
   BackupRestoreGenerationReader,
   BackupServices,

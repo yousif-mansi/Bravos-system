@@ -1,5 +1,6 @@
 import {
   BACKUP_SECTION_NAMES,
+  OPERATIONAL_STOCK_SCHEMA,
   type BackupCreateRequest,
   type BackupReadinessDto,
   type BackupSectionCounts,
@@ -15,7 +16,9 @@ import type {
   BackupData,
   BackupManifest,
   BackupReaderSet,
+  BackupSequenceState,
   BackupServices,
+  BackupSnapshotMetadata,
   BackupUnitOfWork,
   VerifiedAuth,
 } from "./ports.ts";
@@ -52,6 +55,8 @@ export const BACKUP_TABLE_SECTIONS: Record<string, BackupSectionName> = {
   inventory_order_disposition: "inventory",
   inventory_order_disposition_allocation: "inventory",
   inventory_delivered_return_allocation_effect: "inventory",
+  inventory_transfer: "inventory",
+  supplier: "receiving",
   receiving_receipt: "receiving",
   receiving_receipt_line: "receiving",
   receiving_correction: "receiving",
@@ -62,6 +67,8 @@ export const BACKUP_TABLE_SECTIONS: Record<string, BackupSectionName> = {
   sales_sale_line: "sales",
   sales_sale_unit: "sales",
   sales_restore_deferred_completion: "sales",
+  sales_receipt_registration: "sales",
+  customer: "sales",
   expense_category: "expenses",
   expense_operation: "expenses",
   expense_record: "expenses",
@@ -112,6 +119,37 @@ export const BACKUP_TABLE_SECTIONS: Record<string, BackupSectionName> = {
 
 export const EXPECTED_BACKUP_TABLES = new Set(Object.keys(BACKUP_TABLE_SECTIONS));
 
+// Named profiles only. A later migration is not accepted by comparing version numbers.
+export const RECEIPT_NUMBERING_SCHEMA = "036_receipt_numbering.sql";
+
+export const KNOWN_BACKUP_SCHEMAS = [
+  "028_aggregate_analytics.sql",
+  "029_restore.sql",
+  "030_branch_inventory.sql",
+  "031_sale_payments.sql",
+  "032_catalog_online_variants.sql",
+  "033_human_references.sql",
+  "034_order_recognition_branch.sql",
+  "035_return_reason.sql",
+  "036_receipt_numbering.sql",
+  OPERATIONAL_STOCK_SCHEMA,
+] as const;
+
+const OPERATIONAL_TABLES = new Set(["supplier", "customer", "inventory_transfer"]);
+
+export function expectedBackupTables(schemaVersion: string, sourceGeneration: number | null): Set<string> {
+  const schemaIndex = (KNOWN_BACKUP_SCHEMAS as readonly string[]).indexOf(schemaVersion);
+  if (schemaIndex < 0) throw new Error(`Unsupported backup schema profile: ${schemaVersion}`);
+  const schemaNumber = schemaIndex + 28;
+  const legacy028 = schemaVersion === "028_aggregate_analytics.sql" && sourceGeneration === null;
+  const keepsReceiptRegistry = schemaVersion === RECEIPT_NUMBERING_SCHEMA || schemaVersion === OPERATIONAL_STOCK_SCHEMA;
+  return new Set([...EXPECTED_BACKUP_TABLES].filter((name) =>
+    !(legacy028 && name === "sales_restore_deferred_completion")
+    && !(schemaNumber < 30 && name === "inventory_batch_balance")
+    && !(!keepsReceiptRegistry && name === "sales_receipt_registration")
+    && !(schemaVersion !== OPERATIONAL_STOCK_SCHEMA && OPERATIONAL_TABLES.has(name))));
+}
+
 export const DEFAULT_MAX_BACKUP_PAYLOAD_BYTES = 128 * 1024 * 1024;
 
 export function createBackupServices(deps: {
@@ -150,7 +188,7 @@ export function createBackupServices(deps: {
         const metadata = await transaction.metadata();
         const knownTills = await transaction.readers.inventory.listKnownUnsynchronizedTills();
         const tables = await readAllTables(transaction.readers, maxPayloadBytes);
-        const data = buildData(tables);
+        const data = buildData(tables, metadata.schemaVersion, metadata.sourceGeneration);
         const sections = BACKUP_SECTION_NAMES.map((name) => {
           const tableEntries = Object.entries(data[name]).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
           const recordCount = tableEntries.reduce((sum, [, rows]) => sum + rows.length, 0);
@@ -173,6 +211,7 @@ export function createBackupServices(deps: {
           onlineOrderReferenceSequence: metadata.onlineOrderReferenceSequence,
           salesSaleReferenceSequence: metadata.salesSaleReferenceSequence,
           returnsReturnReferenceSequence: metadata.returnsReturnReferenceSequence,
+          ...(receiptPrefixMetadata(metadata)),
           identityPolicy: { preservesStableIds: true, preservesForeignKeys: true, regeneratesIds: false },
           idProvenance: {
             source: "database_primary_and_foreign_keys",
@@ -261,18 +300,30 @@ async function readAllTables(readers: BackupReaderSet, maxPayloadBytes: number):
   return result;
 }
 
-function buildData(tables: BackupTableSnapshot[]): BackupData {
+function receiptPrefixMetadata(metadata: BackupSnapshotMetadata): { salesReceiptPrefixSequence: BackupSequenceState } | Record<string, never> {
+  if (metadata.schemaVersion === RECEIPT_NUMBERING_SCHEMA || metadata.schemaVersion === OPERATIONAL_STOCK_SCHEMA) {
+    if (!metadata.salesReceiptPrefixSequence) throw new Error("Receipt prefix sequence is missing from backup metadata.");
+    return { salesReceiptPrefixSequence: metadata.salesReceiptPrefixSequence };
+  }
+  if (metadata.salesReceiptPrefixSequence) {
+    throw new Error("Historical backup metadata must not include a receipt prefix sequence.");
+  }
+  return {};
+}
+
+function buildData(tables: BackupTableSnapshot[], schemaVersion: string, sourceGeneration: number | null): BackupData {
+  const expected = expectedBackupTables(schemaVersion, sourceGeneration);
   const data = Object.fromEntries(BACKUP_SECTION_NAMES.map((name) => [name, {}])) as BackupData;
   const seen = new Set<string>();
   for (const table of tables) {
     const section = BACKUP_TABLE_SECTIONS[table.tableName];
-    if (!section || seen.has(table.tableName)) {
+    if (!section || seen.has(table.tableName) || !expected.has(table.tableName)) {
       throw new Error(`Backup reader returned an unapproved or duplicate table: ${table.tableName}`);
     }
     seen.add(table.tableName);
     data[section][table.tableName] = table.rows.map((row) => normalizeBackupValue(row) as Record<string, unknown>);
   }
-  const missing = [...EXPECTED_BACKUP_TABLES].filter((tableName) => !seen.has(tableName));
+  const missing = [...expected].filter((tableName) => !seen.has(tableName));
   if (missing.length > 0) throw new Error(`Backup reader omitted required tables: ${missing.join(", ")}`);
   return data;
 }

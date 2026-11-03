@@ -23,8 +23,6 @@ test("a paid offline sale crosses restore generations through durable custody an
     await expect(cashier.getByTestId("offline-ready")).toBeVisible({ timeout: 30_000 });
     await cashier.getByRole("link", { name: "البحث عن منتج" }).click();
     await addAndPrice(cashier, seed);
-    await cashier.getByRole("form", { name: "إتمام البيع" })
-      .getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
     await cashier.route("**/api/internal/sales/pos-snapshots", (route) => route.abort("failed"));
 
     await manager.goto(`${BASE_URL}/restore`);

@@ -8,6 +8,7 @@ import type {
   SizeDto,
   WorkspaceDto,
 } from "@bravos/contracts";
+import { OPERATIONAL_COLOR_ID, OPERATIONAL_SIZE_ID } from "@bravos/contracts";
 import {
   ApiError,
   createCategory,
@@ -31,10 +32,10 @@ import { useRevealFeedback } from "../ui/useRevealFeedback.ts";
 
 type VariantDraft = {
   key: string;
+  savedId: string | null;
   sizeId: string;
   colorId: string;
   onlineVisible: boolean;
-  overrideEgp: string;
 };
 
 type ProductDraft = {
@@ -44,6 +45,7 @@ type ProductDraft = {
   descriptionAr: string;
   categoryId: string;
   defaultEgp: string;
+  minimumEgp: string;
   publication: PublicationStatus;
   imageRefs: string[];
   sizeGuideAr: string;
@@ -58,6 +60,7 @@ function emptyProduct(): ProductDraft {
     descriptionAr: "",
     categoryId: "",
     defaultEgp: "",
+    minimumEgp: "",
     publication: "hidden",
     imageRefs: [],
     sizeGuideAr: "",
@@ -281,41 +284,40 @@ export default function CatalogPage({
       setError("سعر البيع غير صالح.");
       return;
     }
-    if (product.variants.length === 0) {
-      setError("يجب تحديد متغير واحد على الأقل.");
+    const minimumText = product.minimumEgp.trim();
+    const minimumSellingPricePiasters = minimumText ? egpInputToPiasters(minimumText) : null;
+    if (minimumText && minimumSellingPricePiasters === null) {
+      setError("الحد الأدنى للبيع غير صالح.");
+      return;
+    }
+    if (minimumSellingPricePiasters !== null && minimumSellingPricePiasters > defaultSellingPricePiasters) {
+      setError("الحد الأدنى لا يمكن أن يتجاوز سعر البيع.");
       return;
     }
     const variants = [];
     for (const draft of product.variants) {
-      if (!draft.sizeId || !draft.colorId) {
-        setError("يجب تحديد المقاس واللون لكل متغير.");
+      if (!draft.sizeId || !draft.colorId || draft.sizeId === OPERATIONAL_SIZE_ID || draft.colorId === OPERATIONAL_COLOR_ID) {
+        setError("يجب تحديد مقاس ولون للموقع لكل خيار.");
         return;
-      }
-      let override: number | null = null;
-      if (draft.overrideEgp.trim()) {
-        override = egpInputToPiasters(draft.overrideEgp);
-        if (override === null) {
-          setError("سعر المتغير غير صالح.");
-          return;
-        }
       }
       variants.push({
         sizeId: draft.sizeId,
         colorId: draft.colorId,
         onlineVisible: draft.onlineVisible,
-        sellingPricePiastersOverride: override,
+        sellingPricePiastersOverride: null,
       });
     }
     setProductPending("product");
     try {
       const payload = {
         expectedRevision,
-        expectedVariantIds: product.variants.map((variant) => variant.key),
+        expectedVariantIds: product.variants.flatMap((variant) => variant.savedId ? [variant.savedId] : []),
         code: product.code,
         nameAr: product.nameAr,
         descriptionAr: product.descriptionAr,
         categoryId: product.categoryId,
         defaultSellingPricePiasters,
+        minimumSellingPricePiasters,
         publication: product.publication,
         imageRefs: product.imageRefs,
         sizeGuideAr: product.sizeGuideAr.trim() || null,
@@ -345,19 +347,19 @@ export default function CatalogPage({
       descriptionAr: item.descriptionAr,
       categoryId: item.category.id,
       defaultEgp: piastersToEgpInput(item.defaultSellingPricePiasters),
+      minimumEgp: item.minimumSellingPricePiasters === null ? "" : piastersToEgpInput(item.minimumSellingPricePiasters),
       publication: item.publication,
       imageRefs: item.imageRefs,
       sizeGuideAr: item.sizeGuideAr ?? "",
-      variants: item.variants.map((variant) => ({
-        key: variant.id,
-        sizeId: variant.size.id,
-        colorId: variant.color.id,
-        onlineVisible: variant.onlineVisible,
-        overrideEgp:
-          variant.sellingPricePiastersOverride === null
-            ? ""
-            : piastersToEgpInput(variant.sellingPricePiastersOverride),
-      })),
+      variants: item.variants
+        .filter((variant) => variant.size.id !== OPERATIONAL_SIZE_ID && variant.color.id !== OPERATIONAL_COLOR_ID)
+        .map((variant) => ({
+          key: variant.id,
+          savedId: variant.id,
+          sizeId: variant.size.id,
+          colorId: variant.color.id,
+          onlineVisible: variant.onlineVisible,
+        })),
     });
     productFeedback.reveal();
   }
@@ -426,8 +428,8 @@ export default function CatalogPage({
       <header className="page-hero">
         <h1>إدارة المنتجات</h1>
       </header>
-      {error ? <div className="error" role="alert">{error}</div> : null}
-      {notice ? <div className="notice" role="status">{notice}</div> : null}
+      {error ? <div className="error point-feedback" role="alert">{error}</div> : null}
+      {notice ? <div className="notice point-feedback" role="status">{notice}</div> : null}
       <div className="catalog-workspace">
       <div className="grid two catalog-top">
         <section className="card catalog-taxonomy">
@@ -527,7 +529,6 @@ export default function CatalogPage({
         <div className="stacked-form catalog-editor">
           <section className="card" aria-label="اختيار منتج من المخزون">
             <h2>اختيار منتج من المخزون</h2>
-            <p className="muted">ابدأ بتسجيل المنتج ومقاساته وألوانه وكمياته من صفحة استلام المخزون، ثم اختر رمزه هنا لإعداد عرضه.</p>
             <div className="field">
               <label htmlFor="inventoryProductCode">رمز المنتج</label>
               <input
@@ -592,8 +593,12 @@ export default function CatalogPage({
             </select>
           </div>
           <div className="field">
-            <label htmlFor="productPrice">سعر البيع الافتراضي بالجنيه</label>
+            <label htmlFor="productPrice">سعر البيع بالجنيه</label>
             <input id="productPrice" inputMode="decimal" value={product.defaultEgp} onChange={(event) => setProduct({ ...product, defaultEgp: event.target.value })} required />
+          </div>
+          <div className="field">
+            <label htmlFor="productMinimum">الحد الأدنى للبيع بالجنيه (اختياري)</label>
+            <input id="productMinimum" inputMode="decimal" value={product.minimumEgp} onChange={(event) => setProduct({ ...product, minimumEgp: event.target.value })} />
           </div>
           <div className="field">
             <label htmlFor="productPublication">حالة الموقع</label>
@@ -639,7 +644,7 @@ export default function CatalogPage({
                     <img src={`/api/internal/catalog/media/${ref}`} alt={`صورة المنتج ${index + 1}`} />
                     <button
                       type="button"
-                      className="secondary"
+                      className="danger"
                       disabled={Boolean(productPending)}
                       onClick={() => setProduct((current) => ({
                         ...current,
@@ -654,8 +659,7 @@ export default function CatalogPage({
             ) : <p className="muted">لا توجد صور مضافة.</p>}
           </fieldset>
           <fieldset className="grant-editor">
-            <legend>المقاسات والألوان المسجلة في المخزون</legend>
-            <p className="muted">حدّد المقاس واللون اللذين يظهران في المتجر. نفاد الكمية يوقف الطلب تلقائياً.</p>
+            <legend>خيارات الموقع</legend>
             <details className="business-disclosure">
               <summary>تحديد جماعي حسب المقاس أو اللون</summary>
               <p className="catalog-bulk-warning">يغيّر كل التركيبات المسجلة لهذا المقاس أو اللون</p>
@@ -700,23 +704,21 @@ export default function CatalogPage({
                 </label>
                 <div className="field">
                   <label htmlFor={`variant-size-${index}`}>المقاس</label>
-                  <input id={`variant-size-${index}`} value={sizes.find((item) => item.id === variant.sizeId)?.nameAr ?? ""} readOnly />
+                  <select id={`variant-size-${index}`} value={variant.sizeId} onChange={(event) => updateVariant(index, { ...variant, sizeId: event.target.value })}>
+                    <option value="">اختر مقاساً</option>
+                    {sizes.filter((item) => item.id !== OPERATIONAL_SIZE_ID).map((item) => <option key={item.id} value={item.id}>{item.nameAr}</option>)}
+                  </select>
                 </div>
                 <div className="field">
                   <label htmlFor={`variant-color-${index}`}>اللون</label>
-                  <input id={`variant-color-${index}`} value={colors.find((item) => item.id === variant.colorId)?.nameAr ?? ""} readOnly />
-                </div>
-                <div className="field">
-                  <label htmlFor={`variant-price-${index}`}>سعر مختلف للمتغير (اختياري)</label>
-                  <input
-                    id={`variant-price-${index}`}
-                    inputMode="decimal"
-                    value={variant.overrideEgp}
-                    onChange={(event) => updateVariant(index, { ...variant, overrideEgp: event.target.value })}
-                  />
+                  <select id={`variant-color-${index}`} value={variant.colorId} onChange={(event) => updateVariant(index, { ...variant, colorId: event.target.value })}>
+                    <option value="">اختر لوناً</option>
+                    {colors.filter((item) => item.id !== OPERATIONAL_COLOR_ID).map((item) => <option key={item.id} value={item.id}>{item.nameAr}</option>)}
+                  </select>
                 </div>
               </div>
             ))}
+            <button type="button" className="secondary" disabled={Boolean(productPending)} onClick={() => setProduct((current) => ({ ...current, variants: [...current.variants, { key: crypto.randomUUID(), savedId: null, sizeId: "", colorId: "", onlineVisible: true }] }))}>إضافة خيار للموقع</button>
           </fieldset>
           <div className="form-actions">
             {editingId ? (

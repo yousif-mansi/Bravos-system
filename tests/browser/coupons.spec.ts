@@ -52,7 +52,6 @@ test("manager creates a coupon and cashier can apply, remove, reapply, and compl
   await couponInput.fill("BROWSER50");
   await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
   await expect(page.getByTestId("coupon-breakdown")).toContainText("50 ج.م.");
-  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   await expect(page.getByTestId("sale-coupon")).toContainText("browser50 — 50 ج.م.");
@@ -159,7 +158,6 @@ test("a Cairo-midnight handover keeps its accepted cached offer while a fresh of
   await expect(page.getByTestId("accepted-prices")).toContainText("الإجمالي: 270 ج.م.");
 
   await page.clock.setFixedTime(new Date("2026-09-15T21:00:01.000Z"));
-  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   const accepted = await readLocalCouponSale(page, catalog.code);
@@ -229,7 +227,6 @@ test("a last-use race preserves the paid prepared sale and exposes the coupon di
     await manager.context().close();
   }
 
-  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   await expect(page.getByTestId("sale-coupon")).toContainText("ONLY-ONE-E2E — 50 ج.م.");
@@ -341,7 +338,6 @@ async function completeCachedCouponSale(
   await expect(page.getByTestId("automatic-offer-breakdown")).toContainText("30 ج.م.");
   await expect(page.getByTestId("coupon-breakdown")).toContainText("50 ج.م.");
   await expect(page.getByTestId("accepted-prices")).toContainText("الإجمالي: 200 ج.م.");
-  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
 }

@@ -56,6 +56,7 @@ type LineRow = {
   paid_piasters?: number | string;
   sellable_quantity?: number; product_id: string; product_code: string; product_name_ar: string;
   size_id: string; size_name_ar: string; color_id: string; color_name_ar: string;
+  variant_purpose: "website_option" | "operational";
 };
 type CorrectionRow = {
   id: string; operation_id: string; target_type: Target; sale_id: string | null; return_id: string | null;
@@ -354,14 +355,18 @@ async function applySaleMovements(client: PoolClient, inventory: InventoryTransa
       for (const batch of balances) {
         const take = Math.min(remaining, number(batch.balance));
         if (take <= 0) continue;
-        const adjusted = await inventory.adjustCorrectionBatch({ branchId, operationId, batchId: batch.batch_id, variantId: line.variant_id, direction: "restore", quantity: take, recordedAt: at });
-        facts.push({ lineId: entry.lineId, variantId: line.variant_id, batchId: batch.batch_id, direction: "restore", quantity: take, unitCostPiasters: adjusted.unitCostPiasters });
+        const adjusted = await inventory.adjustCorrectionBatch({ branchId, operationId, batchId: batch.batch_id, variantId: batch.variant_id, direction: "restore", quantity: take, recordedAt: at });
+        facts.push({ lineId: entry.lineId, variantId: batch.variant_id, batchId: batch.batch_id, direction: "restore", quantity: take, unitCostPiasters: adjusted.unitCostPiasters });
         remaining -= take;
       }
       if (remaining > 0) throw new CorrectionsValidationError("لا توجد كمية مخصصة كافية يمكن إعادتها لهذه الحركة.");
     } else {
-      const result = await inventory.allocateCorrectionFromOldestAvailable({ branchId, operationId, variantId: line.variant_id, quantity: -entry.quantityDelta, recordedAt: at });
-      for (const allocation of result.allocations) facts.push({ lineId: entry.lineId, variantId: line.variant_id, batchId: allocation.batchId, direction: "deduct", quantity: allocation.quantity, unitCostPiasters: allocation.unitCostPiasters });
+      const productId = await operationalProductId(client, line.variant_id);
+      const result = await inventory.allocateCorrectionFromOldestAvailable({
+        branchId, operationId, variantId: line.variant_id, ...(productId ? { productId } : {}),
+        quantity: -entry.quantityDelta, recordedAt: at,
+      });
+      for (const allocation of result.allocations) facts.push({ lineId: entry.lineId, variantId: allocation.variantId, batchId: allocation.batchId, direction: "deduct", quantity: allocation.quantity, unitCostPiasters: allocation.unitCostPiasters });
     }
   }
   return facts;
@@ -468,7 +473,7 @@ async function exactReturnMovementBatches(
   );
   const low = Math.min(fromSellable, toSellable);
   const high = Math.max(fromSellable, toSellable);
-  const allocationCache = new Map<number, Array<PlannedBatch & { start: number; end: number }>>();
+  const allocationCache = new Map<number, Array<PlannedBatch & { start: number; end: number; requestedVariantId?: string }>>();
   const totals = new Map<string, PlannedBatch>();
   let returnOrdinal = 0;
   let mapped = 0;
@@ -485,7 +490,7 @@ async function exactReturnMovementBatches(
     const saleStart = number(unit.variant_ordinal) + overlapStart - (returnOrdinal - unit.quantity);
     const saleEnd = saleStart + overlapEnd - overlapStart;
     for (const allocation of allocations) {
-      if (allocation.variantId !== unit.variant_id) continue;
+      if ((allocation.requestedVariantId ?? allocation.variantId) !== unit.variant_id) continue;
       const start = Math.max(saleStart, allocation.start);
       const end = Math.min(saleEnd, allocation.end);
       if (start >= end) continue;
@@ -650,6 +655,7 @@ async function effectiveSaleAllocationRanges(queryable: Queryable, returnId: str
   const result = await queryable.query<{
     batch_id: string;
     variant_id: string;
+    requested_variant_id: string;
     quantity: number | string;
     unit_cost_piasters: number | string;
   }>(
@@ -658,38 +664,51 @@ async function effectiveSaleAllocationRanges(queryable: Queryable, returnId: str
        FROM returns_return r JOIN sales_sale source ON source.id = r.source_sale_id
        WHERE r.id = $1
      ), effects AS (
-       SELECT a.batch_id, a.variant_id, a.unit_cost_piasters, a.quantity::bigint AS amount
+       SELECT a.batch_id, a.variant_id, COALESCE(a.requested_variant_id, a.variant_id) AS requested_variant_id,
+              a.unit_cost_piasters, a.quantity::bigint AS amount
        FROM inventory_allocation a JOIN target ON target.operation_id = a.operation_id
        UNION ALL
-       SELECT f.batch_id, f.variant_id, f.unit_cost_piasters,
+       SELECT f.batch_id, f.variant_id, COALESCE(sl.variant_id, f.variant_id) AS requested_variant_id,
+              f.unit_cost_piasters,
               CASE WHEN f.direction = 'deduct' THEN f.quantity ELSE -f.quantity END
        FROM recording_merchandise_fact f
        JOIN recording_correction c ON c.id = f.correction_id
        JOIN target ON target.sale_id = c.sale_id
+       LEFT JOIN sales_sale_line sl ON sl.id = f.sale_line_id
        WHERE c.revision <= $2
      )
-     SELECT effects.batch_id, effects.variant_id, SUM(effects.amount)::int AS quantity,
-            effects.unit_cost_piasters
+     SELECT effects.batch_id, effects.variant_id, effects.requested_variant_id,
+            SUM(effects.amount)::int AS quantity, effects.unit_cost_piasters
      FROM effects JOIN inventory_batch b ON b.id = effects.batch_id
-     GROUP BY effects.batch_id, effects.variant_id, effects.unit_cost_piasters, b.recorded_at
+     GROUP BY effects.batch_id, effects.variant_id, effects.requested_variant_id,
+              effects.unit_cost_piasters, b.recorded_at
      HAVING SUM(effects.amount) > 0
-     ORDER BY effects.variant_id, b.recorded_at, effects.batch_id`,
+     ORDER BY effects.requested_variant_id, b.recorded_at, effects.batch_id`,
     [returnId, sourceRevision],
   );
   const offsets = new Map<string, number>();
   return result.rows.map((row) => {
-    const start = offsets.get(row.variant_id) ?? 0;
+    const start = offsets.get(row.requested_variant_id) ?? 0;
     const quantity = number(row.quantity);
-    offsets.set(row.variant_id, start + quantity);
+    offsets.set(row.requested_variant_id, start + quantity);
     return {
       batchId: row.batch_id,
       variantId: row.variant_id,
+      ...(row.requested_variant_id === row.variant_id ? {} : { requestedVariantId: row.requested_variant_id }),
       quantity,
       unitCostPiasters: number(row.unit_cost_piasters),
       start,
       end: start + quantity,
     };
   });
+}
+
+async function operationalProductId(queryable: Queryable, variantId: string): Promise<string | null> {
+  const result = await queryable.query<{ product_id: string }>(
+    `SELECT product_id FROM catalog_product_variant WHERE id = $1 AND purpose = 'operational'`,
+    [variantId],
+  );
+  return result.rows[0]?.product_id ?? null;
 }
 
 async function outstandingSaleBatches(client: Queryable, saleId: string, variantId: string): Promise<BatchBalance[]> {
@@ -699,23 +718,35 @@ async function outstandingSaleBatches(client: Queryable, saleId: string, variant
      ), effects AS (
        SELECT a.batch_id, a.variant_id, a.unit_cost_piasters, a.quantity::bigint AS amount
        FROM inventory_allocation a JOIN source s ON s.operation_id = a.operation_id
-       WHERE a.variant_id = $2
+       WHERE COALESCE(a.requested_variant_id, a.variant_id) = $2
        UNION ALL
        SELECT f.batch_id, f.variant_id, f.unit_cost_piasters,
               CASE WHEN f.direction = 'deduct' THEN f.quantity ELSE -f.quantity END
-       FROM recording_merchandise_fact f JOIN recording_correction c ON c.id = f.correction_id
-       WHERE c.sale_id = $1 AND f.variant_id = $2
+       FROM recording_merchandise_fact f
+       JOIN recording_correction c ON c.id = f.correction_id
+       JOIN sales_sale_line sl ON sl.id = f.sale_line_id
+       WHERE c.sale_id = $1 AND sl.variant_id = $2
        UNION ALL
        SELECT br.batch_id, br.variant_id, br.unit_cost_piasters, -br.quantity::bigint
-       FROM returns_batch_restoration br JOIN returns_return r ON r.id = br.return_id
-       WHERE r.source_sale_id = $1 AND br.variant_id = $2
+       FROM returns_batch_restoration br
+       JOIN returns_return r ON r.id = br.return_id
+       JOIN sales_sale s ON s.id = r.source_sale_id
+       WHERE r.source_sale_id = $1
+         AND EXISTS (
+           SELECT 1 FROM inventory_allocation a
+           WHERE a.operation_id = s.operation_id AND a.batch_id = br.batch_id
+             AND a.variant_id = br.variant_id
+             AND COALESCE(a.requested_variant_id, a.variant_id) = $2
+         )
        UNION ALL
        SELECT f.batch_id, f.variant_id, f.unit_cost_piasters,
               CASE WHEN f.direction = 'restore' THEN -f.quantity ELSE f.quantity END
        FROM recording_merchandise_fact f
        JOIN recording_correction c ON c.id = f.correction_id
        JOIN returns_return r ON r.id = c.return_id
-       WHERE r.source_sale_id = $1 AND f.variant_id = $2
+       JOIN returns_return_line rl ON rl.id = f.return_line_id
+       JOIN sales_sale_line sl ON sl.id = rl.source_sale_line_id
+       WHERE r.source_sale_id = $1 AND sl.variant_id = $2
      )
      SELECT e.batch_id, e.variant_id, e.unit_cost_piasters, SUM(e.amount)::int AS balance, b.recorded_at
      FROM effects e JOIN inventory_batch b ON b.id = e.batch_id
@@ -910,7 +941,8 @@ async function returnLines(queryable: Queryable, returnId: string): Promise<Retu
     `SELECT rl.id,rl.source_sale_line_id,rl.source_online_order_line_id,rl.sellable_quantity,
             rl.source_variant_id AS variant_id,rl.quantity,
             p.id AS product_id,p.code AS product_code,p.name_ar AS product_name_ar,
-            sz.id AS size_id,sz.name_ar AS size_name_ar,c.id AS color_id,c.name_ar AS color_name_ar
+            sz.id AS size_id,sz.name_ar AS size_name_ar,c.id AS color_id,c.name_ar AS color_name_ar,
+            v.purpose AS variant_purpose
      FROM returns_return_line rl
      JOIN catalog_product_variant v ON v.id=rl.source_variant_id
      JOIN catalog_product p ON p.id=v.product_id
@@ -924,9 +956,18 @@ async function returnLines(queryable: Queryable, returnId: string): Promise<Retu
     variant: variant(row), quantity: row.quantity, sellableQuantity: row.sellable_quantity!,
   }));
 }
-function lineSelect(alias: string, extra = "") { return `SELECT ${alias}.id, ${extra} sl.variant_id, ${alias}.quantity, p.id AS product_id, p.code AS product_code, p.name_ar AS product_name_ar, sz.id AS size_id, sz.name_ar AS size_name_ar, c.id AS color_id, c.name_ar AS color_name_ar`; }
+function lineSelect(alias: string, extra = "") { return `SELECT ${alias}.id, ${extra} sl.variant_id, ${alias}.quantity, p.id AS product_id, p.code AS product_code, p.name_ar AS product_name_ar, sz.id AS size_id, sz.name_ar AS size_name_ar, c.id AS color_id, c.name_ar AS color_name_ar, v.purpose AS variant_purpose`; }
 function variantJoins(lineAlias: string) { return `JOIN catalog_product_variant v ON v.id = ${lineAlias}.variant_id JOIN catalog_product p ON p.id = v.product_id JOIN catalog_size sz ON sz.id = v.size_id JOIN catalog_color c ON c.id = v.color_id`; }
-function variant(row: LineRow): VariantIdentityDto { return { id: row.variant_id, product: { id: row.product_id, code: row.product_code, nameAr: row.product_name_ar }, size: { id: row.size_id, nameAr: row.size_name_ar }, color: { id: row.color_id, nameAr: row.color_name_ar } }; }
+function variant(row: LineRow): VariantIdentityDto {
+  const operational = row.variant_purpose === "operational";
+  return {
+    id: row.variant_id,
+    purpose: operational ? "operational" : "website_option",
+    product: { id: row.product_id, code: row.product_code, nameAr: row.product_name_ar },
+    size: { id: row.size_id, nameAr: operational ? "" : row.size_name_ar },
+    color: { id: row.color_id, nameAr: operational ? "" : row.color_name_ar },
+  };
+}
 
 async function correctionHistory(queryable: Queryable, target: Target, id: string, upToRevision: number): Promise<CorrectionRow[]> {
   const result = await queryable.query<CorrectionRow>(

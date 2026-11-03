@@ -570,31 +570,13 @@ function dateOffset(days: number): string {
 
 async function seedCatalog(manager: Session, prefix: string) {
   const category = await api(manager, "POST", "/api/internal/catalog/categories", { nameAr: `تصنيف ${prefix}` });
-  const size = await api(manager, "POST", "/api/internal/catalog/sizes", { nameAr: `مقاس ${prefix}` });
-  const cheapColor = await api(manager, "POST", "/api/internal/catalog/colors", { nameAr: `فاتح ${prefix}` });
-  const expensiveColor = await api(manager, "POST", "/api/internal/catalog/colors", { nameAr: `داكن ${prefix}` });
-  const product = await api(manager, "POST", "/api/internal/catalog/products", {
-    code: `BUNDLE-${prefix}`,
-    nameAr: `منتج ${prefix}`,
-    descriptionAr: "منتج لاختبار الحزم",
-    categoryId: category.body.id,
-    defaultSellingPricePiasters: 20_000,
-    publication: "hidden",
-    imageRefs: [],
-    sizeGuideAr: null,
-    variants: [
-      { sizeId: size.body.id, colorId: cheapColor.body.id, sellingPricePiastersOverride: 5000 },
-      { sizeId: size.body.id, colorId: expensiveColor.body.id, sellingPricePiastersOverride: 20_000 },
-    ],
-  });
-  expect(product.status).toBe(201);
-  const cheap = product.body.variants.find((variant: { sellingPricePiasters: number }) => variant.sellingPricePiasters === 5000);
-  const expensive = product.body.variants.find((variant: { sellingPricePiasters: number }) => variant.sellingPricePiasters === 20_000);
+  const cheap = await createSingleProduct(manager, `${prefix}-LOW`, category.body.id, 5000);
+  const expensive = await createSingleProduct(manager, `${prefix}-HIGH`, category.body.id, 20_000);
   return {
     categoryId: category.body.id,
-    productId: product.body.id,
-    cheapVariantId: cheap.id,
-    expensiveVariantId: expensive.id,
+    productId: cheap.productId,
+    cheapVariantId: cheap.variantId,
+    expensiveVariantId: expensive.variantId,
   };
 }
 

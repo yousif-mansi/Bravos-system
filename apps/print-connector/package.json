@@ -1,0 +1,17 @@
+{
+  "name": "@bravos/print-connector",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node src/main.ts"
+  },
+  "dependencies": {
+    "@bravos/print-contracts": "workspace:*",
+    "jsbarcode": "3.12.3"
+  }
+}

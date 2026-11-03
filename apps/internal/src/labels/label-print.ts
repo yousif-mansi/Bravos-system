@@ -1,5 +1,24 @@
+import {
+  LABEL_COPIES_MAX,
+  LABEL_COPIES_MIN,
+  LABEL_DPI,
+  LABEL_PAPER_HEIGHT_MM,
+  LABEL_PAPER_WIDTH_MM,
+  LABEL_PROFILE,
+  parseLabelJob,
+  type LabelJob,
+} from "@bravos/print-contracts";
+import { accountGeneration, subscribeAccount } from "../account-session.ts";
+import { ConnectorClientError, hasPairingToken, submitConnectorJob } from "../printing/connector-client.ts";
 import { claimBrowserPrint, releaseBrowserPrint } from "../printing/browser-print-lock.ts";
-import { LabelPrintError, planLabelLayout, type LabelLayout, type LabelProduct, type ProductLabelSettings } from "./barcode.ts";
+import {
+  LabelPrintError,
+  planLabelLayout,
+  XP236B_38X25_PROFILE,
+  type LabelLayout,
+  type LabelProduct,
+  type ProductLabelSettings,
+} from "./barcode.ts";
 import { fitAndValidateLabelDocument, renderLabelDocument } from "./label-document.ts";
 import { installOwnedLabelFonts } from "./label-fonts.ts";
 
@@ -19,10 +38,76 @@ const FONT_PROBE_BOLD = "700 16px Cairo";
 const ARABIC_SAMPLE = "ملصق";
 const LATIN_SAMPLE = "BRAVOS";
 
-export type LabelPrintResult = {
-  dialogRequested: true;
-  dialogReturned: boolean;
-};
+/** Browser dialog and connector spooler handoff are different results. Neither means paper came out. */
+export type LabelPrintResult =
+  | { channel: "browser"; dialogRequested: true; dialogReturned: boolean }
+  | { channel: "connector"; submitted: true };
+
+/** Separate from the generic size preference. Pairing selects this without rewriting saved dimensions. */
+export const LABEL_PROFILE_PREFERENCE_KEY = "bravos.product-label.profile";
+
+export function selectKnownLabelProfile(): void {
+  try {
+    localStorage.setItem(LABEL_PROFILE_PREFERENCE_KEY, XP236B_38X25_PROFILE);
+  } catch {
+    // A blocked profile store must not undo a pairing token that already saved.
+  }
+}
+
+export function clearKnownLabelProfile(): void {
+  try {
+    localStorage.removeItem(LABEL_PROFILE_PREFERENCE_KEY);
+  } catch {
+    // A blocked store must not stop the label dialog.
+  }
+}
+
+const XP_NEEDS_PAIRING = "طراز Xprinter XP-236B يُطبع بعد ربط هذا الجهاز مرة واحدة من الرئيسية. لن تُفتح نافذة المتصفح ولن تُستخدم طابعة الإيصالات.";
+const LABEL_SIZE_UNSUPPORTED = "المقاس المختار غير مدعوم على طابعة الملصقات المربوطة (38×25 مم، 203 نقطة). لن يُصغَّر الملصق ولن تُستخدم طابعة المتصفح.";
+
+function pairingOrThrow(): boolean {
+  try {
+    return hasPairingToken();
+  } catch {
+    throw fail("تعذر قراءة ربط الطباعة على هذا الجهاز. لن تُستخدم طابعة المتصفح.");
+  }
+}
+
+function connectorLabelShape(settings: ProductLabelSettings): boolean {
+  return settings.widthMm === LABEL_PAPER_WIDTH_MM
+    && settings.heightMm === LABEL_PAPER_HEIGHT_MM
+    && settings.dpi === LABEL_DPI
+    && Number.isInteger(settings.copies)
+    && settings.copies >= LABEL_COPIES_MIN
+    && settings.copies <= LABEL_COPIES_MAX;
+}
+
+/** Label DTO for the fixed compact profile. Names and codes are copied, not resized. */
+export function connectorLabelJob(product: LabelProduct, settings: ProductLabelSettings, id: string): LabelJob {
+  if (
+    settings.widthMm !== LABEL_PAPER_WIDTH_MM
+    || settings.heightMm !== LABEL_PAPER_HEIGHT_MM
+    || settings.dpi !== LABEL_DPI
+    || !Number.isInteger(settings.copies)
+    || settings.copies < LABEL_COPIES_MIN
+    || settings.copies > LABEL_COPIES_MAX
+  ) {
+    throw fail(LABEL_SIZE_UNSUPPORTED);
+  }
+  const parsed = parseLabelJob({
+    kind: "label",
+    id,
+    copies: settings.copies,
+    product: { code: product.code, name: product.nameAr },
+    paper: { widthMm: LABEL_PAPER_WIDTH_MM, heightMm: LABEL_PAPER_HEIGHT_MM },
+    dpi: LABEL_DPI,
+    profile: LABEL_PROFILE,
+  });
+  if (!parsed || parsed.product.code !== product.code || parsed.product.name !== product.nameAr) {
+    throw fail("بيانات الملصق لا تطابق طابعة الملصقات المربوطة. لن يُختصر الاسم ولن تُستخدم طابعة أخرى.");
+  }
+  return parsed;
+}
 
 type PrintJob = {
   iframe: HTMLIFrameElement;
@@ -104,7 +189,7 @@ function openFrame(
     iframe.style.pointerEvents = "none";
   } else {
     iframe.style.width = "100%";
-    iframe.style.minHeight = `${layout.settings.heightMm}mm`;
+    iframe.style.height = `${layout.settings.heightMm}mm`;
     iframe.style.background = "#fff";
   }
 
@@ -229,10 +314,16 @@ export async function printProductLabels(
   settings: ProductLabelSettings,
   signal?: AbortSignal,
   host?: HTMLElement | null,
+  onProgress?: (message: string) => void,
 ): Promise<LabelPrintResult> {
   throwIfAborted(signal);
+  const generation = accountGeneration();
   const layout = planLabelLayout(product, settings);
   throwIfAborted(signal);
+  if (accountGeneration() !== generation) throw abortError(signal ?? new AbortController().signal);
+  const paired = pairingOrThrow();
+  if (paired && !connectorLabelShape(settings)) throw fail(LABEL_SIZE_UNSUPPORTED);
+  else if (!paired && layout.profile === XP236B_38X25_PROFILE) throw fail(XP_NEEDS_PAIRING);
   if (typeof window === "undefined" || typeof document === "undefined") {
     throw fail("الطباعة متاحة من شاشة المتصفح فقط.");
   }
@@ -244,9 +335,34 @@ export async function printProductLabels(
     throw fail("نافذة طباعة مفتوحة. أغلقها ثم أعد المحاولة.");
   }
 
+  const controller = new AbortController();
+  const stopAccount = paired
+    ? subscribeAccount(() => {
+      if (accountGeneration() !== generation) controller.abort();
+    })
+    : () => undefined;
+  const onCallerAbort = () => controller.abort();
+  if (paired) signal?.addEventListener("abort", onCallerAbort);
+
   let job: PrintJob | null = null;
   let dialogStarted = false;
   try {
+    if (paired) {
+      if (signal?.aborted) throw abortError(signal);
+      if (accountGeneration() !== generation || controller.signal.aborted) throw abortError(controller.signal);
+      const id = crypto.randomUUID();
+      const labelJob = connectorLabelJob(product, settings, id);
+      try {
+        await submitConnectorJob(labelJob, onProgress
+          ? { signal: controller.signal, onProgress }
+          : { signal: controller.signal });
+      } catch (error) {
+        if (error instanceof ConnectorClientError && error.code === "aborted") throw abortError(controller.signal);
+        if (error instanceof ConnectorClientError) throw fail(error.message);
+        throw error;
+      }
+      return { channel: "connector", submitted: true };
+    }
     job = await openFrame("ملصق المنتج", host ?? document.body, "print", layout, signal);
     throwIfAborted(signal);
     const printWindow = fill(job, layout);
@@ -267,15 +383,17 @@ export async function printProductLabels(
     dialogStarted = true;
     const dialogReturned = await awaitDialog(printWindow);
     await delay(FRAME_GRACE_MS);
-    return { dialogRequested: true, dialogReturned };
+    return { channel: "browser", dialogRequested: true, dialogReturned };
   } catch (error) {
     if (dialogStarted) {
       await delay(FRAME_GRACE_MS);
     }
     if (error instanceof LabelPrintError || (error instanceof DOMException && error.name === "AbortError")) throw error;
-    if (signal?.aborted) throw abortError(signal);
+    if (signal?.aborted || controller.signal.aborted) throw abortError(signal ?? controller.signal);
     throw fail("تعذرت طباعة الملصق. إلغاء نافذة الطباعة لا يغيّر المنتج.");
   } finally {
+    stopAccount();
+    if (paired) signal?.removeEventListener("abort", onCallerAbort);
     job?.iframe.remove();
     releaseBrowserPrint(token);
   }

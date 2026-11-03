@@ -7,6 +7,7 @@ import { ensureOwner } from "../../apps/api/src/bootstrap.ts";
 import { applyMigrations } from "@bravos/persistence";
 import { startPostgresCluster, type PostgresCluster } from "@bravos/testkit";
 import { fingerprintAcceptedSalePayload } from "../../packages/sales/src/domain/fingerprint.ts";
+import { formatReceiptReference } from "../../packages/sales/src/domain/receipt-number.ts";
 
 const INTERNAL_ORIGIN = "http://127.0.0.1:5173";
 const PUBLIC_ORIGIN = "http://127.0.0.1:3000";
@@ -62,11 +63,11 @@ test("accepted sale returns a coherent acknowledgement covering both variants an
     employeeDiscountPiasters: 5000,
     lines: [
       { variantId: seed.variantId, quantity: 1, listedUnitPricePiasters: 30000 },
-      { variantId: seed.secondVariantId, quantity: 1, listedUnitPricePiasters: 20000 },
+      { variantId: seed.secondVariantId, quantity: 1, listedUnitPricePiasters: 30000 },
     ],
   });
   expect(accepted.status).toBe(201);
-  expect(accepted.body.finalTotalPiasters).toBe(45000);
+  expect(accepted.body.finalTotalPiasters).toBe(55000);
   const paid = accepted.body.lines
     .map((line: { variantId: string; paidPiasters: number }) => ({
       variantId: line.variantId,
@@ -77,7 +78,7 @@ test("accepted sale returns a coherent acknowledgement covering both variants an
     );
   expect(paid).toEqual(
     [
-      { variantId: seed.secondVariantId, paidPiasters: 17500 },
+      { variantId: seed.secondVariantId, paidPiasters: 27500 },
       { variantId: seed.variantId, paidPiasters: 27500 },
     ].sort((left, right) => (left.variantId < right.variantId ? -1 : 1)),
   );
@@ -116,7 +117,7 @@ test("accepted sale returns a coherent acknowledgement covering both variants an
     pendingOperationIds: [operationId],
     lines: [
       { variantId: seed.variantId, quantity: 1, listedUnitPricePiasters: 30000 },
-      { variantId: seed.secondVariantId, quantity: 1, listedUnitPricePiasters: 20000 },
+      { variantId: seed.secondVariantId, quantity: 1, listedUnitPricePiasters: 30000 },
     ],
   });
   expect(replay.status).toBe(200);
@@ -404,7 +405,7 @@ test("a later cashier snapshot can reconcile a lost acknowledgement without othe
     physicallyCompleted: true,
     employeeDiscountPiasters: 0,
     pendingOperationIds: [operationId],
-    lines: [{ variantId: seed.secondVariantId, quantity: 1, listedUnitPricePiasters: 20000 }],
+    lines: [{ variantId: seed.secondVariantId, quantity: 1, listedUnitPricePiasters: 21000 }],
   });
   expect(betaAck.status).toBe(201);
   expect(betaAck.body.acknowledgement.includedOperationIds).toContain(operationId);
@@ -511,7 +512,7 @@ test("receiving advances the stock clock so a later snapshot is not labelled wit
   expect(qty(after.body, seed.variantId)).toBe(5);
 });
 
-test("disabled cashier cannot accept while manager recovery keeps original 275/175 attribution", async () => {
+test("disabled cashier cannot accept while manager recovery keeps the accepted equal split", async () => {
   const manager = await signIn("owner", "owner-pass-1");
   await api(manager, "POST", "/api/internal/active-branch", { branchId: abshwayId });
   const seed = await seedShirt(manager, { extraColor: true, price: 30000 });
@@ -539,7 +540,7 @@ test("disabled cashier cannot accept while manager recovery keeps original 275/1
     employeeDiscountPiasters: 5000,
     lines: [
       { variantId: seed.variantId, quantity: 1, listedUnitPricePiasters: 30000 },
-      { variantId: seed.secondVariantId, quantity: 1, listedUnitPricePiasters: 20000 },
+      { variantId: seed.secondVariantId, quantity: 1, listedUnitPricePiasters: 30000 },
     ],
   };
   const denied = await api(cashier, "POST", "/api/internal/sales/accepted", payload);
@@ -557,9 +558,9 @@ test("disabled cashier cannot accept while manager recovery keeps original 275/1
   expect(recovered.body.occurredAt).toBe("2026-09-14T09:00:00.000Z");
   expect(recovered.body.recoveredAt).toEqual(expect.any(String));
   expect(recovered.body.recoveredAt).not.toBe(recovered.body.occurredAt);
-  expect(recovered.body.finalTotalPiasters).toBe(45000);
+  expect(recovered.body.finalTotalPiasters).toBe(55000);
   const paid = recovered.body.lines.map((line: { paidPiasters: number }) => line.paidPiasters).sort((a: number, b: number) => a - b);
-  expect(paid).toEqual([17500, 27500]);
+  expect(paid).toEqual([27500, 27500]);
   const lookupBeforeReplay = await api(manager, "GET", `/api/internal/catalog/lookup?code=${encodeURIComponent("TS-001")}`);
   const remaining = lookupBeforeReplay.body.variants.find((variant: { id: string }) => variant.id === seed.variantId)
     .availableQuantity;
@@ -769,6 +770,367 @@ test("revoked cashier cannot start a new snapshot after reconnect", async () => 
   expect(snapshot.status).toBe(403);
 });
 
+test("snapshot receipt registration is optional, idempotent, and does not use the POS reference sequence", async () => {
+  const manager = await signIn("owner", "owner-pass-1");
+  await api(manager, "POST", "/api/internal/active-branch", { branchId: abshwayId });
+  const deviceId = crypto.randomUUID();
+  const legacy = await api(manager, "POST", "/api/internal/sales/pos-snapshots", { deviceId });
+  expect(legacy.status).toBe(201);
+  expect(legacy.body.receiptRegistration).toBeUndefined();
+
+  const invalid = await api(manager, "POST", "/api/internal/sales/pos-snapshots", {
+    deviceId,
+    receiptRegistrationId: "not-a-uuid",
+  });
+  expect(invalid.status).toBe(400);
+
+  const registrationId = crypto.randomUUID();
+  const first = await api(manager, "POST", "/api/internal/sales/pos-snapshots", { deviceId, receiptRegistrationId: registrationId });
+  expect(first.status).toBe(201);
+  expect(first.body.receiptRegistration).toEqual({ registrationId, deviceId, prefix: "1" });
+
+  const retry = await api(manager, "POST", "/api/internal/sales/pos-snapshots", { deviceId, receiptRegistrationId: registrationId });
+  expect(retry.status).toBe(201);
+  expect(retry.body.receiptRegistration).toEqual(first.body.receiptRegistration);
+  expect(retry.body.snapshotId).not.toBe(first.body.snapshotId);
+
+  const caseRetry = await api(manager, "POST", "/api/internal/sales/pos-snapshots", {
+    deviceId: deviceId.toUpperCase(),
+    receiptRegistrationId: registrationId.toUpperCase(),
+  });
+  expect(caseRetry.status).toBe(201);
+  expect(caseRetry.body.receiptRegistration).toEqual({ registrationId, deviceId, prefix: "1" });
+
+  const mismatch = await api(manager, "POST", "/api/internal/sales/pos-snapshots", {
+    deviceId: crypto.randomUUID(),
+    receiptRegistrationId: registrationId,
+  });
+  expect(mismatch.status).toBe(400);
+  const afterMismatch = await built.pool.query<{ last_value: string; is_called: boolean }>(
+    "SELECT last_value::text, is_called FROM sales_receipt_prefix_seq",
+  );
+  expect(afterMismatch.rows[0]).toEqual({ last_value: "1", is_called: true });
+
+  const otherDeviceId = crypto.randomUUID();
+  const otherRegistrationId = crypto.randomUUID();
+  const second = await api(manager, "POST", "/api/internal/sales/pos-snapshots", {
+    deviceId: otherDeviceId,
+    receiptRegistrationId: otherRegistrationId,
+  });
+  expect(second.status).toBe(201);
+  expect(second.body.receiptRegistration).toEqual({
+    registrationId: otherRegistrationId,
+    deviceId: otherDeviceId,
+    prefix: "2",
+  });
+
+  const rows = await built.pool.query<{ id: string; device_id: string; prefix: string }>(
+    "SELECT id, device_id, prefix FROM sales_receipt_registration ORDER BY prefix::bigint",
+  );
+  expect(rows.rows).toEqual([
+    { id: registrationId, device_id: deviceId, prefix: "1" },
+    { id: otherRegistrationId, device_id: otherDeviceId, prefix: "2" },
+  ]);
+  const posSequence = await built.pool.query<{ is_called: boolean }>(
+    "SELECT is_called FROM sales_sale_reference_number_seq",
+  );
+  expect(posSequence.rows[0]?.is_called).toBe(false);
+});
+
+test("concurrent receipt registration ids that differ only by case take one prefix", async () => {
+  const manager = await signIn("owner", "owner-pass-1");
+  await api(manager, "POST", "/api/internal/active-branch", { branchId: abshwayId });
+  const deviceId = crypto.randomUUID();
+  const registrationId = crypto.randomUUID();
+  const [left, right] = await Promise.all([
+    api(manager, "POST", "/api/internal/sales/pos-snapshots", {
+      deviceId,
+      receiptRegistrationId: registrationId.toUpperCase(),
+    }),
+    api(manager, "POST", "/api/internal/sales/pos-snapshots", {
+      deviceId: deviceId.toUpperCase(),
+      receiptRegistrationId: registrationId,
+    }),
+  ]);
+  expect(left.status).toBe(201);
+  expect(right.status).toBe(201);
+  expect(left.body.receiptRegistration).toEqual({ registrationId, deviceId, prefix: "1" });
+  expect(right.body.receiptRegistration).toEqual(left.body.receiptRegistration);
+  const rows = await built.pool.query<{ id: string; prefix: string }>(
+    "SELECT id, prefix FROM sales_receipt_registration",
+  );
+  expect(rows.rows).toEqual([{ id: registrationId, prefix: "1" }]);
+  const sequence = await built.pool.query<{ last_value: string; is_called: boolean }>(
+    "SELECT last_value::text, is_called FROM sales_receipt_prefix_seq",
+  );
+  expect(sequence.rows[0]).toEqual({ last_value: "1", is_called: true });
+});
+
+test("receipt claims stay staff metadata and a paid sale survives unknown, colliding, and oversized numbers", async () => {
+  const manager = await signIn("owner", "owner-pass-1");
+  await api(manager, "POST", "/api/internal/active-branch", { branchId: abshwayId });
+  const seed = await seedShirt(manager, { price: 25000 });
+  await receive(manager, seed.variantId, 10, 8000);
+  const cashier = await provisionCashier(manager, "sync.receipt", "كاشير الإيصال", "staff-pass-81");
+  const deviceId = crypto.randomUUID();
+  const registrationId = crypto.randomUUID();
+  const snapshot = await api(cashier, "POST", "/api/internal/sales/pos-snapshots", { deviceId, receiptRegistrationId: registrationId });
+  expect(snapshot.status).toBe(201);
+  const secondRegistrationId = crypto.randomUUID();
+  const secondSnapshot = await api(cashier, "POST", "/api/internal/sales/pos-snapshots", {
+    deviceId,
+    receiptRegistrationId: secondRegistrationId,
+  });
+  expect(secondSnapshot.body.receiptRegistration.prefix).toBe("2");
+
+  const legacy = await api(cashier, "POST", "/api/internal/sales", {
+    saleId: crypto.randomUUID(),
+    operationId: crypto.randomUUID(),
+    physicallyCompleted: true,
+    occurredAt: "2026-09-14T09:00:00.000Z",
+    employeeDiscountPiasters: 0,
+    lines: [{ variantId: seed.variantId, quantity: 1 }],
+  });
+  expect(legacy.status).toBe(201);
+  expect(legacy.body.receiptReference).toBeUndefined();
+  expect(legacy.body.receiptNumberingConflict).toBeUndefined();
+  expect(legacy.body.reference).toMatch(/^POS-/);
+
+  const assignedClaim = receiptClaim(registrationId, deviceId, "1", "1");
+  const saleId = crypto.randomUUID();
+  const operationId = crypto.randomUUID();
+  const accepted = {
+    saleId,
+    operationId,
+    deviceId,
+    snapshotId: snapshot.body.snapshotId,
+    occurredAt: "2026-09-14T09:01:00.000Z",
+    physicallyCompleted: true,
+    employeeDiscountPiasters: 0,
+    lines: [{ variantId: seed.variantId, quantity: 1, listedUnitPricePiasters: 25000 }],
+    receiptClaim: assignedClaim,
+  };
+  const created = await api(cashier, "POST", "/api/internal/sales/accepted", accepted);
+  expect(created.status).toBe(201);
+  expect(created.body.reference).toMatch(/^POS-/);
+  expect(created.body.receiptReference).toBe("BRV-001-000001");
+  expect(created.body.receiptNumberingConflict).toBeUndefined();
+  expect(await stockQuantity(seed.variantId)).toBe("8");
+
+  const replay = await api(cashier, "POST", "/api/internal/sales/accepted", {
+    ...accepted,
+    receiptClaim: receiptClaim(registrationId.toUpperCase(), deviceId.toUpperCase(), "1", "1"),
+  });
+  expect(replay.status).toBe(200);
+  expect(replay.body.receiptReference).toBe("BRV-001-000001");
+  expect(replay.body.receiptNumberingConflict).toBeUndefined();
+  expect(await stockQuantity(seed.variantId)).toBe("8");
+
+  const disagreed = await api(cashier, "POST", "/api/internal/sales/accepted", {
+    ...accepted,
+    receiptClaim: receiptClaim(registrationId, deviceId, "1", "2"),
+  });
+  expect(disagreed.status).toBe(200);
+  expect(disagreed.body.receiptReference).toBe("BRV-001-000001");
+  expect(disagreed.body.receiptNumberingConflict).toBe(true);
+  expect(await stockQuantity(seed.variantId)).toBe("8");
+
+  const collision = await api(cashier, "POST", "/api/internal/sales/accepted", {
+    ...accepted,
+    saleId: crypto.randomUUID(),
+    operationId: crypto.randomUUID(),
+    occurredAt: "2026-09-14T09:02:00.000Z",
+  });
+  expect(collision.status).toBe(201);
+  expect(collision.body.receiptReference).toBe("BRV-001-000001");
+  expect(collision.body.receiptNumberingConflict).toBe(true);
+  const reserved = await api(cashier, "GET", `/api/internal/sales/${saleId}`);
+  expect(reserved.body.receiptReference).toBe("BRV-001-000001");
+  expect(await stockQuantity(seed.variantId)).toBe("7");
+
+  const longSequence = "9".repeat(80);
+  const longClaim = receiptClaim(crypto.randomUUID(), deviceId, "1", longSequence);
+  const unknown = await api(cashier, "POST", "/api/internal/sales", {
+    saleId: crypto.randomUUID(),
+    operationId: crypto.randomUUID(),
+    deviceId,
+    physicallyCompleted: true,
+    occurredAt: "2026-09-14T09:03:00.000Z",
+    employeeDiscountPiasters: 0,
+    lines: [{ variantId: seed.variantId, quantity: 1 }],
+    receiptClaim: longClaim,
+  });
+  expect(unknown.status).toBe(201);
+  expect(unknown.body.receiptReference).toBe(longClaim.reference);
+  expect(unknown.body.receiptNumberingConflict).toBe(true);
+  expect(await stockQuantity(seed.variantId)).toBe("6");
+
+  const malformed = await api(cashier, "POST", "/api/internal/sales", {
+    saleId: crypto.randomUUID(),
+    operationId: crypto.randomUUID(),
+    deviceId,
+    physicallyCompleted: true,
+    occurredAt: "2026-09-14T09:04:00.000Z",
+    employeeDiscountPiasters: 0,
+    lines: [{ variantId: seed.variantId, quantity: 1 }],
+    receiptClaim: { reference: "desk-copy" },
+  });
+  expect(malformed.status).toBe(201);
+  expect(malformed.body.receiptReference).toBe("desk-copy");
+  expect(malformed.body.receiptNumberingConflict).toBe(true);
+
+  const btreeSaleId = crypto.randomUUID();
+  const btreeOperationId = crypto.randomUUID();
+  const btreeClaim = receiptClaim(registrationId, deviceId, "1", variedDecimalSequence(7000, 0x5a17));
+  const beforeBtree = await stockQuantity(seed.variantId);
+  const btreeLimited = await api(cashier, "POST", "/api/internal/sales/accepted", {
+    ...accepted,
+    saleId: btreeSaleId,
+    operationId: btreeOperationId,
+    occurredAt: "2026-09-14T09:05:00.000Z",
+    receiptClaim: btreeClaim,
+  });
+  expect(btreeLimited.status).toBe(201);
+  expect(btreeLimited.body.receiptReference).toBe(btreeClaim.reference);
+  expect(btreeLimited.body.receiptNumberingConflict).toBe(true);
+  expect(await stockQuantity(seed.variantId)).toBe(String(Number(beforeBtree) - 1));
+  await expectPreservedConflictSale(btreeSaleId, btreeOperationId, btreeClaim.reference, snapshot.body.snapshotId, seed.variantId);
+
+  const tupleSaleId = crypto.randomUUID();
+  const tupleOperationId = crypto.randomUUID();
+  const tupleClaim = receiptClaim(registrationId, deviceId, "1", variedDecimalSequence(25000, 0x25000));
+  const beforeTuple = await stockQuantity(seed.variantId);
+  const tupleLimited = await api(cashier, "POST", "/api/internal/sales/accepted", {
+    ...accepted,
+    saleId: tupleSaleId,
+    operationId: tupleOperationId,
+    occurredAt: "2026-09-14T09:05:30.000Z",
+    receiptClaim: tupleClaim,
+  });
+  expect(tupleLimited.status).toBe(201);
+  expect(tupleLimited.body.receiptReference).toBe(tupleClaim.reference);
+  expect(tupleLimited.body.receiptNumberingConflict).toBe(true);
+  expect(await stockQuantity(seed.variantId)).toBe(String(Number(beforeTuple) - 1));
+  await expectPreservedConflictSale(tupleSaleId, tupleOperationId, tupleClaim.reference, snapshot.body.snapshotId, seed.variantId);
+  expect(await stockQuantity(seed.variantId)).toBe("3");
+
+  const connected = await api(cashier, "POST", "/api/internal/sales", {
+    saleId: crypto.randomUUID(),
+    operationId: crypto.randomUUID(),
+    deviceId,
+    physicallyCompleted: true,
+    occurredAt: "2026-09-14T09:06:00.000Z",
+    employeeDiscountPiasters: 0,
+    lines: [{ variantId: seed.variantId, quantity: 1 }],
+    receiptClaim: receiptClaim(secondRegistrationId, deviceId, "2", "1"),
+  });
+  expect(connected.status).toBe(201);
+  expect(connected.body.receiptReference).toBe("BRV-002-000001");
+  expect(connected.body.receiptNumberingConflict).toBeUndefined();
+
+  const preparedId = crypto.randomUUID();
+  const preparedOperationId = crypto.randomUUID();
+  const prepared = await api(cashier, "POST", "/api/internal/sales/prepare", {
+    saleId: preparedId,
+    operationId: preparedOperationId,
+    occurredAt: "2026-09-14T09:07:00.000Z",
+    employeeDiscountPiasters: 0,
+    lines: [{ variantId: seed.variantId, quantity: 1 }],
+  });
+  expect(prepared.status).toBe(201);
+  const recovered = await api(manager, "POST", "/api/internal/sales/recover", {
+    saleId: preparedId,
+    operationId: preparedOperationId,
+    deviceId,
+    physicallyCompleted: true,
+    occurredAt: "2026-09-14T09:07:00.000Z",
+    employeeDiscountPiasters: 0,
+    lines: [{ variantId: seed.variantId, quantity: 1 }],
+    receiptClaim: receiptClaim(secondRegistrationId, deviceId, "2", "2"),
+  });
+  expect(recovered.status).toBe(201);
+  expect(recovered.body.receiptReference).toBe("BRV-002-000002");
+  expect(recovered.body.receiptNumberingConflict).toBeUndefined();
+
+  const acceptedRecovered = await api(manager, "POST", "/api/internal/sales/recover", {
+    saleId: crypto.randomUUID(),
+    operationId: crypto.randomUUID(),
+    deviceId,
+    snapshotId: snapshot.body.snapshotId,
+    occurredAt: "2026-09-14T09:08:00.000Z",
+    physicallyCompleted: true,
+    employeeDiscountPiasters: 0,
+    lines: [{ variantId: seed.variantId, quantity: 1, listedUnitPricePiasters: 25000 }],
+    receiptClaim: receiptClaim(registrationId, deviceId, "1", "3"),
+  });
+  expect(acceptedRecovered.status).toBe(201);
+  expect(acceptedRecovered.body.receiptReference).toBe("BRV-001-000003");
+  expect(acceptedRecovered.body.receiptNumberingConflict).toBeUndefined();
+  expect(await stockQuantity(seed.variantId)).toBe("0");
+});
+
+function receiptClaim(registrationId: string, deviceId: string, prefix: string, sequence: string) {
+  return { registrationId, deviceId, prefix, sequence, reference: formatReceiptReference(prefix, sequence) };
+}
+
+function variedDecimalSequence(length: number, seed: number): string {
+  let state = seed >>> 0;
+  let digits = "";
+  while (digits.length < length) {
+    state = (Math.imul(1664525, state) + 1013904223) >>> 0;
+    digits += String(state % 10);
+  }
+  return digits.startsWith("0") ? `1${digits.slice(1)}` : digits;
+}
+
+async function expectPreservedConflictSale(
+  saleId: string,
+  operationId: string,
+  reference: string,
+  snapshotId: string,
+  variantId: string,
+) {
+  const stored = await built.pool.query<{
+    sales: string;
+    payload_fingerprint: string;
+    reference: string;
+    status: string;
+  }>(
+    `SELECT COUNT(*)::text AS sales,
+            MAX(payload_fingerprint) AS payload_fingerprint,
+            MAX(receipt_identity->>'reference') AS reference,
+            MAX(receipt_identity->>'status') AS status
+     FROM sales_sale
+     WHERE id = $1 AND operation_id = $2`,
+    [saleId, operationId],
+  );
+  const row = stored.rows[0];
+  expect(row?.sales).toBe("1");
+  expect(row?.status).toBe("conflict");
+  expect(row?.reference).toBe(reference);
+  expect(row?.payload_fingerprint).toBe(fingerprintAcceptedSalePayload({
+    saleId,
+    snapshotId,
+    customerName: null,
+    customerPhone: null,
+    couponCode: null,
+    employeeDiscountPiasters: 0,
+    discountReason: null,
+    lines: [{ variantId, quantity: 1 }],
+  }));
+}
+
+async function stockQuantity(variantId: string): Promise<string> {
+  const result = await built.pool.query<{ quantity: string }>(
+    `SELECT COALESCE(SUM(balance.remaining_quantity), 0)::text AS quantity
+     FROM inventory_batch_balance balance
+     JOIN inventory_batch batch ON batch.id = balance.batch_id
+     WHERE batch.variant_id = $1`,
+    [variantId],
+  );
+  return result.rows[0]?.quantity ?? "0";
+}
+
 async function startApp() {
   if (built) {
     await built.close();
@@ -850,7 +1212,7 @@ async function seedShirt(manager: CookieSession, options?: { extraColor?: boolea
   const variants = [{ sizeId: size.body.id, colorId: color.body.id, sellingPricePiastersOverride: null as number | null }];
   if (options?.extraColor) {
     const white = await api(manager, "POST", "/api/internal/catalog/colors", { nameAr: "أبيض" });
-    variants.push({ sizeId: size.body.id, colorId: white.body.id, sellingPricePiastersOverride: 20000 });
+    variants.push({ sizeId: size.body.id, colorId: white.body.id, sellingPricePiastersOverride: null });
   }
   const created = await api(manager, "POST", "/api/internal/catalog/products", {
     code: "TS-001",

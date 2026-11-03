@@ -5,11 +5,16 @@ const internal = "http://127.0.0.1:5174";
 const contactPhone = "01017412287";
 const shots = ".scratch/pos-hardware-20261026/screenshots";
 
-type SaleLine = { variantId: string; paidPiasters: number; variant: { product: { nameAr: string; code: string } } };
+type SaleLine = { variantId: string; paidPiasters: number; originalPiasters: number; variant: { product: { nameAr: string; code: string } } };
 type Sale = {
   id: string;
+  reference: string | null;
+  receiptReference?: string | null;
+  operationId: string;
   customerName: string | null;
   customerPhone: string | null;
+  soldByDisplayName: string;
+  soldByStaffId: string;
   finalTotalPiasters: number;
   lines: SaleLine[];
 };
@@ -139,11 +144,12 @@ test("complete without printing persists one sale and leaves reprint available",
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByRole("button", { name: "قبول الأسعار", exact: true }).click();
-  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await page.getByTestId("complete-sale").click();
 
   await expect(page.getByRole("status").filter({ hasText: "تم حفظ البيع" })).toBeVisible();
   await expect(page.getByTestId("sale-details")).toBeVisible();
+  await expect(page.getByTestId("sale-details")).toContainText(/رقم الإيصال: BRV-\d+-\d+/);
+  await expect(page.getByTestId("sale-details")).not.toContainText("عملية محلية");
   await expect(page.getByTestId("reprint-receipt")).toBeVisible();
   await expect(page.getByTestId("complete-sale-print")).toBeDisabled();
   expect(await page.evaluate(() => (window as Window & { __receiptPrintCalls?: number }).__receiptPrintCalls ?? 0)).toBe(0);
@@ -156,6 +162,8 @@ test("complete without printing persists one sale and leaves reprint available",
 
 test("receipt preview renders the completed sale at 58mm and 80mm", async ({ page }) => {
   const data = await seed(page);
+  const customerName = `زبون <img src=x onerror="alert(1)"><script>steal()</script> ${data.tag}`;
+  const customerPhone = "01099887766";
   await openLookup(page);
   await lookupCode(page, data.product.code);
   await openLookupLists(page);
@@ -163,15 +171,18 @@ test("receipt preview renders the completed sale at 58mm and 80mm", async ({ pag
   await page.locator("#lookupColor").selectOption(data.color.id);
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
+  await checkout.getByLabel("اسم الزبون (اختياري)").fill(customerName);
+  await checkout.getByLabel("هاتف الزبون (اختياري)").fill(customerPhone);
   await checkout.getByRole("button", { name: "قبول الأسعار", exact: true }).click();
-  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await page.getByTestId("complete-sale").click();
   await expect(page.getByTestId("sale-details")).toBeVisible();
   await expect.poll(async () => (await salesForVariant(page, data.variant.id)).length).toBe(1);
   const sale = (await salesForVariant(page, data.variant.id)).at(-1)!;
-  expect(sale.customerName).toBeNull();
-  expect(sale.customerPhone).toBeNull();
+  expect(sale.customerName).toBe(customerName);
+  expect(sale.customerPhone).toBe(customerPhone);
   expect(sale.lines[0]?.variant.product.nameAr).toBe(data.nameAr);
+  expect(sale.lines[0]?.variant.product.code).toBe(data.product.code);
+  expect(sale.soldByDisplayName.length).toBeGreaterThan(0);
 
   for (const paperWidthMm of [58, 80] as const) {
     await page.evaluate(async ({ sale, paperWidthMm, contactPhone }) => {
@@ -188,19 +199,108 @@ test("receipt preview renders the completed sale at 58mm and 80mm", async ({ pag
     }, { sale, paperWidthMm, contactPhone });
 
     const frame = page.frameLocator('iframe[title="معاينة الإيصال"]');
+    const logo = frame.locator('[data-receipt-logo="official"] svg.logo');
+    await expect(logo).toHaveCount(1);
+    await expect(logo).toHaveAttribute("viewBox", "0 0 923 389");
+    await expect(logo).toHaveAttribute("aria-hidden", "true");
+    await expect(frame.getByRole("heading", { name: "BRAVOS" })).toHaveCount(1);
+    await expect(frame.getByText("إيصال بيع", { exact: true })).toBeVisible();
     await expect(frame.getByText(data.nameAr, { exact: false })).toBeVisible();
     await expect(frame.locator("body")).toContainText("120");
     await expect(frame.locator("body")).toContainText(contactPhone);
     await expect(frame.locator("body")).toContainText("BRAVOS");
-    await expect(frame.locator('b[data-injected="pos-hardware"], img, script')).toHaveCount(0);
+    await expect(frame.locator("body")).toContainText(data.product.code);
+    await expect(frame.locator("body")).toContainText(customerName);
+    await expect(frame.locator("body")).toContainText(customerPhone);
+    await expect(frame.locator("body")).toContainText(sale.soldByDisplayName);
+    const paperNumber = sale.receiptReference || sale.reference;
+    if (paperNumber) {
+      await expect(frame.locator("body")).toContainText(paperNumber);
+    } else {
+      await expect(frame.locator("body")).toContainText("في انتظار رقم الإيصال");
+    }
+    if (sale.receiptReference && sale.reference && sale.receiptReference !== sale.reference) {
+      await expect(frame.locator("body")).not.toContainText(sale.reference);
+    }
+    await expect(frame.locator("body")).not.toContainText(sale.operationId);
+    await expect(frame.locator("body")).not.toContainText("عملية محلية");
+    await expect(frame.locator("body")).toContainText("رقم الإيصال");
+    await expect(frame.locator("body")).not.toContainText("رقم الطلب");
+    await expect(frame.locator("body")).toContainText("طريقة الدفع");
+    await expect(frame.locator("body")).toContainText("شكرًا لتسوقكم");
+    await expect(frame.locator("img, script")).toHaveCount(0);
+    await expect(frame.locator('b[data-injected="pos-hardware"]')).toHaveCount(0);
     await expect(frame.getByRole("link", { name: "تغيير الفرع" })).toHaveCount(0);
     await expect(frame.getByRole("link", { name: "تسجيل الخروج" })).toHaveCount(0);
     await expect(frame.locator("body")).not.toContainText("تكلفة");
     await expect(frame.locator("body")).not.toContainText("unitCostPiasters");
+    await expect(frame.locator("body")).not.toContainText(sale.soldByStaffId);
+    await expect(frame.locator("body")).not.toContainText("ج.م.");
+    await expect(frame.locator("body")).not.toContainText("EGP");
+    await expect(frame.locator(".qty, .figures").first()).toHaveAttribute("dir", "ltr");
+    await expect(frame.locator("html")).toHaveAttribute("data-receipt-page-width-mm", paperWidthMm === 80 ? "72" : "48");
+    const pageHeightMm = Number(await frame.locator("html").getAttribute("data-receipt-page-height-mm"));
+    expect(pageHeightMm).toBeGreaterThan(20);
+    expect(pageHeightMm).toBeLessThanOrEqual(300);
+    expect(pageHeightMm).toBeLessThan(297);
+    const pageCss = await frame.locator("#receipt-page-size").textContent();
+    expect(pageCss).toMatch(new RegExp(`size:\\s*${paperWidthMm === 80 ? 72 : 48}mm\\s+${pageHeightMm}mm`));
+    expect(pageCss).not.toContain("auto");
     await frame.locator("body").evaluate(async (node) => { await node.ownerDocument.fonts.ready; });
     expect(await frame.locator(".receipt").evaluate((node) => node.scrollWidth <= node.clientWidth + 1)).toBe(true);
     await frame.locator(".receipt").screenshot({ path: `${shots}/receipt-${paperWidthMm}.png` });
   }
+
+  const longCustomerName = `زبون معاينة طويلة Mixed-Customer-Name ${"أ".repeat(48)} ${data.tag}`;
+  const unsyncedPreview = { ...sale, reference: null, receiptReference: null, customerName: longCustomerName };
+  await page.evaluate(async ({ sale, contactPhone }) => {
+    const hostId = "receipt-preview-host";
+    let host = document.getElementById(hostId);
+    if (!host) {
+      host = document.createElement("div");
+      host.id = hostId;
+      document.body.appendChild(host);
+    }
+    host.replaceChildren();
+    const receipts = await import("/src/receipts/index.ts");
+    await receipts.mountReceiptPreview(host, sale, { paperWidthMm: 58, contactPhone });
+  }, { sale: unsyncedPreview, contactPhone });
+
+  const narrow = page.frameLocator('iframe[title="معاينة الإيصال"]');
+  await expect(narrow.locator("body")).toContainText("في انتظار رقم الإيصال");
+  await expect(narrow.locator("body")).not.toContainText(sale.operationId);
+  await expect(narrow.locator("body")).not.toContainText("عملية محلية");
+  await expect(narrow.locator("body")).toContainText(longCustomerName);
+  expect(unsyncedPreview.reference).toBeNull();
+  expect(unsyncedPreview.receiptReference).toBeNull();
+  expect(await narrow.locator(".receipt").evaluate((node) => node.scrollWidth <= node.clientWidth + 1)).toBe(true);
+  for (const labelText of ["رقم الإيصال", "العميل"]) {
+    const metrics = await narrow.locator(".detail .label").filter({ hasText: labelText }).evaluate((node) => {
+      const lineHeight = Number.parseFloat(getComputedStyle(node).lineHeight);
+      return { height: node.getBoundingClientRect().height, lineHeight };
+    });
+    expect(metrics.lineHeight, labelText).toBeGreaterThan(0);
+    expect(metrics.height, labelText).toBeLessThanOrEqual(metrics.lineHeight + 1);
+  }
+
+  const preparedPreview = { ...sale, reference: "POS-000123", receiptReference: null };
+  await page.evaluate(async ({ sale, contactPhone }) => {
+    const hostId = "receipt-preview-host";
+    let host = document.getElementById(hostId);
+    if (!host) {
+      host = document.createElement("div");
+      host.id = hostId;
+      document.body.appendChild(host);
+    }
+    host.replaceChildren();
+    const receipts = await import("/src/receipts/index.ts");
+    await receipts.mountReceiptPreview(host, sale, { paperWidthMm: 80, contactPhone });
+  }, { sale: preparedPreview, contactPhone });
+  const preparedFrame = page.frameLocator('iframe[title="معاينة الإيصال"]');
+  await expect(preparedFrame.locator("body")).toContainText("رقم الإيصال");
+  await expect(preparedFrame.locator("body")).toContainText("POS-000123");
+  await expect(preparedFrame.locator("body")).not.toContainText(sale.operationId);
+  await expect(preparedFrame.locator("body")).not.toContainText("عملية محلية");
 });
 
 test("stubbed offline receipt print runs once per request and does not sell again", async ({ page, context }) => {
@@ -218,7 +318,6 @@ test("stubbed offline receipt print runs once per request and does not sell agai
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByRole("button", { name: "قبول الأسعار", exact: true }).click();
   await expect(page.getByTestId("pos-product-tile").filter({ hasText: data.product.code })).toBeVisible();
-  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await page.screenshot({ path: `${shots}/pos-completion-options.png`, fullPage: true });
   if (process.env.BRAVOS_HW_PRODUCTION === "1") {
     await page.evaluate(async () => {
@@ -233,6 +332,10 @@ test("stubbed offline receipt print runs once per request and does not sell agai
   await context.setOffline(true);
   await page.getByTestId("complete-sale-print").click();
   await expect(page.getByTestId("sale-details")).toBeVisible();
+  await expect(page.getByTestId("sale-details")).toContainText(/رقم الإيصال: BRV-\d+-\d+/);
+  await expect(page.getByTestId("sale-details")).not.toContainText("عملية محلية");
+  const printedReceipt = (await page.getByTestId("sale-details").innerText()).match(/BRV-\d+-\d+/)?.[0];
+  expect(printedReceipt).toBeTruthy();
   await expect.poll(() => page.evaluate(() => (window as Window & { __receiptPrintCalls?: number }).__receiptPrintCalls ?? 0)).toBe(1);
   await expect(page.getByTestId("pos-receipt-status")).toContainText("تم طلب طباعة الإيصال");
   await context.setOffline(false);
@@ -242,6 +345,7 @@ test("stubbed offline receipt print runs once per request and does not sell agai
 
   await page.getByTestId("reprint-receipt").click();
   await expect.poll(() => page.evaluate(() => (window as Window & { __receiptPrintCalls?: number }).__receiptPrintCalls ?? 0)).toBe(2);
+  await expect(page.getByTestId("sale-details")).toContainText(`رقم الإيصال: ${printedReceipt}`);
   expect(await salesForVariant(page, data.variant.id)).toHaveLength(beforeSales.length + 1);
   expect(await available(page, data.product.code, data.variant.id)).toBe(beforeStock - 1);
 
@@ -270,7 +374,6 @@ test("complete and print shows a local save error and does not sell when sales s
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByRole("button", { name: "قبول الأسعار", exact: true }).click();
-  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
 
   await page.evaluate(() => {
     const proto = IDBObjectStore.prototype;
@@ -352,7 +455,6 @@ test("reprint cancelled by the same staff account during font preparation does n
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByRole("button", { name: "قبول الأسعار", exact: true }).click();
-  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await page.getByTestId("complete-sale").click();
   await expect(page.getByTestId("sale-details")).toBeVisible();
   await expect.poll(async () => (await salesForVariant(page, data.variant.id)).length).toBe(beforeSales.length + 1);

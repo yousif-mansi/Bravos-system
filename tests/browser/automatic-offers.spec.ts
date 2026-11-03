@@ -87,7 +87,6 @@ test("manager creates an offer and the connected cashier keeps its accepted valu
   }
 
   await expect(quote.getByTestId("automatic-offer-breakdown")).toContainText("50 ج.م.");
-  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
   const completed = page.getByTestId("sale-details");
   await expect(completed).toContainText("خمسون جنيهاً للمتصفح — 50 ج.م.");

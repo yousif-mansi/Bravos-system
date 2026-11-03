@@ -11,7 +11,7 @@ function mm(value: number): string {
 }
 
 export function labelPrintStyles(layout: LabelLayout): string {
-  const { settings, barcodeWidthMm, barHeightMm, pagePaddingMm, codeFontMm, nameFontMm } = layout;
+  const { settings, barcodeWidthMm, barHeightMm, pagePaddingMm, codeFontMm, nameFontMm, lineHeight } = layout;
   return `
 @page { size: ${settings.widthMm}mm ${settings.heightMm}mm; margin: 0; }
 html, body { margin: 0; padding: 0; background: #fff; color: #000; }
@@ -20,12 +20,15 @@ body { font-family: Cairo, sans-serif; }
   box-sizing: border-box;
   width: ${mm(settings.widthMm)};
   height: ${mm(settings.heightMm)};
+  margin-left: auto;
+  margin-right: auto;
   padding: ${mm(pagePaddingMm)};
   background: #fff;
   color: #000;
   display: flex;
   flex-direction: column;
-  align-items: stretch;
+  align-items: center;
+  justify-content: center;
   overflow: visible;
   break-inside: avoid;
   page-break-inside: avoid;
@@ -35,14 +38,15 @@ body { font-family: Cairo, sans-serif; }
 .label:last-child { break-after: auto; page-break-after: auto; }
 .bars {
   flex: 0 0 auto;
+  align-self: center;
   width: ${mm(barcodeWidthMm)};
   height: ${mm(barHeightMm)};
-  margin: 0 auto;
   background: #fff;
 }
-.bars svg { display: block; width: 100%; height: 100%; }
+.bars svg { display: block; width: 100%; height: 100%; shape-rendering: crispEdges; }
 .code, .name {
   flex: 0 0 auto;
+  align-self: stretch;
   margin: 0;
   text-align: center;
   unicode-bidi: isolate;
@@ -52,13 +56,13 @@ body { font-family: Cairo, sans-serif; }
 .code {
   margin-top: ${mm(TEXT_GAP_MM)};
   font-size: ${mm(codeFontMm)};
-  line-height: 1.35;
+  line-height: ${lineHeight};
   direction: ltr;
 }
 .name {
   margin-top: ${mm(NAME_GAP_MM)};
   font-size: ${mm(nameFontMm)};
-  line-height: 1.35;
+  line-height: ${lineHeight};
 }
 `;
 }
@@ -101,6 +105,8 @@ function drawBars(doc: Document, modules: string, quietZoneModules: number): SVG
 function appendLabel(doc: Document, layout: LabelLayout): void {
   const section = doc.createElement("section");
   section.className = "label";
+  section.dataset.moduleDots = String(layout.moduleDots);
+  section.dataset.labelProfile = layout.profile;
 
   const bars = doc.createElement("div");
   bars.className = "bars";

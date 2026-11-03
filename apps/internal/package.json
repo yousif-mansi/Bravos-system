@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@bravos/contracts": "workspace:*",
+    "@bravos/print-contracts": "workspace:*",
     "@bravos/sales": "workspace:*",
     "jsbarcode": "3.12.3",
     "react": "19.2.8",

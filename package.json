@@ -22,6 +22,8 @@
     "dev:api": "pnpm --filter @bravos/api dev",
     "dev:internal": "pnpm --filter @bravos/internal dev",
     "dev:storefront": "pnpm --filter @bravos/storefront dev",
+    "dev:print-connector": "pnpm --filter @bravos/print-connector start",
+    "print:reset-pairing": "pnpm --filter @bravos/print-connector start -- --reset-pairing",
     "dev": "pnpm --parallel --filter @bravos/api --filter @bravos/internal --filter @bravos/storefront dev"
   },
   "devDependencies": {

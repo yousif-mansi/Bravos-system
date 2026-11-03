@@ -1,11 +1,15 @@
 import type {
   BranchDto,
+  CustomerHistoryDto,
+  CustomerListDto,
+  CustomerSummaryDto,
   ManagerSaleDto,
   PosPriceSnapshotDto,
   SaleAcknowledgementDto,
   SaleDto,
   SaleLineDto,
   SalePaymentDto,
+  VariantIdentityDto,
 } from "@bravos/contracts";
 import {
   ForbiddenError,
@@ -23,10 +27,13 @@ import {
   type InventoryTransaction,
 } from "@bravos/inventory";
 import { evaluateAutomaticOffers, evaluateCoupon } from "@bravos/pricing";
-import { assertMergedSaleQuantities, mergeVariantQuantities, priceSaleLines } from "../domain/discount.ts";
+import { cairoPeriod } from "../domain/cairo-period.ts";
+import { customerSearchDigits, normalizeCustomerPhone } from "../domain/customer-phone.ts";
+import { assertMergedSaleQuantities, mergeVariantQuantities, priceSaleLines, stampAcceptedFloors } from "../domain/discount.ts";
 import { SaleRestoreGenerationChangedError, SaleRetainedForRestoreError, SalesValidationError } from "../domain/errors.ts";
 import { addMoney, assertSafeMoney, subtractMoney } from "../domain/money.ts";
 import { cashPayment, parsePaymentInput, paymentMatches, validatePayment } from "../domain/payment.ts";
+import { parseReceiptClaim, type ParsedReceiptClaim } from "../domain/receipt-number.ts";
 import {
   fingerprintAcceptedSalePayload,
   fingerprintSalePayload,
@@ -34,7 +41,9 @@ import {
 } from "../domain/fingerprint.ts";
 import type {
   CashierCatalogReader,
+  CustomerDirectory,
   DeferredCompletedSalePort,
+  PaidOnlinePurchaseReader,
   CompleteSaleResult,
   AutomaticPricingPort,
   ListedPriceReader,
@@ -69,6 +78,7 @@ const COMPLETE_KEYS = new Set([
   "pendingOperationIds",
   "restoreGeneration",
   "deviceId",
+  "receiptClaim",
 ]);
 const ACCEPTED_KEYS = new Set([
   ...COMPLETE_KEYS,
@@ -78,7 +88,7 @@ const ACCEPTED_KEYS = new Set([
   "pricingOccurredAt",
 ]);
 const RECOVER_KEYS = new Set([...ACCEPTED_KEYS]);
-const SNAPSHOT_KEYS = new Set(["deviceId", "pendingOperationIds"]);
+const SNAPSHOT_KEYS = new Set(["deviceId", "pendingOperationIds", "receiptRegistrationId"]);
 const LINE_KEYS = new Set(["variantId", "quantity"]);
 const ACCEPTED_LINE_KEYS = new Set(["variantId", "quantity", "listedUnitPricePiasters"]);
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -125,6 +135,7 @@ async function allocateSaleLines(
   sourceLines: Array<{ id: string; variantId: string; quantity: number }>,
   allowPartial: boolean,
 ): Promise<{ allocations: AllocateResult[]; costsIncomplete: boolean }> {
+  const operationalProductId = await inventory.operationalProductIds(sourceLines.map((line) => line.variantId));
   const order = sourceLines
     .map((line, index) => ({ line, index }))
     .sort((left, right) => {
@@ -136,10 +147,12 @@ async function allocateSaleLines(
   const allocations: AllocateResult[] = new Array(sourceLines.length);
   let costsIncomplete = false;
   for (const item of order) {
+    const productId = operationalProductId.get(item.line.variantId);
     const allocated = await inventory.allocateFromOldestAvailable({
       branchId,
       operationId,
       variantId: item.line.variantId,
+      ...(productId ? { productId } : {}),
       quantity: item.line.quantity,
       recordedAt,
       allowPartial,
@@ -172,6 +185,9 @@ export function createSalesServices(ports: {
   uow: SalesUnitOfWork;
   allocations: { listAllocations(operationId: string): Promise<AllocationRecord[]> };
   deferredCompletions: DeferredCompletedSalePort;
+  customers: CustomerDirectory;
+  paidOnline: PaidOnlinePurchaseReader;
+  clock?: { now(): Date };
 }) {
   async function requireCashier(auth: VerifiedAuth | null) {
     if (!auth) {
@@ -256,6 +272,7 @@ export function createSalesServices(ports: {
             }
           : null,
       lines: record.lines.map((line) => toLineDto(line, byId.get(line.variantId))),
+      ...receiptStaffMetadata(record.receiptIdentity),
     };
     if (!viewerIsManager) {
       return sale;
@@ -321,7 +338,10 @@ export function createSalesServices(ports: {
 
   async function catalogCoverage(auth: VerifiedAuth): Promise<string[]> {
     const products = await ports.cashierCatalog.listCashierProducts(auth);
-    return products.flatMap((product) => product.variants.map((variant) => variant.id));
+    return [...new Set(products.flatMap((product) => [
+      product.operationalVariantId,
+      ...product.variants.map((variant) => variant.id),
+    ]))];
   }
 
   async function commitSnapshotPricedSale(input: {
@@ -350,8 +370,14 @@ export function createSalesServices(ports: {
     }
     return ports.uow.run(async (tx) => {
       await tx.inventory.lockStockClock("update");
-      const finish = (record: SaleRecord, created: boolean) =>
-        attachAck(tx, record, created, input.coverageVariantIds, input.command.pendingOperationIds);
+      const finish = async (record: SaleRecord, created: boolean) => {
+        const attached = await tx.sales.attachReceiptClaim({
+          saleId: record.id,
+          claim: input.command.receiptClaim,
+          sourceDeviceId: input.command.deviceId,
+        });
+        return attachAck(tx, attached, created, input.coverageVariantIds, input.command.pendingOperationIds);
+      };
       const existing = await loadLockedIdentity(tx.sales, input.command.saleId, input.command.operationId);
       if (existing?.physicallyCompleted) {
         replayOrConflict(existing, input.fingerprint, input.command.operationId, input.command.payment);
@@ -422,12 +448,19 @@ export function createSalesServices(ports: {
         automaticRanges: automatic.unitRanges,
         at: input.command.pricingOccurredAt,
       });
-      const priced = priceSaleLines(
+      const pricedWithoutFloor = priceSaleLines(
         basketLines,
         input.command.employeeDiscountPiasters,
         automatic.appliedAutomaticOffer ? automatic.unitRanges : undefined,
         coupon.appliedCoupon ? coupon.unitRanges : undefined,
       );
+      const priced = {
+        ...pricedWithoutFloor,
+        lines: stampAcceptedFloors(pricedWithoutFloor.lines, new Map(basketLines.map((line) => {
+          const basis = input.snapshot.prices.find((item) => item.variantId === line.variantId);
+          return [line.variantId, basis?.minimumUnitPricePiasters] as const;
+        }))),
+      };
       const payment = validatePayment(input.command.payment, priced.finalTotalPiasters);
       const acceptedPricing = {
         ...priced,
@@ -479,6 +512,7 @@ export function createSalesServices(ports: {
           automaticOfferDiscountPiasters: line.automaticOfferDiscountPiasters,
           couponDiscountPiasters: line.couponDiscountPiasters,
           employeeDiscountPiasters: line.employeeDiscountPiasters,
+          acceptedMinimumUnitPiasters: line.acceptedMinimumUnitPiasters ?? null,
           allocatedQuantity: row?.allocatedQuantity ?? 0,
           unallocatedQuantity: row?.unallocatedQuantity ?? line.quantity,
           lineIndex: index,
@@ -502,6 +536,7 @@ export function createSalesServices(ports: {
             pendingOperationIds: [],
             restoreGeneration: input.snapshot.restoreGeneration,
             deviceId: input.command.deviceId,
+            receiptClaim: input.command.receiptClaim,
           },
           { staff: input.seller, branch: input.branch },
           acceptedPricing,
@@ -542,6 +577,17 @@ export function createSalesServices(ports: {
       const preliminary =
         (await ports.sales.getById(command.saleId)) ??
         (await ports.sales.getByOperationId(command.operationId));
+      if (!preliminary) {
+        await ports.uow.run(async (tx) => {
+          await tx.inventory.lockStockClock("share");
+          const available = await tx.inventory.quantitiesFor(current.branch.id, quantities.map((item) => item.variantId));
+          for (const item of quantities) {
+            if ((available.get(item.variantId) ?? 0) < item.quantity) {
+              throw new SalesValidationError("الكمية المتاحة غير كافية.");
+            }
+          }
+        });
+      }
       const priced = preliminary ? null : await ports.pricingQuote.run(async (quote) => {
         const listed = await quote.prices.getListedPrices(quantities.map((item) => item.variantId));
         return priceFromListed(quote.automaticPricing, listed, quantities, command.employeeDiscountPiasters, command.couponCode);
@@ -591,7 +637,10 @@ export function createSalesServices(ports: {
       const fingerprint = fingerprintSalePayload(toPayload(command));
       const quantities = mergeVariantQuantities(command.lines);
       const catalog = await ports.cashierCatalog.listCashierProducts(auth);
-      const coverageVariantIds = catalog.flatMap((product) => product.variants.map((variant) => variant.id));
+      const coverageVariantIds = [...new Set(catalog.flatMap((product) => [
+        product.operationalVariantId,
+        ...product.variants.map((variant) => variant.id),
+      ]))];
       const preliminary =
         (await ports.sales.getById(command.saleId)) ??
         (await ports.sales.getByOperationId(command.operationId));
@@ -619,8 +668,14 @@ export function createSalesServices(ports: {
       });
       const outcome = await ports.uow.run(async (tx) => {
         await tx.inventory.lockStockClock("update");
-        const finish = (record: SaleRecord, created: boolean) =>
-          attachAck(tx, record, created, coverageVariantIds, command.pendingOperationIds);
+        const finish = async (record: SaleRecord, created: boolean) => {
+          const attached = await tx.sales.attachReceiptClaim({
+            saleId: record.id,
+            claim: command.receiptClaim,
+            sourceDeviceId: command.deviceId,
+          });
+          return attachAck(tx, attached, created, coverageVariantIds, command.pendingOperationIds);
+        };
         const existing = await loadLockedIdentity(tx.sales, command.saleId, command.operationId);
         if (existing?.physicallyCompleted) {
           replayOrConflict(existing, fingerprint, command.operationId, command.payment);
@@ -729,6 +784,7 @@ export function createSalesServices(ports: {
                 automaticOfferDiscountPiasters: line.automaticOfferDiscountPiasters,
                 couponDiscountPiasters: line.couponDiscountPiasters,
                 employeeDiscountPiasters: line.employeeDiscountPiasters,
+                acceptedMinimumUnitPiasters: line.acceptedMinimumUnitPiasters ?? null,
                 units: line.units.map((unit) => ({
                   unitIndex: unit.unitIndex,
                   quantity: unit.quantity,
@@ -763,6 +819,7 @@ export function createSalesServices(ports: {
             automaticOfferDiscountPiasters: line.automaticOfferDiscountPiasters,
             couponDiscountPiasters: line.couponDiscountPiasters,
             employeeDiscountPiasters: line.employeeDiscountPiasters,
+            acceptedMinimumUnitPiasters: line.acceptedMinimumUnitPiasters ?? null,
             allocatedQuantity: allocated?.allocatedQuantity ?? 0,
             unallocatedQuantity: allocated?.unallocatedQuantity ?? line.quantity,
             lineIndex: index,
@@ -822,7 +879,10 @@ export function createSalesServices(ports: {
       }
       const request = parseSnapshotRequest(input);
       const products = await ports.cashierCatalog.listCashierProducts(auth);
-      const ids = products.flatMap((product) => product.variants.map((variant) => variant.id));
+      const ids = [...new Set(products.flatMap((product) => [
+        product.operationalVariantId,
+        ...product.variants.map((variant) => variant.id),
+      ]))];
       const pricingSnapshot = await ports.pricingQuote.run(async (quote) => {
         const [listed, rules] = await Promise.all([
           quote.prices.getListedPrices(ids),
@@ -843,6 +903,7 @@ export function createSalesServices(ports: {
           productId: basis.productId,
           categoryId: basis.categoryId,
           listedUnitPricePiasters: basis.listedUnitPricePiasters,
+          minimumUnitPricePiasters: basis.minimumUnitPricePiasters,
         };
       });
       const issuedAt = new Date();
@@ -850,6 +911,14 @@ export function createSalesServices(ports: {
         await tx.inventory.lockStockClock("share");
         const stockVersion = await tx.inventory.currentStockVersion();
         const restore = await tx.restore.current();
+        const receiptRegistration = request.receiptRegistrationId
+          ? await tx.sales.registerReceiptPrefix({
+              id: request.receiptRegistrationId,
+              deviceId: request.deviceId,
+              staffId: current.staff.id,
+              restoreGeneration: restore.generation,
+            })
+          : null;
         const quantities = await tx.inventory.quantitiesFor(current.branch.id, ids);
         const includedOperations = await tx.sales.listCompletedOperationProofs(request.pendingOperationIds);
         const deferredCompletionProofs = await tx.sales.listDeferredCompletionProofs(request.pendingOperationIds);
@@ -878,7 +947,7 @@ export function createSalesServices(ports: {
         });
         return {
           record, stockVersion, quantities, includedOperations, deferredCompletionProofs, stockPause,
-          restoreGeneration: restore.generation, restorePause: restore.pause,
+          restoreGeneration: restore.generation, restorePause: restore.pause, receiptRegistration,
         };
       });
       return {
@@ -898,6 +967,7 @@ export function createSalesServices(ports: {
         automaticOffers: stock.record.automaticOffers,
         coupons: stock.record.coupons,
         couponAccountedOperations: stock.record.couponAccountedOperations,
+        ...(stock.receiptRegistration ? { receiptRegistration: stock.receiptRegistration } : {}),
         products: products.map((product) => {
           const categoryId = categoryByProductId.get(product.id) ?? product.categoryId;
           return {
@@ -1011,8 +1081,14 @@ export function createSalesServices(ports: {
             throw new NotFoundError("لم يُحفظ البيع بعد.");
           }
           await tx.sales.markRestoreDeferredReconciled(recovered.operationId, manager.id);
-          const finish = (record: SaleRecord, created: boolean) =>
-            attachAck(tx, record, created, coverageVariantIds, recovered.pendingOperationIds);
+          const finish = async (record: SaleRecord, created: boolean) => {
+            const attached = await tx.sales.attachReceiptClaim({
+              saleId: record.id,
+              claim: recovered.receiptClaim,
+              sourceDeviceId: recovered.deviceId,
+            });
+            return attachAck(tx, attached, created, coverageVariantIds, recovered.pendingOperationIds);
+          };
           if (existing.physicallyCompleted) {
             if (!paymentMatches(existing.payment, validatePayment(recovered.payment, existing.finalTotalPiasters - existing.exchangeCreditAppliedPiasters))) {
               throw new OperationConflictError();
@@ -1210,7 +1286,170 @@ export function createSalesServices(ports: {
     referencedVariantIds(variantIds: string[]) {
       return ports.sales.referencedVariantIds(variantIds);
     },
+
+    async listCustomers(auth: VerifiedAuth | null, input: unknown): Promise<CustomerListDto> {
+      await requireManager(auth);
+      if (!input || typeof input !== "object" || Array.isArray(input)) {
+        throw new SalesValidationError("بيانات العملاء غير صالحة.");
+      }
+      const body = input as Record<string, unknown>;
+      if (Object.keys(body).some((key) => key !== "q" && key !== "limit" && key !== "cursor")) {
+        throw new SalesValidationError("بيانات العملاء غير صالحة.");
+      }
+      const rawQuery = body.q === undefined || body.q === null ? "" : body.q;
+      if (typeof rawQuery !== "string" || rawQuery.length > 80) {
+        throw new SalesValidationError("نص البحث غير صالح.");
+      }
+      const query = rawQuery.trim();
+      let limit = 40;
+      if (body.limit !== undefined && body.limit !== null && body.limit !== "") {
+        if (typeof body.limit === "string" && !/^\d+$/.test(body.limit)) {
+          throw new SalesValidationError("حد الصفحة غير صالح.");
+        }
+        const parsed = typeof body.limit === "number" ? body.limit : Number(body.limit);
+        if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > 80) {
+          throw new SalesValidationError("حد الصفحة غير صالح.");
+        }
+        limit = parsed;
+      }
+      const after = decodeCustomerCursor(body.cursor);
+      const rows = await ports.customers.list({
+        query,
+        digits: customerSearchDigits(query),
+        limit: limit + 1,
+        after,
+      });
+      const page = rows.slice(0, limit);
+      const last = page[page.length - 1];
+      return {
+        customers: page.map(toCustomerSummary),
+        nextCursor: rows.length > limit && last ? encodeCustomerCursor(last) : null,
+      };
+    },
+
+    async lookupCustomer(
+      auth: VerifiedAuth | null,
+      input: unknown,
+    ): Promise<{ customer: CustomerSummaryDto | null }> {
+      await requireCashier(auth);
+      if (!input || typeof input !== "object" || Array.isArray(input)) {
+        throw new SalesValidationError("بيانات العميل غير صالحة.");
+      }
+      const body = input as Record<string, unknown>;
+      const keys = Object.keys(body);
+      if (keys.some((key) => key !== "phone" && key !== "name")) {
+        throw new SalesValidationError("بيانات العميل غير صالحة.");
+      }
+      if (body.name !== undefined && typeof body.name !== "string") {
+        throw new SalesValidationError("اسم العميل غير صالح.");
+      }
+      if (typeof body.phone !== "string") {
+        throw new SalesValidationError("رقم الهاتف غير صالح للعميل.");
+      }
+      const phone = normalizeCustomerPhone(body.phone);
+      if (!phone) throw new SalesValidationError("رقم الهاتف غير صالح للعميل.");
+      const customer = await ports.customers.findByPhone(phone);
+      return { customer: customer ? toCustomerSummary(customer) : null };
+    },
+
+    async customerHistory(
+      auth: VerifiedAuth | null,
+      customerId: string,
+      periodInput: unknown,
+    ): Promise<CustomerHistoryDto> {
+      await requireManager(auth);
+      const id = assertUuid(customerId, "العميل غير موجود.");
+      const period = periodInput === undefined || periodInput === null || periodInput === ""
+        ? "year"
+        : periodInput;
+      if (period !== "month" && period !== "year") {
+        throw new SalesValidationError("فترة العرض غير صالحة.");
+      }
+      const customer = await ports.customers.getById(id);
+      if (!customer) throw new NotFoundError("العميل غير موجود.");
+      const bounds = cairoPeriod(ports.clock?.now() ?? new Date(), period);
+      const [physical, online] = await Promise.all([
+        ports.customers.listPhysicalPurchases(customer, bounds.from, bounds.to),
+        ports.paidOnline.listDeliveredPurchases(customer.normalizedPhone, bounds.from, bounds.to),
+      ]);
+      const variantIds = [...new Set(physical.flatMap((purchase) => purchase.lines.map((line) => line.variantId)))];
+      const listed = variantIds.length === 0 ? [] : await ports.prices.getListedPrices(variantIds);
+      const byVariant = new Map(listed.map((row) => [row.variantId, row.identity]));
+      const purchases = [
+        ...physical.map((purchase) => ({
+          channel: "physical" as const,
+          sourceId: purchase.sourceId,
+          reference: purchase.reference,
+          paidAt: purchase.paidAt.toISOString(),
+          products: purchase.lines.map((line) => {
+            const identity = byVariant.get(line.variantId);
+            return {
+              nameAr: identity?.product.nameAr ?? "صنف محفوظ",
+              optionText: identity ? purchaseOption(identity) : null,
+              quantity: line.quantity,
+            };
+          }),
+        })),
+        ...online.map((purchase) => ({
+          channel: "online" as const,
+          sourceId: purchase.sourceId,
+          reference: purchase.reference,
+          paidAt: purchase.paidAt.toISOString(),
+          products: purchase.products,
+        })),
+      ].sort((left, right) => {
+        if (left.paidAt === right.paidAt) return left.sourceId < right.sourceId ? 1 : -1;
+        return left.paidAt < right.paidAt ? 1 : -1;
+      });
+      return {
+        customer: toCustomerSummary(customer),
+        period,
+        from: bounds.from,
+        to: bounds.to,
+        purchaseCount: purchases.length,
+        purchases,
+      };
+    },
   };
+}
+
+function toCustomerSummary(customer: { id: string; normalizedPhone: string; displayName: string }): CustomerSummaryDto {
+  return {
+    id: customer.id,
+    normalizedPhone: customer.normalizedPhone,
+    displayName: customer.displayName,
+  };
+}
+
+function encodeCustomerCursor(customer: { displayName: string; id: string }): string {
+  return Buffer.from(JSON.stringify({ n: customer.displayName, i: customer.id }), "utf8").toString("base64url");
+}
+
+function decodeCustomerCursor(value: unknown): { displayName: string; id: string } | null {
+  if (value === undefined || value === null || value === "") return null;
+  if (typeof value !== "string" || value.length > 512) {
+    throw new SalesValidationError("صفحة العملاء غير صالحة.");
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+  } catch {
+    throw new SalesValidationError("صفحة العملاء غير صالحة.");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new SalesValidationError("صفحة العملاء غير صالحة.");
+  }
+  const row = parsed as { n?: unknown; i?: unknown };
+  if (typeof row.n !== "string" || row.n.length > 200 || typeof row.i !== "string" || !UUID_PATTERN.test(row.i)) {
+    throw new SalesValidationError("صفحة العملاء غير صالحة.");
+  }
+  return { displayName: row.n, id: row.i };
+}
+
+function purchaseOption(identity: VariantIdentityDto): string | null {
+  if (identity.purpose === "operational") return null;
+  const parts = [identity.size.nameAr, identity.color.nameAr].map((name) => name.trim()).filter((name) => name.length > 0);
+  return parts.length > 0 ? parts.join(" / ") : null;
 }
 
 async function loadLockedIdentity(sales: SaleStore, saleId: string, operationId: string) {
@@ -1250,13 +1489,18 @@ async function priceFromListed(
     };
   });
   const automatic = await automaticPricing.evaluate(lines, undefined, couponCode);
+  const priced = priceSaleLines(
+    lines,
+    employeeDiscountPiasters,
+    automatic.appliedAutomaticOffer ? automatic.unitRanges : undefined,
+    automatic.appliedCoupon ? automatic.couponUnitRanges : undefined,
+  );
   return {
-    ...priceSaleLines(
-      lines,
-      employeeDiscountPiasters,
-      automatic.appliedAutomaticOffer ? automatic.unitRanges : undefined,
-      automatic.appliedCoupon ? automatic.couponUnitRanges : undefined,
-    ),
+    ...priced,
+    lines: stampAcceptedFloors(priced.lines, new Map(lines.map((line) => {
+      const basis = byId.get(line.variantId);
+      return [line.variantId, basis?.minimumUnitPricePiasters] as const;
+    }))),
     appliedAutomaticOffer: automatic.appliedAutomaticOffer,
     appliedCoupon: automatic.appliedCoupon,
   };
@@ -1307,6 +1551,7 @@ function toInsert(
       automaticOfferDiscountPiasters: line.automaticOfferDiscountPiasters,
       couponDiscountPiasters: line.couponDiscountPiasters,
       employeeDiscountPiasters: line.employeeDiscountPiasters,
+      acceptedMinimumUnitPiasters: line.acceptedMinimumUnitPiasters ?? null,
       allocatedQuantity: 0,
       unallocatedQuantity: 0,
       lineIndex: index,
@@ -1418,6 +1663,7 @@ type ParsedSale = {
   pendingOperationIds: string[];
   restoreGeneration: number | null;
   deviceId: string | null;
+  receiptClaim: ParsedReceiptClaim;
   lines: Array<{ variantId: string; quantity: number }>;
 };
 
@@ -1437,6 +1683,7 @@ type ParsedAcceptedSale = {
   occurredAt: Date;
   pendingOperationIds: string[];
   restoreGeneration: number | null;
+  receiptClaim: ParsedReceiptClaim;
   lines: Array<{ variantId: string; quantity: number; listedUnitPricePiasters: number | null }>;
 };
 
@@ -1467,12 +1714,15 @@ function parsePendingOperationIds(value: unknown): string[] {
   return [...new Set(ids)];
 }
 
-function parseSnapshotRequest(input: unknown): { deviceId: string; pendingOperationIds: string[] } {
+function parseSnapshotRequest(input: unknown): { deviceId: string; pendingOperationIds: string[]; receiptRegistrationId: string | null } {
   const body = expectObject(input, "بيانات اللقطة غير صالحة.");
   assertAllowedKeys(body, SNAPSHOT_KEYS, "بيانات اللقطة غير صالحة.");
   return {
     deviceId: assertUuid(body.deviceId, "معرّف الجهاز غير صالح."),
     pendingOperationIds: parsePendingOperationIds(body.pendingOperationIds),
+    receiptRegistrationId: body.receiptRegistrationId === undefined || body.receiptRegistrationId === null
+      ? null
+      : assertUuid(body.receiptRegistrationId, "معرّف تسجيل الإيصال غير صالح."),
   };
 }
 
@@ -1517,6 +1767,7 @@ function parseAcceptedSale(input: unknown): ParsedAcceptedSale {
     occurredAt,
     pendingOperationIds: parsePendingOperationIds(body.pendingOperationIds),
     restoreGeneration: parseRestoreGeneration(body.restoreGeneration, null),
+    receiptClaim: parseReceiptClaim(body.receiptClaim),
     lines: body.lines.map((item) => {
       const line = expectObject(item, "بيانات صنف البيع غير صالحة.");
       assertAllowedKeys(line, ACCEPTED_LINE_KEYS, "بيانات صنف البيع غير صالحة.");
@@ -1541,7 +1792,8 @@ function parseRecoverCommand(
 ):
   | { kind: "snapshot"; command: ParsedAcceptedSale }
   | { kind: "prepared"; saleId: string; operationId: string; pendingOperationIds: string[]; occurredAt: Date | null;
-      sourceRestoreGeneration: number | null; payment: SalePaymentDto | null } {
+      sourceRestoreGeneration: number | null; payment: SalePaymentDto | null; deviceId: string | null;
+      receiptClaim: ParsedReceiptClaim } {
   const body = expectObject(input, "بيانات البيع غير صالحة.");
   assertAllowedKeys(body, RECOVER_KEYS, "بيانات البيع غير صالحة.");
   if (body.physicallyCompleted !== true) {
@@ -1556,6 +1808,10 @@ function parseRecoverCommand(
       occurredAt: parseOptionalTime(body.occurredAt),
       sourceRestoreGeneration: parseRestoreGeneration(body.restoreGeneration, null),
       payment: parsePaymentInput(body.payment),
+      deviceId: body.deviceId !== undefined && body.deviceId !== null
+        ? assertUuid(body.deviceId, "معرّف الجهاز غير صالح.")
+        : null,
+      receiptClaim: parseReceiptClaim(body.receiptClaim),
     };
   }
   return { kind: "snapshot", command: parseAcceptedSale(input) };
@@ -1586,6 +1842,7 @@ function parseSaleWrite(input: unknown, complete: boolean): ParsedSale {
     deviceId: complete && body.deviceId !== undefined && body.deviceId !== null
       ? assertUuid(body.deviceId, "معرّف الجهاز غير صالح.")
       : null,
+    receiptClaim: complete ? parseReceiptClaim(body.receiptClaim) : { kind: "absent" },
     lines: body.lines.map((item) => {
       const line = expectObject(item, "بيانات صنف البيع غير صالحة.");
       assertAllowedKeys(line, LINE_KEYS, "بيانات صنف البيع غير صالحة.");
@@ -1615,7 +1872,14 @@ function preparedSaleJson(record: SaleRecord): Record<string, unknown> {
   };
 }
 
+function serializedReceiptClaim(claim: ParsedReceiptClaim): Record<string, unknown> | undefined {
+  if (claim.kind === "absent") return undefined;
+  if (claim.kind === "valid") return { ...claim.claim };
+  return claim.claimedReference === null ? {} : { reference: claim.claimedReference };
+}
+
 function deferredPayload(kind: "connected" | "accepted", command: ParsedSale | ParsedAcceptedSale): Record<string, unknown> {
+  const receiptClaim = serializedReceiptClaim(command.receiptClaim);
   return {
     kind,
     saleId: command.saleId,
@@ -1631,12 +1895,25 @@ function deferredPayload(kind: "connected" | "accepted", command: ParsedSale | P
     ...(command.payment ? { payment: command.payment } : {}),
     pendingOperationIds: command.pendingOperationIds,
     lines: command.lines,
+    ...(command.deviceId ? { deviceId: command.deviceId } : {}),
+    ...(receiptClaim ? { receiptClaim } : {}),
     ...(kind === "accepted" ? {
-      deviceId: (command as ParsedAcceptedSale).deviceId,
       snapshotId: (command as ParsedAcceptedSale).snapshotId,
       pricingVersion: (command as ParsedAcceptedSale).pricingVersion,
       pricingOccurredAt: (command as ParsedAcceptedSale).pricingOccurredAt.toISOString(),
     } : {}),
+  };
+}
+
+function receiptStaffMetadata(identity: SaleRecord["receiptIdentity"]): {
+  receiptReference?: string;
+  receiptNumberingConflict?: true;
+} {
+  if (!identity) return {};
+  const conflict = identity.status === "conflict" || identity.numberingConflict === true;
+  return {
+    ...(identity.reference ? { receiptReference: identity.reference } : {}),
+    ...(conflict ? { receiptNumberingConflict: true as const } : {}),
   };
 }
 

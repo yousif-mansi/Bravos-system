@@ -18,6 +18,7 @@ import {
   updateReturnDraft,
 } from "../returns-api.ts";
 import { egpInputToPiasters, formatEgpFromPiasters, piastersToEgpInput } from "../money.ts";
+import { customerReceiptNumber, RECEIPT_NUMBER_CONFLICT } from "../receipt-number.ts";
 import { calculateReturnRefundSuggestion, type ReturnLineSelection } from "../return-refund.ts";
 import { EmptyState } from "../ui/EmptyState.tsx";
 import { useRevealFeedback } from "../ui/useRevealFeedback.ts";
@@ -30,6 +31,15 @@ import {
   type PendingReturnAttempt,
   withPendingReturnLock,
 } from "../returns-pending.ts";
+
+function sourceHeading(source: ReturnSourceDto): string {
+  if (source.channel === "online") return `طلب ${source.reference}`;
+  return `إيصال ${customerReceiptNumber({
+    receiptReference: source.receiptReference ?? null,
+    reference: source.reference,
+    blockedIds: [source.source.id],
+  })}`;
+}
 
 export default function ReturnsPage({ workspace }: { workspace: WorkspaceDto; onChanged: (workspace: WorkspaceDto | null) => void }) {
   const [searchParams] = useSearchParams();
@@ -589,8 +599,8 @@ export default function ReturnsPage({ workspace }: { workspace: WorkspaceDto; on
         <h1>المرتجعات</h1>
       </header>
       <div className="branch-banner" data-testid="return-handling-branch">الفرع النشط: {workspace.activeBranch?.nameAr} · اختر فرع استلام المرتجع داخل المسودة</div>
-      {error ? <div className="error" role="alert">{error}</div> : null}
-      {notice ? <div className="notice" role="status">{notice}</div> : null}
+      {error ? <div className="error point-feedback" role="alert">{error}</div> : null}
+      {notice ? <div className="notice point-feedback" role="status">{notice}</div> : null}
       {uncertainAttempt ? <div className="notice" data-testid="pending-return-attempt"><p>توجد عملية مرتجع لم يصل تأكيد نتيجتها. ستُعاد بنفس البيانات ومعرّف العملية لمنع تكرار المخزون أو النقد.</p><button type="button" disabled={busy} onClick={() => void retryUncertainAttempt()}>إعادة محاولة العملية السابقة نفسها</button></div> : null}
 
       <section className="card">
@@ -606,7 +616,7 @@ export default function ReturnsPage({ workspace }: { workspace: WorkspaceDto; on
         <div className="return-source-list" data-testid="return-source-list">
           {sources.map((source) => (
             <button className="return-source" type="button" key={`${source.source.kind}:${source.source.id}`} disabled={busy} onClick={() => selectSource(source)}>
-              <strong>طلب {source.reference}</strong><span>{source.customerName ?? "عميل غير مسجل"} · {formatCairoDate(source.receivedAt)}</span><span>{source.channel === "online" ? "أونلاين · فرع التجهيز" : "فرع البيع"}: {source.originalBranch?.nameAr ?? "غير مسجل"}</span><span>{formatEgpFromPiasters(source.originalPayment.totalPiasters)} · {source.lines.map((line) => line.variant.product.nameAr).join("، ")}</span>
+              <strong>{sourceHeading(source)}</strong>{source.channel !== "online" && source.receiptNumberingConflict ? <span>{RECEIPT_NUMBER_CONFLICT}</span> : null}<span>{source.customerName ?? "عميل غير مسجل"} · {formatCairoDate(source.receivedAt)}</span><span>{source.channel === "online" ? "أونلاين · فرع التجهيز" : "فرع البيع"}: {source.originalBranch?.nameAr ?? "غير مسجل"}</span><span>{formatEgpFromPiasters(source.originalPayment.totalPiasters)} · {source.lines.map((line) => line.variant.product.nameAr).join("، ")}</span>
             </button>
           ))}
           {sources.length === 0 && !sourceBusy ? <EmptyState title="مفيش عملية ترجع" message="ابحث برقم الهاتف أو الطلب أو التاريخ." /> : null}
@@ -617,7 +627,8 @@ export default function ReturnsPage({ workspace }: { workspace: WorkspaceDto; on
 
       {selectedSource && !selectedReturn ? (
         <section ref={sourceFeedback.regionRef} className={`card return-editor reveal-feedback${sourceFeedback.highlighted ? " is-highlighted" : ""}`}>
-          <h2 ref={sourceFeedback.headingRef} tabIndex={-1}>{editingReturn ? "تعديل مسودة الإرجاع" : `طلب ${selectedSource.reference}`}</h2>
+          <h2 ref={sourceFeedback.headingRef} tabIndex={-1}>{editingReturn ? "تعديل مسودة الإرجاع" : sourceHeading(selectedSource)}</h2>
+          {selectedSource.channel !== "online" && selectedSource.receiptNumberingConflict ? <p>{RECEIPT_NUMBER_CONFLICT}</p> : null}
           <p>التاريخ: {formatCairoDate(selectedSource.receivedAt)} · المبلغ: {formatEgpFromPiasters(selectedSource.originalPayment.totalPiasters)}</p>
           <p>العميل: {selectedSource.customerName ?? "غير مسجل"} · الهاتف: {selectedSource.customerPhone ?? "غير مسجل"}</p>
           <ul>{selectedSource.lines.map((line) => <li key={line.sourceLineId}>{line.variant.product.nameAr} — {line.variant.size.nameAr} / {line.variant.color.nameAr} × {line.purchasedQuantity} · {formatEgpFromPiasters(line.paidPiasters)}</li>)}</ul>
@@ -646,14 +657,15 @@ export default function ReturnsPage({ workspace }: { workspace: WorkspaceDto; on
       {selectedReturn ? (
         <section ref={detailsFeedback.regionRef} className={`card reveal-feedback${detailsFeedback.highlighted ? " is-highlighted" : ""}`} data-testid="return-details">
           <h2 ref={detailsFeedback.headingRef} tabIndex={-1}>مرتجع {selectedReturn.reference}</h2>
-          <p>الطلب: {selectedReturn.source.reference} · التاريخ: {formatCairoDate(selectedReturn.postedAt ?? selectedReturn.createdAt)}</p>
+          <p>{sourceHeading(selectedReturn.source)} · التاريخ: {formatCairoDate(selectedReturn.postedAt ?? selectedReturn.createdAt)}</p>
+          {selectedReturn.source.channel !== "online" && selectedReturn.source.receiptNumberingConflict ? <p data-testid="receipt-number-conflict">{RECEIPT_NUMBER_CONFLICT}</p> : null}
           <p>العميل: {selectedReturn.source.customerName ?? "غير مسجل"} · الهاتف: {selectedReturn.source.customerPhone ?? "غير مسجل"}</p>
           <p>{selectedReturn.source.channel === "online" ? "فرع التجهيز" : "فرع البيع الأصلي"}: {selectedReturn.source.originalBranch?.nameAr ?? "غير مسجل"} · فرع استلام المرتجع: {selectedReturn.handlingBranch.nameAr} · الحالة: {selectedReturn.status === "draft" ? "مسودة" : "مرحّل"}</p>
           {selectedReturn.reason ? <p>سبب الإرجاع: {selectedReturn.reason}</p> : null}
           {selectedReturn.source.channel === "online" ? <><p>المقترح: البضاعة {formatEgpFromPiasters(selectedReturn.suggestedRefund.merchandisePiasters)} · رسوم التوصيل {formatEgpFromPiasters(selectedReturn.suggestedRefund.checkoutChargePiasters)} · الإجمالي {formatEgpFromPiasters(selectedReturn.suggestedRefund.totalPiasters)}</p><p>المعتمد حالياً: البضاعة {formatEgpFromPiasters(selectedReturn.authorizedRefund.merchandisePiasters)} · رسوم التوصيل {formatEgpFromPiasters(selectedReturn.authorizedRefund.checkoutChargePiasters)} · الإجمالي {formatEgpFromPiasters(selectedReturn.authorizedRefund.totalPiasters)}</p></> : <p>المقترح: {formatEgpFromPiasters(selectedReturn.suggestedRefundPiasters)} · المعتمد حالياً: {formatEgpFromPiasters(selectedReturn.authorizedRefundPiasters)}</p>}
           {selectedReturn.correctionRevision > 0 ? selectedReturn.source.channel === "online" ? <p className="muted">المعتمد الأصلي المحفوظ: بضاعة {formatEgpFromPiasters(selectedReturn.originalAuthorizedRefund.merchandisePiasters)} · رسوم توصيل {formatEgpFromPiasters(selectedReturn.originalAuthorizedRefund.checkoutChargePiasters)} · إجمالي {formatEgpFromPiasters(selectedReturn.originalAuthorizedRefund.totalPiasters)}. توجد تصحيحات إدارية مرتبطة بهذا الأصل.</p> : <p className="muted">المعتمد الأصلي المحفوظ: {formatEgpFromPiasters(selectedReturn.originalAuthorizedRefundPiasters)} · توجد تصحيحات إدارية مرتبطة بهذا الأصل.</p> : null}
           <ul>{selectedReturn.lines.map((line) => <li key={line.id}>{line.variant.product.nameAr}: {line.quantity} مستلم، {line.sellableQuantity} قابل للبيع، {line.unsellableQuantity} غير قابل للبيع</li>)}</ul>
-          {selectedReturn.status === "draft" ? <div className="actions"><button type="button" className="secondary" disabled={busy} onClick={editSelectedDraft}>تعديل المسودة</button><button type="button" className="business-primary-action" disabled={busy} onClick={() => void post()}>تأكيد استلام وفحص المرتجع</button></div> : null}
+          {selectedReturn.status === "draft" ? <div className="actions"><button type="button" className="secondary" disabled={busy} onClick={editSelectedDraft}>تعديل المسودة</button><button type="button" className="confirm" disabled={busy} onClick={() => void post()}>تأكيد استلام وفحص المرتجع</button></div> : null}
           {!selectedReturn.exchange && selectedReturn.effectiveStatus === "active" && selectedReturn.refund.paidPiasters === 0 ? (
             <form aria-label="إتمام استبدال" className="return-line" onSubmit={(event) => void exchange(event)}>
               <h3>سلة الاستبدال</h3>
@@ -678,7 +690,7 @@ export default function ReturnsPage({ workspace }: { workspace: WorkspaceDto; on
                     const option = replacementOptions.find(({ variant }) => variant.id === line.variantId);
                     return <li key={line.variantId}>
                       {option?.product.nameAr ?? line.variantId} — {option?.variant.size.nameAr} / {option?.variant.color.nameAr} × {line.quantity}
-                      <button type="button" className="secondary" onClick={() => removeReplacementLine(line.variantId)}>حذف</button>
+                      <button type="button" className="danger" onClick={() => removeReplacementLine(line.variantId)}>حذف</button>
                     </li>;
                   })}
                 </ul>
@@ -695,7 +707,7 @@ export default function ReturnsPage({ workspace }: { workspace: WorkspaceDto; on
               ) : null}
               <p className="muted">السعر المعروض أعلاه هو السعر المقبول للبيع البديل. أي تعديل لاحق في الإرجاع يتطلب عرضاً جديداً. لا يُنشأ رصيد دائم للعميل.</p>
               {exchangeQuote ? <button type="button" className="secondary" disabled={busy} onClick={resetExchangeQuote}>إلغاء العرض وإعادة التسعير</button> : null}
-              <button type="submit" disabled={busy || !exchangeQuote}>تأكيد الاستبدال بعد مراجعة فرق النقد</button>
+              <button type="submit" className="confirm" disabled={busy || !exchangeQuote}>تأكيد الاستبدال بعد مراجعة فرق النقد</button>
             </form>
           ) : null}
           {selectedReturn.exchange ? (

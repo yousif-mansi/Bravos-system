@@ -41,15 +41,12 @@ export function ProductBrowser({ products, quantities, selectedId, loading, mess
       ) : (
         <div className="pos-product-grid">
           {visible.map((product) => {
-            const prices = product.variants.map((variant) => variant.sellingPricePiasters);
-            const lowest = prices.length ? Math.min(...prices) : null;
-            const highest = prices.length ? Math.max(...prices) : null;
-            const available = product.variants.reduce((sum, variant) => sum + Math.max(0, quantities[variant.id] ?? variant.availableQuantity), 0);
+            const available = Math.max(0, quantities[product.operationalVariantId] ?? product.availableQuantity);
             return <button className={`pos-product-tile${selectedId === product.id ? " is-selected" : ""}`} key={product.id} type="button" aria-pressed={selectedId === product.id} onClick={() => onSelect(product)} data-testid="pos-product-tile">
               <span className="pos-product-code">{product.code}</span>
               <strong>{product.nameAr}</strong>
               {product.categoryNameAr ? <span className="pos-product-category">{product.categoryNameAr}</span> : null}
-              <span className="pos-product-price">{lowest === null ? "لا توجد مقاسات وألوان" : lowest === highest ? formatEgpFromPiasters(lowest) : `${formatEgpFromPiasters(lowest)} – ${formatEgpFromPiasters(highest!)}`}</span>
+              <span className="pos-product-price">{formatEgpFromPiasters(product.sellingPricePiasters)}</span>
               <span className={`pos-product-stock${available === 0 ? " is-unavailable" : ""}`}>{available > 0 ? `متاح بالفرع: ${available}` : "غير متوفر بالفرع"}</span>
             </button>;
           })}

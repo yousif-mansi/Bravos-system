@@ -1,4 +1,6 @@
 import pg, { type Pool, type PoolClient, type QueryResultRow } from "pg";
+import { OPERATIONAL_STOCK_SCHEMA } from "@bravos/contracts";
+import { KNOWN_BACKUP_SCHEMAS, RECEIPT_NUMBERING_SCHEMA } from "../application/backup.ts";
 import type { BackupReaderSet, BackupSnapshotMetadata, BackupUnitOfWork } from "../application/ports.ts";
 
 export type BackupQueryable = {
@@ -79,7 +81,10 @@ async function readMetadata(client: PoolClient, readers: BackupReaderSet): Promi
   if (!capturedAt || !schemaVersion || !Number.isSafeInteger(sourceGeneration) || sourceGeneration < 0) {
     throw new Error("Backup metadata is incomplete.");
   }
-  return {
+  if (!(KNOWN_BACKUP_SCHEMAS as readonly string[]).includes(schemaVersion)) {
+    throw new Error(`Unsupported backup schema profile: ${schemaVersion}`);
+  }
+  const metadata: BackupSnapshotMetadata = {
     capturedAt: capturedAt.toISOString(),
     schemaVersion,
     stockVersion,
@@ -88,4 +93,9 @@ async function readMetadata(client: PoolClient, readers: BackupReaderSet): Promi
     returnsReturnReferenceSequence,
     sourceGeneration,
   };
+  // Only the receipt-numbering profile owns this sequence. Older databases must not be queried for it.
+  if (schemaVersion === RECEIPT_NUMBERING_SCHEMA || schemaVersion === OPERATIONAL_STOCK_SCHEMA) {
+    metadata.salesReceiptPrefixSequence = await readers.sales.readReceiptPrefixSequence();
+  }
+  return metadata;
 }

@@ -11,6 +11,7 @@ import type {
   PublicRuntimeDto,
 } from "@bravos/contracts/public";
 import { useCart } from "../cart/cart-provider";
+import { cartWithinSharedPool, lineQuantityCap } from "../cart/shared-pool";
 import { formatEgp } from "../public-catalog";
 import { type CheckoutFields, useCheckoutDraft } from "./checkout-draft";
 import { publicCheckoutErrorMessage } from "./public-error-message";
@@ -426,7 +427,7 @@ export default function CheckoutPage() {
     );
   }
 
-  const cartValid = cart.items.every((item) => item.orderable && item.quantity <= item.knownAvailableQuantity);
+  const cartValid = cartWithinSharedPool(cart.items);
   const areasMissing = !areasLoading && !areasError && areas.length === 0;
 
   return (
@@ -524,7 +525,7 @@ export default function CheckoutPage() {
             <article key={item.variantId}>
               <div><strong>{reviewed?.productNameAr ?? item.productNameAr}</strong><small>{reviewed?.sizeNameAr ?? item.sizeNameAr} · {reviewed?.colorNameAr ?? item.colorNameAr}</small></div>
               <span>{reviewed?.quantity ?? item.quantity} × {formatEgp(reviewed?.listedUnitPricePiasters ?? item.unitPricePiasters)}</span>
-              {!item.orderable || item.quantity > item.knownAvailableQuantity ? <p className="stock-warning">This quantity needs a change in the bag.</p> : null}
+              {!item.orderable || item.quantity > lineQuantityCap(cart.items, item.variantId) ? <p className="stock-warning">This quantity needs a change in the bag.</p> : null}
             </article>
           );})}
           <p><span>{quote && quoteKey === currentInputKey ? "Merchandise total before discount" : "Preliminary merchandise total"}</span><strong>{formatEgp(quote && quoteKey === currentInputKey ? quote.merchandiseOriginalPiasters : cart.items.reduce((sum, item) => sum + item.unitPricePiasters * item.quantity, 0))}</strong></p>

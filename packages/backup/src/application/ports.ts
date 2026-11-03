@@ -22,12 +22,19 @@ export type BackupInventoryReader = BackupTableReader & {
   readStockVersion(): Promise<string>;
 };
 
+export type BackupSequenceState = { lastValue: string; isCalled: boolean };
+
 export type BackupOnlineOrdersReader = BackupTableReader & {
-  readReferenceSequence(): Promise<{ lastValue: string; isCalled: boolean }>;
+  readReferenceSequence(): Promise<BackupSequenceState>;
 };
 
 export type BackupReferenceReader = BackupTableReader & {
-  readReferenceSequence(): Promise<{ lastValue: string; isCalled: boolean }>;
+  readReferenceSequence(): Promise<BackupSequenceState>;
+};
+
+// Receipt-prefix allocation is separate from the legacy POS reference sequence.
+export type BackupSalesReader = BackupReferenceReader & {
+  readReceiptPrefixSequence(): Promise<BackupSequenceState>;
 };
 
 export type BackupRestoreGenerationReader = {
@@ -39,7 +46,7 @@ export type BackupReaderSet = {
   catalog: BackupTableReader;
   inventory: BackupInventoryReader;
   receiving: BackupTableReader;
-  sales: BackupReferenceReader;
+  sales: BackupSalesReader;
   expenses: BackupTableReader;
   pricing: BackupTableReader;
   returns: BackupReferenceReader;
@@ -55,9 +62,11 @@ export type BackupSnapshotMetadata = {
   capturedAt: string;
   schemaVersion: string;
   stockVersion: string;
-  onlineOrderReferenceSequence: { lastValue: string; isCalled: boolean };
-  salesSaleReferenceSequence: { lastValue: string; isCalled: boolean };
-  returnsReturnReferenceSequence: { lastValue: string; isCalled: boolean };
+  onlineOrderReferenceSequence: BackupSequenceState;
+  salesSaleReferenceSequence: BackupSequenceState;
+  returnsReturnReferenceSequence: BackupSequenceState;
+  // Present for 036_receipt_numbering.sql. Historical profiles omit it; create and decode enforce that.
+  salesReceiptPrefixSequence?: BackupSequenceState;
   sourceGeneration: number;
 };
 
@@ -86,9 +95,11 @@ export type BackupManifest = {
   sourceGeneration: number | null;
   createdByStaffId: string;
   stockVersion: string;
-  onlineOrderReferenceSequence: { lastValue: string; isCalled: boolean };
-  salesSaleReferenceSequence?: { lastValue: string; isCalled: boolean };
-  returnsReturnReferenceSequence?: { lastValue: string; isCalled: boolean };
+  onlineOrderReferenceSequence: BackupSequenceState;
+  salesSaleReferenceSequence?: BackupSequenceState;
+  returnsReturnReferenceSequence?: BackupSequenceState;
+  // Present only on 036_receipt_numbering.sql. Older profiles must omit it.
+  salesReceiptPrefixSequence?: BackupSequenceState;
   identityPolicy: { preservesStableIds: true; preservesForeignKeys: true; regeneratesIds: false };
   idProvenance: {
     source: "database_primary_and_foreign_keys";

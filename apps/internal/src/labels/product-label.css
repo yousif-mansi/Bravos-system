@@ -49,7 +49,7 @@
   position: relative;
   background: #fff;
   color: #000;
-  min-height: 40mm;
+  min-height: 0;
   margin-bottom: 0.8rem;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -59,6 +59,7 @@
 .product-label-preview[aria-busy="true"] {
   color: #333;
   background: #fff;
+  min-height: 25mm;
 }
 
 .product-label-preview[aria-busy="true"] > p {
@@ -71,6 +72,10 @@
 
 .product-label-preview-host {
   min-width: 0;
+}
+
+.product-label-preview-host iframe {
+  display: block;
 }
 
 .product-label-preview[aria-busy="true"] .product-label-preview-host {

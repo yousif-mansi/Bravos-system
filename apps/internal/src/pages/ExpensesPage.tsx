@@ -1,6 +1,6 @@
 import { type FormEvent, useEffect, useMemo, useState } from "react";
 
-import type { ExpenseCategoryDto, ExpenseDto, ExpenseTotalsDto, WorkspaceDto } from "@bravos/contracts";
+import type { ExpenseCategoryDto, ExpenseDto, ExpenseTotalsDto, SupplierPurchaseDto, WorkspaceDto } from "@bravos/contracts";
 import {
   ApiError,
   changeExpense,
@@ -9,6 +9,7 @@ import {
   getExpenseTotals,
   listExpenseCategories,
   listExpenses,
+  listPurchases,
   updateExpenseCategory,
   type ExpenseWrite,
 } from "../api.ts";
@@ -46,6 +47,7 @@ export default function ExpensesPage({
   const [categories, setCategories] = useState<ExpenseCategoryDto[]>([]);
   const [expenses, setExpenses] = useState<ExpenseDto[]>([]);
   const [totals, setTotals] = useState<ExpenseTotalsDto | null>(null);
+  const [purchases, setPurchases] = useState<SupplierPurchaseDto[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [amount, setAmount] = useState("");
   const [expenseDate, setExpenseDate] = useState(todayCairoDate);
@@ -78,12 +80,13 @@ export default function ExpensesPage({
   const activeCategories = categories.filter((item) => item.active);
 
   async function refresh() {
-    const [nextCategories, nextExpenses, nextTotals] = await Promise.all([
-      listExpenseCategories(), listExpenses(), getExpenseTotals(),
+    const [nextCategories, nextExpenses, nextTotals, nextPurchases] = await Promise.all([
+      listExpenseCategories(), listExpenses(), getExpenseTotals(), manager ? listPurchases() : Promise.resolve([]),
     ]);
     setCategories(nextCategories);
     setExpenses(nextExpenses);
     setTotals(nextTotals);
+    setPurchases(nextPurchases);
     setSelectedId((current) => current && nextExpenses.some((item) => item.id === current) ? current : nextExpenses[0]?.id ?? null);
     if (!categoryId && nextCategories[0]) setCategoryId(nextCategories.find((item) => item.active)?.id ?? "");
   }
@@ -196,8 +199,8 @@ export default function ExpensesPage({
         <h1>المصروفات</h1>
       </header>
       {typeof navigator !== "undefined" && !navigator.onLine ? <div className="error" role="alert">تسجيل المصروفات يتطلب اتصالاً.</div> : null}
-      {error ? <div className="error" role="alert">{error}</div> : null}
-      {notice ? <div className="notice" role="status">{notice}</div> : null}
+      {error ? <div className="error point-feedback" role="alert">{error}</div> : null}
+      {notice ? <div className="notice point-feedback" role="status">{notice}</div> : null}
       {loading ? <p role="status">جارٍ تحميل المصروفات…</p> : null}
       {loadFailed ? <button type="button" className="secondary" disabled={loading} onClick={() => setLoadRevision((current) => current + 1)}>إعادة تحميل المصروفات</button> : null}
 
@@ -206,6 +209,27 @@ export default function ExpensesPage({
         <p className="expense-total">{formatEgpFromPiasters(totals?.totalPiasters ?? 0)}</p>
         {manager ? totals?.byBranch.map((item) => <p key={item.branch.id}>{item.branch.nameAr}: {formatEgpFromPiasters(item.totalPiasters)}</p>) : null}
       </section>
+
+      {manager ? (
+        <section className="card" aria-label="مشتريات الموردين">
+          <h2>مشتريات الموردين</h2>
+          <p className="muted">هذه مشتريات البضاعة نفسها، وليست مصروفاً تشغيلياً. لا تُجمع مع إجمالي المصروفات أعلاه.</p>
+          {purchases.length === 0 ? <p>لا توجد مشتريات موردين.</p> : (
+            <div className="staff-list">
+              {purchases.map((purchase) => (
+                <article className="staff-item" key={purchase.receiptId}>
+                  <p>{purchase.supplierNameAr ?? "بدون مورد"} — {purchase.receiptDate} — {formatEgpFromPiasters(purchase.totalCostPiasters)}</p>
+                  <ul>
+                    {purchase.products.map((product, index) => (
+                      <li key={`${purchase.receiptId}-${index}`}>{product.nameAr} — {product.quantity}</li>
+                    ))}
+                  </ul>
+                </article>
+              ))}
+            </div>
+          )}
+        </section>
+      ) : null}
 
       <div className="grid two expense-layout">
         <form className="card" aria-label="تسجيل مصروف" onSubmit={(event) => void submitExpense(event)}>
@@ -216,7 +240,7 @@ export default function ExpensesPage({
           <div className="field"><label htmlFor="expenseCategory">الفئة</label><select id="expenseCategory" value={categoryId} onChange={(event) => setCategoryId(event.target.value)} disabled={Boolean(pendingCreate)} required><option value="">اختر الفئة</option>{activeCategories.map((item) => <option key={item.id} value={item.id}>{item.nameAr}</option>)}</select></div>
           <div className="field"><label htmlFor="expenseDescription">الوصف</label><textarea id="expenseDescription" value={description} onChange={(event) => setDescription(event.target.value)} disabled={Boolean(pendingCreate)} required /></div>
           <div className="form-actions">
-            <button disabled={pending === "create"}>{pending === "create" ? "جارٍ الحفظ…" : pendingCreate ? "إعادة محاولة الحفظ" : "حفظ المصروف"}</button>
+            <button className="confirm" disabled={pending === "create"}>{pending === "create" ? "جارٍ الحفظ…" : pendingCreate ? "إعادة محاولة الحفظ" : "حفظ المصروف"}</button>
           </div>
         </form>
 
@@ -273,7 +297,7 @@ export default function ExpensesPage({
           {pendingChange ? <p className="muted">هناك تعديل غير مؤكد؛ ستتم إعادة المحاولة بنفس المعرّف.</p> : null}
           <div className="field"><label htmlFor="changeType">الإجراء</label><select id="changeType" value={changeType} disabled={Boolean(pendingChange)} onChange={(event) => setChangeType(event.target.value as "correction" | "cancellation")}><option value="correction">تصحيح</option><option value="cancellation">إلغاء</option></select></div>
           {changeType === "correction" ? <><div className="field"><label htmlFor="changeAmount">القيمة المصححة بالجنيه</label><input id="changeAmount" value={changeAmount} disabled={Boolean(pendingChange)} onChange={(event) => setChangeAmount(event.target.value)} /></div><div className="field"><label htmlFor="changeDate">التاريخ المصحح</label><input id="changeDate" type="date" value={changeDate} disabled={Boolean(pendingChange)} onChange={(event) => setChangeDate(event.target.value)} /></div><div className="field"><label htmlFor="changeCategory">الفئة المصححة</label><select id="changeCategory" value={changeCategoryId} disabled={Boolean(pendingChange)} onChange={(event) => setChangeCategoryId(event.target.value)}>{activeCategories.map((item) => <option key={item.id} value={item.id}>{item.nameAr}</option>)}</select></div><div className="field"><label htmlFor="changeDescription">الوصف المصحح</label><textarea id="changeDescription" value={changeDescription} disabled={Boolean(pendingChange)} onChange={(event) => setChangeDescription(event.target.value)} /></div></> : null}
-          <div className="field"><label htmlFor="changeReason">السبب</label><textarea id="changeReason" value={changeReason} disabled={Boolean(pendingChange)} onChange={(event) => setChangeReason(event.target.value)} required /></div><button className={changeType === "cancellation" ? "danger" : ""} disabled={pending === "change"}>{pending === "change" ? "جارٍ الحفظ…" : pendingChange ? "إعادة محاولة الإجراء" : "حفظ الإجراء"}</button>
+          <div className="field"><label htmlFor="changeReason">السبب</label><textarea id="changeReason" value={changeReason} disabled={Boolean(pendingChange)} onChange={(event) => setChangeReason(event.target.value)} required /></div><button className={changeType === "cancellation" ? "danger" : "warn"} disabled={pending === "change"}>{pending === "change" ? "جارٍ الحفظ…" : pendingChange ? "إعادة محاولة الإجراء" : "حفظ الإجراء"}</button>
         </form> : null}
       </section> : null}
 

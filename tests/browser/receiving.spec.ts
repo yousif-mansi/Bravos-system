@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
-import { openLookupLists } from "./support/open-lookup-lists";
+
+const WAREHOUSE_BRANCH_ID = "33333333-3333-4333-8333-333333333333";
 
 test("manager sees concise receipt facts and expands correction audit after a safe retry", async ({ page }) => {
   await page.goto("http://127.0.0.1:5174/login");
@@ -118,7 +119,6 @@ test("manager receives separate cost batches and cashier sees their branch quant
     variants: [{ sizeId: size.body.id, colorId: color.body.id, sellingPricePiastersOverride: null }],
   });
   expect(product.status).toBe(201);
-  const variantId = product.body.variants[0].id;
 
   await page.getByRole("link", { name: "استلام المخزون" }).click();
   await expect(page.getByRole("heading", { name: "استلام المخزون", exact: true })).toBeVisible();
@@ -127,15 +127,12 @@ test("manager receives separate cost batches and cashier sees their branch quant
   await form.getByLabel("تاريخ الاستلام").fill("2026-09-11");
   await form.getByRole("button", { name: "إضافة صنف" }).click();
   const products = form.getByLabel("المنتج", { exact: true });
-  const variants = form.getByLabel("المقاس واللون");
   const quantities = form.getByLabel("الكمية");
   const costs = form.getByLabel("تكلفة الشراء للجنيه");
   await products.nth(0).selectOption({ label: "PT-E2E — بنطلون تجريبي" });
-  await variants.nth(0).selectOption({ label: "32 / رمادي" });
   await quantities.nth(0).fill("10");
   await costs.nth(0).fill("100");
   await products.nth(1).selectOption({ label: "PT-E2E — بنطلون تجريبي" });
-  await variants.nth(1).selectOption({ label: "32 / رمادي" });
   await quantities.nth(1).fill("10");
   await costs.nth(1).fill("140");
   await form.getByRole("button", { name: "حفظ الاستلام" }).click();
@@ -150,16 +147,25 @@ test("manager receives separate cost batches and cashier sees their branch quant
   await expect(costBatches.getByText(/^المتبقي بالمخزون: 10 · حسب الفرع:/)).toHaveCount(2);
   await expect(costBatches.getByText(/الأصلية|الفعالة/)).toHaveCount(0);
   const lowStockRows = page.getByTestId("low-stock-list").locator("article").filter({ hasText: "PT-E2E" });
-  await expect(lowStockRows).toHaveCount(1);
-  await expect(lowStockRows).toContainText("الفرع: الفيوم — المتاح: 0");
+  await expect(lowStockRows).toHaveCount(2);
+  await expect(lowStockRows.filter({ hasText: "الفرع: الفيوم — المتاح: 0" })).toHaveCount(1);
+  await expect(lowStockRows.filter({ hasText: "الفرع: أبشواي — المتاح: 0" })).toHaveCount(1);
 
   const batches = await staffApi(page, "GET", "/api/internal/inventory/batches");
   expect(batches.status).toBe(200);
-  const ownBatches = batches.body.filter((batch: { variantId: string }) => batch.variantId === variantId);
+  const ownBatches = batches.body.filter((batch: { variant: { product: { code: string } } }) => batch.variant.product.code === "PT-E2E");
   expect(ownBatches).toHaveLength(2);
   expect(ownBatches.map((batch: { unitCostPiasters: number }) => batch.unitCostPiasters).sort((a: number, b: number) => a - b)).toEqual([
     10000, 14000,
   ]);
+  const transferred = await staffApi(page, "POST", "/api/internal/inventory/transfers", {
+    operationId: crypto.randomUUID(),
+    sourceBranchId: WAREHOUSE_BRANCH_ID,
+    destinationBranchId: (await staffApi(page, "GET", "/api/internal/workspace")).body.activeBranch.id,
+    productId: product.body.id,
+    quantity: 20,
+  });
+  expect(transferred.status, JSON.stringify(transferred.body)).toBe(201);
 
   await page.getByRole("button", { name: "تسجيل الخروج" }).click();
   await expect(page.getByRole("heading", { name: "تسجيل الدخول" })).toBeVisible();
@@ -176,10 +182,7 @@ test("manager receives separate cost batches and cashier sees their branch quant
   await lookupForm.getByRole("textbox", { name: "رمز المنتج" }).fill("PT-E2E");
   await lookupForm.getByRole("button", { name: "بحث" }).click();
   await expect(page.getByTestId("lookup-result")).toContainText("بنطلون تجريبي");
-  await openLookupLists(page);
-  await page.getByLabel("المقاس").selectOption({ label: "32" });
-  await page.getByLabel("اللون").selectOption({ label: "رمادي" });
-  await expect(page.getByTestId("available-quantity")).toHaveText("الكمية المتاحة: 20");
+  await expect(page.getByTestId("available-quantity")).toHaveText("الكمية المتاحة في الفرع: 20");
   await expect(page.getByTestId("lookup-result").getByText(/تكلفة|ربح|شراء/)).toHaveCount(0);
   const costLabels = page.getByText(/تكلفة شراء|تكلفة الوحدة|تكلفة الدفعات|دفعات التكلفة|مجمل ربح|ربح التشغيل/);
   await expect(costLabels, (await costLabels.allInnerTexts()).join(" | ")).toHaveCount(0);
@@ -216,7 +219,6 @@ test("lost receiving response retries the same operation without duplicating sto
   const form = page.getByRole("form", { name: "تسجيل إذن استلام" });
   await form.getByLabel("تاريخ الاستلام").fill("2026-09-11");
   await form.getByLabel("المنتج", { exact: true }).selectOption({ label: "SH-E2E — حذاء تجريبي" });
-  await form.getByLabel("المقاس واللون").selectOption({ label: "41 / بني" });
   await form.getByLabel("الكمية").fill("5");
   await form.getByLabel("تكلفة الشراء للجنيه").fill("80");
 
@@ -278,14 +280,13 @@ test("lost response then edit, reload and check result keep a single receiving e
     variants: [{ sizeId: size.body.id, colorId: color.body.id, sellingPricePiastersOverride: null }],
   });
   expect(product.status).toBe(201);
-  const variantId = product.body.variants[0].id;
+  const variantId = product.body.operationalVariantId as string;
 
   await page.getByRole("link", { name: "استلام المخزون" }).click();
   await expect(page.getByRole("heading", { name: "استلام المخزون", exact: true })).toBeVisible();
   const form = page.getByRole("form", { name: "تسجيل إذن استلام" });
   await form.getByLabel("تاريخ الاستلام").fill("2026-09-11");
   await form.getByLabel("المنتج", { exact: true }).selectOption({ label: "CT-E2E — معطف تجريبي" });
-  await form.getByLabel("المقاس واللون").selectOption({ label: "42R / زيتي استلام" });
   await form.getByLabel("الكمية").fill("5");
   await form.getByLabel("تكلفة الشراء للجنيه").fill("90");
 
@@ -380,7 +381,6 @@ test("a rejected receiving operation keeps its identity and can be retried after
   const form = page.getByRole("form", { name: "تسجيل إذن استلام" });
   await form.getByLabel("تاريخ الاستلام").fill("2026-09-11");
   await form.getByLabel("المنتج", { exact: true }).selectOption({ label: "HT-E2E — قبعة تجريبية" });
-  await form.getByLabel("المقاس واللون").selectOption({ label: "واحد / بيج" });
   await form.getByLabel("الكمية").fill("2");
   await form.getByLabel("تكلفة الشراء للجنيه").fill("40");
 
@@ -445,14 +445,13 @@ test("two synchronous submit events before digest settles keep one receiving eff
     variants: [{ sizeId: size.body.id, colorId: color.body.id, sellingPricePiastersOverride: null }],
   });
   expect(product.status).toBe(201);
-  const variantId = product.body.variants[0].id;
+  const variantId = product.body.operationalVariantId as string;
 
   await page.getByRole("link", { name: "استلام المخزون" }).click();
   await expect(page.getByRole("heading", { name: "استلام المخزون", exact: true })).toBeVisible();
   const form = page.getByRole("form", { name: "تسجيل إذن استلام" });
   await form.getByLabel("تاريخ الاستلام").fill("2026-09-11");
   await form.getByLabel("المنتج", { exact: true }).selectOption({ label: "DS-E2E — حزام مزدوج" });
-  await form.getByLabel("المقاس واللون").selectOption({ label: "حزام / بني مزدوج" });
   await form.getByLabel("الكمية").fill("4");
   await form.getByLabel("تكلفة الشراء للجنيه").fill("55");
 
@@ -523,7 +522,6 @@ test("lost request before send retries the same identity without duplicating sto
   const form = page.getByRole("form", { name: "تسجيل إذن استلام" });
   await form.getByLabel("تاريخ الاستلام").fill("2026-09-11");
   await form.getByLabel("المنتج", { exact: true }).selectOption({ label: "LB-E2E — جورب إرسال" });
-  await form.getByLabel("المقاس واللون").selectOption({ label: "مراسل / رمادي إرسال" });
   await form.getByLabel("الكمية").fill("6");
   await form.getByLabel("تكلفة الشراء للجنيه").fill("20");
 
@@ -585,14 +583,13 @@ test("pending receiving identity survives closing the page and reopening a fresh
     variants: [{ sizeId: size.body.id, colorId: color.body.id, sellingPricePiastersOverride: null }],
   });
   expect(product.status).toBe(201);
-  const variantId = product.body.variants[0].id;
+  const variantId = product.body.operationalVariantId as string;
 
   await page.getByRole("link", { name: "استلام المخزون" }).click();
   await expect(page.getByRole("heading", { name: "استلام المخزون", exact: true })).toBeVisible();
   const form = page.getByRole("form", { name: "تسجيل إذن استلام" });
   await form.getByLabel("تاريخ الاستلام").fill("2026-09-11");
   await form.getByLabel("المنتج", { exact: true }).selectOption({ label: "CL-E2E — وشاح إغلاق" });
-  await form.getByLabel("المقاس واللون").selectOption({ label: "وشاح / كحلي إغلاق" });
   await form.getByLabel("الكمية").fill("7");
   await form.getByLabel("تكلفة الشراء للجنيه").fill("30");
 
@@ -685,8 +682,8 @@ test("an already-open second tab cannot overwrite or clear another tab's uncerta
     variants: [{ sizeId: size.body.id, colorId: colorB.body.id, sellingPricePiastersOverride: null }],
   });
   expect(productB.status).toBe(201);
-  const variantA = productA.body.variants[0].id;
-  const variantB = productB.body.variants[0].id;
+  const variantA = productA.body.operationalVariantId as string;
+  const variantB = productB.body.operationalVariantId as string;
 
   await page.getByRole("link", { name: "استلام المخزون" }).click();
   await expect(page.getByRole("heading", { name: "استلام المخزون", exact: true })).toBeVisible();
@@ -697,14 +694,12 @@ test("an already-open second tab cannot overwrite or clear another tab's uncerta
   const formA = page.getByRole("form", { name: "تسجيل إذن استلام" });
   await formA.getByLabel("تاريخ الاستلام").fill("2026-09-11");
   await formA.getByLabel("المنتج", { exact: true }).selectOption({ label: "TA-E2E — منتج التبويب أ" });
-  await formA.getByLabel("المقاس واللون").selectOption({ label: "تبويب / أحمر تبويب" });
   await formA.getByLabel("الكمية").fill("5");
   await formA.getByLabel("تكلفة الشراء للجنيه").fill("70");
 
   const formB = pageB.getByRole("form", { name: "تسجيل إذن استلام" });
   await formB.getByLabel("تاريخ الاستلام").fill("2026-09-11");
   await formB.getByLabel("المنتج", { exact: true }).selectOption({ label: "TB-E2E — منتج التبويب ب" });
-  await formB.getByLabel("المقاس واللون").selectOption({ label: "تبويب / أزرق تبويب" });
   await formB.getByLabel("الكمية").fill("8");
   await formB.getByLabel("تكلفة الشراء للجنيه").fill("80");
 
@@ -796,22 +791,20 @@ test("tab A keeps its frozen operation after tab B recovers and clears the share
     variants: [{ sizeId: size.body.id, colorId: color.body.id, sellingPricePiastersOverride: null }],
   });
   expect(product.status).toBe(201);
-  const variantId = product.body.variants[0].id;
+  const variantId = product.body.operationalVariantId as string;
 
   await page.getByRole("link", { name: "استلام المخزون" }).click();
   await expect(page.getByRole("heading", { name: "استلام المخزون", exact: true })).toBeVisible();
   await page.setViewportSize({ width: 1440, height: 1000 });
   await armNativeSubmitCounter(page);
   const intake = page.getByRole("form", { name: "إضافة منتج إلى المخزون" });
-  await intake.getByRole("radio", { name: "مقاس ولون جديدان لمنتج موجود" }).check();
+  await intake.getByRole("radio", { name: "كمية لمنتج موجود" }).check();
   await expect(page.getByTestId("intake-browse-filters")).toBeVisible();
   const existingProduct = intake.getByLabel("اختر المنتج الموجود برمزه");
   await existingProduct.selectOption(product.body.id);
-  await intake.locator("select[id^='new-size-']").selectOption(size.body.id);
-  await intake.locator("select[id^='new-color-']").selectOption(color.body.id);
-  await intake.locator("input[id^='new-qty-']").fill("1");
-  await intake.locator("input[id^='new-cost-']").fill("10");
-  await expect(intake.getByRole("button", { name: "حفظ التركيبة والكمية" })).toBeEnabled();
+  await intake.getByLabel("الكمية").fill("1");
+  await intake.getByLabel("تكلفة الشراء بالجنيه").fill("10");
+  await expect(intake.getByRole("button", { name: "حفظ المنتج والكمية" })).toBeEnabled();
   const intakeQuery = page.locator("#intake-browse-query");
   await intakeQuery.fill("لا-يطابق-FA");
   const intakeSubmits = await nativeSubmitCount(page, "إضافة منتج إلى المخزون");
@@ -819,9 +812,7 @@ test("tab A keeps its frozen operation after tab B recovers and clears the share
   expect(await nativeSubmitCount(page, "إضافة منتج إلى المخزون")).toBe(intakeSubmits);
   await expect(existingProduct).toHaveValue(product.body.id);
   await expect(existingProduct.locator("optgroup[label='الاختيار الحالي'] option")).toHaveAttribute("value", product.body.id);
-  await expect(intake.locator("select[id^='new-size-']")).toHaveValue(size.body.id);
-  await expect(intake.locator("select[id^='new-color-']")).toHaveValue(color.body.id);
-  await expect(intake.locator("input[id^='new-qty-']")).toHaveValue("1");
+  await expect(intake.getByLabel("الكمية")).toHaveValue("1");
   await page.getByTestId("intake-browse-filters").getByRole("button", { name: "مسح التصفية" }).click();
   await expect(intakeQuery).toHaveValue("");
   await intake.getByRole("radio", { name: "منتج جديد" }).check();
@@ -832,7 +823,6 @@ test("tab A keeps its frozen operation after tab B recovers and clears the share
   const formA = page.getByRole("form", { name: "تسجيل إذن استلام" });
   await formA.getByLabel("تاريخ الاستلام").fill("2026-09-11");
   await formA.getByLabel("المنتج", { exact: true }).selectOption({ label: "FA-E2E — منتج التجميد" });
-  await formA.getByLabel("المقاس واللون").selectOption({ label: "مجمد / ذهبي مجمد" });
   await formA.getByLabel("الكمية").fill("6");
   await formA.getByLabel("تكلفة الشراء للجنيه").fill("45");
   await page.locator("#receipt-browse-query").fill("لا-يطابق-FA");
@@ -841,7 +831,6 @@ test("tab A keeps its frozen operation after tab B recovers and clears the share
   await page.locator("#receipt-browse-query").press("Enter");
   expect(await nativeSubmitCount(page, "تسجيل إذن استلام")).toBe(receiptSubmits);
   await expect(formA.getByLabel("المنتج", { exact: true })).toHaveValue(product.body.id);
-  await expect(formA.getByLabel("المقاس واللون")).toHaveValue(variantId);
   await expect(formA.getByLabel("الكمية")).toHaveValue("6");
   await expect(formA.getByLabel("المنتج", { exact: true }).locator("optgroup[label='الاختيار الحالي'] option")).toHaveAttribute("value", product.body.id);
   await page.getByTestId("receipt-browse-filters").getByRole("button", { name: "مسح التصفية" }).click();
@@ -873,8 +862,6 @@ test("tab A keeps its frozen operation after tab B recovers and clears the share
   await page.locator("#receipt-browse-query").fill("لا-يطابق-FA");
   await expect(formA.getByLabel("المنتج", { exact: true })).toBeDisabled();
   await expect(formA.getByLabel("المنتج", { exact: true })).toHaveValue(product.body.id);
-  await expect(formA.getByLabel("المقاس واللون")).toBeDisabled();
-  await expect(formA.getByLabel("المقاس واللون")).toHaveValue(variantId);
   await expect(formA.getByLabel("الكمية")).toHaveValue("6");
   await expect(page.getByTestId("pending-operation")).toBeVisible();
   await expect(formA.getByRole("button", { name: "إعادة المحاولة" })).toBeEnabled();
@@ -886,7 +873,6 @@ test("tab A keeps its frozen operation after tab B recovers and clears the share
   expect(operationIds).toHaveLength(operationsBeforeEnter);
   expect(await readPendingMarkerSnapshot(page)).toEqual(markerBeforeEnter);
   await expect(formA.getByLabel("المنتج", { exact: true })).toHaveValue(product.body.id);
-  await expect(formA.getByLabel("المقاس واللون")).toHaveValue(variantId);
   await expect(formA.getByLabel("الكمية")).toBeDisabled();
   await expect(formA.getByLabel("الكمية")).toHaveValue("6");
   await expect(page.getByTestId("pending-operation")).toBeVisible();
@@ -972,7 +958,7 @@ test("a later same-account receive keeps its marker when the recovered tab retri
     variants: [{ sizeId: size.body.id, colorId: color.body.id, sellingPricePiastersOverride: null }],
   });
   expect(product.status).toBe(201);
-  const variantId = product.body.variants[0].id;
+  const variantId = product.body.operationalVariantId as string;
 
   await page.getByRole("link", { name: "استلام المخزون" }).click();
   await expect(page.getByRole("heading", { name: "استلام المخزون", exact: true })).toBeVisible();
@@ -1040,7 +1026,6 @@ async function fillSameAccountReceive(target: Page, quantity: string) {
   const form = target.getByRole("form", { name: "تسجيل إذن استلام" });
   await form.getByLabel("تاريخ الاستلام").fill("2026-09-11");
   await form.getByLabel("المنتج", { exact: true }).selectOption({ label: "SS-E2E — تحقق الحساب المشترك" });
-  await form.getByLabel("المقاس واللون").selectOption({ label: "مقاس نفس الحساب / لون نفس الحساب" });
   await form.getByLabel("الكمية").fill(quantity);
   await form.getByLabel("تكلفة الشراء للجنيه").fill("45");
   return form;

@@ -184,21 +184,30 @@ test("manager completes an exchange from Return details and sees only the actual
   const size = await staffApi(page, "POST", "/api/internal/catalog/sizes", { nameAr: "L استبدال" });
   const originalColor = await staffApi(page, "POST", "/api/internal/catalog/colors", { nameAr: "أصلي استبدال" });
   const replacementColor = await staffApi(page, "POST", "/api/internal/catalog/colors", { nameAr: "بديل استبدال" });
-  const product = await staffApi(page, "POST", "/api/internal/catalog/products", {
-    code: "EXC-E2E",
-    nameAr: "قميص استبدال المتصفح",
+  const originalProduct = await staffApi(page, "POST", "/api/internal/catalog/products", {
+    code: "EXC-E2E-ORIG",
+    nameAr: "قميص استبدال أصلي",
     descriptionAr: "تدفق استبدال حقيقي",
     categoryId: category.body.id,
     defaultSellingPricePiasters: 28000,
     publication: "hidden",
     imageRefs: [],
-    variants: [
-      { sizeId: size.body.id, colorId: originalColor.body.id, sellingPricePiastersOverride: 28000 },
-      { sizeId: size.body.id, colorId: replacementColor.body.id, sellingPricePiastersOverride: 40000 },
-    ],
+    variants: [{ sizeId: size.body.id, colorId: originalColor.body.id, sellingPricePiastersOverride: null }],
   });
-  const originalVariantId = product.body.variants.find((variant: { sellingPricePiasters: number }) => variant.sellingPricePiasters === 28000).id;
-  const replacementVariantId = product.body.variants.find((variant: { sellingPricePiasters: number }) => variant.sellingPricePiasters === 40000).id;
+  const replacementProduct = await staffApi(page, "POST", "/api/internal/catalog/products", {
+    code: "EXC-E2E-REPL",
+    nameAr: "قميص استبدال بديل",
+    descriptionAr: "تدفق استبدال حقيقي",
+    categoryId: category.body.id,
+    defaultSellingPricePiasters: 40000,
+    publication: "hidden",
+    imageRefs: [],
+    variants: [{ sizeId: size.body.id, colorId: replacementColor.body.id, sellingPricePiastersOverride: null }],
+  });
+  expect(originalProduct.status, JSON.stringify(originalProduct.body)).toBe(201);
+  expect(replacementProduct.status, JSON.stringify(replacementProduct.body)).toBe(201);
+  const originalVariantId = originalProduct.body.variants[0].id as string;
+  const replacementVariantId = replacementProduct.body.variants[0].id as string;
   const receipt = await staffApi(page, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(), receiptDate: "2026-09-01", branchId,
     lines: [
@@ -221,7 +230,7 @@ test("manager completes an exchange from Return details and sees only the actual
     endsOn: cairoDate(),
     active: true,
     allowCoupon: true,
-    productIds: [product.body.id],
+    productIds: [originalProduct.body.id, replacementProduct.body.id],
     categoryIds: [],
   });
   const source = (await staffApi(page, "GET", `/api/internal/returns/sources?reference=${original.body.id}`)).body[0];

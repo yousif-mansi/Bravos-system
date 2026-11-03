@@ -5,7 +5,10 @@ import type {
   InventorySettingsDto,
   LowStockVariantDto,
   StockCorrectionDto,
+  ProductLocationStockDto,
+  StockLocationDto,
   StockPauseDto,
+  StockTransferDto,
   StockReconciliationDto,
   StockReconciliationCaseDto,
   VariantIdentityDto,
@@ -110,6 +113,7 @@ export type DiscrepancyRecord = {
 
 export type AllocateResult = {
   allocations: AllocationRecord[];
+  allocationIds: string[];
   allocatedQuantity: number;
   unallocatedQuantity: number;
 };
@@ -220,7 +224,7 @@ export type InventoryTransaction = {
     operationId: string;
     payloadFingerprint: string;
     actorStaffId: string;
-    kind?: "stock_correction" | "stock_reconciliation";
+    kind?: "stock_correction" | "stock_reconciliation" | "transfer";
   }): Promise<ClaimedOperation>;
   receiveBatches(input: {
     branchId: string;
@@ -259,7 +263,7 @@ export type InventoryTransaction = {
     operationId: string;
     payloadFingerprint: string;
     actorStaffId: string;
-    lines: Array<{ lineId: string; variantId: string; quantity: number }>;
+    lines: Array<{ lineId: string; variantId: string; productId: string; quantity: number }>;
   }): Promise<ProtectOnlineOrderResult>;
   disposeProtectedOnlineOrder(input: {
     branchId: string;
@@ -284,10 +288,13 @@ export type InventoryTransaction = {
     branchId: string;
     operationId: string;
     variantId: string;
+    productId?: string;
     quantity: number;
     recordedAt: Date;
     allowPartial: boolean;
   }): Promise<AllocateResult>;
+  // Same connection as allocation. A pool query here deadlocks when two sales share a two-connection pool.
+  operationalProductIds(variantIds: string[]): Promise<Map<string, string>>;
   allocateHeldFromOldestAvailable(input: {
     branchId: string;
     operationId: string;
@@ -314,6 +321,7 @@ export type InventoryTransaction = {
     branchId: string;
     operationId: string;
     variantId: string;
+    productId?: string;
     quantity: number;
     recordedAt: Date;
   }): Promise<AllocateResult>;
@@ -355,6 +363,8 @@ export type InventoryTransaction = {
   unresolvedDiscrepancyQuantity(): Promise<number>;
   quantitiesFor(branchId: string, variantIds: string[]): Promise<Map<string, number>>;
   quantitiesByBranchFor(variantIds: string[]): Promise<Map<string, Map<string, number>>>;
+  productQuantitiesFor(branchId: string, productIds: string[]): Promise<Map<string, number>>;
+  productQuantitiesByRetailBranch(productIds: string[]): Promise<Map<string, Map<string, number>>>;
   referencedVariantIds(variantIds: string[]): Promise<string[]>;
   listAvailableBatchesFifo(branchId: string, variantId: string): Promise<ReceivedBatchRecord[]>;
   getBatchStates(batchIds: string[]): Promise<BatchRecord[]>;
@@ -362,6 +372,24 @@ export type InventoryTransaction = {
   bumpStockVersion(): Promise<number>;
   currentStockVersion(): Promise<number>;
   assertStockMutationAllowed(): Promise<void>;
+  transferProduct(input: {
+    operationId: string;
+    sourceBranchId: string;
+    destinationBranchId: string;
+    productId: string;
+    quantity: number;
+    actorStaffId: string;
+    payloadFingerprint: string;
+  }): Promise<{
+    id: string;
+    operationId: string;
+    sourceBranchId: string;
+    destinationBranchId: string;
+    productId: string;
+    quantity: number;
+    recordedAt: Date;
+    created: boolean;
+  }>;
   recordTillSnapshot(input: {
     deviceId: string;
     staffId: string;
@@ -377,7 +405,11 @@ export type InventoryTransaction = {
 export type InventoryReadStore = {
   quantitiesFor(branchId: string, variantIds: string[]): Promise<Map<string, number>>;
   quantitiesByBranchFor(variantIds: string[]): Promise<Map<string, Map<string, number>>>;
+  productQuantitiesFor(branchId: string, productIds: string[]): Promise<Map<string, number>>;
+  productQuantitiesByRetailBranch(productIds: string[]): Promise<Map<string, Map<string, number>>>;
+  productQuantitiesByLocation(productIds: string[]): Promise<Map<string, Map<string, number>>>;
   listBranchIds(): Promise<string[]>;
+  listStockLocations(): Promise<StockLocationDto[]>;
   currentStockVersion(): Promise<number>;
   referencedVariantIds(variantIds: string[]): Promise<string[]>;
   listBatches(): Promise<BatchRecord[]>;
@@ -401,6 +433,10 @@ export type InventoryReadStore = {
   ): Promise<VariantLowStockDto>;
   clearVariantThreshold(variantId: string, actorStaffId: string): Promise<VariantLowStockDto>;
   listVariantThresholds(): Promise<Map<string, number | null>>;
+};
+
+export type InventoryUnitOfWork = {
+  run<T>(work: (tx: InventoryTransaction) => Promise<T>): Promise<T>;
 };
 
 export type InventoryServices = {
@@ -438,6 +474,9 @@ export type InventoryServices = {
     auth: VerifiedAuth | null,
     input: unknown,
   ): Promise<{ value: StockReconciliationDto; created: boolean }>;
+  listStockLocations(auth: VerifiedAuth | null): Promise<StockLocationDto[]>;
+  listProductLocationStock(auth: VerifiedAuth | null): Promise<ProductLocationStockDto[]>;
+  transfer(auth: VerifiedAuth | null, input: unknown): Promise<StockTransferDto>;
 };
 
 export type CountCoordinationRecord = Omit<CountCoordinationDto, "startedBy" | "finishedBy"> & {

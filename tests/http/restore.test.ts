@@ -72,7 +72,7 @@ test("stages, pauses and activates twice, keeps a paid old-generation sale for o
   expect(oldSnapshot).toMatchObject({ status: 201, body: { restoreGeneration: 0, restorePause: null } });
   const firstArchive = await downloadBackup(manager);
   expect((await decodeBackupArchive(firstArchive, ARCHIVE_PASSWORD)).manifest).toMatchObject({
-    schemaVersion: "035_return_reason.sql",
+    schemaVersion: "037_operational_stock.sql",
     sourceGeneration: 0,
   });
 
@@ -232,6 +232,13 @@ test("stages, pauses and activates twice, keeps a paid old-generation sale for o
     status: 201, body: { reference: "POS-999999" },
   });
   await built.pool.query("SELECT setval('returns_return_reference_number_seq', 999999, TRUE)");
+  const disasterRegistrationId = crypto.randomUUID();
+  await built.pool.query(
+    `INSERT INTO sales_receipt_registration (id, device_id, prefix, created_at, created_by_staff_id, restore_generation)
+     VALUES ($1,$2,'9007199254740993',now(),$3,2)`,
+    [disasterRegistrationId, crypto.randomUUID(), sourceOwnerId],
+  );
+  await built.pool.query("SELECT setval('sales_receipt_prefix_seq', '9007199254740993', true)");
   const sourceCounts = await businessCounts(built.pool);
   const sourceMaxSaleReference = (await built.pool.query<{ max_number: string }>(
     "SELECT MAX(substring(reference FROM '^POS-([0-9]+)$')::bigint)::text AS max_number FROM sales_sale",
@@ -259,6 +266,10 @@ test("stages, pauses and activates twice, keeps a paid old-generation sale for o
   expect((await built.pool.query<{ generation: string }>("SELECT current_generation::text AS generation FROM restore_runtime")).rows[0]!.generation).toBe("3");
   expect(sourceMaxSaleReference).toBe("999999");
   expect((await built.pool.query<{ id: string }>(`SELECT id FROM "user" WHERE username = 'owner'`)).rows[0]!.id).toBe(sourceOwnerId);
+  expect((await built.pool.query<{ id: string }>("SELECT id FROM sales_receipt_registration")).rows.map((row) => row.id)).toEqual([disasterRegistrationId]);
+  expect((await built.pool.query<{ last_value: string; is_called: boolean }>(
+    "SELECT last_value::text AS last_value, is_called FROM sales_receipt_prefix_seq",
+  )).rows[0]).toEqual({ last_value: "9007199254740994", is_called: false });
   expect(await businessCounts(built.pool)).toEqual(sourceCounts);
   expect((await built.pool.query<{ count: string }>("SELECT count(*)::text FROM account")).rows[0]!.count).toBe("0");
   const restoredManager = await recoverOwner("fresh-owner-pass-2");
@@ -341,10 +352,21 @@ test("wrong passwords, damaged files, invalid links, unsupported schemas and una
     .toMatchObject({ status: 400, body: { error: { code: "VALIDATION" } } });
   await expectUnpaused();
 
-  // Authenticated data from an older schema must fail with a compatibility error before staging.
-  const legacy = await decodeBackupArchive(archive, ARCHIVE_PASSWORD);
-  legacy.manifest.schemaVersion = "033_human_references.sql";
-  const legacyPreview = await createPreview(manager, Buffer.from(await createNodeBackupCrypto().protect(legacy, ARCHIVE_PASSWORD)));
+  // Authenticated 033 data must fail compatibility before staging. A relabeled 036 payload
+  // never reaches that check, so export the real profile and restore the current schema first.
+  const factsBeforeLegacy = await businessCounts(built.pool);
+  expect(await revertLastMigration(built.pool)).toBe("037_operational_stock.sql");
+  expect(await revertLastMigration(built.pool)).toBe("036_receipt_numbering.sql");
+  expect(await revertLastMigration(built.pool)).toBe("035_return_reason.sql");
+  expect(await revertLastMigration(built.pool)).toBe("034_order_recognition_branch.sql");
+  const legacyBytes = await downloadBackup(manager);
+  const legacy = await decodeBackupArchive(legacyBytes, ARCHIVE_PASSWORD);
+  expect(legacy.manifest.schemaVersion).toBe("033_human_references.sql");
+  expect(legacy.manifest).not.toHaveProperty("salesReceiptPrefixSequence");
+  expect(legacy.data.sales).not.toHaveProperty("sales_receipt_registration");
+  await applyMigrations(built.pool);
+  expect(await businessCounts(built.pool)).toEqual(factsBeforeLegacy);
+  const legacyPreview = await createPreview(manager, legacyBytes);
   expect(legacyPreview, JSON.stringify(legacyPreview.body)).toMatchObject({
     status: 400,
     body: { error: { code: "VALIDATION", messageAr: expect.stringContaining("إصدار مخطط النسخة") } },
@@ -485,14 +507,26 @@ test.each(["035", "034"])("restores an authentic %s return profile with readable
   });
   expect(draft.status, JSON.stringify(draft.body)).toBe(201);
   // Generate an actual old-schema archive, rather than relabeling current rows.
+  expect(await revertLastMigration(built.pool)).toBe("037_operational_stock.sql");
+  expect(await revertLastMigration(built.pool)).toBe("036_receipt_numbering.sql");
   if (profile === "034") expect(await revertLastMigration(built.pool)).toBe("035_return_reason.sql");
   const bytes = await downloadBackup(manager);
   const decoded = await decodeBackupArchive(bytes, ARCHIVE_PASSWORD);
   expect(decoded.manifest.schemaVersion).toBe(profile === "034" ? "034_order_recognition_branch.sql" : "035_return_reason.sql");
+  expect(decoded.manifest).not.toHaveProperty("salesReceiptPrefixSequence");
+  expect(decoded.data.sales).not.toHaveProperty("sales_receipt_registration");
+  for (const sale of decoded.data.sales.sales_sale ?? []) expect(sale).not.toHaveProperty("receipt_identity");
   const archived = decoded.data.returns.returns_return![0]!;
   if (profile === "034") expect(archived).not.toHaveProperty("reason");
   else expect(archived.reason).toBe("المقاس غير مناسب");
-  if (profile === "034") await applyMigrations(built.pool);
+  await applyMigrations(built.pool);
+
+  const injectedIdentity = structuredClone(decoded);
+  injectedIdentity.data.sales.sales_sale![0]!.receipt_identity = null;
+  resealSection(injectedIdentity, "sales");
+  const rejectedIdentity = await createPreview(manager, Buffer.from(await createNodeBackupCrypto().protect(injectedIdentity, ARCHIVE_PASSWORD)));
+  expect(rejectedIdentity.status, JSON.stringify(rejectedIdentity.body)).toBe(400);
+  expect((await api(manager, "GET", "/api/internal/restore/state")).body.pause).toBeNull();
 
   // Reject malformed old-profile rows before pausing any writes.
   if (profile === "034") {
@@ -528,10 +562,251 @@ test.each(["035", "034"])("restores an authentic %s return profile with readable
   expect(activated.status, JSON.stringify(activated.body)).toBe(201);
   const restored = await built.pool.query<{ reference: string; reason: string | null }>("SELECT reference,reason FROM returns_return WHERE id=$1", [draft.body.id]);
   expect(restored.rows[0]).toEqual({ reference: draft.body.reference, reason: profile === "034" ? null : "المقاس غير مناسب" });
+  expect((await built.pool.query("SELECT receipt_identity FROM sales_sale WHERE id=$1", [original.body.id])).rows[0]!.receipt_identity).toBeNull();
+  expect((await built.pool.query("SELECT 1 FROM sales_receipt_registration")).rowCount).toBe(0);
+  expect((await built.pool.query("SELECT last_value::text AS last_value, is_called FROM sales_receipt_prefix_seq")).rows[0]).toEqual({
+    last_value: "1",
+    is_called: false,
+  });
   const recovered = await recoverOwner("reason-restored-owner-pass-1");
   const activationReplay = await api(recovered, "POST", `/api/internal/restore/previews/${preview.body.id}/activate`, activation);
   expect(activationReplay.status, JSON.stringify(activationReplay.body)).toBe(200);
   expect((await api(recovered, "GET", `/api/internal/returns/${draft.body.id}`)).body.reason).toBe(profile === "034" ? null : "المقاس غير مناسب");
+}, 180_000);
+
+test("receipt registrations stay immutable across checkpoint and activation, and the prefix high water does not rewind", async () => {
+  const manager = await signIn("owner", "owner-pass-1");
+  await api(manager, "POST", "/api/internal/active-branch", { branchId });
+  const variantId = await seedVariant(manager);
+  expect((await receive(manager, variantId, 3)).status).toBe(201);
+  const employee = await api(manager, "POST", "/api/internal/staff", {
+    loginName: "receipt.cashier",
+    displayName: "منشئ الإيصال",
+    password: "receipt-cashier-pass-1",
+    grants: [{ branchId, cashier: true, orderRepresentative: false }],
+  });
+  expect(employee.status).toBe(201);
+  const ownerId = (await built.pool.query<{ id: string }>(`SELECT id FROM "user" WHERE username = 'owner'`)).rows[0]!.id;
+  const hugePrefix = "9007199254740993";
+  const hugeSequence = "9223372036854775808";
+  const assignedReference = `BRV-042-${hugeSequence}`;
+  const saleIds = [crypto.randomUUID(), crypto.randomUUID()];
+  for (const saleId of saleIds) {
+    const sale = await api(manager, "POST", "/api/internal/sales", {
+      saleId, operationId: crypto.randomUUID(), physicallyCompleted: true,
+      occurredAt: new Date().toISOString(), employeeDiscountPiasters: 0, lines: [{ variantId, quantity: 1 }],
+    });
+    expect(sale.status, JSON.stringify(sale.body)).toBe(201);
+  }
+  const unusedRegistrationId = crypto.randomUUID();
+  const assignedRegistrationId = crypto.randomUUID();
+  const deviceId = crypto.randomUUID();
+  await built.pool.query(
+    `INSERT INTO sales_receipt_registration (id, device_id, prefix, created_at, created_by_staff_id, restore_generation)
+     VALUES ($1,$2,$3,now(),$4,0), ($5,$6,'42',now(),$7,0)`,
+    [unusedRegistrationId, crypto.randomUUID(), hugePrefix, employee.body.id, assignedRegistrationId, deviceId, ownerId],
+  );
+  await built.pool.query("UPDATE sales_sale SET receipt_identity = $2::jsonb WHERE id = $1", [saleIds[0], JSON.stringify({
+    status: "assigned", registrationId: assignedRegistrationId, deviceId, prefix: "42", sequence: hugeSequence, reference: assignedReference,
+  })]);
+  await built.pool.query("SELECT setval('sales_receipt_prefix_seq', $1::bigint, true)", [hugePrefix]);
+  const beforeSequence = (await built.pool.query<{ last_value: string; is_called: boolean }>(
+    "SELECT last_value::text AS last_value, is_called FROM sales_receipt_prefix_seq",
+  )).rows[0];
+
+  const bytes = await downloadBackup(manager);
+  const decoded = await decodeBackupArchive(bytes, ARCHIVE_PASSWORD);
+  expect(decoded.manifest.schemaVersion).toBe("037_operational_stock.sql");
+  expect(decoded.data.sales.sales_sale.find((row) => row.id === saleIds[0])?.receipt_identity).toMatchObject({
+    sequence: hugeSequence, reference: assignedReference,
+  });
+  const withoutCreator = structuredClone(decoded);
+  withoutCreator.data.identity.identity_actor = withoutCreator.data.identity.identity_actor!
+    .filter((row) => row.id !== employee.body.id);
+  withoutCreator.data.identity.staff_profile = withoutCreator.data.identity.staff_profile!
+    .filter((row) => row.staff_id !== employee.body.id);
+  withoutCreator.data.identity.staff_branch_grant = withoutCreator.data.identity.staff_branch_grant!
+    .filter((row) => row.staff_id !== employee.body.id);
+  withoutCreator.data.identity.staff_operation = (withoutCreator.data.identity.staff_operation ?? [])
+    .filter((row) => row.staff_id !== employee.body.id);
+  withoutCreator.data.sales.sales_receipt_registration = withoutCreator.data.sales.sales_receipt_registration!
+    .filter((row) => row.id !== unusedRegistrationId);
+  resealSection(withoutCreator, "identity");
+  resealSection(withoutCreator, "sales");
+  const creatorArchive = Buffer.from(await createNodeBackupCrypto().protect(withoutCreator, ARCHIVE_PASSWORD));
+  const decodedCreator = await decodeBackupArchive(creatorArchive, ARCHIVE_PASSWORD);
+  expect(decodedCreator.data.identity.identity_actor!.some((row) => row.id === employee.body.id)).toBe(false);
+  expect(decodedCreator.data.sales.sales_receipt_registration.map((row) => row.id)).toEqual([assignedRegistrationId]);
+
+  const duplicateArchive = structuredClone(decoded);
+  duplicateArchive.data.sales.sales_receipt_registration!.push({
+    ...duplicateArchive.data.sales.sales_receipt_registration!.find((row) => row.prefix === hugePrefix)!,
+    id: crypto.randomUUID(),
+  });
+  resealSection(duplicateArchive, "sales");
+  const duplicatePreview = await createPreview(manager, Buffer.from(await createNodeBackupCrypto().protect(duplicateArchive, ARCHIVE_PASSWORD)));
+  expect(duplicatePreview.status, JSON.stringify(duplicatePreview.body)).toBe(400);
+  expect((await api(manager, "GET", "/api/internal/restore/state")).body.pause).toBeNull();
+
+  const collision = structuredClone(decoded);
+  const collisionRegistrations = collision.data.sales.sales_receipt_registration!;
+  const unusedIndex = collisionRegistrations.findIndex((row) => row.id === unusedRegistrationId);
+  const replacementRegistrationId = crypto.randomUUID();
+  collisionRegistrations[unusedIndex] = { ...collisionRegistrations[unusedIndex]!, id: replacementRegistrationId };
+  resealSection(collision, "sales");
+  const collisionBytes = Buffer.from(await createNodeBackupCrypto().protect(collision, ARCHIVE_PASSWORD));
+  const decodedCollision = await decodeBackupArchive(collisionBytes, ARCHIVE_PASSWORD);
+  expect(decodedCollision.data.sales.sales_receipt_registration.map((row) => row.id).sort()).toEqual(
+    [assignedRegistrationId, replacementRegistrationId].sort(),
+  );
+  const collisionPreview = await createPreview(manager, collisionBytes);
+  expect(collisionPreview.status, JSON.stringify(collisionPreview.body)).toBe(201);
+  expect(collisionPreview.body.blockingReasons.join(" ")).toContain("بادئات الإيصالات");
+  expect(collisionPreview.body.differences).toEqual(expect.arrayContaining([
+    expect.objectContaining({ section: "sales", conflictingRecordCount: expect.any(Number) }),
+  ]));
+  expect(collisionPreview.body.differences.find((difference: { section: string }) => difference.section === "sales").conflictingRecordCount)
+    .toBeGreaterThan(0);
+  expect((await api(manager, "POST", `/api/internal/restore/previews/${collisionPreview.body.id}/cancel`)).status).toBe(200);
+  await expectUnpaused();
+
+  const changed = structuredClone(decoded);
+  const changedRow = changed.data.sales.sales_receipt_registration!.find((row) => row.id === assignedRegistrationId)!;
+  changedRow.restore_generation = "1";
+  resealSection(changed, "sales");
+  const changedPreview = await createPreview(manager, Buffer.from(await createNodeBackupCrypto().protect(changed, ARCHIVE_PASSWORD)));
+  expect(changedPreview.status, JSON.stringify(changedPreview.body)).toBe(201);
+  expect(changedPreview.body.blockingReasons.join(" ")).toContain("بادئات الإيصالات");
+  expect((await api(manager, "POST", `/api/internal/restore/previews/${changedPreview.body.id}/cancel`)).status).toBe(200);
+  await expectUnpaused();
+
+  const missingCreator = structuredClone(decoded);
+  const orphan = missingCreator.data.sales.sales_receipt_registration!.find((row) => row.id === unusedRegistrationId)!;
+  orphan.created_by_staff_id = crypto.randomUUID();
+  resealSection(missingCreator, "sales");
+  const orphanPreview = await createPreview(manager, Buffer.from(await createNodeBackupCrypto().protect(missingCreator, ARCHIVE_PASSWORD)));
+  expect(orphanPreview.status, JSON.stringify(orphanPreview.body)).toBe(400);
+  expect((await api(manager, "GET", "/api/internal/restore/state")).body.pause).toBeNull();
+
+  const failedPreview = await createPreview(manager, creatorArchive);
+  expect(failedPreview.status, JSON.stringify(failedPreview.body)).toBe(201);
+  const failedReady = await acknowledgeCheckpoint(manager, failedPreview.body.id);
+  expect(failedReady.body.status).toBe("ready");
+  const stagingName = (await built.pool.query<{ name: string }>(
+    "SELECT staging_database_name AS name FROM restore_preview WHERE id = $1", [failedPreview.body.id],
+  )).rows[0]!.name;
+  const stage = new Pool({ connectionString: cluster.connectionString(stagingName), max: 1 });
+  try {
+    await stage.query("DELETE FROM online_order_settings");
+  } finally {
+    await stage.end();
+  }
+  const failed = await api(manager, "POST", `/api/internal/restore/previews/${failedPreview.body.id}/activate`, {
+    operationId: crypto.randomUUID(), previewFingerprint: failedReady.body.previewFingerprint,
+  });
+  expect(failed).toMatchObject({ status: 400, body: { error: { code: "VALIDATION" } } });
+  expect((await built.pool.query("SELECT last_value::text AS last_value, is_called FROM sales_receipt_prefix_seq")).rows[0]).toEqual(beforeSequence);
+  expect((await built.pool.query("SELECT id FROM sales_receipt_registration ORDER BY id")).rows.map((row) => row.id).sort())
+    .toEqual([assignedRegistrationId, unusedRegistrationId].sort());
+  expect((await api(manager, "POST", `/api/internal/restore/previews/${failedPreview.body.id}/cancel`)).status).toBe(200);
+  await expectUnpaused();
+
+  const preview = await createPreview(manager, creatorArchive);
+  expect(preview.status, JSON.stringify(preview.body)).toBe(201);
+  expect(preview.body.blockingReasons).toEqual([]);
+  const ready = await acknowledgeCheckpoint(manager, preview.body.id);
+  expect(ready.body.status).toBe("ready");
+  const laterRegistrationId = crypto.randomUUID();
+  await built.pool.query(
+    `INSERT INTO sales_receipt_registration (id, device_id, prefix, created_at, created_by_staff_id, restore_generation)
+     VALUES ($1,$2,'77',now(),$3,0)`,
+    [laterRegistrationId, crypto.randomUUID(), employee.body.id],
+  );
+  const activation = await api(manager, "POST", `/api/internal/restore/previews/${preview.body.id}/activate`, {
+    operationId: crypto.randomUUID(), previewFingerprint: ready.body.previewFingerprint,
+  });
+  expect(activation.status, JSON.stringify(activation.body)).toBe(201);
+  expect((await built.pool.query<{ id: string }>("SELECT id FROM sales_receipt_registration")).rows.map((row) => row.id).sort())
+    .toEqual([assignedRegistrationId, laterRegistrationId, unusedRegistrationId].sort());
+  expect((await built.pool.query<{ id: string; created_by_staff_id: string }>(
+    "SELECT id, created_by_staff_id FROM sales_receipt_registration WHERE id = $1",
+    [laterRegistrationId],
+  )).rows[0]).toEqual({ id: laterRegistrationId, created_by_staff_id: employee.body.id });
+  expect((await built.pool.query<{ id: string }>(`SELECT id FROM "user" WHERE username = 'receipt.cashier'`)).rows[0]!.id).toBe(employee.body.id);
+  expect((await built.pool.query<{ staff_id: string; branch_id: string }>(
+    "SELECT staff_id, branch_id FROM staff_branch_grant WHERE staff_id = $1",
+    [employee.body.id],
+  )).rows).toEqual([{ staff_id: employee.body.id, branch_id: branchId }]);
+  expect((await built.pool.query("SELECT receipt_identity->>'sequence' AS sequence FROM sales_sale WHERE id = $1", [saleIds[0]])).rows[0]!.sequence)
+    .toBe(hugeSequence);
+  expect((await built.pool.query("SELECT last_value::text AS last_value, is_called FROM sales_receipt_prefix_seq")).rows[0]).toEqual({
+    last_value: "9007199254740994",
+    is_called: false,
+  });
+  const storedManifest = (await built.pool.query<{ schema_version: string }>(
+    "SELECT archive_schema_version AS schema_version FROM restore_preview WHERE id = $1", [preview.body.id],
+  )).rows[0]!.schema_version;
+  expect(storedManifest).toBe("037_operational_stock.sql");
+}, 180_000);
+
+test("activation rejects a live prefix claimed by a different registration and leaves that registration in place", async () => {
+  const manager = await signIn("owner", "owner-pass-1");
+  const ownerId = (await built.pool.query<{ id: string }>(`SELECT id FROM "user" WHERE username = 'owner'`)).rows[0]!.id;
+  const counts = await businessCounts(built.pool);
+  const registrationA = crypto.randomUUID();
+  const decoded = await decodeBackupArchive(await downloadBackup(manager), ARCHIVE_PASSWORD);
+  decoded.data.sales.sales_receipt_registration = [{
+    id: registrationA,
+    device_id: crypto.randomUUID(),
+    prefix: "10",
+    created_at: "2026-10-29 12:00:00+00",
+    created_by_staff_id: ownerId,
+    restore_generation: "0",
+  }];
+  decoded.manifest.salesReceiptPrefixSequence = { lastValue: "10", isCalled: true };
+  resealSection(decoded, "sales");
+  const archive = Buffer.from(await createNodeBackupCrypto().protect(decoded, ARCHIVE_PASSWORD));
+  const checked = await decodeBackupArchive(archive, ARCHIVE_PASSWORD);
+  expect(checked.data.sales.sales_receipt_registration.map((row) => row.id)).toEqual([registrationA]);
+  expect(checked.manifest.salesReceiptPrefixSequence).toEqual({ lastValue: "10", isCalled: true });
+
+  const preview = await createPreview(manager, archive);
+  expect(preview.status, JSON.stringify(preview.body)).toBe(201);
+  expect(preview.body.blockingReasons).toEqual([]);
+  const ready = await acknowledgeCheckpoint(manager, preview.body.id);
+  expect(ready.body.status, JSON.stringify(ready.body)).toBe("ready");
+
+  const registrationB = crypto.randomUUID();
+  await built.pool.query(
+    `INSERT INTO sales_receipt_registration (id, device_id, prefix, created_at, created_by_staff_id, restore_generation)
+     VALUES ($1,$2,'10',now(),$3,0)`,
+    [registrationB, crypto.randomUUID(), ownerId],
+  );
+  await built.pool.query("SELECT setval('sales_receipt_prefix_seq', '10', true)");
+  const sequence = (await built.pool.query<{ last_value: string; is_called: boolean }>(
+    "SELECT last_value::text AS last_value, is_called FROM sales_receipt_prefix_seq",
+  )).rows[0];
+
+  const activated = await api(manager, "POST", `/api/internal/restore/previews/${preview.body.id}/activate`, {
+    operationId: crypto.randomUUID(),
+    previewFingerprint: ready.body.previewFingerprint,
+  });
+  expect(activated, JSON.stringify(activated.body)).toMatchObject({
+    status: 400,
+    body: { error: { code: "VALIDATION", messageAr: expect.stringContaining("بادئة واحدة") } },
+  });
+  expect((await api(manager, "GET", "/api/internal/restore/state")).body).toMatchObject({
+    pause: { previewId: preview.body.id },
+  });
+  expect(await businessCounts(built.pool)).toEqual(counts);
+  expect((await built.pool.query<{ id: string }>(`SELECT id FROM "user" WHERE username = 'owner'`)).rows[0]!.id).toBe(ownerId);
+  expect((await built.pool.query<{ id: string }>("SELECT id FROM sales_receipt_registration")).rows.map((row) => row.id)).toEqual([registrationB]);
+  expect((await built.pool.query<{ last_value: string; is_called: boolean }>(
+    "SELECT last_value::text AS last_value, is_called FROM sales_receipt_prefix_seq",
+  )).rows[0]).toEqual(sequence);
+  expect((await api(manager, "POST", `/api/internal/restore/previews/${preview.body.id}/cancel`)).status).toBe(200);
+  await expectUnpaused();
+  expect((await built.pool.query<{ id: string }>("SELECT id FROM sales_receipt_registration")).rows.map((row) => row.id)).toEqual([registrationB]);
 }, 180_000);
 
 async function startApp(databaseName: string, displayName: string, password: string) {
@@ -578,14 +853,17 @@ async function businessCounts(pool: Pool) {
   return result.rows[0];
 }
 
-function resealSection(archive: Awaited<ReturnType<typeof decodeBackupArchive>>, sectionName: "sales" | "returns") {
+function resealSection(archive: Awaited<ReturnType<typeof decodeBackupArchive>>, sectionName: "sales" | "returns" | "identity") {
   const section = archive.data[sectionName];
+  const names = Object.keys(section).sort();
+  const sorted = Object.fromEntries(names.map((name) => [name, section[name]!])) as typeof section;
+  archive.data[sectionName] = sorted;
   const manifest = archive.manifest.sections.find((candidate) => candidate.name === sectionName)!;
-  const count = Object.values(section).reduce((sum, rows) => sum + rows.length, 0);
+  const count = names.reduce((sum, name) => sum + sorted[name]!.length, 0);
   archive.manifest.totalRecordCount += count - manifest.recordCount;
   manifest.recordCount = count;
-  manifest.tables = Object.entries(section).map(([name, rows]) => ({ name, recordCount: rows.length }));
-  manifest.sha256 = createHash("sha256").update(canonicalJson(section), "utf8").digest("hex");
+  manifest.tables = names.map((name) => ({ name, recordCount: sorted[name]!.length }));
+  manifest.sha256 = createHash("sha256").update(canonicalJson(sorted), "utf8").digest("hex");
 }
 
 function canonicalJson(value: unknown): string {
@@ -618,7 +896,7 @@ async function acknowledgeCheckpoint(manager: CookieSession, previewId: string) 
   expect(response.statusCode, response.body).toBe(200);
   const archiveSha256 = String(response.headers["x-bravos-backup-sha256"]);
   expect(createHash("sha256").update(response.rawPayload).digest("hex")).toBe(archiveSha256);
-  expect((await decodeBackupArchive(response.rawPayload, CHECKPOINT_PASSWORD)).manifest.schemaVersion).toBe("035_return_reason.sql");
+  expect((await decodeBackupArchive(response.rawPayload, CHECKPOINT_PASSWORD)).manifest.schemaVersion).toBe("037_operational_stock.sql");
   return api(manager, "POST", `/api/internal/restore/previews/${previewId}/pre-restore-backup/acknowledgement`, { archiveSha256 });
 }
 

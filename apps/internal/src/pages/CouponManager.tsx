@@ -140,7 +140,6 @@ export function CouponManager({ products, categories }: Props) {
 
   return <section className="card stacked-form" aria-label="إدارة الكوبونات">
     <h2>الكوبونات</h2>
-    <p className="muted">يُحتسب الاستخدام عند إتمام البيع فقط.</p>
     {error ? <div className="error" role="alert">{error}</div> : null}
     {notice ? <div className="notice" role="status">{notice}</div> : null}
     {listStale && refreshError ? <p className="error" role="alert">{refreshError}</p> : null}

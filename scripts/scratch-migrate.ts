@@ -49,6 +49,8 @@ try {
       "033_human_references.sql",
       "034_order_recognition_branch.sql",
       "035_return_reason.sql",
+      "036_receipt_numbering.sql",
+      "037_operational_stock.sql",
     ];
     if (first.join(",") !== expectedMigrations.join(",") || afterApply.join(",") !== first.join(",")) {
       throw new Error(`Scratch apply did not record multiple migrations: ${first.join(",")}`);

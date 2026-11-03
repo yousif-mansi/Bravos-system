@@ -352,8 +352,8 @@ export default function OffersPage({
       <header className="page-hero">
         <h1>العروض التلقائية</h1>
       </header>
-      {error ? <div className="error" role="alert">{error}</div> : null}
-      {notice ? <div className="notice" role="status">{notice}</div> : null}
+      {error ? <div className="error point-feedback" role="alert">{error}</div> : null}
+      {notice ? <div className="notice point-feedback" role="status">{notice}</div> : null}
       {listStale && refreshError ? <p className="error" role="alert">{refreshError}</p> : null}
       {listStale ? <button type="button" className="secondary" aria-busy={action === "refresh"} disabled={action !== null} onClick={() => void reloadOffers()}>{action === "refresh" ? "جارٍ تحديث القائمة…" : "إعادة تحميل العروض"}</button> : null}
 
@@ -393,7 +393,6 @@ export default function OffersPage({
             <div className="field"><label htmlFor="rewardQuantity">عدد وحدات المكافأة</label><input id="rewardQuantity" inputMode="numeric" value={form.rewardQuantity} onChange={(event) => setForm({ ...form, rewardQuantity: event.target.value })} /></div>
             <div className="field"><label htmlFor="rewardPercentage">نسبة خصم المكافأة</label><input id="rewardPercentage" inputMode="decimal" value={form.rewardPercentage} onChange={(event) => setForm({ ...form, rewardPercentage: event.target.value })} /></div>
           </div>
-          <p className="muted">100٪ تعني أن وحدة المكافأة مجانية. تُختار أرخص مكافأة ممكنة مع إبقاء وحدات الشراء منفصلة.</p>
           <fieldset className="offer-scope"><legend>منتجات الشراء</legend>{products.map((product) => <label key={product.id}><input type="checkbox" checked={form.buyProductIds.includes(product.id)} onChange={(event) => toggle("buyProductIds", product.id, event.target.checked)} /> {product.code} — {product.nameAr}</label>)}</fieldset>
           <fieldset className="offer-scope"><legend>تصنيفات الشراء</legend>{categories.map((category) => <label key={category.id}><input type="checkbox" checked={form.buyCategoryIds.includes(category.id)} onChange={(event) => toggle("buyCategoryIds", category.id, event.target.checked)} /> {category.nameAr}</label>)}</fieldset>
           <fieldset className="offer-scope"><legend>منتجات المكافأة</legend>{products.map((product) => <label key={product.id}><input type="checkbox" checked={form.rewardProductIds.includes(product.id)} onChange={(event) => toggle("rewardProductIds", product.id, event.target.checked)} /> {product.code} — {product.nameAr}</label>)}</fieldset>

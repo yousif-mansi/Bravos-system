@@ -911,6 +911,48 @@ test("returns lookup finds physical orders by phone or readable order number whi
   expect(byDate.body[0]).toMatchObject({ source: { id: anonymous.body.id }, customerPhone: null });
 });
 
+test("manager lookup by customer receipt reference works across branches and cashiers stay forbidden", async () => {
+  const manager = await signIn("owner", "owner-pass-1");
+  await api(manager, "POST", "/api/internal/active-branch", { branchId: abshwayId });
+  const product = await seedProduct(manager, [12000]);
+  await receive(manager, product.variantIds[0]!, 2, 4000);
+  const deviceId = crypto.randomUUID();
+  const registrationId = crypto.randomUUID();
+  const registered = await api(manager, "POST", "/api/internal/sales/pos-snapshots", { deviceId, receiptRegistrationId: registrationId });
+  expect(registered.status).toBe(201);
+  const sold = await sale(manager, {
+    occurredAt: "2026-09-15T12:00:00.000Z",
+    deviceId,
+    receiptClaim: {
+      registrationId,
+      deviceId,
+      prefix: "1",
+      sequence: "1",
+      reference: "BRV-001-000001",
+    },
+    lines: [{ variantId: product.variantIds[0]!, quantity: 1 }],
+  });
+  expect(sold.body.receiptReference).toBe("BRV-001-000001");
+  await api(manager, "POST", "/api/internal/active-branch", { branchId: fayoumId });
+  const found = await api(manager, "GET", "/api/internal/returns/sources?reference=BRV-001-000001");
+  expect(found.status).toBe(200);
+  expect(found.body).toHaveLength(1);
+  expect(found.body[0]).toMatchObject({
+    source: { id: sold.body.id },
+    reference: sold.body.reference,
+    receiptReference: "BRV-001-000001",
+  });
+  expect(found.body[0].receiptNumberingConflict).toBeUndefined();
+  await api(manager, "POST", "/api/internal/staff", {
+    loginName: "cashier.receipt.lookup",
+    displayName: "كاشير البحث",
+    password: "staff-pass-82",
+    grants: [{ branchId: abshwayId, cashier: true, orderRepresentative: false }],
+  });
+  const cashier = await signIn("cashier.receipt.lookup", "staff-pass-82");
+  expect((await api(cashier, "GET", "/api/internal/returns/sources?reference=BRV-001-000001")).status).toBe(403);
+});
+
 test("a partial sellable return spanning FIFO costs restores each original batch without averaging", async () => {
   const manager = await signIn("owner", "owner-pass-1");
   await api(manager, "POST", "/api/internal/active-branch", { branchId: abshwayId });
@@ -1127,11 +1169,22 @@ async function receive(session: Session, variantId: string, quantity: number, un
   return result.body;
 }
 
-async function sale(session: Session, input: { occurredAt: string; customerName?: string; customerPhone?: string; employeeDiscountPiasters?: number; lines: Array<{ variantId: string; quantity: number }> }) {
+async function sale(session: Session, input: {
+  occurredAt: string;
+  customerName?: string;
+  customerPhone?: string;
+  employeeDiscountPiasters?: number;
+  deviceId?: string;
+  receiptClaim?: { registrationId: string; deviceId: string; prefix: string; sequence: string; reference: string };
+  lines: Array<{ variantId: string; quantity: number }>;
+}) {
   const result = await api(session, "POST", "/api/internal/sales", {
     saleId: crypto.randomUUID(), operationId: crypto.randomUUID(), physicallyCompleted: true,
     occurredAt: input.occurredAt, customerName: input.customerName, customerPhone: input.customerPhone,
-    employeeDiscountPiasters: input.employeeDiscountPiasters ?? 0, lines: input.lines,
+    employeeDiscountPiasters: input.employeeDiscountPiasters ?? 0,
+    ...(input.deviceId ? { deviceId: input.deviceId } : {}),
+    ...(input.receiptClaim ? { receiptClaim: input.receiptClaim } : {}),
+    lines: input.lines,
   });
   expect(result.status, JSON.stringify(result.body)).toBe(201);
   return result;

@@ -20,6 +20,7 @@ import type { AuthenticatedStaff, VerifiedAuth } from "@bravos/identity";
 import type { AllocationRecord, DiscrepancyRecord, InventoryTransaction } from "@bravos/inventory";
 import type { CouponUsageTransaction } from "@bravos/pricing";
 import type { VariantLineAllocation } from "../domain/discount.ts";
+import type { ParsedReceiptClaim, ReceiptIdentity } from "../domain/receipt-number.ts";
 
 export type { VerifiedAuth };
 
@@ -50,6 +51,7 @@ export type ListedPriceBasis = {
   productId: string;
   categoryId: string;
   listedUnitPricePiasters: number;
+  minimumUnitPricePiasters: number | null;
   identity: VariantIdentityDto;
 };
 
@@ -112,6 +114,8 @@ export type PriceSnapshotPrice = {
   productId: string;
   categoryId: string;
   listedUnitPricePiasters: number;
+  // Absent or null on a snapshot issued before the floor existed. Zero is a real floor.
+  minimumUnitPricePiasters?: number | null;
 };
 
 export type PriceSnapshotRecord = {
@@ -155,6 +159,7 @@ export type SaleLineWrite = {
   automaticOfferDiscountPiasters: number;
   couponDiscountPiasters: number;
   employeeDiscountPiasters: number;
+  acceptedMinimumUnitPiasters?: number | null;
   allocatedQuantity: number;
   unallocatedQuantity: number;
   lineIndex: number;
@@ -197,6 +202,8 @@ export type SaleRecord = {
   recoveredAt: Date | null;
   sourceDeviceId: string | null;
   sourceSnapshotId: string | null;
+  /** Loaded receipt metadata. Absent until a completion attaches a claim. */
+  receiptIdentity?: ReceiptIdentity | null;
   lines: SaleLineWrite[];
 };
 
@@ -284,6 +291,21 @@ export type SaleStore = {
   listCompleted(): Promise<SaleRecord[]>;
   listCompletedForStaff(staffId: string, branchIds: string[]): Promise<SaleRecord[]>;
   referencedVariantIds(variantIds: string[]): Promise<string[]>;
+  registerReceiptPrefix(input: {
+    id: string;
+    deviceId: string;
+    staffId: string;
+    restoreGeneration: number;
+  }): Promise<{ registrationId: string; deviceId: string; prefix: string }>;
+  /**
+   * Persist numbering metadata for a sale row that already exists in this transaction.
+   * A conflict or a mismatched replay does not change the paid sale. An assigned reference stays reserved.
+   */
+  attachReceiptClaim(input: {
+    saleId: string;
+    claim: ParsedReceiptClaim;
+    sourceDeviceId: string | null;
+  }): Promise<SaleRecord>;
 };
 
 // Supplied by the restore feature at composition. Reading it holds the shared restore barrier
@@ -373,6 +395,65 @@ export type PhysicalSaleSourceSearch = {
   reference?: string; phone?: string; date?: string; branchId?: string; amountPiasters?: number;
   limit?: number; after?: { receivedAt: string; id: string; channel: "physical" | "online" };
 };
+export type PhysicalSaleSourceCandidate = {
+  id: string;
+  receivedAtKey: string;
+  receiptReference?: string;
+  receiptNumberingConflict?: true;
+};
+
+export type PhysicalSaleReceiptProjection = {
+  id: string;
+  receiptReference?: string;
+  receiptNumberingConflict?: true;
+};
+
 export type PhysicalSaleSourceCandidateReader = {
-  list(search: PhysicalSaleSourceSearch): Promise<Array<{ id: string; receivedAtKey: string }>>;
+  list(search: PhysicalSaleSourceSearch): Promise<PhysicalSaleSourceCandidate[]>;
+  projections(ids: string[]): Promise<PhysicalSaleReceiptProjection[]>;
+};
+
+export type CustomerRecord = {
+  id: string;
+  normalizedPhone: string;
+  displayName: string;
+};
+
+export type PhysicalPaidPurchase = {
+  sourceId: string;
+  reference: string;
+  paidAt: Date;
+  lines: Array<{ variantId: string; quantity: number }>;
+};
+
+export type CustomerListQuery = {
+  query: string;
+  digits: string;
+  limit: number;
+  after: { displayName: string; id: string } | null;
+};
+
+/** Sale-owned customer identity and completed physical purchases. Does not read online orders. */
+export type CustomerDirectory = {
+  findByPhone(normalizedPhone: string): Promise<CustomerRecord | null>;
+  getById(id: string): Promise<CustomerRecord | null>;
+  list(input: CustomerListQuery): Promise<CustomerRecord[]>;
+  listPhysicalPurchases(customer: CustomerRecord, from: string, to: string): Promise<PhysicalPaidPurchase[]>;
+};
+
+/**
+ * Delivered online purchases for one already-normalized phone.
+ * Implemented by online orders and injected at composition so sales never reads those tables.
+ */
+export type PaidOnlinePurchaseReader = {
+  listDeliveredPurchases(
+    normalizedPhone: string,
+    from: string,
+    to: string,
+  ): Promise<Array<{
+    sourceId: string;
+    reference: string;
+    paidAt: Date;
+    products: Array<{ nameAr: string; optionText: string | null; quantity: number }>;
+  }>>;
 };

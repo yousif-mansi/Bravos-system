@@ -16,7 +16,8 @@ import {
   UnauthenticatedError,
 } from "@bravos/identity";
 import { CatalogValidationError, DuplicateProductCodeError, ReferencedVariantError } from "../domain/errors.ts";
-import { assertPiasters, resolvedSellingPricePiasters } from "../domain/money.ts";
+import { OPERATIONAL_COLOR_ID, OPERATIONAL_SIZE_ID } from "@bravos/contracts";
+import { assertPiasters } from "../domain/money.ts";
 import { validateProductImage } from "../domain/media.ts";
 import {
   assertDescription,
@@ -55,6 +56,7 @@ const PRODUCT_KEYS = new Set([
   "descriptionAr",
   "categoryId",
   "defaultSellingPricePiasters",
+  "minimumSellingPricePiasters",
   "publication",
   "imageRefs",
   "sizeGuideAr",
@@ -68,6 +70,12 @@ export function unstockedAvailability(): AvailabilityReader {
       return new Map(variantIds.map((id) => [id, 0]));
     },
     async quantitiesByBranchFor() {
+      return new Map();
+    },
+    async productQuantitiesFor(_branchId, productIds) {
+      return new Map(productIds.map((id) => [id, 0]));
+    },
+    async productQuantitiesByRetailBranch() {
       return new Map();
     },
   };
@@ -119,12 +127,12 @@ export function createCatalogServices(ports: {
     return { ...current, branchId };
   }
 
-  async function publicQuantitiesFor(variantIds: string[]): Promise<Map<string, number>> {
-    const byBranch = await availability.quantitiesByBranchFor(variantIds);
+  async function sharedRetailQuantities(productIds: string[]): Promise<Map<string, number>> {
+    const byBranch = await availability.productQuantitiesByRetailBranch(productIds);
     const visible = new Map<string, number>();
     for (const branch of byBranch.values()) {
-      for (const [variantId, quantity] of branch) {
-        visible.set(variantId, Math.max(visible.get(variantId) ?? 0, quantity));
+      for (const [productId, quantity] of branch) {
+        visible.set(productId, Math.max(visible.get(productId) ?? 0, quantity));
       }
     }
     return visible;
@@ -285,23 +293,28 @@ export function createCatalogServices(ports: {
       if (!product) {
         throw new NotFoundError("المنتج غير موجود.");
       }
-      const quantities = await availability.quantitiesFor(branchId, product.variants.map((variant) => variant.id));
-      return toCashierLookup(product, quantities);
+      const [quantities, pools] = await Promise.all([
+        availability.quantitiesFor(branchId, product.variants.map((variant) => variant.id)),
+        availability.productQuantitiesFor(branchId, [product.id]),
+      ]);
+      return toCashierLookup(product, quantities, pools.get(product.id) ?? 0);
     },
 
     async listCashierCatalog(auth: VerifiedAuth | null): Promise<CashierProductLookupDto[]> {
       const { branchId } = await requireCashier(auth);
       const products = await ports.store.listProducts();
       const ids = products.flatMap((product) => product.variants.map((variant) => variant.id));
-      const quantities = await availability.quantitiesFor(branchId, ids);
-      return products.map((product) => toCashierLookup(product, quantities));
+      const [quantities, pools] = await Promise.all([
+        availability.quantitiesFor(branchId, ids),
+        availability.productQuantitiesFor(branchId, products.map((product) => product.id)),
+      ]);
+      return products.map((product) => toCashierLookup(product, quantities, pools.get(product.id) ?? 0));
     },
 
     async listPublicProducts(): Promise<PublicProductDto[]> {
       const products = await ports.store.listPublishedProducts();
-      const ids = products.flatMap((product) => product.variants.map((variant) => variant.id));
-      const quantities = await publicQuantitiesFor(ids);
-      return products.map((product) => toPublicProduct(product, quantities));
+      const shared = await sharedRetailQuantities(products.map((product) => product.id));
+      return products.map((product) => toPublicProduct(product, shared.get(product.id) ?? 0));
     },
 
     async browsePublicProducts(input: { categoryId?: unknown }): Promise<PublicCatalogBrowseDto> {
@@ -312,12 +325,11 @@ export function createCatalogServices(ports: {
         nameAr: product.category.nameAr,
       }])).values()].sort((left, right) => left.nameAr.localeCompare(right.nameAr, "ar"));
       const matching = products.filter((product) => !categoryId || product.category.id === categoryId);
-      const ids = matching.flatMap((product) => product.variants.map((variant) => variant.id));
-      const quantities = await publicQuantitiesFor(ids);
+      const shared = await sharedRetailQuantities(matching.map((product) => product.id));
       return {
         categories,
         products: matching.map((product) => {
-          const detail = toPublicProduct(product, quantities);
+          const detail = toPublicProduct(product, shared.get(product.id) ?? 0);
           const prices = detail.variants.map((variant) => variant.sellingPricePiasters);
           return {
             id: detail.id,
@@ -337,8 +349,8 @@ export function createCatalogServices(ports: {
       if (!product) {
         throw new NotFoundError("المنتج غير موجود.");
       }
-      const quantities = await publicQuantitiesFor(product.variants.map((variant) => variant.id));
-      return toPublicProduct(product, quantities);
+      const shared = await sharedRetailQuantities([product.id]);
+      return toPublicProduct(product, shared.get(product.id) ?? 0);
     },
 
     async getPublicMedia(refValue: unknown) {
@@ -370,34 +382,26 @@ function optionalBrowseCategory(value: unknown): string | null {
   return assertUuid(value, "التصنيف المحدد غير صالح.");
 }
 
-function toPublicProduct(
-  product: ManagerProductDto,
-  quantities: Map<string, number>,
-): PublicProductDto {
+function toPublicProduct(product: ManagerProductDto, sharedAvailableQuantity: number): PublicProductDto {
   const comingSoon = product.publication === "coming_soon";
-  const variants = product.variants.filter((variant) => variant.onlineVisible).map((variant) => {
-    const availableQuantity = Math.max(0, quantities.get(variant.id) ?? 0);
-    return {
-      id: variant.id,
-      size: variant.size,
-      color: variant.color,
-      sellingPricePiasters: resolvedSellingPricePiasters(
-        product.defaultSellingPricePiasters,
-        variant.sellingPricePiastersOverride,
-      ),
-      availableQuantity,
-      orderable: !comingSoon && availableQuantity > 0,
-    };
-  });
-  const hasStock = variants.some((variant) => variant.availableQuantity > 0);
+  const shared = Math.max(0, sharedAvailableQuantity);
+  const variants = product.variants.filter((variant) => variant.onlineVisible).map((variant) => ({
+    id: variant.id,
+    size: variant.size,
+    color: variant.color,
+    sellingPricePiasters: product.defaultSellingPricePiasters,
+    availableQuantity: shared,
+    orderable: !comingSoon && shared > 0,
+  }));
   return {
     id: product.id,
     nameAr: product.nameAr,
     descriptionAr: product.descriptionAr,
     category: { id: product.category.id, nameAr: product.category.nameAr },
     publication: product.publication === "coming_soon" ? "coming_soon" : "available",
-    availability: comingSoon ? "coming_soon" : hasStock ? "in_stock" : "out_of_stock",
-    orderable: !comingSoon && hasStock,
+    availability: comingSoon ? "coming_soon" : shared > 0 ? "in_stock" : "out_of_stock",
+    orderable: !comingSoon && shared > 0,
+    sharedAvailableQuantity: shared,
     imageRefs: [...product.imageRefs],
     sizeGuideAr: product.sizeGuideAr,
     variants,
@@ -407,6 +411,7 @@ function toPublicProduct(
 function toCashierLookup(
   product: ManagerProductDto,
   quantities: Map<string, number>,
+  availableQuantity: number,
 ): CashierProductLookupDto {
   return {
     id: product.id,
@@ -415,14 +420,15 @@ function toCashierLookup(
     code: product.code,
     nameAr: product.nameAr,
     descriptionAr: product.descriptionAr,
+    sellingPricePiasters: product.defaultSellingPricePiasters,
+    minimumSellingPricePiasters: product.minimumSellingPricePiasters,
+    operationalVariantId: product.operationalVariantId,
+    availableQuantity,
     variants: product.variants.map((variant) => ({
       id: variant.id,
       size: variant.size,
       color: variant.color,
-      sellingPricePiasters: resolvedSellingPricePiasters(
-        product.defaultSellingPricePiasters,
-        variant.sellingPricePiastersOverride,
-      ),
+      sellingPricePiasters: product.defaultSellingPricePiasters,
       availableQuantity: quantities.get(variant.id) ?? 0,
     })),
   };
@@ -447,6 +453,13 @@ async function parseProductWrite(
     throw new CatalogValidationError("التصنيف المحدد غير موجود.");
   }
   const variants = await parseVariants(store, body.variants);
+  const defaultSellingPricePiasters = assertPiasters(body.defaultSellingPricePiasters, "سعر البيع غير صالح.");
+  const minimumSellingPricePiasters = body.minimumSellingPricePiasters === undefined || body.minimumSellingPricePiasters === null
+    ? null
+    : assertPiasters(body.minimumSellingPricePiasters, "الحد الأدنى للبيع غير صالح.");
+  if (minimumSellingPricePiasters !== null && minimumSellingPricePiasters > defaultSellingPricePiasters) {
+    throw new CatalogValidationError("الحد الأدنى لا يمكن أن يتجاوز سعر البيع.");
+  }
   const expectedRevision = body.expectedRevision === undefined ? undefined : assertExpectedRevision(body.expectedRevision);
   const expectedVariantIds = body.expectedVariantIds === undefined ? undefined : assertExpectedVariantIds(body.expectedVariantIds);
   return {
@@ -456,7 +469,8 @@ async function parseProductWrite(
     nameAr: assertProductName(body.nameAr),
     descriptionAr: assertDescription(body.descriptionAr),
     categoryId,
-    defaultSellingPricePiasters: assertPiasters(body.defaultSellingPricePiasters, "سعر البيع غير صالح."),
+    defaultSellingPricePiasters,
+    minimumSellingPricePiasters,
     publication: assertPublication(body.publication),
     imageRefs: assertImageRefs(body.imageRefs),
     sizeGuideAr: assertSizeGuide(body.sizeGuideAr),
@@ -484,8 +498,8 @@ function assertExpectedVariantIds(value: unknown): string[] {
 }
 
 async function parseVariants(store: CatalogStore, value: unknown): Promise<VariantWrite[]> {
-  if (!Array.isArray(value) || value.length === 0) {
-    throw new CatalogValidationError("يجب تحديد متغير واحد على الأقل.");
+  if (!Array.isArray(value)) {
+    throw new CatalogValidationError("يجب تحديد خيارات الموقع في قائمة.");
   }
   const parsed: VariantWrite[] = [];
   const seen = new Set<string>();
@@ -494,6 +508,9 @@ async function parseVariants(store: CatalogStore, value: unknown): Promise<Varia
     assertAllowedKeys(body, VARIANT_KEYS, "تركيبة المقاس واللون غير صالحة.");
     const sizeId = assertUuid(body.sizeId, "المقاس المحدد غير موجود.");
     const colorId = assertUuid(body.colorId, "اللون المحدد غير موجود.");
+    if (sizeId === OPERATIONAL_SIZE_ID || colorId === OPERATIONAL_COLOR_ID) {
+      throw new CatalogValidationError("المقاس أو اللون التشغيلي ليس خياراً للموقع.");
+    }
     const key = `${sizeId}:${colorId}`;
     if (seen.has(key)) {
       throw new CatalogValidationError("لا يمكن تكرار نفس المقاس واللون.");

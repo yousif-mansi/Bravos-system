@@ -8,6 +8,7 @@ import { createPortal } from "react-dom";
 import { formatEgp, productMediaUrl } from "../public-catalog";
 import type { CartLine } from "./cart-types";
 import { useCart } from "./cart-provider";
+import { lineQuantityCap } from "./shared-pool";
 import styles from "./bag-preview.module.css";
 
 type ScrollLock = {
@@ -195,6 +196,7 @@ export function BagPreview() {
                 <BagPreviewLine
                   key={item.variantId}
                   item={item}
+                  lineCap={lineQuantityCap(items, item.variantId)}
                   failed={failedImages.has(`${item.variantId}:${item.imageRef ?? ""}`)}
                   onImageError={() => {
                     const key = `${item.variantId}:${item.imageRef ?? ""}`;
@@ -247,14 +249,15 @@ export function BagPreview() {
   );
 }
 
-function BagPreviewLine({ item, failed, onImageError, onFollow }: {
+function BagPreviewLine({ item, lineCap, failed, onImageError, onFollow }: {
   item: CartLine;
+  lineCap: number;
   failed: boolean;
   onImageError: () => void;
   onFollow: () => void;
 }) {
   const unavailable = !item.orderable || item.knownAvailableQuantity === 0;
-  const excessive = item.quantity > item.knownAvailableQuantity;
+  const excessive = item.quantity > lineCap;
   const showPhoto = Boolean(item.imageRef) && !failed;
 
   return (
@@ -274,7 +277,7 @@ function BagPreviewLine({ item, failed, onImageError, onFollow }: {
         <p className={styles.qty}>Qty <strong>{item.quantity}</strong></p>
         <p className={styles.lineMerchandise}><span>Merchandise</span> <strong>{formatEgp(item.unitPricePiasters * item.quantity)}</strong></p>
         {unavailable ? <p className={styles.warning}>This selection was unavailable at its last check. Review the bag to refresh its availability.</p> : null}
-        {excessive && item.knownAvailableQuantity > 0 ? <p className={styles.warning}>Last checked availability: {item.knownAvailableQuantity}. Review the bag to change the quantity.</p> : null}
+        {excessive && lineCap > 0 ? <p className={styles.warning}>Last checked availability: {lineCap}. Review the bag to change the quantity.</p> : null}
       </div>
     </li>
   );

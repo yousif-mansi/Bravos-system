@@ -85,6 +85,7 @@ type SourceUnitRow = {
 type AllocationRow = {
   batch_id: string;
   variant_id: string;
+  requested_variant_id: string;
   quantity: number;
   unit_cost_piasters: number | string;
   effective_unit_cost_piasters: number | string;
@@ -208,8 +209,38 @@ type ExchangeQuoteRow = {
   quoted_at: Date;
 };
 
+type PhysicalSourceCandidate = {
+  id: string;
+  receivedAtKey: string;
+  receiptReference?: string;
+  receiptNumberingConflict?: true;
+};
+
+type PhysicalSourceProjection = {
+  id: string;
+  receiptReference?: string;
+  receiptNumberingConflict?: true;
+};
+
+type PhysicalSourceCandidates = {
+  list(search: SourceSearch): Promise<PhysicalSourceCandidate[]>;
+  projections(ids: string[]): Promise<PhysicalSourceProjection[]>;
+};
+
+function applyReceiptMetadata(
+  source: ReturnSourceRecord,
+  metadata: { receiptReference?: string; receiptNumberingConflict?: true } | undefined,
+): ReturnSourceRecord {
+  if (!metadata?.receiptReference && !metadata?.receiptNumberingConflict) return source;
+  return {
+    ...source,
+    ...(metadata.receiptReference ? { receiptReference: metadata.receiptReference } : {}),
+    ...(metadata.receiptNumberingConflict ? { receiptNumberingConflict: true as const } : {}),
+  };
+}
+
 export function createPostgresReturnsStore(queryable: Queryable,
-  sourceCandidates: { list(search: SourceSearch): Promise<Array<{ id: string; receivedAtKey: string }>> },
+  sourceCandidates: PhysicalSourceCandidates,
 ): ReturnsStore {
   return {
     async listPhysicalSources(search) {
@@ -225,7 +256,9 @@ export function createPostgresReturnsStore(queryable: Queryable,
         for (const item of candidates) {
           const source = await loadPhysicalSource(queryable, item.id, false);
           if (source && (search.amountPiasters === undefined
-            || source.originalPayment.totalPiasters === search.amountPiasters)) rows.push(source);
+            || source.originalPayment.totalPiasters === search.amountPiasters)) {
+            rows.push(applyReceiptMetadata(source, item));
+          }
           if (rows.length === target) break;
         }
         const last = candidates.at(-1);
@@ -234,7 +267,12 @@ export function createPostgresReturnsStore(queryable: Queryable,
       }
       return rows;
     },
-    getPhysicalSource: (saleId, lock = false) => loadPhysicalSource(queryable, saleId, lock),
+    async getPhysicalSource(saleId, lock = false) {
+      const source = await loadPhysicalSource(queryable, saleId, lock);
+      if (!source) return null;
+      const projected = await sourceCandidates.projections([saleId]);
+      return applyReceiptMetadata(source, projected.find((item) => item.id === saleId));
+    },
     async getSourceKey(returnId) {
       const result = await queryable.query<{ source_sale_id: string | null; source_online_order_id: string | null }>(
         `SELECT source_sale_id,source_online_order_id FROM returns_return WHERE id = $1`, [returnId]);
@@ -322,7 +360,7 @@ export function createPostgresReturnsStore(queryable: Queryable,
     },
     async lockIdentities(returnId, operationId) {
       for (const key of [...new Set([returnId, operationId])].sort()) {
-        await queryable.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [key]);
+        await queryable.query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))", [key]);
       }
     },
     async insertDraft(input) {
@@ -577,7 +615,7 @@ export function createPostgresReturnsUnitOfWork(
   onlineSourcesFor: (client: PoolClient) => DeliveredOnlineOrderSourceReader,
   correctionsFor: (client: PoolClient) => ReturnCorrectionStateReader,
   replacementSalesFor: (client: PoolClient, inventory: InventoryTransaction) => ReturnReplacementSaleWriter,
-  sourceCandidatesFor: (client: PoolClient) => { list(search: SourceSearch): Promise<Array<{ id: string; receivedAtKey: string }>> },
+  sourceCandidatesFor: (client: PoolClient) => PhysicalSourceCandidates,
 ): ReturnsUnitOfWork {
   return {
     async run(work) {
@@ -673,21 +711,25 @@ async function loadPhysicalSource(queryable: Queryable, saleId: string, lock: bo
        GROUP BY rl.source_sale_line_id`, [saleId]),
     queryable.query<AllocationRow>(
       `WITH effects AS (
-         SELECT a.batch_id, a.variant_id, a.unit_cost_piasters, a.quantity::bigint AS amount
+         SELECT a.batch_id, a.variant_id, COALESCE(a.requested_variant_id, a.variant_id) AS requested_variant_id,
+                a.unit_cost_piasters, a.quantity::bigint AS amount
          FROM inventory_allocation a WHERE a.operation_id = $1
          UNION ALL
-         SELECT f.batch_id, f.variant_id, f.unit_cost_piasters,
+         SELECT f.batch_id, f.variant_id, COALESCE(sl.variant_id, f.variant_id) AS requested_variant_id,
+                f.unit_cost_piasters,
                 CASE WHEN f.direction = 'deduct' THEN f.quantity ELSE -f.quantity END
          FROM recording_merchandise_fact f
-         JOIN recording_correction c ON c.id = f.correction_id WHERE c.sale_id = $2
+         JOIN recording_correction c ON c.id = f.correction_id
+         LEFT JOIN sales_sale_line sl ON sl.id = f.sale_line_id
+         WHERE c.sale_id = $2
        )
-       SELECT e.batch_id, e.variant_id, SUM(e.amount)::int AS quantity,
+       SELECT e.batch_id, e.variant_id, e.requested_variant_id, SUM(e.amount)::int AS quantity,
               e.unit_cost_piasters, b.effective_unit_cost_piasters, b.recorded_at
        FROM effects e JOIN inventory_batch b ON b.id = e.batch_id
-       GROUP BY e.batch_id, e.variant_id, e.unit_cost_piasters,
+       GROUP BY e.batch_id, e.variant_id, e.requested_variant_id, e.unit_cost_piasters,
                 b.effective_unit_cost_piasters, b.recorded_at
        HAVING SUM(e.amount) > 0
-       ORDER BY e.variant_id, b.recorded_at, e.batch_id`, [row.operation_id, saleId]),
+       ORDER BY e.requested_variant_id, b.recorded_at, e.batch_id`, [row.operation_id, saleId]),
   ]);
   const returnedByLine = new Map(returnedResult.rows.map((item) => [item.source_sale_line_id, asSafeInteger(item.quantity)]));
   const unitsByLine = new Map<string, ReturnSourceUnit[]>();
@@ -741,6 +783,7 @@ async function loadPhysicalSource(queryable: Queryable, saleId: string, lock: bo
       sourceLineId: null,
       batchId: item.batch_id,
       variantId: item.variant_id,
+      ...(item.requested_variant_id === item.variant_id ? {} : { requestedVariantId: item.requested_variant_id }),
       quantity: item.quantity,
       unitCostPiasters: asSafeInteger(item.unit_cost_piasters),
       effectiveUnitCostPiasters: asSafeInteger(item.effective_unit_cost_piasters),

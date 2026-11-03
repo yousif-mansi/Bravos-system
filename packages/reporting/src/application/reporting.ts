@@ -468,13 +468,14 @@ async function lowStockSnapshot(context: ReportingReadContext, branchId: string 
   const [variantIds, settings, thresholds] = await Promise.all([
     context.catalog.listVariantIds(), context.inventory.getSettings(), context.inventory.listVariantThresholds(),
   ]);
-  const [identities, quantitiesByBranch] = await Promise.all([
-    context.catalog.getVariants(variantIds), context.inventory.quantitiesByBranchFor(variantIds),
-  ]);
+  const identities = (await context.catalog.getVariants(variantIds)).filter((identity) => identity.purpose === "operational");
+  const quantitiesByBranch = await context.inventory.productQuantitiesByRetailBranch(
+    [...new Set(identities.map((identity) => identity.product.id))],
+  );
   return identities.flatMap((identity) => [...quantitiesByBranch.entries()]
     .filter(([id]) => !branchId || id === branchId)
     .flatMap(([id, quantities]) => {
-      const availableQuantity = quantities.get(identity.id) ?? 0;
+      const availableQuantity = quantities.get(identity.product.id) ?? 0;
       const override = thresholds.get(identity.id);
       const threshold = override ?? settings.lowStockThreshold;
       return availableQuantity <= threshold ? [{ branchId: id, variantId: identity.id,

@@ -7,6 +7,7 @@ import { buildApp, type BuiltApp } from "../../apps/api/src/app.ts";
 import { ensureOwner } from "../../apps/api/src/bootstrap.ts";
 import { applyMigrations } from "@bravos/persistence";
 import { createInventoryTransaction, createPostgresInventoryStore } from "@bravos/inventory/node";
+import { WAREHOUSE_BRANCH_ID } from "../../packages/contracts/src/index.ts";
 import { startPostgresCluster, type PostgresCluster } from "@bravos/testkit";
 
 const INTERNAL_ORIGIN = "http://127.0.0.1:5173";
@@ -105,7 +106,7 @@ test("online variant selection keeps exact inventory pairs and leaves hidden pai
     imageRefs: [],
     variants: [
       { sizeId: seed.sizeId, colorId: seed.colorId, onlineVisible: false, sellingPricePiastersOverride: null },
-      { sizeId: secondSize.body.id, colorId: seed.colorId, onlineVisible: true, sellingPricePiastersOverride: 32000 },
+      { sizeId: secondSize.body.id, colorId: seed.colorId, onlineVisible: true, sellingPricePiastersOverride: null },
     ],
   });
   expect(created.status).toBe(201);
@@ -127,7 +128,7 @@ test("online variant selection keeps exact inventory pairs and leaves hidden pai
   const publicProduct = await api(undefined, "GET", `/api/public/catalog/products/${created.body.id}`);
   expect(publicProduct.status).toBe(200);
   expect(publicProduct.body.variants.map((item: { id: string }) => item.id)).toEqual([visible.id]);
-  expect(publicProduct.body.variants[0].availableQuantity).toBe(3);
+  expect(publicProduct.body.variants[0].availableQuantity).toBe(5);
   const pos = await api(manager, "GET", "/api/internal/catalog/pos-snapshot");
   const posProduct = pos.body.find((item: { id: string }) => item.id === created.body.id);
   expect(posProduct.variants).toHaveLength(2);
@@ -236,7 +237,7 @@ test("invalid taxonomy and variant combinations fail with useful validation erro
     defaultSellingPricePiasters: 30000,
     variants: [
       { sizeId: seed.sizeId, colorId: seed.colorId, sellingPricePiastersOverride: null },
-      { sizeId: seed.sizeId, colorId: seed.colorId, sellingPricePiastersOverride: 31000 },
+      { sizeId: seed.sizeId, colorId: seed.colorId, sellingPricePiastersOverride: null },
     ],
   });
   expect(repeated.status).toBe(400);
@@ -281,12 +282,12 @@ test("invalid taxonomy and variant combinations fail with useful validation erro
   expect(negative.body.error.messageAr).toBe("سعر البيع غير صالح.");
 });
 
-test("variant price override is used and the default remains the shared listed price otherwise", async () => {
+test("a new size or color price override is rejected and the product default stays the listed price", async () => {
   const manager = await signIn("owner", "owner-pass-1");
   const seed = await seedShirt(manager);
   const secondColor = await api(manager, "POST", "/api/internal/catalog/colors", { nameAr: "أبيض" });
   expect(secondColor.status).toBe(201);
-  const created = await api(manager, "POST", "/api/internal/catalog/products", {
+  const rejected = await api(manager, "POST", "/api/internal/catalog/products", {
     code: "TS-PRICE",
     nameAr: "تيشيرت سعرين",
     descriptionAr: "",
@@ -295,6 +296,21 @@ test("variant price override is used and the default remains the shared listed p
     variants: [
       { sizeId: seed.sizeId, colorId: seed.colorId, sellingPricePiastersOverride: null },
       { sizeId: seed.sizeId, colorId: secondColor.body.id, sellingPricePiastersOverride: 27500 },
+    ],
+  });
+  expect(rejected.status).toBe(400);
+  expect(rejected.body.error.code).toBe("VALIDATION");
+  expect(rejected.body.error.messageAr).toBe("لا يمكن تحديد سعر مستقل للمقاس أو اللون.");
+
+  const created = await api(manager, "POST", "/api/internal/catalog/products", {
+    code: "TS-PRICE",
+    nameAr: "تيشيرت سعرين",
+    descriptionAr: "",
+    categoryId: seed.categoryId,
+    defaultSellingPricePiasters: 25000,
+    variants: [
+      { sizeId: seed.sizeId, colorId: seed.colorId, sellingPricePiastersOverride: null },
+      { sizeId: seed.sizeId, colorId: secondColor.body.id, sellingPricePiastersOverride: null },
     ],
   });
   expect(created.status).toBe(201);
@@ -309,8 +325,8 @@ test("variant price override is used and the default remains the shared listed p
     sellingPricePiasters: 25000,
   });
   expect(byName.get("أبيض")).toMatchObject({
-    sellingPricePiastersOverride: 27500,
-    sellingPricePiasters: 27500,
+    sellingPricePiastersOverride: null,
+    sellingPricePiasters: 25000,
   });
   expect(created.body).not.toHaveProperty("branchPrice");
   expect(created.body).not.toHaveProperty("websitePrice");
@@ -343,7 +359,7 @@ test("manager can edit taxonomy, product details, publication and variants", asy
     publication: "coming_soon",
     imageRefs: ["products/ts-001.jpg"],
     variants: [
-      { sizeId: seed.sizeId, colorId: seed.colorId, sellingPricePiastersOverride: 28000 },
+      { sizeId: seed.sizeId, colorId: seed.colorId, sellingPricePiastersOverride: null },
       { sizeId: extraSize.body.id, colorId: seed.colorId, sellingPricePiastersOverride: null },
     ],
   });
@@ -394,7 +410,10 @@ test("cashier lookup selects an explicit variant, ignores website visibility, an
   expect(found.body).not.toHaveProperty("cost");
   expect(JSON.stringify(found.body)).not.toMatch(/cost|profit|purchase|batch|inventoryValue/i);
   const keys = Object.keys(found.body).sort();
-  expect(keys).toEqual(["categoryId", "categoryNameAr", "code", "descriptionAr", "id", "nameAr", "variants"]);
+  expect(keys).toEqual([
+    "availableQuantity", "categoryId", "categoryNameAr", "code", "descriptionAr", "id",
+    "minimumSellingPricePiasters", "nameAr", "operationalVariantId", "sellingPricePiasters", "variants",
+  ]);
   expect(found.body.categoryId).toBe(seed.categoryId);
 });
 
@@ -451,7 +470,8 @@ test("cashier POS snapshots retain readable categories, selling prices and avail
     categoryNameAr: "تيشيرتات",
   });
   expect(Object.keys(cachedSnapshot.body.products[0]).sort()).toEqual([
-    "categoryId", "categoryNameAr", "code", "descriptionAr", "id", "nameAr", "variants",
+    "availableQuantity", "categoryId", "categoryNameAr", "code", "descriptionAr", "id",
+    "minimumSellingPricePiasters", "nameAr", "operationalVariantId", "sellingPricePiasters", "variants",
   ]);
   expect(cachedSnapshot.body.products[0].variants).toEqual([{
     id: variantId,
@@ -544,7 +564,7 @@ test("catalog reads never mix default and override prices from different writes"
     productWrite(seed, {
       code: "TS-SNAP",
       defaultSellingPricePiasters: 25000,
-      variants: [{ sizeId: seed.sizeId, colorId: seed.colorId, sellingPricePiastersOverride: 27500 }],
+      variants: [{ sizeId: seed.sizeId, colorId: seed.colorId, sellingPricePiastersOverride: null }],
     }),
   );
   expect(created.status).toBe(201);
@@ -580,7 +600,7 @@ test("catalog reads never mix default and override prices from different writes"
     variants: [{ sellingPricePiastersOverride: null, sellingPricePiasters: 30000 }],
   });
 
-  const consistentManager = new Set(["25000:27500:27500", "30000:null:30000"]);
+  const consistentManager = new Set(["25000:null:25000", "30000:null:30000"]);
   for (const read of reads.slice(0, 20)) {
     expect(read.status).toBe(200);
     const variant = read.body.variants[0];
@@ -589,8 +609,7 @@ test("catalog reads never mix default and override prices from different writes"
   }
   for (const read of reads.slice(20)) {
     expect(read.status).toBe(200);
-    expect([27500, 30000]).toContain(read.body.variants[0].sellingPricePiasters);
-    expect(read.body.variants[0].sellingPricePiasters).not.toBe(25000);
+    expect([25000, 30000]).toContain(read.body.variants[0].sellingPricePiasters);
   }
 });
 
@@ -737,7 +756,7 @@ test("public catalog exposes safe live variant availability across restocking an
     sizeGuideAr: "L — عرض الصدر 52 سم",
     variants: [
       { sizeId: seed.sizeId, colorId: seed.colorId, sellingPricePiastersOverride: null },
-      { sizeId: seed.sizeId, colorId: white.body.id, sellingPricePiastersOverride: 34000 },
+      { sizeId: seed.sizeId, colorId: white.body.id, sellingPricePiastersOverride: null },
     ],
   });
   expect(created.status).toBe(201);
@@ -755,7 +774,7 @@ test("public catalog exposes safe live variant availability across restocking an
   });
   expect(Object.keys(initial.body).sort()).toEqual([
     "availability", "category", "descriptionAr", "id", "imageRefs", "nameAr",
-    "orderable", "publication", "sizeGuideAr", "variants",
+    "orderable", "publication", "sharedAvailableQuantity", "sizeGuideAr", "variants",
   ]);
   expect(Object.keys(initial.body.variants[0]).sort()).toEqual([
     "availableQuantity", "color", "id", "orderable", "sellingPricePiasters", "size",
@@ -791,28 +810,31 @@ test("public catalog exposes safe live variant availability across restocking an
   expect(receipt.status).toBe(201);
 
   const restocked = await api(undefined, "GET", `/api/public/catalog/products/${created.body.id}`);
-  expect(restocked.body).toMatchObject({ availability: "in_stock", orderable: true });
+  expect(restocked.body).toMatchObject({ availability: "in_stock", orderable: true, sharedAvailableQuantity: 3 });
   expect(restocked.body.variants.find((item: { id: string }) => item.id === stockedVariant.id)).toMatchObject({
     availableQuantity: 3,
     orderable: true,
     sellingPricePiasters: 32000,
   });
   expect(restocked.body.variants.find((item: { id: string }) => item.id === emptyVariant.id)).toMatchObject({
-    availableQuantity: 0,
-    orderable: false,
-    sellingPricePiasters: 34000,
+    availableQuantity: 3,
+    orderable: true,
+    sellingPricePiasters: 32000,
   });
 
   const inventory = createPostgresInventoryStore(built.pool);
   const variantIds = [stockedVariant.id, emptyVariant.id];
   const expectBranchQuantities = async (abshwayQuantity: number, fayoumQuantity: number) => {
     const byBranch = await inventory.quantitiesByBranchFor(variantIds);
-    expect([...byBranch.keys()].sort()).toEqual([abshwayId, fayoumId].sort());
+    expect([...byBranch.keys()].sort()).toEqual([abshwayId, fayoumId, WAREHOUSE_BRANCH_ID].sort());
     expect(byBranch.get(abshwayId)).toEqual(new Map([
       [stockedVariant.id, abshwayQuantity], [emptyVariant.id, 0],
     ]));
     expect(byBranch.get(fayoumId)).toEqual(new Map([
       [stockedVariant.id, fayoumQuantity], [emptyVariant.id, 0],
+    ]));
+    expect(byBranch.get(WAREHOUSE_BRANCH_ID)).toEqual(new Map([
+      [stockedVariant.id, 0], [emptyVariant.id, 0],
     ]));
   };
   // Fayoum has no batch balance yet; both branches must still include every requested variant.
@@ -836,12 +858,18 @@ test("public catalog exposes safe live variant availability across restocking an
   const expectPublicQuantity = async (quantity: number) => {
     const detail = await api(undefined, "GET", `/api/public/catalog/products/${created.body.id}`);
     expect(detail.status).toBe(200);
-    expect(detail.body.variants.find((item: { id: string }) => item.id === stockedVariant.id))
-      .toMatchObject({ availableQuantity: quantity, orderable: true });
+    expect(detail.body.sharedAvailableQuantity).toBe(quantity);
+    for (const variantId of [stockedVariant.id, emptyVariant.id]) {
+      expect(detail.body.variants.find((item: { id: string }) => item.id === variantId))
+        .toMatchObject({ availableQuantity: quantity, orderable: true, sellingPricePiasters: 32000 });
+    }
     const list = await api(undefined, "GET", "/api/public/catalog/products");
     expect(list.status).toBe(200);
-    expect(list.body.find((item: { id: string }) => item.id === created.body.id).variants
-      .find((item: { id: string }) => item.id === stockedVariant.id).availableQuantity).toBe(quantity);
+    const listed = list.body.find((item: { id: string }) => item.id === created.body.id);
+    expect(listed.sharedAvailableQuantity).toBe(quantity);
+    for (const variantId of [stockedVariant.id, emptyVariant.id]) {
+      expect(listed.variants.find((item: { id: string }) => item.id === variantId).availableQuantity).toBe(quantity);
+    }
   };
   await expectPublicQuantity(5); // One branch can supply five, not the combined nine.
 

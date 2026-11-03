@@ -1,12 +1,22 @@
+export { normalizeCustomerPhone } from "./domain/customer-phone.ts";
 export {
   allocateEmployeeDiscount,
   assertMergedSaleQuantities,
   mergeVariantQuantities,
+  assertUnitFloors,
   priceSaleLines,
+  stampAcceptedFloors,
 } from "./domain/discount.ts";
 export { evaluatePosUpdate, isDeclaredSafeMigration, POS_SCHEMA_VERSION } from "./domain/pos-update.ts";
 export type { PosUpdateDecision } from "./domain/pos-update.ts";
 export { SalesValidationError } from "./domain/errors.ts";
+export {
+  formatReceiptReference,
+  nextReceiptSequence,
+  parseReceiptClaim,
+  parseReceiptReference,
+} from "./domain/receipt-number.ts";
+export type { ParsedReceiptClaim, ReceiptClaim, ReceiptIdentity, ReceiptNumberingStatus } from "./domain/receipt-number.ts";
 export { canonicalOfflineSaleFactsJson } from "./domain/canonical-payload.ts";
 export {
   digestAcceptedSalePayload,
@@ -21,6 +31,7 @@ export {
   type OfflineAcknowledgement,
   type OfflineCompletedSale,
   type OfflinePendingSale,
+  type OfflineReceiptNumberingStatus,
   type OfflinePosStore,
   type OfflineSaleKind,
   type OtherPendingQueue,

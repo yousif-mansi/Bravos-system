@@ -20,8 +20,8 @@ test("product commerce keeps one variant and add state across the mobile bar and
     sizeGuideAr: "دليل المقاسات التجريبي",
     variants: [
       { sizeId: medium.body.id, colorId: black.body.id, sellingPricePiastersOverride: null },
-      { sizeId: medium.body.id, colorId: sand.body.id, sellingPricePiastersOverride: 30_000 },
-      { sizeId: large.body.id, colorId: sand.body.id, sellingPricePiastersOverride: 35_000 },
+      { sizeId: medium.body.id, colorId: sand.body.id, sellingPricePiastersOverride: null },
+      { sizeId: large.body.id, colorId: sand.body.id, sellingPricePiastersOverride: null },
     ],
   });
   expect(product.status).toBe(201);
@@ -34,8 +34,7 @@ test("product commerce keeps one variant and add state across the mobile bar and
     branchId: (await (await page.request.get("http://127.0.0.1:5174/api/internal/workspace")).json()).activeBranch.id,
     receiptDate: cairoDate(),
     lines: [
-      { variantId: blackVariant.id, quantity: 2, unitCostPiasters: 10_000 },
-      { variantId: sandVariant.id, quantity: 1, unitCostPiasters: 12_000 },
+      { variantId: blackVariant.id, quantity: 1, unitCostPiasters: 10_000 },
     ],
   });
   expect(receipt.status).toBe(201);
@@ -57,6 +56,7 @@ test("product commerce keeps one variant and add state across the mobile bar and
   await expect.poll(() => normalizedText(bar)).toContain("EGP 250");
   const colors = panel.getByRole("group", { name: "Color" });
   const sizes = panel.getByRole("group", { name: "Size" });
+  await colors.getByRole("radio", { name: new RegExp(`أسود ${suffix}`) }).check();
   const blackSize = sizes.getByRole("radio", { name: new RegExp(`M ${suffix}`) });
   await expect(blackSize).toBeChecked();
   await expect(blackSize).toHaveValue(blackVariant.id);
@@ -65,18 +65,17 @@ test("product commerce keeps one variant and add state across the mobile bar and
 
   await colors.getByRole("radio", { name: new RegExp(`رملي ${suffix}`) }).check();
   const sandSize = sizes.getByRole("radio", { name: new RegExp(`M ${suffix}`) });
-  const unavailable = sizes.getByRole("radio", { name: new RegExp(`L ${suffix}`) });
+  const largeSize = sizes.getByRole("radio", { name: new RegExp(`L ${suffix}`) });
   await expect(sandSize).toBeChecked();
   await expect(sandSize).toHaveValue(sandVariant.id);
-  await expect(unavailable).toBeDisabled();
-  await expect(unavailable.locator("xpath=ancestor::label[1]")).toContainText("Unavailable");
-  await expect(unavailable.locator("xpath=ancestor::label[1]")).toContainText(/EGP\s*350/);
+  await expect(largeSize).toBeEnabled();
+  await expect(largeSize.locator("xpath=ancestor::label[1]")).toContainText(/EGP\s*250/);
   await sandSize.scrollIntoViewIfNeeded();
   await sandSize.focus();
   await expect(sandSize).toBeChecked();
   await expect(bar).toBeInViewport();
-  await expect.poll(() => normalizedText(selectedPrice)).toContain("EGP 300");
-  await expect.poll(() => normalizedText(bar)).toContain("EGP 300");
+  await expect.poll(() => normalizedText(selectedPrice)).toContain("EGP 250");
+  await expect.poll(() => normalizedText(bar)).toContain("EGP 250");
   await expect(bar).toContainText(`M ${suffix}`);
   await expect(bar).toContainText(`رملي ${suffix}`);
   const radioBox = await sandSize.boundingBox();
@@ -97,7 +96,7 @@ test("product commerce keeps one variant and add state across the mobile bar and
   await expect(panel.locator("#product-availability")).toContainText("You can add up to 1 of this selection.");
   await page.getByRole("heading", { name: product.body.nameAr }).click();
   await expect(bar).toBeInViewport();
-  await expect.poll(() => normalizedText(bar)).toContain("EGP 300");
+  await expect.poll(() => normalizedText(bar)).toContain("EGP 250");
   const repair = bar.getByRole("link", { name: "Reduce the quantity to 1." });
   await expect(repair).toBeVisible();
   await expect(repair).toHaveAttribute("href", "#product-quantity");
@@ -139,7 +138,7 @@ test("product commerce keeps one variant and add state across the mobile bar and
   await expect.poll(() => cartEvents.length).toBe(1);
   expect(cartEvents[0]).toMatchObject({ eventType: "cart_addition", productId: product.body.id, variantId: sandVariant.id, quantity: 1 });
   const savedCart = await page.evaluate(() => JSON.parse(localStorage.getItem("bravos-guest-cart-v1") ?? "null"));
-  expect(savedCart.items).toMatchObject([{ variantId: sandVariant.id, unitPricePiasters: 30_000, quantity: 1 }]);
+  expect(savedCart.items).toMatchObject([{ variantId: sandVariant.id, unitPricePiasters: 25_000, quantity: 1 }]);
   await page.screenshot({ path: testInfo.outputPath("commerce-phone-390.png"), fullPage: true });
   expect(await hasNoHorizontalOverflow(page)).toBe(true);
 

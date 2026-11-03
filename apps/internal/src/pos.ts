@@ -1,4 +1,4 @@
-import type { PosPriceSnapshotDto, SaleDto, SalePaymentDto, WorkspaceDto } from "@bravos/contracts";
+import type { PosPriceSnapshotDto, SaleDto, SalePaymentDto, SaleReceiptClaimInput, WorkspaceDto } from "@bravos/contracts";
 import {
   createDexiePosStore,
   createOfflinePosServices,
@@ -12,7 +12,7 @@ import {
   type OfflineSaleKind,
   type SessionTransition,
 } from "@bravos/sales/browser";
-import { ApiError, type SyncedSaleDto } from "./api.ts";
+import { ApiError, issuePosSnapshot, type SyncedSaleDto } from "./api.ts";
 
 const store = createDexiePosStore();
 export const pos: OfflinePosServices = createOfflinePosServices(store);
@@ -59,6 +59,10 @@ export function saleFromOffline(record: OfflineCompletedSale): SaleDto {
   return {
     id: record.id,
     reference: record.reference ?? null,
+    ...(typeof record.receiptReference === "string" && record.receiptReference.length > 0
+      ? { receiptReference: record.receiptReference }
+      : {}),
+    ...(record.receiptNumberingConflict === true ? { receiptNumberingConflict: true as const } : {}),
     operationId: record.operationId,
     branch: record.branch,
     soldByStaffId: record.soldByStaffId,
@@ -109,6 +113,8 @@ export function offlineFromQuote(input: {
     id: input.quote.id,
     staffId: input.staffId,
     operationId: input.quote.operationId,
+    /** Optional server POS reference. Stored as metadata and excluded from the operation digest. */
+    reference: input.quote.reference ?? null,
     deviceId: input.deviceId,
     snapshotId: input.snapshotId ?? null,
     pricingVersion: input.pricingVersion === 1 ? 1 : null,
@@ -184,6 +190,21 @@ export async function cacheIssuedSnapshot(staffId: string, snapshot: PosPriceSna
   notifyPosStockChange({ staffId, branchId: snapshot.branch.id });
 }
 
+/**
+ * One snapshot request. Passive callers omit receipt registration even when a local prefix already exists.
+ * Only explicit POS preparation asks the store to ensure a registration id.
+ */
+export async function issueStaffPosSnapshot(
+  pendingOperationIds: string[] = [],
+  mode: "passive" | "register" = "passive",
+): Promise<PosPriceSnapshotDto> {
+  if (mode === "register") {
+    const registration = await store.ensureReceiptRegistration();
+    return issuePosSnapshot(registration.deviceId, pendingOperationIds, registration.registrationId);
+  }
+  return issuePosSnapshot(await pos.deviceId(), pendingOperationIds);
+}
+
 export function syncOutcomeMessage(error: unknown): string {
   if (error instanceof ApiError && error.code === "SALE_RETAINED_FOR_RESTORE") {
     return "تم الاحتفاظ بالبيع المكتمل للمراجعة بعد الاستعادة. سيظل محفوظاً وقابلاً للاسترداد حتى يراجعه المدير.";
@@ -235,6 +256,7 @@ export async function applySyncedSale(local: OfflineCompletedSale, synced: Synce
         discrepancy: synced.discrepancy,
         lines: synced.lines,
         reference: synced.reference,
+        ...syncedReceiptMetadata(synced),
       },
     ],
   });
@@ -353,6 +375,8 @@ export async function recoverPreservedQueues(
         finalTotalPiasters: synced.finalTotalPiasters,
         discrepancy: synced.discrepancy,
         lines: synced.lines,
+        reference: synced.reference,
+        ...syncedReceiptMetadata(synced),
         acknowledgement: { ...synced.acknowledgement, branchId: sale.branch.id },
       };
     }, stillCurrent);
@@ -383,6 +407,7 @@ export async function acceptedPayload(sale: OfflineCompletedSale) {
     discountReason: sale.discountReason,
     ...(sale.payment ? { payment: sale.payment } : {}),
     pendingOperationIds: await pendingOperationIds(),
+    ...rawReceiptClaim(sale),
     lines: sale.lines.map((line) => ({
       variantId: line.variantId,
       quantity: line.quantity,
@@ -405,6 +430,7 @@ export async function completedPayload(sale: OfflineCompletedSale) {
     discountReason: sale.discountReason,
     ...(sale.payment ? { payment: sale.payment } : {}),
     pendingOperationIds: await pendingOperationIds(),
+    ...rawReceiptClaim(sale),
     lines: sale.lines.map((line) => ({ variantId: line.variantId, quantity: line.quantity })),
   };
 }
@@ -420,7 +446,34 @@ export async function recoveryPayload(sale: OfflineCompletedSale) {
     occurredAt: sale.occurredAt,
     ...(sale.restoreGeneration !== undefined ? { restoreGeneration: sale.restoreGeneration } : {}),
     pendingOperationIds: await pendingOperationIds(),
+    ...rawReceiptClaim(sale),
     ...(sale.payment ? { payment: sale.payment } : {}),
+  };
+}
+
+function rawReceiptClaim(sale: OfflineCompletedSale): { receiptClaim?: SaleReceiptClaimInput } {
+  const claim = sale.receiptClaim;
+  if (!claim) return {};
+  return {
+    receiptClaim: {
+      registrationId: claim.registrationId,
+      deviceId: claim.deviceId,
+      prefix: claim.prefix,
+      sequence: claim.sequence,
+      reference: claim.reference,
+    },
+  };
+}
+
+function syncedReceiptMetadata(synced: {
+  receiptReference?: string;
+  receiptNumberingConflict?: true;
+}): { receiptReference?: string; receiptNumberingConflict?: true } {
+  return {
+    ...(typeof synced.receiptReference === "string" && synced.receiptReference.length > 0
+      ? { receiptReference: synced.receiptReference }
+      : {}),
+    ...(synced.receiptNumberingConflict === true ? { receiptNumberingConflict: true as const } : {}),
   };
 }
 

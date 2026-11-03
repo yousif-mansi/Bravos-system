@@ -3,6 +3,7 @@
 import { createContext, type ReactNode, useContext, useEffect, useRef, useState } from "react";
 import type { AddCartLine, CartLine } from "./cart-types";
 import { recordPublicAnalyticsEvent } from "../analytics-events";
+import { productQuantity, sharedPoolLimit } from "./shared-pool";
 
 const STORAGE_KEY = "bravos-guest-cart-v1";
 const STORAGE_VERSION = 1;
@@ -160,7 +161,9 @@ export function CartProvider({ children }: { children: ReactNode }) {
       const quantity = line.quantity ?? 1;
       const added = await mutateCart((current) => {
         const match = current.items.find((item) => item.variantId === line.variantId);
-        if (!line.orderable || !Number.isInteger(quantity) || quantity < 1 || quantity + (match?.quantity ?? 0) > line.knownAvailableQuantity) return null;
+        const used = productQuantity(current.items, line.productId);
+        const limit = sharedPoolLimit(current.items, line.productId, line.knownAvailableQuantity);
+        if (!line.orderable || !Number.isInteger(quantity) || quantity < 1 || used + quantity > limit) return null;
         return {
           ...current,
           items: match
@@ -181,10 +184,17 @@ export function CartProvider({ children }: { children: ReactNode }) {
     },
     async setQuantity(variantId, quantity, maximum) {
       if (!Number.isInteger(quantity) || quantity < 1 || quantity > maximum) return false;
-      return mutateCart((current) => ({
-        ...current,
-        items: current.items.map((item) => item.variantId === variantId ? { ...item, quantity } : item),
-      }));
+      return mutateCart((current) => {
+        const target = current.items.find((item) => item.variantId === variantId);
+        if (!target) return null;
+        const others = productQuantity(current.items, target.productId, variantId);
+        const limit = Math.min(maximum, sharedPoolLimit(current.items, target.productId));
+        if (quantity + others > limit) return null;
+        return {
+          ...current,
+          items: current.items.map((item) => item.variantId === variantId ? { ...item, quantity } : item),
+        };
+      });
     },
     async remove(variantId) {
       await mutateCart((current) => ({ ...current, items: current.items.filter((item) => item.variantId !== variantId) }));

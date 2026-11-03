@@ -239,9 +239,11 @@ test("manager report composes effective revenue, retained batch costs, returns a
     correctionRevision: 1,
     corrections: [{ type: "cancellation", revision: 1, reason: "لم يحدث المصروف" }],
   });
-  expect(report.body.bestSellers).toEqual([
-    expect.objectContaining({ grossEffectiveSoldQuantity: 2, returnedQuantity: 1 }),
-  ]);
+  expect(report.body.bestSellers).toHaveLength(2);
+  expect(report.body.bestSellers).toEqual(expect.arrayContaining([
+    expect.objectContaining({ grossEffectiveSoldQuantity: 1, returnedQuantity: 1 }),
+    expect.objectContaining({ grossEffectiveSoldQuantity: 1, returnedQuantity: 0 }),
+  ]));
   expect(report.body.byEmployee).toEqual([
     expect.objectContaining({
       staffId: employee.id,
@@ -666,24 +668,33 @@ async function seedProduct(manager: Session) {
   const size = await api(manager, "POST", "/api/internal/catalog/sizes", { nameAr: `مقاس ${suffix}` });
   const firstColor = await api(manager, "POST", "/api/internal/catalog/colors", { nameAr: `أسود ${suffix}` });
   const secondColor = await api(manager, "POST", "/api/internal/catalog/colors", { nameAr: `أبيض ${suffix}` });
-  const product = await api(manager, "POST", "/api/internal/catalog/products", {
-    code: `REP-${suffix}`,
-    nameAr: "منتج التقرير",
+  expect([category.status, size.status, firstColor.status, secondColor.status]).toEqual([201, 201, 201, 201]);
+  const firstProduct = await api(manager, "POST", "/api/internal/catalog/products", {
+    code: `REP-${suffix}-A`,
+    nameAr: "منتج التقرير الأول",
     descriptionAr: "اختبار التقرير",
     categoryId: category.body.id,
     defaultSellingPricePiasters: 30000,
     publication: "hidden",
     imageRefs: [],
-    variants: [
-      { sizeId: size.body.id, colorId: firstColor.body.id, sellingPricePiastersOverride: 30000 },
-      { sizeId: size.body.id, colorId: secondColor.body.id, sellingPricePiastersOverride: 20000 },
-    ],
+    variants: [{ sizeId: size.body.id, colorId: firstColor.body.id, sellingPricePiastersOverride: null }],
   });
-  expect(product.status, JSON.stringify(product.body)).toBe(201);
-  const first = product.body.variants.find((variant: { sellingPricePiasters: number }) => variant.sellingPricePiasters === 30000);
-  const second = product.body.variants.find((variant: { sellingPricePiasters: number }) => variant.sellingPricePiasters === 20000);
-  if (!first || !second) throw new Error("Expected both reporting variants.");
-  return { first: first.id as string, second: second.id as string };
+  const secondProduct = await api(manager, "POST", "/api/internal/catalog/products", {
+    code: `REP-${suffix}-B`,
+    nameAr: "منتج التقرير الثاني",
+    descriptionAr: "اختبار التقرير",
+    categoryId: category.body.id,
+    defaultSellingPricePiasters: 20000,
+    publication: "hidden",
+    imageRefs: [],
+    variants: [{ sizeId: size.body.id, colorId: secondColor.body.id, sellingPricePiastersOverride: null }],
+  });
+  expect(firstProduct.status, JSON.stringify(firstProduct.body)).toBe(201);
+  expect(secondProduct.status, JSON.stringify(secondProduct.body)).toBe(201);
+  return {
+    first: firstProduct.body.variants[0].id as string,
+    second: secondProduct.body.variants[0].id as string,
+  };
 }
 
 async function completeSale(manager: Session, variantId: string, occurredAt: string) {

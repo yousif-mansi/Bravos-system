@@ -4,6 +4,9 @@ export {
   formatCairoDateTime,
   isCompletedSale,
   localOperationReference,
+  RECEIPT_MAX_PAGE_HEIGHT_MM,
+  receiptPageSizeCss,
+  receiptPageSizeMm,
   type ReceiptItemLine,
   type ReceiptMoneyLine,
   type ReceiptOptions,
@@ -11,7 +14,13 @@ export {
   type ReceiptView,
 } from "./receipt-model.ts";
 export { parsePaperWidth, receiptPhoneWarning, resolveReceiptOptions } from "./receipt-options.ts";
-export { receiptFontSources, receiptFontStyles, receiptPrintStyles, renderReceiptDocument } from "./receipt-document.ts";
+export {
+  finalizeReceiptDocumentSize,
+  receiptFontSources,
+  receiptFontStyles,
+  receiptPrintStyles,
+  renderReceiptDocument,
+} from "./receipt-document.ts";
 export {
   mountReceiptPreview,
   printSaleReceipt,

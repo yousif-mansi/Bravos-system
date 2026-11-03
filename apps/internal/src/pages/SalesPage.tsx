@@ -4,6 +4,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import type { ManagerSaleDto, OnlineOrderDto, SaleDto, WorkspaceDto } from "@bravos/contracts";
 import { ApiError, getSale, listOnlineOrders, listSales } from "../api.ts";
 import { pos, saleFromOffline } from "../pos.ts";
+import { customerReceiptNumber, withPreservedLocalReceipt } from "../receipt-number.ts";
 import { releaseReceiptPrintResources } from "../receipts/index.ts";
 import { formatEgpFromPiasters } from "../money.ts";
 import { EmptyState } from "../ui/EmptyState.tsx";
@@ -92,7 +93,7 @@ export default function SalesPage({
           if (role !== "manager" && sale.soldByStaffId !== staffId) {
             continue;
           }
-          byId.set(sale.id, sale);
+          byId.set(sale.id, withPreservedLocalReceipt(sale, byId.get(sale.id), staffId));
         }
         setSalesLoaded(true);
       } else {
@@ -112,7 +113,8 @@ export default function SalesPage({
         setOrdersPhase("ready");
       }
       if (requestedResult.status === "fulfilled" && requestedResult.value) {
-        setSelected(requestedResult.value);
+        const requested = requestedResult.value;
+        setSelected(withPreservedLocalReceipt(requested, local.find((sale) => sale.id === requested.id), staffId));
       } else {
         setSelected((requestedSaleId ? rows.find((sale) => sale.id === requestedSaleId) : rows[0]) ?? null);
       }
@@ -141,6 +143,7 @@ export default function SalesPage({
 
   async function openSale(id: string) {
     const generation = generationRef.current;
+    const staffId = workspace.staff.id;
     const request = ++detailRequest.current;
     const stillCurrent = () => generationRef.current === generation && detailRequest.current === request;
     setError("");
@@ -159,7 +162,7 @@ export default function SalesPage({
       if (!stillCurrent()) {
         return;
       }
-      setSelected(detail);
+      setSelected(withPreservedLocalReceipt(detail, local, staffId));
       detailFeedback.reveal();
     } catch (caught) {
       if (!stillCurrent()) {
@@ -203,7 +206,7 @@ export default function SalesPage({
               {sales.map((sale) => (
                 <li key={sale.id}>
                   <button type="button" className="secondary" aria-pressed={selected?.id === sale.id} aria-busy={loadingSaleId === sale.id} disabled={loadingSaleId === sale.id} onClick={() => void openSale(sale.id)}>
-                    {sale.reference ?? "بيع غير مزامن"} — {sale.soldByDisplayName} — {sale.branch.nameAr} — {formatEgpFromPiasters(sale.finalTotalPiasters)}
+                    {customerReceiptNumber({ receiptReference: sale.receiptReference ?? null, reference: sale.reference, blockedIds: [sale.id, sale.operationId] })} — {sale.soldByDisplayName} — {sale.branch.nameAr} — {formatEgpFromPiasters(sale.finalTotalPiasters)}
                     {sale.recordedAt ? "" : " — غير مزامن"}
                   </button>
                 </li>
@@ -234,7 +237,7 @@ export default function SalesPage({
         ) : null}
         {selected ? (
           <div ref={detailFeedback.regionRef} className={`reveal-feedback${detailFeedback.highlighted ? " is-highlighted" : ""}`} data-testid="sale-detail-region" aria-busy={Boolean(loadingSaleId)}>
-            <h2 ref={detailFeedback.headingRef} tabIndex={-1}>بيع {selected.reference ?? "غير مزامن"}</h2>
+            <h2 ref={detailFeedback.headingRef} tabIndex={-1}>بيع {customerReceiptNumber({ receiptReference: selected.receiptReference ?? null, reference: selected.reference, blockedIds: [selected.id, selected.operationId] })}</h2>
             <SaleSummary key={selected.id} sale={selected} printDisabled={Boolean(loadingSaleId)} />
             {managerSale ? <Link className="button secondary" to={`/corrections?target=sale&id=${selected.id}`}>تصحيح تسجيل هذا البيع</Link> : null}
             {managerSale ? (

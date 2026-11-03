@@ -7,6 +7,7 @@ import type {
   ReceiptLineWrite,
   ReceiptRecord,
   ReceiptStore,
+  ReceivingReferences,
   ReceivingUnitOfWork,
 } from "../application/ports.ts";
 
@@ -16,10 +17,15 @@ type ReceiptRow = {
   id: string;
   branch_id: string;
   operation_id: string;
+  supplier_id: string | null;
+  supplier_name_ar: string | null;
   receipt_date: string;
   received_by_staff_id: string;
   recorded_at: Date;
 };
+
+const RECEIPT_COLUMNS = `r.id, r.branch_id, r.operation_id, r.supplier_id, s.name_ar AS supplier_name_ar,
+       r.receipt_date::text AS receipt_date, r.received_by_staff_id, r.recorded_at`;
 
 type LineRow = {
   id: string;
@@ -59,9 +65,9 @@ export function createPostgresReceiptStore(queryable: Queryable): ReceiptStore {
     async insert(input) {
       await queryable.query(
         `INSERT INTO receiving_receipt (
-           id, branch_id, operation_id, receipt_date, received_by_staff_id, recorded_at
-         ) VALUES ($1, $2, $3, $4::date, $5, $6)`,
-        [input.id, input.branchId, input.operationId, input.receiptDate, input.receivedByStaffId, input.recordedAt],
+           id, branch_id, operation_id, supplier_id, receipt_date, received_by_staff_id, recorded_at
+         ) VALUES ($1, $2, $3, $4, $5::date, $6, $7)`,
+        [input.id, input.branchId, input.operationId, input.supplierId, input.receiptDate, input.receivedByStaffId, input.recordedAt],
       );
       for (const [index, line] of input.lines.entries()) {
         await queryable.query(
@@ -80,11 +86,34 @@ export function createPostgresReceiptStore(queryable: Queryable): ReceiptStore {
 
     getByOperationId: (operationId) => loadByOperationId(queryable, operationId),
     getById: (id, lock = false) => loadById(queryable, id, lock),
+    async listSuppliers() {
+      const result = await queryable.query<{ id: string; name_ar: string }>(
+        `SELECT id, name_ar FROM supplier ORDER BY name_ar, id`,
+      );
+      return result.rows.map((row) => ({ id: row.id, nameAr: row.name_ar }));
+    },
+    async insertSupplier(input) {
+      try {
+        const result = await queryable.query<{ id: string; name_ar: string }>(
+          `INSERT INTO supplier (id, name_ar, name_key, created_by_staff_id)
+           VALUES ($1, $2, $3, $4)
+           RETURNING id, name_ar`,
+          [input.id, input.nameAr, input.nameKey, input.actorStaffId],
+        );
+        const row = result.rows[0];
+        if (!row) throw new Error("Created supplier could not be loaded.");
+        return { id: row.id, nameAr: row.name_ar };
+      } catch (error) {
+        if (isUniqueViolation(error)) return "duplicate" as const;
+        throw error;
+      }
+    },
     async list() {
       const receipts = await queryable.query<ReceiptRow>(
-        `SELECT id, branch_id, operation_id, receipt_date::text AS receipt_date, received_by_staff_id, recorded_at
-         FROM receiving_receipt
-         ORDER BY recorded_at DESC, id DESC`,
+        `SELECT ${RECEIPT_COLUMNS}
+         FROM receiving_receipt r
+         LEFT JOIN supplier s ON s.id = r.supplier_id
+         ORDER BY r.recorded_at DESC, r.id DESC`,
       );
       const lines = await queryable.query<LineRow>(
         `SELECT id, receipt_id, variant_id, quantity, unit_cost_piasters, batch_id, line_index
@@ -148,6 +177,7 @@ export function createPostgresReceivingUnitOfWork(
           receipts: createPostgresReceiptStore(client),
           corrections: createPostgresReceiptCorrectionStore(client),
           inventory: inventoryFor(client),
+          references: createReceivingReferences(client),
         });
         await client.query("COMMIT");
         return result;
@@ -163,9 +193,10 @@ export function createPostgresReceivingUnitOfWork(
 
 async function loadById(queryable: Queryable, id: string, lock = false): Promise<ReceiptRecord | null> {
   const receipt = await queryable.query<ReceiptRow>(
-    `SELECT id, branch_id, operation_id, receipt_date::text AS receipt_date, received_by_staff_id, recorded_at
-     FROM receiving_receipt
-     WHERE id = $1 ${lock ? "FOR UPDATE" : ""}`,
+    `SELECT ${RECEIPT_COLUMNS}
+     FROM receiving_receipt r
+     LEFT JOIN supplier s ON s.id = r.supplier_id
+     WHERE r.id = $1 ${lock ? "FOR UPDATE OF r" : ""}`,
     [id],
   );
   const row = receipt.rows[0];
@@ -250,9 +281,10 @@ function toCorrection(row: CorrectionRow, lines: ReceiptCorrectionLineRecord[]):
 
 async function loadByOperationId(queryable: Queryable, operationId: string): Promise<ReceiptRecord | null> {
   const receipt = await queryable.query<ReceiptRow>(
-    `SELECT id, branch_id, operation_id, receipt_date::text AS receipt_date, received_by_staff_id, recorded_at
-     FROM receiving_receipt
-     WHERE operation_id = $1`,
+    `SELECT ${RECEIPT_COLUMNS}
+     FROM receiving_receipt r
+     LEFT JOIN supplier s ON s.id = r.supplier_id
+     WHERE r.operation_id = $1`,
     [operationId],
   );
   const row = receipt.rows[0];
@@ -288,9 +320,34 @@ function toReceipt(row: ReceiptRow, lines: ReceiptLineWrite[]): ReceiptRecord {
     id: row.id,
     branchId: row.branch_id,
     operationId: row.operation_id,
+    supplierId: row.supplier_id,
+    supplierNameAr: row.supplier_name_ar,
     receiptDate: row.receipt_date,
     receivedByStaffId: row.received_by_staff_id,
     recordedAt: row.recorded_at,
     lines,
+  };
+}
+
+function isUniqueViolation(error: unknown): boolean {
+  return Boolean(error && typeof error === "object" && "code" in error && (error as { code?: string }).code === "23505");
+}
+
+function createReceivingReferences(queryable: Queryable): ReceivingReferences {
+  return {
+    async operationalVariantId(productId) {
+      const result = await queryable.query<{ id: string }>(
+        `SELECT id FROM catalog_product_variant WHERE product_id = $1 AND purpose = 'operational'`,
+        [productId],
+      );
+      return result.rows[0]?.id ?? null;
+    },
+    async supplierName(supplierId) {
+      const result = await queryable.query<{ name_ar: string }>(
+        `SELECT name_ar FROM supplier WHERE id = $1`,
+        [supplierId],
+      );
+      return result.rows[0]?.name_ar ?? null;
+    },
   };
 }

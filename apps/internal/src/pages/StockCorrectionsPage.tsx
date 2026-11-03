@@ -20,7 +20,6 @@ import {
   finalizeStockCorrection,
   getCountCoordination,
   getStockPause,
-  issuePosSnapshot,
   listBatches,
   listCashierCatalog,
   listStockCorrections,
@@ -29,7 +28,7 @@ import {
   reconcileLateSale,
   startCountCoordination,
 } from "../api.ts";
-import { cacheIssuedSnapshot, pos } from "../pos.ts";
+import { cacheIssuedSnapshot, issueStaffPosSnapshot, pos } from "../pos.ts";
 
 type Loaded = {
   coordination: CountCoordinationDto | null;
@@ -261,7 +260,7 @@ export default function StockCorrectionsPage({ workspace }: { workspace: Workspa
     await run("sync", async () => {
       const pendingIds = await pos.listPendingOperationIds();
       if (pendingIds.length > 0) throw new Error("يجب إرسال المبيعات المكتملة من هذه النقطة أولاً.");
-      const snapshot = await issuePosSnapshot(await pos.deviceId(), pendingIds);
+      const snapshot = await issueStaffPosSnapshot(pendingIds, "passive");
       await cacheIssuedSnapshot(workspace.staff.id, snapshot);
       if (!snapshot.stockPause) throw new Error("لم تعد مهلة التوقف نشطة. حدّث الصفحة وابدأ تنسيقاً جديداً.");
       setPauseSnapshot(snapshot);
@@ -429,8 +428,8 @@ export default function StockCorrectionsPage({ workspace }: { workspace: Workspa
       <p className="notice" data-testid="stock-correction-active-branch">
         الفرع النشط للتصحيح: <strong>{activeBranch?.nameAr ?? "اختر فرعاً من مساحة العمل"}</strong>
       </p>
-      {error ? <div className="error" role="alert">{error}</div> : null}
-      {notice ? <div className="notice" role="status">{notice}</div> : null}
+      {error ? <div className="error point-feedback" role="alert">{error}</div> : null}
+      {notice ? <div className="notice point-feedback" role="status">{notice}</div> : null}
       {initialLoading ? <p role="status">جارٍ تحميل المخزون والتصحيحات…</p> : null}
       {readState === "error" || listRetrying ? (
         <p>
@@ -562,7 +561,7 @@ export default function StockCorrectionsPage({ workspace }: { workspace: Workspa
               onChange={(event) => setReason(event.target.value)}
             />
           </div>
-          <button type="submit" disabled={Boolean(pending) || !activeBranch || (Boolean(correctionAttempt) && correctionAttempt?.branchId !== activeBranch.id) || (!correctionAttempt && (!allAcknowledged || !correctionValid))}>
+          <button className="warn" type="submit" disabled={Boolean(pending) || !activeBranch || (Boolean(correctionAttempt) && correctionAttempt?.branchId !== activeBranch.id) || (!correctionAttempt && (!allAcknowledged || !correctionValid))}>
             {pending === "finalize" ? "جارٍ التحقق…" : correctionAttempt ? "إعادة محاولة حفظ التصحيح" : "حفظ التصحيح وإنهاء التوقف"}
           </button>
           {!allAcknowledged ? <p className="muted">لا يمكن الحفظ حتى تؤكد كل نقطة بيع معروفة مزامنتها وتوقفها.</p> : null}

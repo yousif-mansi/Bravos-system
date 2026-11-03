@@ -170,7 +170,6 @@ test("offline browse refreshes after completion, rejects known overselling and k
   await checkout.getByLabel("الكمية", { exact: true }).fill("1");
   await checkout.getByRole("button", { name: "قبول الأسعار", exact: true }).click();
   await expect(page.getByTestId("accepted-prices")).toBeVisible();
-  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkout.getByRole("button", { name: "إتمام البيع", exact: true }).click();
   await expect(page.getByRole("status").filter({ hasText: "تم حفظ البيع" })).toBeVisible();
   await expect(page.getByTestId("available-quantity")).toHaveText("الكمية المتاحة: 1");
@@ -246,7 +245,6 @@ test("another tab's completed offline sale refreshes known availability without 
   const secondCheckout = second.getByRole("form", { name: "إتمام البيع" });
   await secondCheckout.getByRole("button", { name: "قبول الأسعار", exact: true }).click();
   await expect(second.getByTestId("accepted-prices")).toBeVisible();
-  await secondCheckout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await secondCheckout.getByRole("button", { name: "إتمام البيع", exact: true }).click();
   await expect(second.getByRole("status").filter({ hasText: "تم حفظ البيع" })).toBeVisible();
   await expect(page.getByTestId("available-quantity")).toHaveText("الكمية المتاحة: 1");
@@ -289,7 +287,6 @@ test("a remote same-cashier branch reselection keeps automatic sync running afte
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByRole("button", { name: "قبول الأسعار", exact: true }).click();
   await expect(page.getByTestId("accepted-prices")).toBeVisible();
-  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkout.getByRole("button", { name: "إتمام البيع", exact: true }).click();
   await expect(page.getByRole("status").filter({ hasText: "تم حفظ البيع" })).toBeVisible();
 

@@ -1,4 +1,9 @@
-import type { ReceiptView } from "./receipt-model.ts";
+import officialHorizontalLogoSvg from "../../../../logo svg/02_Logo_Horizontal_Black.svg?raw";
+import { receiptPageSizeCss, receiptPageSizeMm, type ReceiptView } from "./receipt-model.ts";
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+const XLINK_NS = "http://www.w3.org/1999/xlink";
+const LOGO_WIDTH_MM = 34;
 
 /** Same subset ranges as apps/internal/src/styles/fonts.css so the faces combine. */
 const CAIRO_RANGES = {
@@ -33,10 +38,10 @@ export function receiptFontStyles(fontBaseUrl: string): string {
     .join("");
 }
 
-export function receiptPrintStyles(contentWidthMm: number): string {
+export function receiptPrintStyles(contentWidthMm: number, pageHeightMm = 80): string {
   return `
-@page { margin: 0; }
-html, body { margin: 0; padding: 0; background: #fff; color: #000; }
+${receiptPageSizeCss(contentWidthMm, pageHeightMm)}
+html, body { margin: 0; padding: 0; background: #fff; color: #000; width: ${contentWidthMm}mm; }
 body {
   font-family: Cairo, sans-serif;
   font-size: 12px;
@@ -44,22 +49,70 @@ body {
   width: ${contentWidthMm}mm;
 }
 .receipt {
+  position: relative;
   box-sizing: border-box;
   width: ${contentWidthMm}mm;
+  max-width: 100%;
   padding: 2mm 1.5mm 4mm;
   background: #fff;
   color: #000;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.logo-wrap {
+  display: flex;
+  justify-content: center;
+  margin: 0 auto 1.5mm;
+  max-width: 100%;
+}
+.logo {
+  display: block;
+  width: ${LOGO_WIDTH_MM}mm;
+  max-width: 100%;
+  height: auto;
+  color: #000;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
 }
 .brand { margin: 0; text-align: center; font-size: 18px; font-weight: 700; letter-spacing: 0.08em; }
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+@media print {
+  .visually-hidden { display: none; }
+}
 .center { text-align: center; }
+.title { margin: 0 0 1mm; font-size: 13px; font-weight: 700; }
 .muted { margin: 1mm 0; }
 .rule { border: 0; border-top: 1px solid #000; margin: 2mm 0; }
 .line { break-inside: avoid; page-break-inside: avoid; margin: 0 0 2mm; }
-.name, .meta, .refs { unicode-bidi: isolate; overflow-wrap: anywhere; }
+.name, .meta, .refs, .value { unicode-bidi: isolate; overflow-wrap: anywhere; word-break: break-word; }
+.qty { unicode-bidi: isolate; direction: ltr; text-align: start; margin: 0.4mm 0; }
+.detail {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 2mm;
+  margin: 0.5mm 0;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+.detail .label { flex: 0 0 auto; overflow-wrap: normal; word-break: normal; }
+.detail .value { flex: 1 1 auto; min-width: 0; text-align: start; }
 .row { display: flex; justify-content: space-between; gap: 2mm; break-inside: avoid; page-break-inside: avoid; }
-.row span { unicode-bidi: isolate; }
-.figures { white-space: nowrap; }
+.row span { unicode-bidi: isolate; min-width: 0; overflow-wrap: anywhere; }
+.figures { unicode-bidi: isolate; direction: ltr; white-space: nowrap; flex: 0 0 auto; }
 .total { font-size: 16px; font-weight: 700; margin-top: 1mm; }
+.footer { text-align: center; margin-top: 3mm; }
 h1, p { margin: 0; }
 `;
 }
@@ -70,10 +123,18 @@ function create(doc: Document, tag: string, className?: string): HTMLElement {
   return element;
 }
 
-function row(doc: Document, parent: ParentNode, label: string, value: string, className = "row"): void {
+function row(
+  doc: Document,
+  parent: ParentNode,
+  label: string,
+  value: string,
+  className = "row",
+  labelDir: "auto" | "ltr" = "auto",
+): void {
   const line = create(doc, "div", className);
-  const labelNode = create(doc, "span");
+  const labelNode = create(doc, "span", labelDir === "ltr" ? "qty" : undefined);
   labelNode.textContent = label;
+  labelNode.dir = labelDir;
   const valueNode = create(doc, "span", "figures");
   valueNode.textContent = value;
   valueNode.dir = "ltr";
@@ -81,22 +142,109 @@ function row(doc: Document, parent: ParentNode, label: string, value: string, cl
   parent.appendChild(line);
 }
 
+function quantityLine(doc: Document, parent: ParentNode, text: string): void {
+  const line = create(doc, "p", "qty");
+  line.dir = "ltr";
+  line.textContent = text;
+  parent.appendChild(line);
+}
+
+function detail(
+  doc: Document,
+  parent: ParentNode,
+  label: string,
+  value: string,
+  valueDir: "auto" | "ltr" = "auto",
+): void {
+  const line = create(doc, "p", "detail");
+  const labelNode = create(doc, "span", "label");
+  labelNode.textContent = label;
+  const valueNode = create(doc, "span", "value");
+  valueNode.textContent = value;
+  valueNode.dir = valueDir;
+  line.append(labelNode, valueNode);
+  parent.appendChild(line);
+}
+
+function appendOfficialLogo(doc: Document, parent: HTMLElement): boolean {
+  const parserCtor = doc.defaultView?.DOMParser ?? (typeof DOMParser === "function" ? DOMParser : null);
+  if (!parserCtor) return false;
+  const parsed = new parserCtor().parseFromString(officialHorizontalLogoSvg, "image/svg+xml");
+  const root = parsed.documentElement;
+  if (!root || root.namespaceURI !== SVG_NS || root.localName !== "svg") {
+    return false;
+  }
+  if (parsed.getElementsByTagName("parsererror").length > 0) {
+    return false;
+  }
+  const logo = doc.importNode(root, true) as unknown as SVGSVGElement;
+  logo.removeAttribute("width");
+  logo.removeAttribute("height");
+  logo.setAttribute("class", "logo");
+  logo.setAttribute("aria-hidden", "true");
+  logo.setAttribute("focusable", "false");
+  logo.setAttribute("preserveAspectRatio", "xMidYMid meet");
+  for (const use of Array.from(logo.querySelectorAll("use"))) {
+    const href = use.getAttribute("href") ?? use.getAttributeNS(XLINK_NS, "href");
+    if (href && !use.getAttribute("href")) {
+      use.setAttribute("href", href);
+    }
+  }
+  const wrap = create(doc, "div", "logo-wrap");
+  wrap.setAttribute("data-receipt-logo", "official");
+  wrap.appendChild(logo);
+  parent.appendChild(wrap);
+  return true;
+}
+
 /**
- * Renders the receipt into an empty document using text nodes only.
+ * Sets an explicit two-length @page box from the laid-out receipt height.
+ * Long receipts cap at RECEIPT_MAX_PAGE_HEIGHT_MM and paginate; content is not clipped.
+ */
+export function finalizeReceiptDocumentSize(doc: Document, contentWidthMm: number): { widthMm: number; heightMm: number } {
+  const receipt = doc.querySelector(".receipt");
+  const heightPx = receipt
+    ? Math.max(receipt.scrollHeight, receipt.getBoundingClientRect().height)
+    : 0;
+  const size = receiptPageSizeMm(contentWidthMm, heightPx);
+  let page = doc.getElementById("receipt-page-size");
+  if (!page) {
+    page = doc.createElement("style");
+    page.id = "receipt-page-size";
+    doc.head.appendChild(page);
+  }
+  page.textContent = `${receiptPageSizeCss(size.widthMm, size.heightMm)}html,body{width:${size.widthMm}mm;}`;
+  doc.documentElement.setAttribute("data-receipt-page-width-mm", String(size.widthMm));
+  doc.documentElement.setAttribute("data-receipt-page-height-mm", String(size.heightMm));
+  return size;
+}
+
+/**
+ * Renders the receipt into an empty document using text nodes only for sale data.
  * The same function fills the print iframe and any preview frame.
  */
 export function renderReceiptDocument(doc: Document, view: ReceiptView, fontBaseUrl: string): void {
   const style = doc.createElement("style");
   style.textContent = `${receiptFontStyles(fontBaseUrl)}${receiptPrintStyles(view.contentWidthMm)}`;
   doc.head.appendChild(style);
+  const page = doc.createElement("style");
+  page.id = "receipt-page-size";
+  page.textContent = `${receiptPageSizeCss(view.contentWidthMm, 80)}html,body{width:${view.contentWidthMm}mm;}`;
+  doc.head.appendChild(page);
   doc.documentElement.lang = "ar";
   doc.documentElement.dir = "rtl";
-  doc.title = "إيصال";
+  doc.title = "إيصال بيع";
+  doc.documentElement.setAttribute("data-receipt-page-width-mm", String(view.contentWidthMm));
+  doc.documentElement.setAttribute("data-receipt-page-height-mm", "80");
 
   const receipt = create(doc, "main", "receipt");
-  const brand = create(doc, "h1", "brand");
+  const logoMounted = appendOfficialLogo(doc, receipt);
+  const brand = create(doc, "h1", logoMounted ? "brand visually-hidden" : "brand");
   brand.textContent = view.brand;
   receipt.appendChild(brand);
+  const heading = create(doc, "p", "center title");
+  heading.textContent = "إيصال بيع";
+  receipt.appendChild(heading);
 
   const branch = create(doc, "p", "center name");
   branch.textContent = view.branchName;
@@ -115,14 +263,13 @@ export function renderReceiptDocument(doc: Document, view: ReceiptView, fontBase
   };
   rule();
 
-  const reference = create(doc, "p", "refs");
-  reference.textContent = view.printedReference;
-  reference.dir = "auto";
-  receipt.appendChild(reference);
-
-  const when = create(doc, "p", "muted");
-  when.textContent = view.occurredAtLabel;
-  receipt.appendChild(when);
+  detail(doc, receipt, "رقم الإيصال", view.printedReference);
+  detail(doc, receipt, "التاريخ", view.occurredAtLabel);
+  detail(doc, receipt, "الكاشير", view.cashierDisplayName);
+  detail(doc, receipt, "العميل", view.customerName);
+  if (view.customerPhone) {
+    detail(doc, receipt, "الهاتف", view.customerPhone, "ltr");
+  }
   rule();
 
   for (const line of view.lines) {
@@ -130,11 +277,23 @@ export function renderReceiptDocument(doc: Document, view: ReceiptView, fontBase
     const name = create(doc, "p", "name");
     name.textContent = line.productName;
     name.dir = "auto";
-    const variant = create(doc, "p", "meta");
-    variant.textContent = `${line.sizeName} · ${line.colorName}`;
-    variant.dir = "auto";
-    block.append(name, variant);
-    row(doc, block, line.quantityAndUnitPrice, line.lineOriginal);
+    block.appendChild(name);
+    if (line.productCode) {
+      detail(doc, block, "الرمز", line.productCode, "ltr");
+    }
+    if (line.sizeName.trim() || line.colorName.trim()) {
+      const variant = create(doc, "p", "meta");
+      variant.textContent = `${line.sizeName} · ${line.colorName}`;
+      variant.dir = "auto";
+      block.appendChild(variant);
+    }
+    if (line.linePaid) {
+      quantityLine(doc, block, line.quantityAndUnitPrice);
+      row(doc, block, "الأصلي", line.lineOriginal);
+      row(doc, block, "المدفوع", line.linePaid);
+    } else {
+      row(doc, block, line.quantityAndUnitPrice, line.lineOriginal, "row", "ltr");
+    }
     receipt.appendChild(block);
   }
 
@@ -149,12 +308,14 @@ export function renderReceiptDocument(doc: Document, view: ReceiptView, fontBase
   if (view.cashCollected) {
     row(doc, receipt, "النقد المحصّل", view.cashCollected);
   }
-  const method = create(doc, "p", "muted");
-  method.textContent = view.paymentMethodLabel;
-  receipt.appendChild(method);
+  detail(doc, receipt, "طريقة الدفع", view.paymentMethodLabel);
   for (const allocation of view.paymentAllocations) {
     row(doc, receipt, allocation.label, allocation.amount);
   }
+
+  const thanks = create(doc, "p", "footer");
+  thanks.textContent = "شكرًا لتسوقكم";
+  receipt.appendChild(thanks);
 
   doc.body.appendChild(receipt);
 }

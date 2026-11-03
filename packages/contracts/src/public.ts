@@ -24,6 +24,7 @@ export type PublicProductDto = {
   publication: PublicProductPublication;
   availability: PublicProductAvailability;
   orderable: boolean;
+  sharedAvailableQuantity: number;
   imageRefs: string[];
   sizeGuideAr: string | null;
   variants: PublicProductVariantDto[];

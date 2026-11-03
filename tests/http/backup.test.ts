@@ -7,6 +7,8 @@ import { buildApp, type BuiltApp } from "../../apps/api/src/app.ts";
 import { ensureOwner } from "../../apps/api/src/bootstrap.ts";
 import { createNodeBackupCrypto, decodeBackupArchive } from "@bravos/backup/node";
 import { BACKUP_SECTION_NAMES } from "@bravos/backup";
+import { canonicalJson } from "../../packages/backup/src/domain/canonical-json.ts";
+import { revertLastMigration } from "@bravos/persistence";
 import { startPostgresCluster, type PostgresCluster } from "@bravos/testkit";
 
 const INTERNAL_ORIGIN = "http://127.0.0.1:5173";
@@ -149,7 +151,7 @@ test("manager downloads one authenticated business snapshot with privacy and uns
     includesUnsentBrowserRecords: false,
     imageBinariesIncluded: false,
     imageReferencesPreserved: true,
-    schemaVersion: "035_return_reason.sql",
+    schemaVersion: "037_operational_stock.sql",
     sourceGeneration: 0,
     salesSaleReferenceSequence: { lastValue: expect.stringMatching(/^\d+$/), isCalled: expect.any(Boolean) },
     returnsReturnReferenceSequence: { lastValue: expect.stringMatching(/^\d+$/), isCalled: expect.any(Boolean) },
@@ -157,9 +159,26 @@ test("manager downloads one authenticated business snapshot with privacy and uns
     identityPolicy: { preservesStableIds: true, preservesForeignKeys: true, regeneratesIds: false },
     idProvenance: { source: "database_primary_and_foreign_keys", stableIdsPreserved: true, foreignKeysPreserved: true, idsRegenerated: false },
   });
+  const prefixSequence = await built.pool.query<{ last_value: string; is_called: boolean }>(
+    "SELECT last_value::text AS last_value, is_called FROM sales_receipt_prefix_seq",
+  );
+  expect(decoded.manifest.salesReceiptPrefixSequence).toEqual({
+    lastValue: prefixSequence.rows[0]!.last_value,
+    isCalled: prefixSequence.rows[0]!.is_called,
+  });
+  expect(decoded.data.sales.sales_receipt_registration).toEqual([]);
   expect(decoded.data.inventory.inventory_known_till).toEqual([expect.not.objectContaining({ restore_generation: expect.anything() })]);
   expect(decoded.data.inventory.inventory_batch_balance).toEqual([]);
-  expect(decoded.data.catalog.catalog_product_variant).toEqual([expect.objectContaining({ id: variantId, online_visible: false })]);
+  expect(decoded.data.catalog.catalog_product_variant).toHaveLength(2);
+  expect(decoded.data.catalog.catalog_product_variant).toEqual(expect.arrayContaining([
+    expect.objectContaining({ id: variantId, online_visible: false, purpose: "website_option" }),
+    expect.objectContaining({
+      purpose: "operational",
+      online_visible: false,
+      size_id: "a0000000-0000-4000-8000-000000000001",
+      color_id: "a0000000-0000-4000-8000-000000000002",
+    }),
+  ]));
   expect(decoded.data.sales.sales_restore_deferred_completion).toEqual([]);
   const actors = decoded.data.identity.identity_actor ?? [];
   expect(actors).toEqual(expect.arrayContaining([
@@ -332,6 +351,7 @@ test("business flows created through the application are archived table by table
   for (const [sequenceName, manifestSequence] of [
     ["sales_sale_reference_number_seq", decoded.manifest.salesSaleReferenceSequence],
     ["returns_return_reference_number_seq", decoded.manifest.returnsReturnReferenceSequence],
+    ["sales_receipt_prefix_seq", decoded.manifest.salesReceiptPrefixSequence],
   ] as const) {
     const current = await built.pool.query<{ last_value: string; is_called: boolean }>(
       `SELECT last_value::text, is_called FROM ${sequenceName}`,
@@ -367,7 +387,149 @@ test("backup creation is manager-only and validates the download password", asyn
   expect((await createBackup()).statusCode).toBe(201);
 });
 
+test("receipt numbering archive keeps an unbounded sequence, registry rows, and rejects mismatched profiles", async () => {
+  const manager = await signIn("owner", "owner-pass-1");
+  expect((await jsonApi(manager, "POST", "/api/internal/active-branch", { branchId })).status).toBe(200);
+  const suffix = crypto.randomUUID().slice(0, 6);
+  const category = await jsonApi(manager, "POST", "/api/internal/catalog/categories", { nameAr: `إيصال ${suffix}` });
+  const size = await jsonApi(manager, "POST", "/api/internal/catalog/sizes", { nameAr: `مقاس ${suffix}` });
+  const color = await jsonApi(manager, "POST", "/api/internal/catalog/colors", { nameAr: `لون ${suffix}` });
+  const product = await jsonApi(manager, "POST", "/api/internal/catalog/products", {
+    code: `RECEIPT-${suffix}`,
+    nameAr: "منتج الإيصال",
+    descriptionAr: "",
+    categoryId: category.body.id,
+    defaultSellingPricePiasters: 30000,
+    publication: "available",
+    imageRefs: [],
+    variants: [{ sizeId: size.body.id, colorId: color.body.id, sellingPricePiastersOverride: null }],
+  });
+  expect(product.status, JSON.stringify(product.body)).toBe(201);
+  const variantId = product.body.variants[0].id as string;
+  const received = await jsonApi(manager, "POST", "/api/internal/receiving/receipts", {
+    operationId: crypto.randomUUID(),
+    branchId,
+    receiptDate: cairoDate(new Date()),
+    lines: [{ variantId, quantity: 4, unitCostPiasters: 10000 }],
+  });
+  expect(received.status, JSON.stringify(received.body)).toBe(201);
+  const saleIds = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()];
+  for (const saleId of saleIds) {
+    const sale = await jsonApi(manager, "POST", "/api/internal/sales", {
+      saleId,
+      operationId: crypto.randomUUID(),
+      physicallyCompleted: true,
+      occurredAt: new Date().toISOString(),
+      employeeDiscountPiasters: 0,
+      lines: [{ variantId, quantity: 1 }],
+    });
+    expect(sale.status, JSON.stringify(sale.body)).toBe(201);
+  }
+  const hugeSequence = "9223372036854775808";
+  const assignedReference = `BRV-042-${hugeSequence}`;
+  const unusedRegistrationId = crypto.randomUUID();
+  const assignedRegistrationId = crypto.randomUUID();
+  const unusedDeviceId = crypto.randomUUID();
+  const assignedDeviceId = crypto.randomUUID();
+  const hugePrefix = "9007199254740993";
+  await built.pool.query(
+    `INSERT INTO sales_receipt_registration (id, device_id, prefix, created_at, created_by_staff_id, restore_generation)
+     VALUES ($1,$2,$3,now(),$4,0), ($5,$6,'42',now(),$4,0)`,
+    [unusedRegistrationId, unusedDeviceId, hugePrefix, ownerId, assignedRegistrationId, assignedDeviceId],
+  );
+  await built.pool.query("UPDATE sales_sale SET receipt_identity = $2::jsonb WHERE id = $1", [saleIds[0], JSON.stringify({
+    status: "assigned", registrationId: assignedRegistrationId, deviceId: assignedDeviceId,
+    prefix: "42", sequence: hugeSequence, reference: assignedReference, staffDiagnostic: "slice-b",
+  })]);
+  await built.pool.query("UPDATE sales_sale SET receipt_identity = $2::jsonb WHERE id = $1", [
+    saleIds[1], JSON.stringify({ status: "conflict", reference: "تعارض-الخزينة" }),
+  ]);
+  await built.pool.query("SELECT setval('sales_receipt_prefix_seq', $1::bigint, true)", [hugePrefix]);
+  const posReference = (await built.pool.query<{ reference: string }>("SELECT reference FROM sales_sale WHERE id = $1", [saleIds[0]])).rows[0]!.reference;
+
+  const decoded = await downloadBackup(manager);
+  expect(decoded.manifest.schemaVersion).toBe("037_operational_stock.sql");
+  expect(decoded.manifest.salesReceiptPrefixSequence).toEqual({ lastValue: hugePrefix, isCalled: true });
+  const salesSection = decoded.manifest.sections.find((section) => section.name === "sales");
+  expect(salesSection?.sha256).toBe(createHash("sha256").update(canonicalJson(decoded.data.sales), "utf8").digest("hex"));
+  expect(decoded.data.sales.sales_receipt_registration).toEqual(expect.arrayContaining([
+    expect.objectContaining({ id: unusedRegistrationId, prefix: hugePrefix, created_by_staff_id: ownerId, restore_generation: "0" }),
+    expect.objectContaining({ id: assignedRegistrationId, prefix: "42", created_by_staff_id: ownerId }),
+  ]));
+  const archivedSales = new Map(decoded.data.sales.sales_sale.map((row) => [String(row.id), row]));
+  expect(archivedSales.get(saleIds[0])?.reference).toBe(posReference);
+  expect(archivedSales.get(saleIds[0])?.receipt_identity).toMatchObject({
+    sequence: hugeSequence, reference: assignedReference, staffDiagnostic: "slice-b", status: "assigned",
+  });
+  expect(archivedSales.get(saleIds[1])?.receipt_identity).toMatchObject({ status: "conflict", reference: "تعارض-الخزينة" });
+  const longConflictReference = `BRV-001-${`9${"0".repeat(80)}`}`;
+  const longConflict = structuredClone(decoded);
+  const conflictSale = longConflict.data.sales.sales_sale.find((row) => row.id === saleIds[1]);
+  (conflictSale!.receipt_identity as Record<string, unknown>).reference = longConflictReference;
+  resealSales(longConflict);
+  const acceptedConflict = await decodeBackupArchive(await createNodeBackupCrypto().protect(longConflict, PASSWORD), PASSWORD);
+  expect(acceptedConflict.data.sales.sales_sale.find((row) => row.id === saleIds[1])?.receipt_identity).toMatchObject({
+    status: "conflict",
+    reference: longConflictReference,
+  });
+  expect(archivedSales.get(saleIds[2])?.receipt_identity).toBeNull();
+  expect(JSON.stringify(decoded)).not.toContain(PASSWORD);
+  expect(JSON.stringify(decoded)).not.toContain("owner-pass-1");
+
+  const current = structuredClone(decoded);
+  await expectRejectedReceiptArchive(current, (archive) => {
+    delete archive.data.sales.sales_sale[0]!.receipt_identity;
+  }, "Receipt numbering sale row is missing receipt_identity.");
+  await expectRejectedReceiptArchive(current, (archive) => {
+    delete archive.data.sales.sales_receipt_registration;
+  }, "Receipt numbering backup is missing sales_receipt_registration.");
+  await expectRejectedReceiptArchive(current, (archive) => {
+    delete archive.manifest.salesReceiptPrefixSequence;
+  }, "Receipt numbering backup is missing the receipt prefix sequence.");
+  await expectRejectedReceiptArchive(current, (archive) => {
+    archive.data.sales.sales_receipt_registration[0]!.prefix = "01";
+  }, "Invalid receipt registration row in backup.");
+  await expectRejectedReceiptArchive(current, (archive) => {
+    const duplicate = structuredClone(archive.data.sales.sales_receipt_registration[0]!);
+    duplicate.id = crypto.randomUUID();
+    archive.data.sales.sales_receipt_registration.push(duplicate);
+  }, "Invalid receipt registration row in backup.");
+  await expectRejectedReceiptArchive(current, (archive) => {
+    manifestOf(archive).salesReceiptPrefixSequence = { lastValue: hugePrefix, isCalled: true, extra: true };
+  }, "Invalid receipt prefix sequence in backup manifest.");
+  await expectRejectedReceiptArchive(current, (archive) => {
+    manifestOf(archive).salesReceiptPrefixSequence = { lastValue: "9223372036854775808", isCalled: false };
+  }, "Invalid receipt prefix sequence in backup manifest.");
+  await expectRejectedReceiptArchive(current, (archive) => {
+    archive.manifest.schemaVersion = "037_future.sql";
+  }, "Unsupported backup schema version. Use a backup made by a compatible server.");
+  await expectRejectedReceiptArchive(current, (archive) => {
+    const sale = archive.data.sales.sales_sale.find((row) => row.id === saleIds[1]);
+    (sale!.receipt_identity as Record<string, unknown>).reference = "x".repeat(81);
+  }, "Invalid receipt identity in backup.");
+
+  expect(await revertLastMigration(built.pool)).toBe("037_operational_stock.sql");
+  expect(await revertLastMigration(built.pool)).toBe("036_receipt_numbering.sql");
+  const profile035 = await downloadBackup(manager);
+  expectHistoricalReceiptProfile(profile035, "035_return_reason.sql");
+  expect(await revertLastMigration(built.pool)).toBe("035_return_reason.sql");
+  const profile034 = await downloadBackup(manager);
+  expectHistoricalReceiptProfile(profile034, "034_order_recognition_branch.sql");
+  for (const historical of [profile035, profile034]) {
+    await expectRejectedReceiptArchive(historical, (archive) => {
+      archive.data.sales.sales_sale[0]!.receipt_identity = null;
+    }, "Historical sale row must not contain receipt_identity.");
+    await expectRejectedReceiptArchive(historical, (archive) => {
+      archive.data.sales.sales_receipt_registration = [];
+    }, "Historical backup must not contain sales_receipt_registration.");
+    await expectRejectedReceiptArchive(historical, (archive) => {
+      manifestOf(archive).salesReceiptPrefixSequence = { lastValue: "1", isCalled: false };
+    }, "Historical backup must not contain a receipt prefix sequence.");
+  }
+});
+
 type CookieSession = { cookie: string };
+type BackupArchive = Awaited<ReturnType<typeof decodeBackupArchive>>;
 
 async function signIn(username: string, password: string): Promise<CookieSession> {
   const response = await built.app.inject({
@@ -432,6 +594,61 @@ async function submitOnlineOrder(deliveryAreaId: string, variantId: string, suff
 
 function cairoDate(instant: Date): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "Africa/Cairo", year: "numeric", month: "2-digit", day: "2-digit" }).format(instant);
+}
+
+async function downloadBackup(session: CookieSession) {
+  const response = await built.app.inject({
+    method: "POST",
+    url: "/api/internal/backups",
+    headers: { origin: INTERNAL_ORIGIN, cookie: session.cookie, "content-type": "application/json" },
+    payload: { password: PASSWORD },
+  });
+  expect(response.statusCode, response.body).toBe(201);
+  return decodeBackupArchive(response.rawPayload, PASSWORD);
+}
+
+function expectHistoricalReceiptProfile(decoded: BackupArchive, schemaVersion: string) {
+  expect(decoded.manifest.schemaVersion).toBe(schemaVersion);
+  expect(decoded.manifest).not.toHaveProperty("salesReceiptPrefixSequence");
+  expect(decoded.data.sales).not.toHaveProperty("sales_receipt_registration");
+  expect(decoded.data.sales.sales_sale.length).toBeGreaterThan(0);
+  for (const row of decoded.data.sales.sales_sale) expect(row).not.toHaveProperty("receipt_identity");
+}
+
+function manifestOf(archive: BackupArchive): Record<string, unknown> {
+  return archive.manifest as unknown as Record<string, unknown>;
+}
+
+function resealSales(archive: BackupArchive) {
+  const sales = archive.data.sales;
+  const names = Object.keys(sales).sort();
+  const sorted = Object.fromEntries(names.map((name) => [name, sales[name]!])) as BackupArchive["data"]["sales"];
+  archive.data.sales = sorted;
+  const manifest = archive.manifest.sections.find((section) => section.name === "sales");
+  if (!manifest) throw new Error("Missing sales section.");
+  const count = names.reduce((sum, name) => sum + sorted[name]!.length, 0);
+  archive.manifest.totalRecordCount += count - manifest.recordCount;
+  manifest.recordCount = count;
+  manifest.tables = names.map((name) => ({ name, recordCount: sorted[name]!.length }));
+  manifest.sha256 = createHash("sha256").update(canonicalJson(sorted), "utf8").digest("hex");
+}
+
+async function expectRejectedReceiptArchive(source: BackupArchive, mutate: (archive: BackupArchive) => void, fragment: string) {
+  const archive = structuredClone(source);
+  mutate(archive);
+  resealSales(archive);
+  const bytes = await createNodeBackupCrypto().protect(archive, PASSWORD);
+  let thrown: unknown;
+  try {
+    await decodeBackupArchive(bytes, PASSWORD);
+  } catch (error) {
+    thrown = error;
+  }
+  expect(thrown).toMatchObject({
+    code: "BACKUP_ARCHIVE_INVALID",
+    message: "تعذر فتح النسخة الاحتياطية. تحقق من كلمة المرور وسلامة الملف.",
+  });
+  expect((thrown as { cause?: { message?: string } }).cause?.message ?? "").toContain(fragment);
 }
 
 async function businessTableCounts() {

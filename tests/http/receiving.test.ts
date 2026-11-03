@@ -753,18 +753,34 @@ test("a failing multi-line receiving operation rolls back receipt and stock", as
   expect(afterRetry.body[0].remainingQuantity).toBe(8);
 });
 
-test("low-stock evaluates each branch using persisted default 3 and per-variant override", async () => {
+test("low-stock evaluates each retail branch on the operational product pool", async () => {
   const manager = await signIn("owner", "owner-pass-1");
   const seed = await seedShirt(manager, { extraColor: true });
+  const product = await api(manager, "GET", `/api/internal/catalog/products/${seed.productId}`);
+  expect(product.status).toBe(200);
+  const operationalVariantId = product.body.operationalVariantId as string;
   const settings = await api(manager, "GET", "/api/internal/inventory/settings");
   expect(settings.status).toBe(200);
   expect(settings.body).toEqual({ lowStockThreshold: 3 });
   const unstocked = await api(manager, "GET", "/api/internal/inventory/low-stock");
   expect(unstocked.status).toBe(200);
+  expect(unstocked.body).toHaveLength(2);
   expect(unstocked.body).toEqual(
     expect.arrayContaining([
-      expect.objectContaining({ variantId: seed.variantId, availableQuantity: 0, threshold: 3, thresholdSource: "global" }),
-      expect.objectContaining({ variantId: seed.secondVariantId, availableQuantity: 0, threshold: 3, thresholdSource: "global" }),
+      expect.objectContaining({
+        variantId: operationalVariantId,
+        branchId: abshwayId,
+        availableQuantity: 0,
+        threshold: 3,
+        thresholdSource: "global",
+      }),
+      expect.objectContaining({
+        variantId: operationalVariantId,
+        branchId: fayoumId,
+        availableQuantity: 0,
+        threshold: 3,
+        thresholdSource: "global",
+      }),
     ]),
   );
 
@@ -779,39 +795,56 @@ test("low-stock evaluates each branch using persisted default 3 and per-variant 
   });
   const initial = await api(manager, "GET", "/api/internal/inventory/low-stock");
   expect(initial.status).toBe(200);
-  const initialAbshway = initial.body.filter((item: { branchId: string }) => item.branchId === abshwayId);
-  expect(initialAbshway.map((item: { variantId: string }) => item.variantId)).toEqual([seed.variantId]);
-  expect(initialAbshway[0]).toMatchObject({
-    availableQuantity: 3,
-    threshold: 3,
-    thresholdSource: "global",
-  });
+  expect(initial.body.filter((item: { branchId: string }) => item.branchId === abshwayId)).toEqual([]);
+  expect(initial.body.filter((item: { branchId: string }) => item.branchId === fayoumId)).toEqual([
+    expect.objectContaining({
+      variantId: operationalVariantId,
+      availableQuantity: 0,
+      threshold: 3,
+      thresholdSource: "global",
+    }),
+  ]);
 
   const raised = await api(manager, "PATCH", "/api/internal/inventory/settings", { lowStockThreshold: 4 });
   expect(raised.status).toBe(200);
   expect(raised.body).toEqual({ lowStockThreshold: 4 });
   const afterGlobal = await api(manager, "GET", "/api/internal/inventory/low-stock");
-  expect(afterGlobal.body.filter((item: { branchId: string }) => item.branchId === abshwayId).map((item: { variantId: string }) => item.variantId).sort()).toEqual(
-    [seed.secondVariantId, seed.variantId].sort(),
-  );
+  expect(afterGlobal.body.filter((item: { branchId: string }) => item.branchId === abshwayId)).toEqual([]);
 
   const override = await api(
+    manager,
+    "PUT",
+    `/api/internal/inventory/variants/${operationalVariantId}/low-stock-threshold`,
+    { lowStockThreshold: 7 },
+  );
+  expect(override.status).toBe(200);
+  expect(override.body).toMatchObject({ variantId: operationalVariantId, lowStockThreshold: 7 });
+  const afterOverride = await api(manager, "GET", "/api/internal/inventory/low-stock");
+  const afterOverrideAbshway = afterOverride.body.filter((item: { branchId: string }) => item.branchId === abshwayId);
+  expect(afterOverrideAbshway).toHaveLength(1);
+  expect(afterOverrideAbshway[0]).toMatchObject({
+    variantId: operationalVariantId,
+    availableQuantity: 7,
+    threshold: 7,
+    thresholdSource: "variant",
+  });
+
+  const websiteOverride = await api(
     manager,
     "PUT",
     `/api/internal/inventory/variants/${seed.variantId}/low-stock-threshold`,
     { lowStockThreshold: 2 },
   );
-  expect(override.status).toBe(200);
-  expect(override.body).toMatchObject({ variantId: seed.variantId, lowStockThreshold: 2 });
-  const afterOverride = await api(manager, "GET", "/api/internal/inventory/low-stock");
-  const afterOverrideAbshway = afterOverride.body.filter((item: { branchId: string }) => item.branchId === abshwayId);
-  expect(afterOverrideAbshway).toHaveLength(1);
-  expect(afterOverrideAbshway[0]).toMatchObject({
-    variantId: seed.secondVariantId,
-    availableQuantity: 4,
-    threshold: 4,
-    thresholdSource: "global",
-  });
+  expect(websiteOverride.status).toBe(200);
+  const afterWebsite = await api(manager, "GET", "/api/internal/inventory/low-stock");
+  expect(afterWebsite.body.filter((item: { branchId: string }) => item.branchId === abshwayId)).toEqual([
+    expect.objectContaining({
+      variantId: operationalVariantId,
+      availableQuantity: 7,
+      threshold: 7,
+      thresholdSource: "variant",
+    }),
+  ]);
 
   const persisted = await api(manager, "GET", "/api/internal/inventory/settings");
   expect(persisted.body.lowStockThreshold).toBe(4);
@@ -819,27 +852,33 @@ test("low-stock evaluates each branch using persisted default 3 and per-variant 
   const cleared = await api(
     manager,
     "PUT",
-    `/api/internal/inventory/variants/${seed.variantId}/low-stock-threshold`,
+    `/api/internal/inventory/variants/${operationalVariantId}/low-stock-threshold`,
     { lowStockThreshold: null },
   );
   expect(cleared.status).toBe(200);
   expect(cleared.body).toMatchObject({
-    variantId: seed.variantId,
+    variantId: operationalVariantId,
     lowStockThreshold: null,
   });
   expect(cleared.body.updatedByStaffId).toEqual(expect.any(String));
   expect(cleared.body.updatedAt).toEqual(expect.any(String));
   const afterClear = await api(manager, "GET", "/api/internal/inventory/low-stock");
-  expect(afterClear.body.filter((item: { branchId: string }) => item.branchId === abshwayId).map((item: { variantId: string }) => item.variantId).sort()).toEqual(
-    [seed.secondVariantId, seed.variantId].sort(),
-  );
+  expect(afterClear.body.filter((item: { branchId: string }) => item.branchId === abshwayId)).toEqual([]);
+  expect(afterClear.body.filter((item: { branchId: string }) => item.branchId === fayoumId)).toEqual([
+    expect.objectContaining({
+      variantId: operationalVariantId,
+      availableQuantity: 0,
+      threshold: 4,
+      thresholdSource: "global",
+    }),
+  ]);
 
   const zero = await api(manager, "PATCH", "/api/internal/inventory/settings", { lowStockThreshold: 0 });
   expect(zero.status).toBe(200);
   expect(zero.body).toEqual({ lowStockThreshold: 0 });
   const afterZero = await api(manager, "GET", "/api/internal/inventory/low-stock");
   expect(afterZero.body.filter((item: { branchId: string }) => item.branchId === abshwayId)).toEqual([]);
-  expect(afterZero.body.filter((item: { branchId: string }) => item.branchId === fayoumId)).toHaveLength(2);
+  expect(afterZero.body.filter((item: { branchId: string }) => item.branchId === fayoumId)).toHaveLength(1);
 });
 
 test("cashier lookup uses active branch availability and selling prices without cost data", async () => {
@@ -876,7 +915,10 @@ test("cashier lookup uses active branch availability and selling prices without 
   const stocked = await api(cashier, "GET", `/api/internal/catalog/lookup?code=${encodeURIComponent("TS-001")}`);
   expect(stocked.body.variants[0].availableQuantity).toBe(12);
   expect(JSON.stringify(found.body)).not.toMatch(/cost|profit|purchase|batch|inventoryValue|6500/i);
-  expect(Object.keys(found.body).sort()).toEqual(["categoryId", "categoryNameAr", "code", "descriptionAr", "id", "nameAr", "variants"]);
+  expect(Object.keys(found.body).sort()).toEqual([
+    "availableQuantity", "categoryId", "categoryNameAr", "code", "descriptionAr", "id",
+    "minimumSellingPricePiasters", "nameAr", "operationalVariantId", "sellingPricePiasters", "variants",
+  ]);
   expect(found.body.categoryId).toBe(seed.categoryId);
   expect(found.body.categoryNameAr).toBe("تيشيرتات");
 
@@ -936,11 +978,11 @@ test("catalog price edits keep received variant and batch identity, and referenc
     defaultSellingPricePiasters: 27000,
     publication: "hidden",
     imageRefs: [],
-    variants: [{ sizeId: seed.sizeId, colorId: seed.colorId, sellingPricePiastersOverride: 28000 }],
+    variants: [{ sizeId: seed.sizeId, colorId: seed.colorId, sellingPricePiastersOverride: null }],
   });
   expect(renamed.status).toBe(200);
   expect(renamed.body.variants[0].id).toBe(seed.variantId);
-  expect(renamed.body.variants[0].sellingPricePiasters).toBe(28000);
+  expect(renamed.body.variants[0].sellingPricePiasters).toBe(27000);
 
   const batches = await api(manager, "GET", "/api/internal/inventory/batches");
   expect(batches.body).toHaveLength(1);
@@ -982,7 +1024,7 @@ test("catalog price edits keep received variant and batch identity, and referenc
     publication: "hidden",
     imageRefs: [],
     variants: [
-      { sizeId: seed.sizeId, colorId: seed.colorId, sellingPricePiastersOverride: 28000 },
+      { sizeId: seed.sizeId, colorId: seed.colorId, sellingPricePiastersOverride: null },
       { sizeId: extraSize.body.id, colorId: extraColor.body.id, sellingPricePiastersOverride: null },
     ],
   });
@@ -1003,7 +1045,7 @@ test("catalog price edits keep received variant and batch identity, and referenc
     defaultSellingPricePiasters: 27000,
     publication: "hidden",
     imageRefs: [],
-    variants: [{ sizeId: seed.sizeId, colorId: seed.colorId, sellingPricePiastersOverride: 28000 }],
+    variants: [{ sizeId: seed.sizeId, colorId: seed.colorId, sellingPricePiastersOverride: null }],
   });
   expect(dropDraft.status).toBe(200);
   expect(dropDraft.body.variants).toHaveLength(1);

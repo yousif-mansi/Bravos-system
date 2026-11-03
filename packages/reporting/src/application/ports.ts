@@ -29,6 +29,7 @@ export type ReportingReadContext = {
   inventory: Pick<InventoryReadStore,
     "getBatchStates" | "listAllocationsForOperations" | "listDiscrepanciesForOperations" |
     "unresolvedDiscrepancyQuantity" | "getSettings" | "listVariantThresholds" | "quantitiesByBranchFor" |
+    "productQuantitiesByRetailBranch" |
     "listProtectedOrderAllocationProvenance" | "listOrderRestoredCostByOperations" | "summarizeAuthoritativeAvailableInventory" |
     "summarizeProtectedOrderInventory">;
   orders: OnlineOrderReportingReader;

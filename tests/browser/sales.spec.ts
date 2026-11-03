@@ -98,7 +98,6 @@ test("receiving, split sale and authorized sales view form one connected workflo
     }
     await route.continue();
   });
-  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("alert")).toContainText("أدخل مبلغ النقد والدفع الإلكتروني");
   expect(completions).toHaveLength(0);
@@ -262,7 +261,6 @@ test("lost complete response retries the same sale without charging the customer
   await expect(page.getByTestId("accepted-prices")).toBeVisible();
   await checkout.getByRole("radio", { name: /إلكترونياً بالكامل/ }).check();
   await expect(page.getByTestId("payment-remaining")).toContainText("0");
-  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   const local = (await page.evaluate(async () => {
@@ -443,7 +441,6 @@ test("lost complete before send recovers the prepared sale after stock is taken"
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
   await expect(page.getByTestId("accepted-prices")).toBeVisible();
-  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   await expect.poll(() => blockedUploads.length).toBeGreaterThan(0);
@@ -629,7 +626,6 @@ test("check result completes a physically paid preparation instead of accepting 
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
   await expect(page.getByTestId("accepted-prices")).toBeVisible();
-  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   await page.unroute("**/api/internal/sales");
@@ -708,7 +704,6 @@ test("invalid employee discount stays editable then completes after correction",
   await checkout.getByLabel("خصم الموظف بالجنيه").fill("10");
   await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
   await expect(page.getByTestId("accepted-prices")).toBeVisible();
-  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   await expect.poll(async () => {
@@ -807,7 +802,6 @@ test("two open tabs keep a physically completed marker and save that sale once",
     const checkout = page.getByRole("form", { name: "إتمام البيع" });
     await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
     await expect(page.getByTestId("accepted-prices")).toBeVisible();
-    await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
     await checkout.getByRole("button", { name: "إتمام البيع" }).click();
     await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
     await expect.poll(() => completedIds.length).toBe(1);
@@ -1015,7 +1009,6 @@ test("rapid cart edit disables completion of the old quote until prices are acce
   expect(newQuote.saleId).not.toBe(oldQuote.saleId);
   expect(newQuote.operationId).not.toBe(oldQuote.operationId);
   expect(newQuote.lines).toEqual([{ variantId, quantity: 2 }]);
-  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   await expect.poll(async () => {
@@ -1178,7 +1171,6 @@ test("cart edits during delayed prepare cannot complete a stale quote", async ({
   await expect(page.getByTestId("accepted-prices")).toBeVisible();
   await expect(checkout.getByLabel("الكمية")).toHaveValue("1");
   await expect(page.getByTestId("accepted-prices")).toContainText("الإجمالي: 140 ج.م.");
-  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   expect(prepareBodies).toEqual([{ quantity: 1, discount: 0 }]);
@@ -1309,7 +1301,6 @@ test("blocked tab recovers the other tab's sale then continues its own cart", as
   const checkoutA = page.getByRole("form", { name: "إتمام البيع" });
   await checkoutA.getByRole("button", { name: "قبول الأسعار" }).click();
   await expect(page.getByTestId("accepted-prices")).toBeVisible();
-  await checkoutA.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkoutA.getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   await expect.poll(() => completedAttempts.length).toBeGreaterThan(0);
@@ -1431,7 +1422,6 @@ test("blocked tab recovers the other tab's sale then continues its own cart", as
   });
   await checkoutB.getByRole("button", { name: "قبول الأسعار" }).click();
   await expect(page2.getByTestId("accepted-prices")).toBeVisible();
-  await checkoutB.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   await checkoutB.getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page2.getByRole("status")).toContainText("تم حفظ البيع.");
   expect(bPrepareIds).toHaveLength(1);
@@ -1536,7 +1526,6 @@ test("synchronous double complete keeps a single sale identity", async ({ page }
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
   await expect(page.getByTestId("accepted-prices")).toBeVisible();
-  await checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة").check();
   const lookupBefore = await staffApi(page, "GET", `/api/internal/catalog/lookup?code=${encodeURIComponent("DOUBLE-E2E")}`);
   expect(lookupBefore.body.variants[0].availableQuantity).toBe(3);
   const saleIds: string[] = [];

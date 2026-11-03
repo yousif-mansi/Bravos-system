@@ -1,5 +1,11 @@
 export type BranchCode = "abshway" | "fayoum";
 
+export const WAREHOUSE_BRANCH_ID = "33333333-3333-4333-8333-333333333333";
+export const WAREHOUSE_BRANCH_CODE = "warehouse";
+export const OPERATIONAL_SIZE_ID = "a0000000-0000-4000-8000-000000000001";
+export const OPERATIONAL_COLOR_ID = "a0000000-0000-4000-8000-000000000002";
+export const OPERATIONAL_STOCK_SCHEMA = "037_operational_stock.sql";
+
 export type StaffRole = "manager" | "employee";
 
 export type BranchDto = {
@@ -402,6 +408,8 @@ export type ManagerProductDto = {
   descriptionAr: string;
   category: CategoryDto;
   defaultSellingPricePiasters: number;
+  minimumSellingPricePiasters: number | null;
+  operationalVariantId: string;
   publication: PublicationStatus;
   imageRefs: string[];
   sizeGuideAr: string | null;
@@ -446,11 +454,16 @@ export type CashierProductLookupDto = {
   code: string;
   nameAr: string;
   descriptionAr: string;
+  sellingPricePiasters: number;
+  minimumSellingPricePiasters: number | null;
+  operationalVariantId: string;
+  availableQuantity: number;
   variants: CashierVariantDto[];
 };
 
 export type VariantIdentityDto = {
   id: string;
+  purpose: "website_option" | "operational";
   product: {
     id: string;
     code: string;
@@ -500,12 +513,97 @@ export type ReceiptDto = {
   id: string;
   operationId: string;
   branchId: string;
+  supplierId: string | null;
+  supplierNameAr: string | null;
   receiptDate: string;
   receivedByStaffId: string;
   recordedAt: string;
   correctionRevision: number;
   corrections: ReceiptCorrectionDto[];
   lines: ReceiptLineDto[];
+};
+
+export type SupplierDto = {
+  id: string;
+  nameAr: string;
+};
+
+export type SupplierPurchaseDto = {
+  receiptId: string;
+  supplierId: string | null;
+  supplierNameAr: string | null;
+  receiptDate: string;
+  branchId: string;
+  totalCostPiasters: number;
+  products: Array<{ nameAr: string; quantity: number; unitCostPiasters: number }>;
+};
+
+export type StockLocationDto = {
+  id: string;
+  code: string;
+  nameAr: string;
+  kind: "retail" | "warehouse";
+};
+
+/** Manager stock visibility. Quantities only; purchase cost stays off this read. */
+export type ProductLocationQuantityDto = {
+  branchId: string;
+  code: string;
+  nameAr: string;
+  kind: "retail" | "warehouse";
+  quantity: number;
+};
+
+export type ProductLocationStockDto = {
+  productId: string;
+  code: string;
+  nameAr: string;
+  locations: ProductLocationQuantityDto[];
+};
+
+export type StockTransferDto = {
+  id: string;
+  operationId: string;
+  sourceBranchId: string;
+  destinationBranchId: string;
+  productId: string;
+  quantity: number;
+  recordedAt: string;
+  created: boolean;
+};
+
+export type CustomerSummaryDto = {
+  id: string;
+  normalizedPhone: string;
+  displayName: string;
+};
+
+export type CustomerListDto = {
+  customers: CustomerSummaryDto[];
+  nextCursor: string | null;
+};
+
+export type CustomerPurchaseProductDto = {
+  nameAr: string;
+  optionText: string | null;
+  quantity: number;
+};
+
+export type CustomerPurchaseDto = {
+  channel: "physical" | "online";
+  sourceId: string;
+  reference: string;
+  paidAt: string;
+  products: CustomerPurchaseProductDto[];
+};
+
+export type CustomerHistoryDto = {
+  customer: CustomerSummaryDto;
+  period: "month" | "year";
+  from: string;
+  to: string;
+  purchaseCount: number;
+  purchases: CustomerPurchaseDto[];
 };
 
 export type InventoryBatchDto = {
@@ -716,6 +814,12 @@ export type PosPriceSnapshotDto = {
   products: CashierProductLookupDto[];
   automaticOffers: AutomaticOfferDto[];
   coupons: CouponDto[];
+  /** Present only when this snapshot requested a till receipt registration. */
+  receiptRegistration?: {
+    registrationId: string;
+    deviceId: string;
+    prefix: string;
+  };
 };
 
 export type CouponUsageProofDto = {
@@ -752,9 +856,22 @@ export type SalePaymentDto = {
   onlinePiasters: number;
 };
 
+/** Optional staff receipt claim carried beside a sale write. It is not a financial fact. */
+export type SaleReceiptClaimInput = {
+  registrationId?: string;
+  deviceId?: string;
+  prefix?: string;
+  sequence?: string;
+  reference?: string;
+};
+
 export type SaleDto = {
   id: string;
   reference: string | null;
+  /** Stored customer receipt text. Omitted when the sale has no receipt identity. */
+  receiptReference?: string;
+  /** True when numbering is a conflict or a later claim disagreed with an assigned number. */
+  receiptNumberingConflict?: true;
   operationId: string;
   branch: BranchDto;
   soldByStaffId: string;
@@ -882,6 +999,8 @@ export type ReturnSourceDto = {
   /** Compatibility alias present only for physical-sale sources. */
   saleId?: string;
   reference: string;
+  receiptReference?: string;
+  receiptNumberingConflict?: true;
   channel: "physical" | "online";
   originalBranch: BranchDto | null;
   seller: { staffId: string; displayName: string } | null;

@@ -167,6 +167,8 @@ export function createReturnServices(ports: Omit<ReturnServiceDependencies, "clo
       source: source.source,
       ...(source.source.kind === "physical_sale" ? { saleId: source.source.id } : {}),
       reference: source.reference,
+      ...(source.receiptReference ? { receiptReference: source.receiptReference } : {}),
+      ...(source.receiptNumberingConflict ? { receiptNumberingConflict: true as const } : {}),
       channel: source.channel,
       originalBranch: branch,
       seller: source.seller,
@@ -1135,20 +1137,22 @@ function restorationPlan(
   source: ReturnSourceRecord,
   selected: Array<{ sourceLineId: string; variantId: string; variantOrdinal: number; quantity: number; sellableQuantity: number }>,
 ) {
-  const allocationsByVariant = new Map<string, Array<{ start: number; end: number; batchId: string; unitCostPiasters: number; effectiveUnitCostPiasters: number }>>();
+  const allocationsByRequested = new Map<string, Array<{ start: number; end: number; batchId: string; variantId: string; unitCostPiasters: number; effectiveUnitCostPiasters: number }>>();
   const offsets = new Map<string, number>();
   for (const allocation of source.allocations) {
-    const offsetKey = source.source.kind === "delivered_online_order" ? allocation.sourceLineId ?? "" : allocation.variantId;
+    const requestedVariantId = allocation.requestedVariantId ?? allocation.variantId;
+    const offsetKey = source.source.kind === "delivered_online_order" ? allocation.sourceLineId ?? "" : requestedVariantId;
     const start = offsets.get(offsetKey) ?? 0;
-    const list = allocationsByVariant.get(allocation.variantId) ?? [];
+    const list = allocationsByRequested.get(requestedVariantId) ?? [];
     list.push({
       start,
       end: start + allocation.quantity,
       batchId: allocation.batchId,
+      variantId: allocation.variantId,
       unitCostPiasters: allocation.unitCostPiasters,
       effectiveUnitCostPiasters: allocation.effectiveUnitCostPiasters,
     });
-    allocationsByVariant.set(allocation.variantId, list);
+    allocationsByRequested.set(requestedVariantId, list);
     offsets.set(offsetKey, start + allocation.quantity);
   }
   const totals = new Map<string, Omit<ReturnRestorationWrite, "id">>();
@@ -1160,19 +1164,20 @@ function restorationPlan(
           start: all.slice(0, index).reduce((sum, row) => sum + row.quantity, 0),
           end: all.slice(0, index + 1).reduce((sum, row) => sum + row.quantity, 0),
           batchId: item.batchId,
+          variantId: item.variantId,
           unitCostPiasters: item.unitCostPiasters,
           effectiveUnitCostPiasters: item.effectiveUnitCostPiasters,
         }))
-      : allocationsByVariant.get(segment.variantId) ?? [];
+      : allocationsByRequested.get(segment.variantId) ?? [];
     for (const allocation of allocationRows) {
       if (remaining <= 0) break;
       if (cursor >= allocation.end || cursor < allocation.start) continue;
       const take = Math.min(remaining, allocation.end - cursor);
-      const key = `${allocation.batchId}:${segment.variantId}`;
+      const key = `${allocation.batchId}:${allocation.variantId}`;
       const existing = totals.get(key);
       totals.set(key, {
         batchId: allocation.batchId,
-        variantId: segment.variantId,
+        variantId: allocation.variantId,
         quantity: (existing?.quantity ?? 0) + take,
         unitCostPiasters: allocation.unitCostPiasters,
         effectiveUnitCostPiasters: allocation.effectiveUnitCostPiasters,

@@ -1,18 +1,27 @@
 import type { SaleDto } from "@bravos/contracts";
+import {
+  RECEIPT_CONTENT_WIDTH_MM,
+  RECEIPT_COPIES,
+  parseReceiptJob,
+  type ReceiptJob,
+} from "@bravos/print-contracts";
+import { accountGeneration, subscribeAccount } from "../account-session.ts";
+import { ConnectorClientError, hasPairingToken, submitConnectorJob } from "../printing/connector-client.ts";
 import { claimBrowserPrint, releaseBrowserPrint } from "../printing/browser-print-lock.ts";
 import { resolveReceiptOptions } from "./receipt-options.ts";
-import { buildReceiptView, isCompletedSale, type ReceiptOptions } from "./receipt-model.ts";
-import { renderReceiptDocument } from "./receipt-document.ts";
+import { buildReceiptView, isCompletedSale, type ReceiptOptions, type ReceiptView } from "./receipt-model.ts";
+import { finalizeReceiptDocumentSize, renderReceiptDocument } from "./receipt-document.ts";
 
 /**
  * Print lifecycle (dialog only; paper success is never claimed):
  * 1. Open a same-origin iframe within IFRAME_LOAD_MS, or fail and remove it.
  * 2. Wait up to FONT_TIMEOUT_MS until Cairo covers Arabic, Latin, and bold.
- * 3. Call the iframe's print(), never the parent window.
+ * 3. Measure content height and set an explicit two-length @page size.
+ * 4. Call the iframe's print(), never the parent window.
  *    On Windows, print() blocks until the dialog is closed or cancelled.
  *    A blocking return, or afterprint, means the dialog returned.
  *    A non-blocking return waits up to DIALOG_WATCH_MS for afterprint.
- * 4. Keep the iframe through that call. Remove it only after a short grace,
+ * 5. Keep the iframe through that call. Remove it only after a short grace,
  *    or when the watch bound ends, and always clear the in-flight lock.
  *    Cancelling the dialog does not fail the sale.
  */
@@ -34,11 +43,66 @@ export class ReceiptPrintError extends Error {
   }
 }
 
-/** Browser dialog lifecycle. Neither flag means paper was printed. */
-export type ReceiptPrintResult = {
-  dialogRequested: true;
-  dialogReturned: boolean;
-};
+/** Browser dialog and connector spooler handoff are different results. Neither means paper came out. */
+export type ReceiptPrintResult =
+  | { channel: "browser"; dialogRequested: true; dialogReturned: boolean }
+  | { channel: "connector"; submitted: true };
+
+const RECEIPT_WIDTH_UNSUPPORTED = "عرض الإيصال المحفوظ غير مدعوم على طابعة الإيصالات المربوطة. المدعوم ورق 80 مم فقط، ولن يُغيّر العرض المحفوظ ولن تُستخدم طابعة المتصفح. البيع مكتمل.";
+
+function pairingOrThrow(): boolean {
+  try {
+    return hasPairingToken();
+  } catch {
+    throw unavailable("تعذر قراءة ربط الطباعة على هذا الجهاز. لن تُستخدم طابعة المتصفح. البيع مكتمل.");
+  }
+}
+
+/**
+ * Copies the saved receipt view into the connector DTO.
+ * Internal trace ids stay off the payload. Amounts and names are not recalculated.
+ */
+export function connectorReceiptJob(view: ReceiptView, id: string): ReceiptJob {
+  if (view.contentWidthMm !== RECEIPT_CONTENT_WIDTH_MM) {
+    throw unavailable(RECEIPT_WIDTH_UNSUPPORTED);
+  }
+  const receiptView = {
+    brand: view.brand,
+    branchName: view.branchName,
+    contactPhone: view.contactPhone,
+    printedReference: view.printedReference,
+    occurredAtLabel: view.occurredAtLabel,
+    cashierDisplayName: view.cashierDisplayName,
+    customerName: view.customerName,
+    customerPhone: view.customerPhone,
+    lines: view.lines.map((line) => ({
+      productName: line.productName,
+      productCode: line.productCode,
+      sizeName: line.sizeName,
+      colorName: line.colorName,
+      quantityAndUnitPrice: line.quantityAndUnitPrice,
+      lineOriginal: line.lineOriginal,
+      linePaid: line.linePaid,
+    })),
+    adjustments: view.adjustments.map((row) => ({ label: row.label, amount: row.amount })),
+    finalTotal: view.finalTotal,
+    exchangeCredit: view.exchangeCredit,
+    cashCollected: view.cashCollected,
+    paymentMethodLabel: view.paymentMethodLabel,
+    paymentAllocations: view.paymentAllocations.map((row) => ({ label: row.label, amount: row.amount })),
+    contentWidthMm: view.contentWidthMm,
+  };
+  const parsed = parseReceiptJob({
+    kind: "receipt",
+    id,
+    copies: RECEIPT_COPIES,
+    receiptView,
+  });
+  if (!parsed || parsed.receiptView.printedReference !== view.printedReference) {
+    throw unavailable("بيانات الإيصال المحفوظة لا تطابق طابعة الإيصالات المربوطة. لم يُغيّر البيع. البيع مكتمل.");
+  }
+  return parsed;
+}
 
 type PrintJob = {
   iframe: HTMLIFrameElement;
@@ -47,6 +111,7 @@ type PrintJob = {
 let active: PrintJob | null = null;
 let printing = false;
 let cancelPreparation = false;
+let connectorCancel: AbortController | null = null;
 
 function unavailable(message: string): ReceiptPrintError {
   return new ReceiptPrintError(message);
@@ -149,7 +214,7 @@ function openFrame(title: string, host: HTMLElement, presentation: "print" | "pr
   });
 }
 
-function fill(job: PrintJob, sale: SaleDto, overrides?: Partial<ReceiptOptions>): Window {
+function fill(job: PrintJob, sale: SaleDto, overrides?: Partial<ReceiptOptions>): { printWindow: Window; contentWidthMm: number } {
   const doc = job.iframe.contentDocument;
   const printWindow = job.iframe.contentWindow;
   if (!doc || !printWindow || typeof printWindow.print !== "function") {
@@ -158,8 +223,9 @@ function fill(job: PrintJob, sale: SaleDto, overrides?: Partial<ReceiptOptions>)
   doc.open();
   doc.write("<!DOCTYPE html><html><head></head><body></body></html>");
   doc.close();
-  renderReceiptDocument(doc, buildReceiptView(sale, resolveReceiptOptions(overrides)), fontBaseUrl());
-  return printWindow;
+  const view = buildReceiptView(sale, resolveReceiptOptions(overrides));
+  renderReceiptDocument(doc, view, fontBaseUrl());
+  return { printWindow, contentWidthMm: view.contentWidthMm };
 }
 
 function delay(ms: number): Promise<void> {
@@ -213,12 +279,17 @@ async function awaitDialog(printWindow: Window): Promise<boolean> {
 export async function printSaleReceipt(
   sale: SaleDto,
   overrides?: Partial<ReceiptOptions>,
+  onProgress?: (message: string) => void,
 ): Promise<ReceiptPrintResult> {
   if (printing) {
     throw unavailable("نافذة طباعة الإيصال مفتوحة. أغلقها ثم أعد المحاولة.");
   }
   if (!isCompletedSale(sale)) {
     throw unavailable("لا يمكن طباعة إيصال قبل اكتمال البيع.");
+  }
+  const generation = accountGeneration();
+  if (pairingOrThrow()) {
+    return printReceiptThroughConnector(sale, overrides, generation, onProgress);
   }
   if (typeof window === "undefined" || typeof document === "undefined") {
     throw unavailable("الطباعة متاحة من شاشة نقطة البيع في المتصفح فقط.");
@@ -240,14 +311,15 @@ export async function printSaleReceipt(
     if (cancelPreparation) {
       throw unavailable("أُلغيت طباعة الإيصال قبل فتح النافذة. البيع مكتمل.");
     }
-    const printWindow = fill(job, sale, overrides);
-    await waitForFonts(printWindow.document);
+    const prepared = fill(job, sale, overrides);
+    await waitForFonts(prepared.printWindow.document);
     if (cancelPreparation) {
       throw unavailable("أُلغيت طباعة الإيصال قبل فتح النافذة. البيع مكتمل.");
     }
-    const dialogReturned = await awaitDialog(printWindow);
+    finalizeReceiptDocumentSize(prepared.printWindow.document, prepared.contentWidthMm);
+    const dialogReturned = await awaitDialog(prepared.printWindow);
     await delay(FRAME_GRACE_MS);
-    return { dialogRequested: true, dialogReturned };
+    return { channel: "browser", dialogRequested: true, dialogReturned };
   } catch (error) {
     if (error instanceof ReceiptPrintError) throw error;
     throw unavailable("تعذرت طباعة الإيصال. البيع مكتمل. إلغاء نافذة الطباعة لا يلغي البيع.");
@@ -265,7 +337,55 @@ export async function printSaleReceipt(
  */
 export function releaseReceiptPrintResources(): void {
   cancelPreparation = true;
+  connectorCancel?.abort();
   if (!printing && active) removeJob(active);
+}
+
+async function printReceiptThroughConnector(
+  sale: SaleDto,
+  overrides: Partial<ReceiptOptions> | undefined,
+  generation: number,
+  onProgress: ((message: string) => void) | undefined,
+): Promise<ReceiptPrintResult> {
+  const view = buildReceiptView(sale, resolveReceiptOptions(overrides));
+  const id = crypto.randomUUID();
+  const job = connectorReceiptJob(view, id);
+  let printToken: symbol;
+  try {
+    printToken = claimBrowserPrint();
+  } catch {
+    throw unavailable("نافذة طباعة الإيصال مفتوحة. أغلقها ثم أعد المحاولة.");
+  }
+  printing = true;
+  cancelPreparation = false;
+  const controller = new AbortController();
+  connectorCancel = controller;
+  const stopAccount = subscribeAccount(() => {
+    if (accountGeneration() !== generation) controller.abort();
+  });
+  try {
+    if (cancelPreparation || controller.signal.aborted || accountGeneration() !== generation) {
+      throw unavailable("أُلغيت طباعة الإيصال قبل الإرسال. البيع مكتمل.");
+    }
+    await submitConnectorJob(job, onProgress
+      ? { signal: controller.signal, onProgress }
+      : { signal: controller.signal });
+    return { channel: "connector", submitted: true };
+  } catch (error) {
+    if (error instanceof ReceiptPrintError) throw error;
+    if (error instanceof ConnectorClientError) {
+      if (error.code === "aborted") {
+        throw unavailable("أُلغيت طباعة الإيصال قبل الإرسال. البيع مكتمل.");
+      }
+      throw unavailable(`${error.message} البيع مكتمل.`);
+    }
+    throw unavailable("تعذرت طباعة الإيصال. البيع مكتمل. إلغاء نافذة الطباعة لا يلغي البيع.");
+  } finally {
+    stopAccount();
+    if (connectorCancel === controller) connectorCancel = null;
+    printing = false;
+    releaseBrowserPrint(printToken);
+  }
 }
 
 /** Same receipt document, without opening the print dialog. */
@@ -280,7 +400,13 @@ export async function mountReceiptPreview(
   let job: PrintJob | null = null;
   try {
     job = await openFrame("معاينة الإيصال", host, "preview");
-    fill(job, sale, overrides);
+    const prepared = fill(job, sale, overrides);
+    try {
+      await waitForFonts(prepared.printWindow.document);
+    } catch {
+      /* Preview remains available without claiming print-ready fonts. */
+    }
+    finalizeReceiptDocumentSize(prepared.printWindow.document, prepared.contentWidthMm);
     const frame = job.iframe;
     return () => frame.remove();
   } catch (error) {

@@ -1,3 +1,4 @@
+import { OPERATIONAL_COLOR_ID, OPERATIONAL_SIZE_ID } from "@bravos/contracts";
 import type { PoolClient } from "pg";
 import type { OpeningCatalogPlan, OpeningCatalogTransaction } from "../application/ports.ts";
 
@@ -8,15 +9,16 @@ export function createPostgresOpeningCatalogTransaction(client: PoolClient): Ope
         categories: unknown; sizes: unknown; colors: unknown; products: unknown; variants: unknown;
       }>(`SELECT
         COALESCE((SELECT jsonb_agg(jsonb_build_array(id,name_ar,parent_id) ORDER BY id) FROM catalog_category),'[]') AS categories,
-        COALESCE((SELECT jsonb_agg(jsonb_build_array(id,name_ar) ORDER BY id) FROM catalog_size),'[]') AS sizes,
-        COALESCE((SELECT jsonb_agg(jsonb_build_array(id,name_ar) ORDER BY id) FROM catalog_color),'[]') AS colors,
+        COALESCE((SELECT jsonb_agg(jsonb_build_array(id,name_ar) ORDER BY id) FROM catalog_size WHERE id <> $1::uuid),'[]') AS sizes,
+        COALESCE((SELECT jsonb_agg(jsonb_build_array(id,name_ar) ORDER BY id) FROM catalog_color WHERE id <> $2::uuid),'[]') AS colors,
         COALESCE((SELECT jsonb_agg(jsonb_build_array(id,code,name_ar,category_id,default_selling_price_piasters,publication,updated_at) ORDER BY id) FROM catalog_product),'[]') AS products,
-        COALESCE((SELECT jsonb_agg(jsonb_build_array(id,product_id,size_id,color_id,selling_price_piasters_override,updated_at) ORDER BY id) FROM catalog_product_variant),'[]') AS variants`);
+        COALESCE((SELECT jsonb_agg(jsonb_build_array(id,product_id,size_id,color_id,selling_price_piasters_override,updated_at) ORDER BY id) FROM catalog_product_variant WHERE purpose = 'website_option'),'[]') AS variants`,
+      [OPERATIONAL_SIZE_ID, OPERATIONAL_COLOR_ID]);
       const errors: Awaited<ReturnType<OpeningCatalogTransaction["inspect"]>>["errors"] = [];
       const [categoryNames, sizeNames, colorNames, productCodes] = await Promise.all([
         client.query<{ name_ar: string; parent_id: string | null }>("SELECT name_ar,parent_id FROM catalog_category"),
-        client.query<{ name_ar: string }>("SELECT name_ar FROM catalog_size"),
-        client.query<{ name_ar: string }>("SELECT name_ar FROM catalog_color"),
+        client.query<{ name_ar: string }>("SELECT name_ar FROM catalog_size WHERE id <> $1::uuid", [OPERATIONAL_SIZE_ID]),
+        client.query<{ name_ar: string }>("SELECT name_ar FROM catalog_color WHERE id <> $1::uuid", [OPERATIONAL_COLOR_ID]),
         client.query<{ code: string }>("SELECT code FROM catalog_product"),
       ]);
       const existingCategories = new Set(categoryNames.rows.map((row) => `${row.parent_id ?? "root"}:${normalize(row.name_ar)}`));

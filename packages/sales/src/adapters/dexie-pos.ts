@@ -7,6 +7,12 @@ import { canonicalOfflineSaleFactsJson } from "../domain/canonical-payload.ts";
 import { digestOfflineSale } from "../domain/offline-digest.ts";
 import { cashPayment, paymentMatches, validatePayment } from "../domain/payment.ts";
 import {
+  canonicalReceiptUuid,
+  formatReceiptReference,
+  nextReceiptSequence,
+  type ReceiptClaim,
+} from "../domain/receipt-number.ts";
+import {
   PosStorageError,
   type CompleteOfflineSaleInput,
   type DeviceStockCache,
@@ -14,6 +20,7 @@ import {
   type OfflineCompletedSale,
   type OfflinePendingSale,
   type OfflinePosStore,
+  type OfflineReceiptNumberingStatus,
   type OfflineSession,
   type OfflineStockEffect,
   type SessionTransition,
@@ -21,6 +28,8 @@ import {
 
 const DB_NAME = "bravos-pos";
 const LEGACY_PENDING_PREFIX = "bravos.sales.pending.";
+/** One installation-global registry. Schema 4 stores it in the existing meta table. */
+const RECEIPT_NUMBERING_META_KEY = "receiptNumbering";
 
 type MetaRow = { key: string; value: string };
 type SnapshotRow = { staffId: string; snapshot: PosPriceSnapshotDto };
@@ -152,6 +161,10 @@ function normalizeCompletedSale(sale: OfflineCompletedSale): OfflineCompletedSal
   return {
     ...recorded,
     ...(sale.reference !== undefined ? { reference: sale.reference } : {}),
+    // Printed receipt metadata is copied through. This never allocates a number.
+    ...(sale.receiptClaim ? { receiptClaim: sale.receiptClaim } : {}),
+    ...(typeof sale.receiptReference === "string" ? { receiptReference: sale.receiptReference } : {}),
+    ...(sale.receiptNumberingConflict === true ? { receiptNumberingConflict: true as const } : {}),
     // A connected sale may not know its restore generation; the server then uses the current one.
     ...(typeof restoreGeneration === "number" && Number.isSafeInteger(restoreGeneration) && restoreGeneration >= 0
       ? { restoreGeneration }
@@ -356,17 +369,37 @@ function overlaySnapshot(snapshot: PosPriceSnapshotDto, cache: DeviceStockCache)
     stockVersion: cache.branchVersions?.[snapshot.branch.id] ?? cache.version,
     includedOperationIds: cache.includedOperationIds,
     includedOperations: [],
-    products: snapshot.products.map((product) => ({
-      ...product,
-      variants: product.variants.map((variant) => ({
-        ...variant,
+    products: snapshot.products.map((product) => {
+      const operationalKey = stockKey(snapshot.branch.id, product.operationalVariantId);
+      return {
+        ...product,
         availableQuantity:
-          stockKey(snapshot.branch.id, variant.id) in cache.availability
-            ? cache.availability[stockKey(snapshot.branch.id, variant.id)] ?? 0
-            : variant.availableQuantity,
-      })),
-    })),
+          operationalKey in cache.availability
+            ? cache.availability[operationalKey] ?? 0
+            : product.availableQuantity,
+        variants: product.variants.map((variant) => ({
+          ...variant,
+          availableQuantity:
+            stockKey(snapshot.branch.id, variant.id) in cache.availability
+              ? cache.availability[stockKey(snapshot.branch.id, variant.id)] ?? 0
+              : variant.availableQuantity,
+        })),
+      };
+    }),
   };
+}
+
+function writeSnapshotAvailability(
+  availability: Record<string, number>,
+  snapshot: PosPriceSnapshotDto,
+): void {
+  const branchId = snapshot.branch.id;
+  for (const product of snapshot.products) {
+    availability[stockKey(branchId, product.operationalVariantId)] = product.availableQuantity;
+    for (const variant of product.variants) {
+      availability[stockKey(branchId, variant.id)] = variant.availableQuantity;
+    }
+  }
 }
 
 async function overlayAllSnapshots(db: BravosPosDatabase, cache: DeviceStockCache) {
@@ -384,6 +417,7 @@ type PreparedLocalDigest = {
   canonical: string;
 };
 
+/** Financial whitelist. Receipt numbering stays out of digests and replay comparisons. */
 function saleFacts(local: OfflineCompletedSale) {
   return {
     id: local.id,
@@ -487,6 +521,7 @@ async function acknowledgeMatchingOperations(
       const remote = byId.get(local.id);
       const next: OfflineCompletedSale = {
         ...local,
+        ...preservedPrintedReceipt(local, remote),
         payloadFingerprint: digest,
         syncStatus: "acknowledged",
         recordedAt: remote?.recordedAt ?? local.recordedAt,
@@ -744,6 +779,191 @@ function toPendingRecord(parsed: OfflinePendingSale): OfflinePendingSale {
   };
 }
 
+type ReceiptNumberingState =
+  | { status: "pending"; registrationId: string; deviceId: string }
+  | { status: "ready"; registrationId: string; deviceId: string; prefix: string; nextSequence: string };
+
+function canonicalPrefix(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  try {
+    formatReceiptReference(value, "1");
+  } catch {
+    return null;
+  }
+  return value;
+}
+
+function canonicalSequence(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  try {
+    nextReceiptSequence(value);
+  } catch {
+    return null;
+  }
+  return value;
+}
+
+/** Missing and unreadable records are both absent. Callers must not rebuild a counter from a snapshot. */
+function parseReceiptNumbering(value: string | undefined): ReceiptNumberingState | null {
+  if (!value) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const record = parsed as Record<string, unknown>;
+  const registrationId = canonicalReceiptUuid(record.registrationId);
+  const deviceId = canonicalReceiptUuid(record.deviceId);
+  if (!registrationId || !deviceId) return null;
+  const hasPrefix = Object.prototype.hasOwnProperty.call(record, "prefix");
+  const hasSequence = Object.prototype.hasOwnProperty.call(record, "nextSequence");
+  if (!hasPrefix && !hasSequence) {
+    return { status: "pending", registrationId, deviceId };
+  }
+  const prefix = canonicalPrefix(record.prefix);
+  const nextSequence = canonicalSequence(record.nextSequence);
+  if (!prefix || !nextSequence) return null;
+  return { status: "ready", registrationId, deviceId, prefix, nextSequence };
+}
+
+async function storedReceiptNumbering(db: BravosPosDatabase): Promise<ReceiptNumberingState | null> {
+  return parseReceiptNumbering((await db.meta.get(RECEIPT_NUMBERING_META_KEY))?.value);
+}
+
+async function readCanonicalDeviceId(db: BravosPosDatabase): Promise<string | null> {
+  return canonicalReceiptUuid((await db.meta.get("deviceId"))?.value);
+}
+
+async function readOrCreateDeviceId(db: BravosPosDatabase): Promise<string> {
+  const existing = await db.meta.get("deviceId");
+  if (existing?.value) return existing.value;
+  const deviceId = crypto.randomUUID();
+  await db.meta.put({ key: "deviceId", value: deviceId });
+  return deviceId;
+}
+
+/** A stored incarnation is usable only for the current installation device. Reading does not repair it. */
+function numberingForDevice(
+  state: ReceiptNumberingState | null,
+  deviceId: string | null,
+): ReceiptNumberingState | null {
+  if (!state || !deviceId || state.deviceId !== deviceId) return null;
+  return state;
+}
+
+function receiptStatus(state: ReceiptNumberingState | null): OfflineReceiptNumberingStatus {
+  if (!state) return { status: "absent" };
+  if (state.status === "pending") {
+    return { status: "pending", registrationId: state.registrationId, deviceId: state.deviceId };
+  }
+  return {
+    status: "ready",
+    registrationId: state.registrationId,
+    deviceId: state.deviceId,
+    prefix: state.prefix,
+  };
+}
+
+/**
+ * Accept a server prefix only for the current incarnation.
+ * A ready counter is left untouched, including when the same response arrives again.
+ */
+async function acceptReceiptRegistration(
+  db: BravosPosDatabase,
+  registration: PosPriceSnapshotDto["receiptRegistration"],
+): Promise<void> {
+  if (!registration) return;
+  const registrationId = canonicalReceiptUuid(registration.registrationId);
+  const deviceId = canonicalReceiptUuid(registration.deviceId);
+  const prefix = canonicalPrefix(registration.prefix);
+  if (!registrationId || !deviceId || !prefix) return;
+  const installationDeviceId = await readCanonicalDeviceId(db);
+  const current = numberingForDevice(await storedReceiptNumbering(db), installationDeviceId);
+  if (!current || deviceId !== installationDeviceId || current.registrationId !== registrationId) return;
+  if (current.status === "ready") return;
+  await db.meta.put({
+    key: RECEIPT_NUMBERING_META_KEY,
+    value: JSON.stringify({
+      registrationId: current.registrationId,
+      deviceId: current.deviceId,
+      prefix,
+      nextSequence: "1",
+    }),
+  });
+}
+
+/** Allocate inside the caller's sale transaction. Unavailable numbering leaves the sale unnumbered. */
+async function allocateReceiptClaim(db: BravosPosDatabase, saleDeviceId: string): Promise<ReceiptClaim | null> {
+  const deviceId = canonicalReceiptUuid(saleDeviceId);
+  const current = numberingForDevice(await storedReceiptNumbering(db), await readCanonicalDeviceId(db));
+  if (!current || current.status !== "ready" || !deviceId || deviceId !== current.deviceId) return null;
+  const sequence = current.nextSequence;
+  let reference: string;
+  let advanced: string;
+  try {
+    reference = formatReceiptReference(current.prefix, sequence);
+    advanced = nextReceiptSequence(sequence);
+  } catch {
+    return null;
+  }
+  await db.meta.put({
+    key: RECEIPT_NUMBERING_META_KEY,
+    value: JSON.stringify({
+      registrationId: current.registrationId,
+      deviceId: current.deviceId,
+      prefix: current.prefix,
+      nextSequence: advanced,
+    }),
+  });
+  return {
+    registrationId: current.registrationId,
+    deviceId: current.deviceId,
+    prefix: current.prefix,
+    sequence,
+    reference,
+  };
+}
+
+function withoutIncomingReceipt(sale: OfflineCompletedSale, payloadFingerprint: string): OfflineCompletedSale {
+  const stored: OfflineCompletedSale = { ...sale, payloadFingerprint };
+  delete stored.receiptClaim;
+  delete stored.receiptReference;
+  delete stored.receiptNumberingConflict;
+  return stored;
+}
+
+type AcknowledgedReceiptFields = {
+  receiptReference?: string;
+  receiptNumberingConflict?: true;
+};
+
+function receiptText(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+/**
+ * Keep a local printed claim and BRV text.
+ * When the sale has neither, a server receipt reference is stored as metadata and does not allocate a number.
+ */
+function preservedPrintedReceipt(
+  local: OfflineCompletedSale,
+  remote: AcknowledgedReceiptFields | undefined,
+): Pick<OfflineCompletedSale, "receiptClaim" | "receiptReference" | "receiptNumberingConflict"> {
+  const localReference = receiptText(local.receiptReference) ?? receiptText(local.receiptClaim?.reference);
+  const remoteReference = receiptText(remote?.receiptReference);
+  const hasLocalPrinted = Boolean(local.receiptClaim) || receiptText(local.receiptReference) !== null;
+  const receiptReference = hasLocalPrinted ? localReference : remoteReference;
+  const mismatched = Boolean(localReference && remoteReference && remoteReference !== localReference);
+  const conflict = local.receiptNumberingConflict === true || remote?.receiptNumberingConflict === true || mismatched;
+  return {
+    ...(local.receiptClaim ? { receiptClaim: local.receiptClaim } : {}),
+    ...(receiptReference ? { receiptReference } : {}),
+    ...(conflict ? { receiptNumberingConflict: true as const } : {}),
+  };
+}
+
 export function createDexiePosStore(options?: { databaseName?: string }): OfflinePosStore {
   const db = createDatabase(options?.databaseName ?? DB_NAME);
 
@@ -766,19 +986,50 @@ export function createDexiePosStore(options?: { databaseName?: string }): Offlin
     async deviceId() {
       await ensureOpen();
       try {
-        return await db.transaction("rw", db.meta, async () => {
-          const existing = await db.meta.get("deviceId");
-          if (existing?.value) {
-            return existing.value;
-          }
-          const deviceId = crypto.randomUUID();
-          await db.meta.put({ key: "deviceId", value: deviceId });
-          return deviceId;
-        });
+        return await db.transaction("rw", db.meta, async () => readOrCreateDeviceId(db));
       } catch (error) {
         if (error instanceof PosStorageError) {
           throw error;
         }
+        throw new PosStorageError();
+      }
+    },
+
+    async ensureReceiptRegistration() {
+      await ensureOpen();
+      try {
+        return await db.transaction("rw", db.meta, async () => {
+          const storedDeviceId = (await db.meta.get("deviceId"))?.value;
+          let deviceId = canonicalReceiptUuid(storedDeviceId);
+          if (!deviceId) {
+            deviceId = canonicalReceiptUuid(crypto.randomUUID());
+            if (!deviceId) throw new PosStorageError();
+            await db.meta.put({ key: "deviceId", value: deviceId });
+          }
+          const current = numberingForDevice(await storedReceiptNumbering(db), deviceId);
+          if (current) {
+            return { registrationId: current.registrationId, deviceId: current.deviceId };
+          }
+          const registrationId = canonicalReceiptUuid(crypto.randomUUID());
+          if (!registrationId) throw new PosStorageError();
+          await db.meta.put({
+            key: RECEIPT_NUMBERING_META_KEY,
+            value: JSON.stringify({ registrationId, deviceId }),
+          });
+          return { registrationId, deviceId };
+        });
+      } catch (error) {
+        if (error instanceof PosStorageError) throw error;
+        throw new PosStorageError();
+      }
+    },
+
+    async readReceiptNumbering() {
+      await ensureOpen();
+      try {
+        return receiptStatus(numberingForDevice(await storedReceiptNumbering(db), await readCanonicalDeviceId(db)));
+      } catch (error) {
+        if (error instanceof PosStorageError) throw error;
         throw new PosStorageError();
       }
     },
@@ -920,11 +1171,7 @@ export function createDexiePosStore(options?: { databaseName?: string }): Offlin
           let next = cache;
           if (incomingGeneration > cache.restoreGeneration) {
             const availability: Record<string, number> = {};
-            for (const product of snapshot.products) {
-              for (const variant of product.variants) {
-                availability[stockKey(branchId, variant.id)] = variant.availableQuantity;
-              }
-            }
+            writeSnapshotAvailability(availability, snapshot);
             const acked = await acknowledgeMatchingOperations(db, incomingProofs, undefined, prepared);
             next = {
               version: incomingVersion,
@@ -939,11 +1186,7 @@ export function createDexiePosStore(options?: { databaseName?: string }): Offlin
             return;
           } else if (incomingVersion > branchVersion) {
             const availability = { ...cache.availability };
-            for (const product of snapshot.products) {
-              for (const variant of product.variants) {
-                availability[stockKey(branchId, variant.id)] = variant.availableQuantity;
-              }
-            }
+            writeSnapshotAvailability(availability, snapshot);
             const acked = await acknowledgeMatchingOperations(db, incomingProofs, undefined, prepared);
             next = {
               version: Math.max(incomingVersion, cache.version),
@@ -971,6 +1214,7 @@ export function createDexiePosStore(options?: { databaseName?: string }): Offlin
             };
             await writeStockCacheRecord(db, next);
           }
+          await acceptReceiptRegistration(db, snapshot.receiptRegistration);
           const priorIssuedAt = Date.parse(priorSnapshot?.snapshot.issuedAt ?? "");
           const incomingIssuedAt = Date.parse(snapshot.issuedAt);
           if (!priorSnapshot || !Number.isFinite(priorIssuedAt) || incomingIssuedAt >= priorIssuedAt) {
@@ -1108,7 +1352,11 @@ export function createDexiePosStore(options?: { databaseName?: string }): Offlin
           if (canonicalOfflineSaleFactsJson(saleFacts(sale)) !== expectedCanonical) {
             throw new SalesValidationError("تعذر حفظ البيع محلياً.");
           }
-          await db.sales.add(sale);
+          const claim = await allocateReceiptClaim(db, input.deviceId);
+          const stored: OfflineCompletedSale = claim
+            ? { ...sale, receiptClaim: claim, receiptReference: claim.reference }
+            : sale;
+          await db.sales.add(stored);
           for (const item of quantities) {
             await db.effects.add({
               id: `${input.operationId}:${item.variantId}`,
@@ -1123,7 +1371,7 @@ export function createDexiePosStore(options?: { databaseName?: string }): Offlin
           if (pending && pending.saleId === input.saleId) {
             await db.pending.delete(input.staffId);
           }
-          return sale;
+          return stored;
         });
       } catch (error) {
         if (error instanceof SalesValidationError || error instanceof PosStorageError) {
@@ -1165,7 +1413,12 @@ export function createDexiePosStore(options?: { databaseName?: string }): Offlin
           if (canonicalOfflineSaleFactsJson(saleFacts(sale)) !== expectedCanonical) {
             throw new SalesValidationError("تعذر حفظ البيع محلياً.");
           }
-          const stored = normalizeCompletedSale({ ...sale, payloadFingerprint });
+          const claim = await allocateReceiptClaim(db, sale.deviceId);
+          const stored = normalizeCompletedSale(
+            claim
+              ? { ...withoutIncomingReceipt(sale, payloadFingerprint), receiptClaim: claim, receiptReference: claim.reference }
+              : withoutIncomingReceipt(sale, payloadFingerprint),
+          );
           await db.sales.add(stored);
           for (const item of quantities) {
             await db.effects.add({

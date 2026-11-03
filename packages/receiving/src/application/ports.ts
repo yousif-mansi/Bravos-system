@@ -24,10 +24,17 @@ export type ReceiptRecord = {
   id: string;
   branchId: string;
   operationId: string;
+  supplierId: string | null;
+  supplierNameAr: string | null;
   receiptDate: string;
   receivedByStaffId: string;
   recordedAt: Date;
   lines: ReceiptLineWrite[];
+};
+
+export type ReceivingReferences = {
+  operationalVariantId(productId: string): Promise<string | null>;
+  supplierName(supplierId: string): Promise<string | null>;
 };
 
 export type OpeningReceivingTransaction = {
@@ -93,6 +100,7 @@ export type ReceiptStore = {
     id: string;
     branchId: string;
     operationId: string;
+    supplierId: string | null;
     receiptDate: string;
     receivedByStaffId: string;
     recordedAt: Date;
@@ -101,6 +109,13 @@ export type ReceiptStore = {
   getByOperationId(operationId: string): Promise<ReceiptRecord | null>;
   getById(id: string, lock?: boolean): Promise<ReceiptRecord | null>;
   list(): Promise<ReceiptRecord[]>;
+  listSuppliers(): Promise<Array<{ id: string; nameAr: string }>>;
+  insertSupplier(input: {
+    id: string;
+    nameAr: string;
+    nameKey: string;
+    actorStaffId: string;
+  }): Promise<{ id: string; nameAr: string } | "duplicate">;
 };
 
 export type ReceivingUnitOfWork = {
@@ -108,6 +123,7 @@ export type ReceivingUnitOfWork = {
     receipts: ReceiptStore;
     corrections: ReceiptCorrectionStore;
     inventory: InventoryTransaction;
+    references: ReceivingReferences;
   }) => Promise<T>): Promise<T>;
 };
 

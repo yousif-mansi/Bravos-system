@@ -1,6 +1,6 @@
 import type { SaleAcknowledgementDto, SaleDto } from "@bravos/contracts";
 import { evaluateAutomaticOffers, evaluateCoupon, normalizeCouponCode, PricingValidationError } from "@bravos/pricing";
-import { assertMergedSaleQuantities, priceSaleLines } from "../domain/discount.ts";
+import { assertMergedSaleQuantities, priceSaleLines, stampAcceptedFloors } from "../domain/discount.ts";
 import { SalesValidationError } from "../domain/errors.ts";
 import { digestOfflineSale } from "../domain/offline-digest.ts";
 import { validatePayment } from "../domain/payment.ts";
@@ -9,7 +9,15 @@ import type { CompleteOfflineSaleInput, OfflineCompletedSale, OfflinePosStore } 
 
 export type RecoveredSaleAck = Pick<
   SaleDto,
-  "id" | "operationId" | "recordedAt" | "soldByStaffId" | "finalTotalPiasters" | "lines" | "discrepancy"
+  | "id"
+  | "operationId"
+  | "recordedAt"
+  | "soldByStaffId"
+  | "finalTotalPiasters"
+  | "lines"
+  | "discrepancy"
+  | "receiptReference"
+  | "receiptNumberingConflict"
 > & { acknowledgement: SaleAcknowledgementDto; reference?: string | null };
 
 export function createOfflinePosServices(store: OfflinePosStore) {
@@ -157,13 +165,18 @@ export function createOfflinePosServices(store: OfflinePosStore) {
             units: line.units,
             variant: {
               id: source.variant.id,
+              purpose: source.product.operationalVariantId === source.variant.id ? "operational" : "website_option",
               product: {
                 id: source.product.id,
                 code: source.product.code,
                 nameAr: source.product.nameAr,
               },
-              size: source.variant.size,
-              color: source.variant.color,
+              size: source.product.operationalVariantId === source.variant.id
+                ? { id: source.variant.size.id, nameAr: "" }
+                : source.variant.size,
+              color: source.product.operationalVariantId === source.variant.id
+                ? { id: source.variant.color.id, nameAr: "" }
+                : source.variant.color,
             },
           };
         }),
@@ -177,15 +190,34 @@ export function priceOfflineCart(input: CompleteOfflineSaleInput, unaccountedLoc
     throw new SalesValidationError("يجب تحديد صنف واحد على الأقل.");
   }
   assertMergedSaleQuantities(input.lines);
-  const snapshotPrices = new Map(
-    input.snapshot.products.flatMap((product) =>
-      product.variants.map((variant) => [variant.id, {
+  const snapshotPrices = new Map<string, {
+    listedUnitPricePiasters: number;
+    productId: string;
+    categoryId: string;
+    minimumUnitPricePiasters: number | null;
+  }>();
+  for (const product of input.snapshot.products) {
+    const productPrice = {
+      listedUnitPricePiasters: product.sellingPricePiasters,
+      productId: product.id,
+      categoryId: product.categoryId ?? "",
+      minimumUnitPricePiasters: product.minimumSellingPricePiasters,
+    };
+    if (product.operationalVariantId) {
+      snapshotPrices.set(product.operationalVariantId, productPrice);
+    }
+    for (const variant of product.variants) {
+      snapshotPrices.set(variant.id, {
         listedUnitPricePiasters: variant.sellingPricePiasters,
         productId: product.id,
         categoryId: product.categoryId ?? "",
-      }] as const),
-    ),
-  );
+        minimumUnitPricePiasters: product.minimumSellingPricePiasters,
+      });
+    }
+    if (product.operationalVariantId) {
+      snapshotPrices.set(product.operationalVariantId, productPrice);
+    }
+  }
   const basketLines = input.lines.map((line) => {
       const basis = snapshotPrices.get(line.variantId);
       if (!basis) {
@@ -219,13 +251,18 @@ export function priceOfflineCart(input: CompleteOfflineSaleInput, unaccountedLoc
       automaticRanges: automatic.unitRanges,
       at: new Date(input.pricingOccurredAt ?? input.occurredAt),
     });
+    const priced = priceSaleLines(
+      basketLines,
+      input.employeeDiscountPiasters,
+      automatic.appliedAutomaticOffer ? automatic.unitRanges : undefined,
+      coupon.appliedCoupon ? coupon.unitRanges : undefined,
+    );
     return {
-      ...priceSaleLines(
-        basketLines,
-        input.employeeDiscountPiasters,
-        automatic.appliedAutomaticOffer ? automatic.unitRanges : undefined,
-        coupon.appliedCoupon ? coupon.unitRanges : undefined,
-      ),
+      ...priced,
+      lines: stampAcceptedFloors(priced.lines, new Map(basketLines.map((line) => [
+        line.variantId,
+        snapshotPrices.get(line.variantId)?.minimumUnitPricePiasters,
+      ]))),
       automaticOfferDiscountPiasters: automatic.automaticOfferDiscountPiasters,
       appliedAutomaticOffer: automatic.appliedAutomaticOffer,
       couponDiscountPiasters: coupon.couponDiscountPiasters,

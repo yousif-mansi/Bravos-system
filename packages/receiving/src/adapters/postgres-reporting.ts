@@ -15,12 +15,16 @@ export function createPostgresPurchaseReportingReader(queryable: Queryable): Pur
     },
     async listReceiptFactsPage(input) {
       const receipts = await queryable.query<{
-        id: string; branch_id: string; operation_id: string; receipt_date: string; received_by_staff_id: string; recorded_at: Date;
+        id: string; branch_id: string; operation_id: string; supplier_id: string | null; supplier_name_ar: string | null;
+        receipt_date: string; received_by_staff_id: string; recorded_at: Date;
       }>(
-        `SELECT id,branch_id,operation_id,receipt_date::text AS receipt_date,received_by_staff_id,recorded_at
-         FROM receiving_receipt WHERE receipt_date >= $1::date AND receipt_date <= $2::date
-           AND ($3::date IS NULL OR (receipt_date,id) < ($3::date,$4::uuid))
-         ORDER BY receipt_date DESC,id DESC LIMIT $5`,
+        `SELECT r.id, r.branch_id, r.operation_id, r.supplier_id, s.name_ar AS supplier_name_ar,
+                r.receipt_date::text AS receipt_date, r.received_by_staff_id, r.recorded_at
+         FROM receiving_receipt r
+         LEFT JOIN supplier s ON s.id = r.supplier_id
+         WHERE r.receipt_date >= $1::date AND r.receipt_date <= $2::date
+           AND ($3::date IS NULL OR (r.receipt_date, r.id) < ($3::date, $4::uuid))
+         ORDER BY r.receipt_date DESC, r.id DESC LIMIT $5`,
         [input.fromDate, input.toDateInclusive, input.after?.receiptDate ?? null, input.after?.id ?? null, input.limit],
       );
       const ids = receipts.rows.map((row) => row.id);
@@ -52,6 +56,8 @@ export function createPostgresPurchaseReportingReader(queryable: Queryable): Pur
           id: row.id,
           branchId: row.branch_id,
           operationId: row.operation_id,
+          supplierId: row.supplier_id,
+          supplierNameAr: row.supplier_name_ar,
           receiptDate: row.receipt_date,
           receivedByStaffId: row.received_by_staff_id,
           recordedAt: row.recorded_at,

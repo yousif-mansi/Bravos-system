@@ -39,6 +39,8 @@ export type ReturnSourceLine = {
 export type ReturnSourceAllocation = AllocationRecord & {
   allocationId: string | null;
   sourceLineId: string | null;
+  /** Sold-line variant when it differs from the batch variant. Historical rows omit it. */
+  requestedVariantId?: string;
 };
 
 export type ReturnSourceRecord = {
@@ -55,6 +57,8 @@ export type ReturnSourceRecord = {
   availableCheckoutChargePiasters: number;
   customerName: string | null;
   customerPhone: string | null;
+  receiptReference?: string;
+  receiptNumberingConflict?: true;
   lines: ReturnSourceLine[];
   allocations: ReturnSourceAllocation[];
 };

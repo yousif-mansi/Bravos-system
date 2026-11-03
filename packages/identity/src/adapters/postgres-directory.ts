@@ -34,7 +34,7 @@ export function createPostgresStaffDirectory(pool: Pool): StaffDirectory {
   return {
     async listBranches() {
       const result = await pool.query<BranchRecord>(
-        `SELECT id, code, name_ar AS "nameAr" FROM branch ORDER BY code`,
+        `SELECT id, code, name_ar AS "nameAr" FROM branch WHERE kind = 'retail' ORDER BY code`,
       );
       return result.rows;
     },

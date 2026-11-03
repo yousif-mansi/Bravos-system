@@ -781,8 +781,8 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
       <header className="page-hero">
         <h1>الطلبات الأونلاين</h1>
       </header>
-      {error ? <div className="error" role="alert">{error}</div> : null}
-      {notice ? <div className="notice" role="status">{notice}</div> : null}
+      {error ? <div className="error point-feedback" role="alert">{error}</div> : null}
+      {notice ? <div className="notice point-feedback" role="status">{notice}</div> : null}
       {pending ? <p role="status">{pendingCopy(pending)}</p> : null}
       {loadFailed ? <section className="card"><button type="button" onClick={() => setReadVersion((version) => version + 1)}>إعادة تحميل {orderId ? "تفاصيل الطلب" : "الطلبات"}</button></section> : null}
 
@@ -1107,7 +1107,7 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
                     <input type="checkbox" checked={itemsSetAside} disabled={frozen || confirmationNeedsReview} onChange={(event) => setItemsSetAside(event.target.checked)} />
                     وجدت الأصناف الفعلية وفصلتها لهذا الطلب
                   </label>
-                  <button type="submit" disabled={frozen || confirmationNeedsReview || !itemsSetAside || !fulfillmentBranchId}>{pending === "confirmation" ? pendingCopy(pending) : "تأكيد الطلب وخصم المخزون"}</button>
+                  <button type="submit" className="confirm" disabled={frozen || confirmationNeedsReview || !itemsSetAside || !fulfillmentBranchId}>{pending === "confirmation" ? pendingCopy(pending) : "تأكيد الطلب وخصم المخزون"}</button>
                 </form>
               ) : (
                 <p className="card muted">لا يمكن تأكيد الطلب قبل حفظ اتفاق العميل على المنتجات والأسعار.</p>

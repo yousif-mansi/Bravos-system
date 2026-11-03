@@ -1,0 +1,9 @@
+.printer-connection {
+  margin: 0 0 1rem;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.printer-connection p {
+  margin: 0;
+}

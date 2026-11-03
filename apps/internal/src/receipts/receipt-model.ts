@@ -1,5 +1,6 @@
 import type { SaleDto, SalePaymentDto } from "@bravos/contracts";
-import { formatEgpFromPiasters } from "../money.ts";
+import { piastersToEgpInput } from "../money.ts";
+import { customerReceiptNumber } from "../receipt-number.ts";
 
 export type ReceiptPaperWidthMm = 58 | 80;
 
@@ -16,12 +17,16 @@ export type ReceiptMoneyLine = {
 
 export type ReceiptItemLine = {
   productName: string;
+  /** Stored product code / SKU. Empty when the saved product has no code. */
+  productCode: string;
   sizeName: string;
   colorName: string;
   /** Stored quantity and stored unit price, already formatted. */
   quantityAndUnitPrice: string;
   /** Stored line original total (`originalPiasters`). */
   lineOriginal: string;
+  /** Stored line paid total (`paidPiasters`) when it differs from the original. */
+  linePaid: string | null;
 };
 
 export type ReceiptView = {
@@ -29,16 +34,22 @@ export type ReceiptView = {
   branchName: string;
   /** Printed only when configured. A missing phone is never a customer-facing warning. */
   contactPhone: string | null;
-  /** Server sale reference when the completed sale has one. */
+  /** Legacy POS reference when the completed sale has one. */
   serverReference: string | null;
   /**
-   * Full local operation id. Kept for traceability after a server reference exists.
-   * This is not the server POS sequence.
+   * Full local operation id. Kept for internal traceability.
+   * It is not a customer receipt number.
    */
   localOperationReference: string;
-  /** Server reference when known; otherwise the full local operation reference. */
+  /** Customer receipt number: BRV, then the legacy POS reference, then a pending label. */
   printedReference: string;
   occurredAtLabel: string;
+  /** Cashier display name only. Staff ids stay off the receipt. */
+  cashierDisplayName: string;
+  /** Saved customer name, or a neutral Arabic placeholder when none was recorded. */
+  customerName: string;
+  /** Saved customer phone when present. */
+  customerPhone: string | null;
   lines: ReceiptItemLine[];
   /** Present only when a stored discount must be shown to reconcile the final total. */
   adjustments: ReceiptMoneyLine[];
@@ -51,7 +62,13 @@ export type ReceiptView = {
   contentWidthMm: number;
 };
 
+/** CSS reference pixel conversion used for thermal page-height measurement. */
+const CSS_PX_PER_MM = 96 / 25.4;
+/** Long receipts paginate at this height instead of becoming an A4 sheet. */
+export const RECEIPT_MAX_PAGE_HEIGHT_MM = 300;
+
 const LOCAL_REFERENCE_PREFIX = "عملية محلية ";
+const UNREGISTERED_LABEL = "غير مسجل";
 
 const paymentMethodLabels: Record<SalePaymentDto["method"], string> = {
   cash: "نقدي",
@@ -73,24 +90,47 @@ export function formatCairoDateTime(iso: string): string {
   if (Number.isNaN(parsed.getTime())) {
     return iso;
   }
-  return new Intl.DateTimeFormat("ar-EG", {
+  const parts = new Intl.DateTimeFormat("en-GB", {
     timeZone: "Africa/Cairo",
     calendar: "gregory",
+    numberingSystem: "latn",
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
     hourCycle: "h23",
-  }).format(parsed);
+  }).formatToParts(parsed);
+  const read = (type: Intl.DateTimeFormatPartTypes) => parts.find((part) => part.type === type)?.value ?? "";
+  return `${read("day")}/${read("month")}/${read("year")} ${read("hour")}:${read("minute")}`;
 }
 
 export function contentWidthMm(paperWidthMm: ReceiptPaperWidthMm): number {
   return paperWidthMm === 58 ? 48 : 72;
 }
 
+/** Two explicit millimetre lengths. `auto` is invalid CSS page size. */
+export function receiptPageSizeCss(widthMm: number, heightMm: number): string {
+  return `@page { size: ${widthMm}mm ${heightMm}mm; margin: 0; }`;
+}
+
+/**
+ * Thermal page box from content width and measured CSS-pixel height.
+ * Height is rounded up with a 1mm buffer, then capped so long receipts paginate.
+ */
+export function receiptPageSizeMm(contentWidthMm: number, contentHeightPx: number): { widthMm: number; heightMm: number } {
+  const measuredMm = Math.max(0, contentHeightPx) / CSS_PX_PER_MM;
+  const heightMm = Math.min(RECEIPT_MAX_PAGE_HEIGHT_MM, Math.max(1, Math.ceil(measuredMm + 1)));
+  return { widthMm: contentWidthMm, heightMm };
+}
+
 function money(piasters: number): string {
-  return formatEgpFromPiasters(piasters);
+  return piastersToEgpInput(piasters);
+}
+
+function storedText(value: string | null | undefined): string | null {
+  const trimmed = value?.trim() ?? "";
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 function adjustmentsFor(sale: SaleDto): ReceiptMoneyLine[] {
@@ -141,14 +181,23 @@ export function buildReceiptView(sale: SaleDto, options: ReceiptOptions): Receip
     contactPhone: phone.length > 0 ? phone : null,
     serverReference: sale.reference,
     localOperationReference: localOperationReference(sale.operationId),
-    printedReference: sale.reference ?? localOperationReference(sale.operationId),
+    printedReference: customerReceiptNumber({
+      receiptReference: sale.receiptReference ?? null,
+      reference: sale.reference,
+      blockedIds: [sale.id, sale.operationId],
+    }),
     occurredAtLabel: formatCairoDateTime(sale.occurredAt),
+    cashierDisplayName: storedText(sale.soldByDisplayName) ?? UNREGISTERED_LABEL,
+    customerName: storedText(sale.customerName) ?? UNREGISTERED_LABEL,
+    customerPhone: storedText(sale.customerPhone),
     lines: sale.lines.map((line) => ({
       productName: line.variant.product.nameAr,
-      sizeName: line.variant.size.nameAr,
-      colorName: line.variant.color.nameAr,
+      productCode: storedText(line.variant.product.code) ?? "",
+      sizeName: line.variant.purpose === "operational" ? "" : line.variant.size.nameAr,
+      colorName: line.variant.purpose === "operational" ? "" : line.variant.color.nameAr,
       quantityAndUnitPrice: `${line.quantity} × ${money(line.listedUnitPricePiasters)}`,
       lineOriginal: money(line.originalPiasters),
+      linePaid: line.paidPiasters !== line.originalPiasters ? money(line.paidPiasters) : null,
     })),
     adjustments: adjustmentsFor(sale),
     finalTotal: money(sale.finalTotalPiasters),

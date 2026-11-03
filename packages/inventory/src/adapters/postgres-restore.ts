@@ -26,6 +26,7 @@ const TABLE_NAMES = [
   "inventory_order_disposition",
   "inventory_order_disposition_allocation",
   "inventory_delivered_return_allocation_effect",
+  "inventory_transfer",
 ] as const;
 
 type RestoreTableName = (typeof TABLE_NAMES)[number];

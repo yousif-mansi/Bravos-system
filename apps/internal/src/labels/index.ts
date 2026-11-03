@@ -1,20 +1,33 @@
 export {
   assertLabelSettings,
+  COMPACT_MIN_LABEL_WIDTH_MM,
   encodeProductBarcode,
   formatLabelMm,
+  GENERIC_LABEL_PROFILE,
+  GENERIC_MIN_LABEL_WIDTH_MM,
   LabelPrintError,
   PAGE_PADDING_MM,
   planLabelLayout,
   PRODUCT_CODE_PATTERN,
   QUIET_ZONE_MODULES,
+  resolveLabelProfile,
+  XP236B_38X25_DPI,
+  XP236B_38X25_HEIGHT_MM,
+  XP236B_38X25_PROFILE,
+  XP236B_38X25_WIDTH_MM,
   type EncodedProductBarcode,
   type LabelLayout,
   type LabelProduct,
+  type LabelProfileId,
   type ProductLabelSettings,
 } from "./barcode.ts";
 export { fitAndValidateLabelDocument, labelPrintStyles, renderLabelDocument } from "./label-document.ts";
 export {
+  clearKnownLabelProfile,
+  connectorLabelJob,
+  LABEL_PROFILE_PREFERENCE_KEY,
   mountProductLabelPreview,
   printProductLabels,
+  selectKnownLabelProfile,
   type LabelPrintResult,
 } from "./label-print.ts";

@@ -2,11 +2,23 @@ import { type KeyboardEvent as ReactKeyboardEvent, useEffect, useId, useMemo, us
 import { createPortal } from "react-dom";
 
 import { accountGeneration, subscribeAccount } from "../account-session.ts";
+import { hasPairingToken } from "../printing/connector-client.ts";
 import {
+  clearKnownLabelProfile,
+  COMPACT_MIN_LABEL_WIDTH_MM,
+  GENERIC_LABEL_PROFILE,
+  GENERIC_MIN_LABEL_WIDTH_MM,
+  LABEL_PROFILE_PREFERENCE_KEY,
   LabelPrintError,
   mountProductLabelPreview,
   planLabelLayout,
   printProductLabels,
+  selectKnownLabelProfile,
+  XP236B_38X25_DPI,
+  XP236B_38X25_HEIGHT_MM,
+  XP236B_38X25_PROFILE,
+  XP236B_38X25_WIDTH_MM,
+  type LabelProfileId,
   type ProductLabelSettings,
 } from "./index.ts";
 import "./product-label.css";
@@ -27,6 +39,11 @@ type DevicePrefs = {
 };
 
 const FALLBACK_PREFS: DevicePrefs = { widthMm: 80, heightMm: 40, dpi: 203 };
+const KNOWN_XP236B_PAPER: DevicePrefs = {
+  widthMm: XP236B_38X25_WIDTH_MM,
+  heightMm: XP236B_38X25_HEIGHT_MM,
+  dpi: XP236B_38X25_DPI,
+};
 
 function readDevicePrefs(): DevicePrefs {
   try {
@@ -36,10 +53,31 @@ function readDevicePrefs(): DevicePrefs {
     const widthMm = Number(parsed.widthMm);
     const heightMm = Number(parsed.heightMm);
     const dpi = parsed.dpi === 300 ? 300 : parsed.dpi === 203 ? 203 : null;
-    if (!inRange(widthMm, 40, 160) || !inRange(heightMm, 20, 100) || !dpi) return FALLBACK_PREFS;
+    if (!inRange(widthMm, GENERIC_MIN_LABEL_WIDTH_MM, 160) || !inRange(heightMm, 20, 100) || !dpi) return FALLBACK_PREFS;
     return { widthMm, heightMm, dpi };
   } catch {
     return FALLBACK_PREFS;
+  }
+}
+
+function readStoredProfile(): LabelProfileId | null {
+  try {
+    return localStorage.getItem(LABEL_PROFILE_PREFERENCE_KEY) === XP236B_38X25_PROFILE ? XP236B_38X25_PROFILE : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredProfile(profile: LabelProfileId | null) {
+  if (profile === XP236B_38X25_PROFILE) selectKnownLabelProfile();
+  else clearKnownLabelProfile();
+}
+
+function devicePaired(): boolean {
+  try {
+    return hasPairingToken();
+  } catch {
+    return false;
   }
 }
 
@@ -99,6 +137,7 @@ export function ProductLabelDialog({
   onClose: () => void;
 }) {
   const titleId = useId();
+  const profileId = useId();
   const widthId = useId();
   const heightId = useId();
   const copiesId = useId();
@@ -110,11 +149,16 @@ export function ProductLabelDialog({
   const onCloseRef = useRef(onClose);
   const productRef = useRef(product);
   onCloseRef.current = onClose;
-  const initial = useMemo(readDevicePrefs, []);
-  const [widthRaw, setWidthRaw] = useState(String(initial.widthMm));
-  const [heightRaw, setHeightRaw] = useState(String(initial.heightMm));
+  const initial = useMemo(() => {
+    const storedProfile = readStoredProfile();
+    const device = storedProfile === XP236B_38X25_PROFILE ? KNOWN_XP236B_PAPER : readDevicePrefs();
+    return { profile: storedProfile ?? GENERIC_LABEL_PROFILE, device };
+  }, []);
+  const [profile, setProfile] = useState<LabelProfileId>(initial.profile);
+  const [widthRaw, setWidthRaw] = useState(String(initial.device.widthMm));
+  const [heightRaw, setHeightRaw] = useState(String(initial.device.heightMm));
   const [copiesRaw, setCopiesRaw] = useState("1");
-  const [dpi, setDpi] = useState<203 | 300>(initial.dpi);
+  const [dpi, setDpi] = useState<203 | 300>(initial.device.dpi);
   const [previewTick, setPreviewTick] = useState(0);
   const [previewPhase, setPreviewPhase] = useState<"loading" | "ready" | "error">("loading");
   const [previewError, setPreviewError] = useState("");
@@ -125,23 +169,25 @@ export function ProductLabelDialog({
   const widthMm = parseDimension(widthRaw);
   const heightMm = parseDimension(heightRaw);
   const copies = parseWhole(copiesRaw);
-  const widthValid = widthMm !== null && inRange(widthMm, 40, 160);
+  const widthMin = profile === XP236B_38X25_PROFILE ? COMPACT_MIN_LABEL_WIDTH_MM : GENERIC_MIN_LABEL_WIDTH_MM;
+  const widthValid = widthMm !== null && inRange(widthMm, widthMin, 160);
   const heightValid = heightMm !== null && inRange(heightMm, 20, 100);
   const copiesValid = copies !== null && copies >= 1 && copies <= 100;
   const deviceValid = widthValid && heightValid;
+  const knownPaper = profile === XP236B_38X25_PROFILE;
 
   const previewLayout = useMemo(() => {
     if (!widthValid || !heightValid || widthMm === null || heightMm === null) {
       return { ok: false as const, message: "إعدادات الملصق غير صالحة." };
     }
-    const settings: ProductLabelSettings = { widthMm, heightMm, copies: 1, dpi };
+    const settings: ProductLabelSettings = { widthMm, heightMm, copies: 1, dpi, profile };
     try {
       planLabelLayout(productRef.current, settings);
     } catch (error) {
       return { ok: false as const, message: messageFrom(error) || "إعدادات الملصق غير صالحة." };
     }
     return { ok: true as const, settings, message: "" };
-  }, [widthMm, heightMm, dpi, widthValid, heightValid]);
+  }, [widthMm, heightMm, dpi, profile, widthValid, heightValid]);
 
   const printSettings: ProductLabelSettings | null = previewLayout.ok && copiesValid && copies !== null
     ? { ...previewLayout.settings, copies }
@@ -163,9 +209,10 @@ export function ProductLabelDialog({
   }, [geometryError]);
 
   useEffect(() => {
+    if (profile !== GENERIC_LABEL_PROFILE) return;
     if (!deviceValid || widthMm === null || heightMm === null) return;
     writeDevicePrefs({ widthMm, heightMm, dpi });
-  }, [deviceValid, widthMm, heightMm, dpi]);
+  }, [profile, deviceValid, widthMm, heightMm, dpi]);
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -259,9 +306,22 @@ export function ProductLabelDialog({
     setPrintError("");
     setPrintStatus("");
     try {
-      const result = await printProductLabels(productRef.current, settings, controller.signal, dialogRef.current);
+      const result = await printProductLabels(
+        productRef.current,
+        settings,
+        controller.signal,
+        dialogRef.current,
+        (message) => {
+          if (controller.signal.aborted || accountGeneration() !== generation) return;
+          setPrintStatus(message);
+        },
+      );
       if (controller.signal.aborted || accountGeneration() !== generation) return;
-      if (result.dialogRequested) setPrintStatus("تم طلب طباعة الملصقات.");
+      if (result.channel === "connector") {
+        setPrintStatus("أُرسلت الملصقات إلى طابعة الملصقات. هذا تسليم لبرنامج الطباعة فقط، وليس خروج الورق.");
+      } else {
+        setPrintStatus("تم طلب طباعة الملصقات.");
+      }
     } catch (error) {
       if (controller.signal.aborted || accountGeneration() !== generation) return;
       const text = messageFrom(error);
@@ -280,6 +340,33 @@ export function ProductLabelDialog({
     || activePreviewError.includes("ارتفاع");
   const printDisabled = printSettings === null || printing || previewPhase !== "ready";
   const fieldsLocked = printing;
+  const paperLocked = knownPaper;
+
+  function chooseProfile(next: string) {
+    if (next === XP236B_38X25_PROFILE) {
+      writeStoredProfile(XP236B_38X25_PROFILE);
+      setProfile(XP236B_38X25_PROFILE);
+      setWidthRaw(String(KNOWN_XP236B_PAPER.widthMm));
+      setHeightRaw(String(KNOWN_XP236B_PAPER.heightMm));
+      setDpi(KNOWN_XP236B_PAPER.dpi);
+      return;
+    }
+    writeStoredProfile(null);
+    const saved = readDevicePrefs();
+    setProfile(GENERIC_LABEL_PROFILE);
+    setWidthRaw(String(saved.widthMm));
+    setHeightRaw(String(saved.heightMm));
+    setDpi(saved.dpi);
+  }
+
+  const pairedDevice = devicePaired();
+  const targetInstruction = knownPaper
+    ? pairedDevice
+      ? "ملصقات Xprinter XP-236B تذهب إلى طابعة الملصقات المربوطة، وليس إلى طابعة الإيصالات. برنامج الطباعة لا يؤكد خروج الورق."
+      : "طراز Xprinter XP-236B يحتاج ربط هذا الجهاز مرة واحدة من الرئيسية. لن تُفتح نافذة المتصفح ولن تُستخدم طابعة الإيصالات."
+    : pairedDevice
+      ? "هذا الجهاز مربوط. المقاس المدعوم لملصقات برنامج الطباعة هو 38×25 مم فقط. المقاس المختلف لن يُصغَّر ولن يذهب إلى نافذة المتصفح."
+      : "في نافذة طباعة المتصفح اختر طابعة الملصقات والمقاس المطابق بنسبة 100٪، وليس طابعة الإيصالات. التطبيق لا يختار الطابعة.";
 
   const dialog = (
     <dialog
@@ -315,6 +402,24 @@ export function ProductLabelDialog({
       ) : null}
       <fieldset className="product-label-fields" disabled={fieldsLocked}>
       <div className="field">
+        <label htmlFor={profileId}>طراز الملصق</label>
+        <select
+          id={profileId}
+          data-testid="product-label-profile"
+          value={profile}
+          disabled={fieldsLocked}
+          onChange={(event) => chooseProfile(event.target.value)}
+        >
+          <option value={GENERIC_LABEL_PROFILE}>المقاس المحفوظ</option>
+          <option value={XP236B_38X25_PROFILE}>Xprinter XP-236B — 38×25 مم — 203 نقطة/بوصة</option>
+        </select>
+      </div>
+      <p className="product-label-note" data-testid="product-label-paper">
+        {knownPaper
+          ? "ورق الملصق الفعلي: Xprinter XP-236B، 38×25 مم، 203 نقطة في البوصة."
+          : "المقاس المحفوظ يبقى كما هو. طراز Xprinter XP-236B يستخدم ورق 38×25 مم عند 203 نقطة في البوصة."}
+      </p>
+      <div className="field">
         <label htmlFor={copiesId}>عدد النسخ</label>
         <input
           id={copiesId}
@@ -327,8 +432,12 @@ export function ProductLabelDialog({
         />
       </div>
       <details ref={sizeDetailsRef} className="product-label-size" data-invalid={widthRejected || heightRejected}>
-        <summary>مقاس الملصق</summary>
-        <p className="muted product-label-note">المقاس الافتراضي مؤقت ويمكن تعديله ليطابق طابعة الملصقات.</p>
+        <summary>{knownPaper ? "مقاس الملصق: 38×25 مم" : "مقاس الملصق"}</summary>
+        <p className="muted product-label-note">
+          {knownPaper
+            ? "ورق Xprinter XP-236B ثابت على 38×25 مم و203 نقطة في البوصة."
+            : "المقاس المحفوظ قابل للتعديل ليناسب ورقة أخرى."}
+        </p>
         <div className="field">
           <label htmlFor={widthId}>العرض بالملليمتر</label>
           <input
@@ -337,7 +446,7 @@ export function ProductLabelDialog({
             autoComplete="off"
             value={widthRaw}
             aria-invalid={widthRejected}
-            disabled={fieldsLocked}
+            disabled={fieldsLocked || paperLocked}
             onChange={(event) => setWidthRaw(event.target.value)}
           />
         </div>
@@ -349,7 +458,7 @@ export function ProductLabelDialog({
             autoComplete="off"
             value={heightRaw}
             aria-invalid={heightRejected}
-            disabled={fieldsLocked}
+            disabled={fieldsLocked || paperLocked}
             onChange={(event) => setHeightRaw(event.target.value)}
           />
         </div>
@@ -359,7 +468,7 @@ export function ProductLabelDialog({
             id={dpiId}
             value={String(dpi)}
             aria-invalid={false}
-            disabled={fieldsLocked}
+            disabled={fieldsLocked || paperLocked}
             onChange={(event) => setDpi(event.target.value === "300" ? 300 : 203)}
           >
             <option value="203">203</option>
@@ -368,7 +477,7 @@ export function ProductLabelDialog({
         </div>
       </details>
       </fieldset>
-      <p className="muted product-label-note">اختر طابعة الملصقات والمقاس المطابق في نافذة الطباعة، وبنسبة 100٪.</p>
+      <p className="muted product-label-note" data-testid="product-label-target">{targetInstruction}</p>
       {printError ? <div className="error" role="alert">{printError}</div> : null}
       {printStatus ? <div className="notice" role="status">{printStatus}</div> : null}
       <div className="form-actions">

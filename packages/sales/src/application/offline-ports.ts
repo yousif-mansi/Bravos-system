@@ -8,6 +8,7 @@ import type {
   SalePaymentDto,
   WorkspaceDto,
 } from "@bravos/contracts";
+import type { ReceiptClaim } from "../domain/receipt-number.ts";
 
 export type OfflineSaleKind = "accepted" | "connected";
 
@@ -73,8 +74,20 @@ export type OfflineCompletedSale = {
   couponUsageAccountedSnapshotIssuedAt?: string | null;
   /** Server sale reference once acknowledged. Optional metadata; never part of the digest. */
   reference?: string | null;
+  /** Original printed till claim. Metadata only; never part of the financial digest. */
+  receiptClaim?: ReceiptClaim;
+  /** Original printed BRV reference. Acknowledgement must not replace it. */
+  receiptReference?: string;
+  /** Staff-visible numbering conflict. The printed reference stays in place. */
+  receiptNumberingConflict?: true;
   lines: OfflineSaleLine[];
 };
+
+/** Installation receipt registry. `absent` is missing or unreadable; only active preparation creates one. */
+export type OfflineReceiptNumberingStatus =
+  | { status: "absent" }
+  | { status: "pending"; registrationId: string; deviceId: string }
+  | { status: "ready"; registrationId: string; deviceId: string; prefix: string };
 
 export type OfflineStockEffect = {
   id: string;
@@ -165,7 +178,18 @@ export type DeviceStockCache = {
 
 export type OfflineAcknowledgement = SaleAcknowledgementDto & {
   sales?: Array<
-    Pick<SaleDto, "id" | "operationId" | "recordedAt" | "soldByStaffId" | "finalTotalPiasters" | "lines" | "discrepancy"> & {
+    Pick<
+      SaleDto,
+      | "id"
+      | "operationId"
+      | "recordedAt"
+      | "soldByStaffId"
+      | "finalTotalPiasters"
+      | "lines"
+      | "discrepancy"
+      | "receiptReference"
+      | "receiptNumberingConflict"
+    > & {
       reference?: string | null;
     }
   >;
@@ -180,6 +204,10 @@ export type OtherPendingQueue = {
 
 export type OfflinePosStore = {
   deviceId(): Promise<string>;
+  /** Active POS preparation only. Reuses a pending registration across retries, logout, account, and branch changes. */
+  ensureReceiptRegistration(): Promise<{ registrationId: string; deviceId: string }>;
+  /** Read-only. Does not create a registration or change the counter. */
+  readReceiptNumbering(): Promise<OfflineReceiptNumberingStatus>;
   rememberSession(workspace: WorkspaceDto, transition?: SessionTransition): Promise<boolean>;
   markSignedOut(staffId: string, transition?: SessionTransition): Promise<boolean>;
   readSessionRevision(): Promise<string | null>;

@@ -46,6 +46,15 @@ export type RestoreInventoryFeaturePort = RestoreFeaturePort & {
 
 export type RestoreSalesFeaturePort = RestoreFeaturePort & {
   restoreReferenceSequence(sequence: { lastValue: string; isCalled: boolean }): Promise<void>;
+  // Decimal lastValue/isCalled only. Independent of the POS reference sequence.
+  restoreReceiptPrefixSequence(sequence: { lastValue: string; isCalled: boolean }): Promise<void>;
+  // Exact pre-036 sale columns, then receipt_identity: null. Does not default missing fields.
+  upgradeReceiptlessRestoreRows(rows: Array<Record<string, unknown>>): Promise<Array<Record<string, unknown>>>;
+  // Assigned identities must bind to a retained registration. Conflict identities are not renumbered.
+  assertAssignedReceiptIdentities(input: {
+    registrations: Array<Record<string, unknown>>;
+    sales: Array<Record<string, unknown>>;
+  }): Promise<void>;
   listRestoreCustodyProofs(operationIds: string[]): Promise<Array<{
     operationId: string;
     saleId: string;

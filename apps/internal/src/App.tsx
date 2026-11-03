@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from "react";
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import type { WorkspaceDto } from "@bravos/contracts";
-import { acceptOfflineSale, ApiError, completeSale, getWorkspace, issuePosSnapshot } from "./api.ts";
+import { acceptOfflineSale, ApiError, completeSale, getWorkspace } from "./api.ts";
 import { AppShell } from "./layout/AppShell.tsx";
 import { LoginPage } from "./pages/LoginPage.tsx";
 import { RecoveryPage } from "./pages/RecoveryPage.tsx";
@@ -12,6 +12,7 @@ import {
   acceptedPayload,
   cacheIssuedSnapshot,
   completedPayload,
+  issueStaffPosSnapshot,
   pos,
   prepareOfflineWorkspace,
   retryUnsyncedSales,
@@ -22,6 +23,9 @@ const StaffPage = lazy(() => import("./pages/StaffPage.tsx"));
 const CatalogPage = lazy(() => import("./pages/CatalogPage.tsx"));
 const LookupPage = lazy(() => import("./pages/LookupPage.tsx"));
 const ReceivingPage = lazy(() => import("./pages/ReceivingPage.tsx"));
+const TransferPage = lazy(() => import("./pages/TransferPage.tsx"));
+const SuppliersPage = lazy(() => import("./pages/SuppliersPage.tsx"));
+const CustomersPage = lazy(() => import("./pages/CustomersPage.tsx"));
 const SalesPage = lazy(() => import("./pages/SalesPage.tsx"));
 const ExpensesPage = lazy(() => import("./pages/ExpensesPage.tsx"));
 const OffersPage = lazy(() => import("./pages/OffersPage.tsx"));
@@ -264,7 +268,7 @@ export function App() {
             retryDelayMs = Math.min(Math.max(2_000, retryDelayMs * 2), 30_000);
           } else if (stillCurrent()) {
             retryDelayMs = result.remaining > 0 ? 2_000 : 30_000;
-            const snapshot = await issuePosSnapshot(await pos.deviceId(), await pos.listPendingOperationIds());
+            const snapshot = await issueStaffPosSnapshot(await pos.listPendingOperationIds(), "passive");
             if (stillCurrent()) {
               await cacheIssuedSnapshot(staffId, snapshot);
             }
@@ -475,6 +479,36 @@ export function App() {
           element={
             workspace?.capabilities.manageInventory ? (
               guarded(<ReceivingPage workspace={workspace} onChanged={replaceWorkspace} />)
+            ) : (
+              <Navigate to={workspace ? "/workspace" : "/login"} replace />
+            )
+          }
+        />
+        <Route
+          path="/transfers"
+          element={
+            workspace?.staff.role === "manager" && workspace.capabilities.manageInventory ? (
+              guarded(<TransferPage workspace={workspace} onChanged={replaceWorkspace} />)
+            ) : (
+              <Navigate to={workspace ? "/workspace" : "/login"} replace />
+            )
+          }
+        />
+        <Route
+          path="/suppliers"
+          element={
+            workspace?.staff.role === "manager" ? (
+              guarded(<SuppliersPage workspace={workspace} onChanged={replaceWorkspace} />)
+            ) : (
+              <Navigate to={workspace ? "/workspace" : "/login"} replace />
+            )
+          }
+        />
+        <Route
+          path="/customers"
+          element={
+            workspace?.staff.role === "manager" ? (
+              guarded(<CustomersPage workspace={workspace} onChanged={replaceWorkspace} />)
             ) : (
               <Navigate to={workspace ? "/workspace" : "/login"} replace />
             )

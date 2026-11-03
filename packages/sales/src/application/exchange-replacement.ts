@@ -1,5 +1,5 @@
 import { OperationConflictError, type InventoryTransaction } from "@bravos/inventory";
-import { assertMergedSaleQuantities, priceSaleLines } from "../domain/discount.ts";
+import { assertMergedSaleQuantities, priceSaleLines, stampAcceptedFloors } from "../domain/discount.ts";
 import { SalesValidationError } from "../domain/errors.ts";
 import type {
   AutomaticPricingPort,
@@ -41,6 +41,13 @@ async function priceReplacement(
     automatic.appliedAutomaticOffer ? automatic.unitRanges : undefined,
     automatic.appliedCoupon ? automatic.couponUnitRanges : undefined,
   );
+  const stamped = stampAcceptedFloors(priced.lines, new Map(basket.map((line) => {
+    const basis = byId.get(line.variantId);
+    return [line.variantId, basis?.minimumUnitPricePiasters] as const;
+  }))).map((line) => {
+    const basis = byId.get(line.variantId);
+    return basis?.identity.purpose === "operational" ? { ...line, stockProductId: basis.productId } : line;
+  });
   return {
     originalTotalPiasters: priced.originalTotalPiasters,
     finalTotalPiasters: priced.finalTotalPiasters,
@@ -49,7 +56,7 @@ async function priceReplacement(
       0,
     ),
     appliedAutomaticOffer: automatic.appliedAutomaticOffer,
-    lines: priced.lines,
+    lines: stamped,
   };
 }
 
@@ -100,6 +107,7 @@ export function createExchangeReplacementSaleWriter(ports: {
           branchId: input.branchId,
           operationId: input.operationId,
           variantId: line.variantId,
+          ...(line.stockProductId ? { productId: line.stockProductId } : {}),
           quantity: line.quantity,
           recordedAt: claimed.recordedAt,
           allowPartial: false,
@@ -115,6 +123,7 @@ export function createExchangeReplacementSaleWriter(ports: {
           automaticOfferDiscountPiasters: line.automaticOfferDiscountPiasters,
           couponDiscountPiasters: line.couponDiscountPiasters,
           employeeDiscountPiasters: 0,
+          acceptedMinimumUnitPiasters: line.acceptedMinimumUnitPiasters ?? null,
           allocatedQuantity: allocated.allocatedQuantity,
           unallocatedQuantity: 0,
           lineIndex,

@@ -79,13 +79,15 @@ export type CheckoutDependencies = {
     lockStockClock(mode: "share" | "update"): Promise<void>;
     quantitiesFor(branchId: string, variantIds: string[]): Promise<Map<string, number>>;
     quantitiesByBranchFor(variantIds: string[]): Promise<Map<string, Map<string, number>>>;
+    productQuantitiesFor(branchId: string, productIds: string[]): Promise<Map<string, number>>;
+    productQuantitiesByRetailBranch(productIds: string[]): Promise<Map<string, Map<string, number>>>;
     protectOnlineOrder(input: {
       branchId: string;
       orderId: string;
       operationId: string;
       payloadFingerprint: string;
       actorStaffId: string;
-      lines: Array<{ lineId: string; variantId: string; quantity: number }>;
+      lines: Array<{ lineId: string; variantId: string; productId: string; quantity: number }>;
     }): Promise<ProtectOnlineOrderResult>;
     disposeProtectedOnlineOrder(input: {
       branchId: string;

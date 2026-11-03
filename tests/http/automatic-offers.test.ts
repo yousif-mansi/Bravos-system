@@ -269,20 +269,16 @@ test("a sale quote uses one committed catalog and offer snapshot", async () => {
       nameAr: product.body.nameAr,
       descriptionAr: product.body.descriptionAr,
       categoryId: movedCategory.body.id,
-      defaultSellingPricePiasters: product.body.defaultSellingPricePiasters,
+      defaultSellingPricePiasters: 2000,
       publication: product.body.publication,
       imageRefs: product.body.imageRefs,
       variants: product.body.variants.map((variant: {
-        id: string;
         size: { id: string };
         color: { id: string };
-        sellingPricePiastersOverride: number | null;
       }) => ({
         sizeId: variant.size.id,
         colorId: variant.color.id,
-        sellingPricePiastersOverride: variant.id === catalog.cheapVariantId
-          ? 2000
-          : variant.sellingPricePiastersOverride,
+        sellingPricePiastersOverride: null,
       })),
     });
     expect(changed.status, JSON.stringify(changed.body)).toBe(200);
@@ -390,28 +386,46 @@ async function seedCatalog(manager: Session, prefix = "AUTH") {
   const cheapColor = await api(manager, "POST", "/api/internal/catalog/colors", { nameAr: `فاتح ${prefix}` });
   const expensiveColor = await api(manager, "POST", "/api/internal/catalog/colors", { nameAr: `داكن ${prefix}` });
   expect([category.status, size.status, cheapColor.status, expensiveColor.status]).toEqual([201, 201, 201, 201]);
-  const product = await api(manager, "POST", "/api/internal/catalog/products", {
-    code: `OFFER-${prefix}`,
-    nameAr: `منتج ${prefix}`,
-    descriptionAr: "منتج لاختبار العروض",
+  const cheapProduct = await createPricedProduct(manager, {
+    code: `OFFER-${prefix}-LOW`,
+    nameAr: `منتج رخيص ${prefix}`,
     categoryId: category.body.id,
-    defaultSellingPricePiasters: 10000,
-    publication: "hidden",
-    imageRefs: [],
-    variants: [
-      { sizeId: size.body.id, colorId: cheapColor.body.id, sellingPricePiastersOverride: 1000 },
-      { sizeId: size.body.id, colorId: expensiveColor.body.id, sellingPricePiastersOverride: 10000 },
-    ],
+    sizeId: size.body.id,
+    colorId: cheapColor.body.id,
+    price: 1000,
   });
-  expect(product.status).toBe(201);
-  const cheap = product.body.variants.find((variant: { sellingPricePiasters: number }) => variant.sellingPricePiasters === 1000);
-  const expensive = product.body.variants.find((variant: { sellingPricePiasters: number }) => variant.sellingPricePiasters === 10000);
+  const expensiveProduct = await createPricedProduct(manager, {
+    code: `OFFER-${prefix}-HIGH`,
+    nameAr: `منتج غالي ${prefix}`,
+    categoryId: category.body.id,
+    sizeId: size.body.id,
+    colorId: expensiveColor.body.id,
+    price: 10000,
+  });
   return {
     categoryId: category.body.id,
-    productId: product.body.id,
-    cheapVariantId: cheap.id,
-    expensiveVariantId: expensive.id,
+    productId: cheapProduct.productId,
+    cheapVariantId: cheapProduct.variantId,
+    expensiveVariantId: expensiveProduct.variantId,
   };
+}
+
+async function createPricedProduct(
+  manager: Session,
+  input: { code: string; nameAr: string; categoryId: string; sizeId: string; colorId: string; price: number },
+) {
+  const product = await api(manager, "POST", "/api/internal/catalog/products", {
+    code: input.code,
+    nameAr: input.nameAr,
+    descriptionAr: "منتج لاختبار العروض",
+    categoryId: input.categoryId,
+    defaultSellingPricePiasters: input.price,
+    publication: "hidden",
+    imageRefs: [],
+    variants: [{ sizeId: input.sizeId, colorId: input.colorId, sellingPricePiastersOverride: null }],
+  });
+  expect(product.status, JSON.stringify(product.body)).toBe(201);
+  return { productId: product.body.id as string, variantId: product.body.variants[0].id as string };
 }
 
 async function receive(manager: Session, variantId: string, quantity: number) {

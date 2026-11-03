@@ -11,6 +11,13 @@ export type {
   StockAvailabilityDto,
 } from "@bravos/contracts";
 export { SaleRestoreGenerationChangedError, SaleRetainedForRestoreError, SalesValidationError } from "./domain/errors.ts";
+export {
+  formatReceiptReference,
+  nextReceiptSequence,
+  parseReceiptClaim,
+  parseReceiptReference,
+} from "./domain/receipt-number.ts";
+export type { ParsedReceiptClaim, ReceiptClaim, ReceiptIdentity, ReceiptNumberingStatus } from "./domain/receipt-number.ts";
 export { allocateEmployeeDiscount, assertMergedSaleQuantities, priceSaleLines } from "./domain/discount.ts";
 export { evaluatePosUpdate, isDeclaredSafeMigration, POS_SCHEMA_VERSION } from "./domain/pos-update.ts";
 export type { PosUpdateDecision } from "./domain/pos-update.ts";

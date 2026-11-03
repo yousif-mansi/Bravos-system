@@ -41,6 +41,7 @@ import {
 import {
   createInventoryTransaction,
   createPostgresInventoryStore,
+  createPostgresInventoryUnitOfWork,
   createPostgresStockCoordinationStore,
 } from "@bravos/inventory/node";
 import {
@@ -63,6 +64,7 @@ import {
   type SalesServices,
 } from "@bravos/sales";
 import {
+  createPostgresCustomerDirectory,
   createPostgresPriceSnapshotStore,
   createPostgresPhysicalSaleSourceCandidateReader,
   createPostgresPricingQuoteReader,
@@ -134,7 +136,7 @@ import {
   createOnlineOrderServices,
   type OnlineOrderServices,
 } from "@bravos/online-orders";
-import { createPostgresOnlineOrderStore, createPostgresOnlineOrderUnitOfWork } from "@bravos/online-orders/node";
+import { createPostgresOnlineOrderStore, createPostgresOnlineOrderUnitOfWork, createPostgresPaidOnlinePurchaseReader } from "@bravos/online-orders/node";
 import {
   OPENING_IMPORT_TEMPLATES,
   OpeningImportConflictError,
@@ -347,6 +349,7 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
         getVariants: (ids) => catalogStore.getVariants(ids),
         listIds: () => catalogStore.listVariantIds(),
       },
+      uow: createPostgresInventoryUnitOfWork(pool),
       coordination: createPostgresStockCoordinationStore(
         pool,
         createInventoryTransaction,
@@ -405,6 +408,9 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
       ),
       allocations: { listAllocations: (operationId) => inventoryStore.listAllocations(operationId) },
       deferredCompletions: createPostgresDeferredCompletedSaleStore(pool, createPostgresRestoreRuntimeReader),
+      customers: createPostgresCustomerDirectory(pool),
+      paidOnline: createPostgresPaidOnlinePurchaseReader(pool),
+      ...(config.businessClock ? { clock: { now: config.businessClock } } : {}),
     });
     const expenses = createExpenseServices({
       actors,
@@ -1346,6 +1352,27 @@ async function registerRoutes(
     return handle(reply, async () => receiving.list(await verifiedAuth(identity, request)));
   });
 
+  app.get("/api/internal/suppliers", async (request, reply) => {
+    return handle(reply, async () => receiving.listSuppliers(await verifiedAuth(identity, request)));
+  });
+
+  app.post("/api/internal/suppliers", async (request, reply) => {
+    return handle(reply, async () => {
+      const supplier = await receiving.createSupplier(await verifiedAuth(identity, request), request.body);
+      reply.status(201);
+      return supplier;
+    });
+  });
+
+  app.get("/api/internal/purchases", async (request, reply) => {
+    const query = request.query as { supplierId?: string | string[] };
+    const supplierId = Array.isArray(query.supplierId) ? query.supplierId[0] : query.supplierId;
+    return handle(reply, async () => receiving.listPurchases(
+      await verifiedAuth(identity, request),
+      supplierId ?? null,
+    ));
+  });
+
   app.get("/api/internal/receiving/receipts/:receiptId", async (request, reply) => {
     const params = request.params as { receiptId: string };
     return handle(reply, async () => receiving.get(await verifiedAuth(identity, request), params.receiptId));
@@ -1369,6 +1396,23 @@ async function registerRoutes(
     return handle(reply, async () =>
       receiving.getByOperation(await verifiedAuth(identity, request), params.operationId),
     );
+  });
+
+  app.get("/api/internal/inventory/locations", async (request, reply) => {
+    return handle(reply, async () => inventory.listStockLocations(await verifiedAuth(identity, request)));
+  });
+
+  app.get("/api/internal/inventory/product-locations", async (request, reply) => {
+    reply.header("cache-control", "no-store");
+    return handle(reply, async () => inventory.listProductLocationStock(await verifiedAuth(identity, request)));
+  });
+
+  app.post("/api/internal/inventory/transfers", async (request, reply) => {
+    return handle(reply, async () => {
+      const result = await inventory.transfer(await verifiedAuth(identity, request), request.body);
+      reply.status(result.created ? 201 : 200);
+      return result;
+    });
   });
 
   app.get("/api/internal/inventory/batches", async (request, reply) => {
@@ -1478,6 +1522,39 @@ async function registerRoutes(
       reply.status(result.created ? 201 : 200);
       return { ...result.sale, acknowledgement: result.acknowledgement };
     });
+  });
+
+  app.get("/api/internal/customers", async (request, reply) => {
+    reply.header("cache-control", "no-store");
+    const query = request.query as { q?: unknown; limit?: unknown; cursor?: unknown };
+    const q = firstQueryText(query.q);
+    const limit = firstQueryText(query.limit);
+    const cursor = firstQueryText(query.cursor);
+    return handle(reply, async () => sales.listCustomers(await verifiedAuth(identity, request), {
+      ...(q === undefined ? {} : { q }),
+      ...(limit === undefined ? {} : { limit }),
+      ...(cursor === undefined ? {} : { cursor }),
+    }));
+  });
+
+  app.get("/api/internal/customers/lookup", async (request, reply) => {
+    const query = request.query as { phone?: unknown; name?: unknown };
+    const phone = firstQueryText(query.phone);
+    const name = firstQueryText(query.name);
+    return handle(reply, async () => sales.lookupCustomer(await verifiedAuth(identity, request), {
+      phone,
+      ...(name === undefined ? {} : { name }),
+    }));
+  });
+
+  app.get("/api/internal/customers/:customerId/history", async (request, reply) => {
+    const params = request.params as { customerId: string };
+    const query = request.query as { period?: unknown };
+    return handle(reply, async () => sales.customerHistory(
+      await verifiedAuth(identity, request),
+      params.customerId,
+      firstQueryText(query.period),
+    ));
   });
 
   app.get("/api/internal/sales/restore-deferred", async (request, reply) => {
@@ -1681,6 +1758,11 @@ function isTrustedInternalOrigin(request: FastifyRequest, config: AppConfig): bo
     return request.method === "GET" || request.method === "HEAD";
   }
   return config.trustedOrigins.includes(origin);
+}
+
+function firstQueryText(value: unknown): string | undefined {
+  const picked = Array.isArray(value) ? value[0] : value;
+  return typeof picked === "string" ? picked : undefined;
 }
 
 async function verifiedAuth(

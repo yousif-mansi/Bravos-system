@@ -642,7 +642,7 @@ export function createPostgresOnlineOrderUnitOfWork(
       let operationLocked = false;
       try {
         if (operationId) {
-          await client.query("SELECT pg_advisory_lock(hashtextextended($1, 19))", [operationId]);
+          await client.query("SELECT pg_advisory_lock(hashtextextended($1::text, 19))", [operationId]);
           operationLocked = true;
         }
         for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -660,7 +660,7 @@ export function createPostgresOnlineOrderUnitOfWork(
         }
         throw new Error("Online-order transaction retry limit reached.");
       } finally {
-        if (operationLocked) await client.query("SELECT pg_advisory_unlock(hashtextextended($1, 19))", [operationId]);
+        if (operationLocked) await client.query("SELECT pg_advisory_unlock(hashtextextended($1::text, 19))", [operationId]);
         client.release();
       }
     },

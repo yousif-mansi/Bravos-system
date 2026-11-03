@@ -3,7 +3,10 @@ import type {
   InventoryBatchDto,
   InventorySettingsDto,
   LowStockVariantDto,
+  ProductLocationStockDto,
   StockCorrectionDto,
+  StockLocationDto,
+  StockTransferDto,
   StockReconciliationCaseDto,
   StockReconciliationDto,
   VariantLowStockDto,
@@ -20,6 +23,7 @@ import type {
   CountCoordinationRecord,
   InventoryReadStore,
   InventoryServices,
+  InventoryUnitOfWork,
   StockCoordinationStore,
   StockCorrectionRecord,
   VariantIdentityReader,
@@ -30,11 +34,14 @@ const SETTINGS_KEYS = new Set(["lowStockThreshold"]);
 const VARIANT_THRESHOLD_KEYS = new Set(["lowStockThreshold"]);
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+const TRANSFER_KEYS = new Set(["operationId", "sourceBranchId", "destinationBranchId", "productId", "quantity"]);
+
 export function createInventoryServices(ports: {
   store: InventoryReadStore;
   actors: InventoryActorPort;
   variants: VariantIdentityReader;
   coordination: StockCoordinationStore;
+  uow: InventoryUnitOfWork;
 }): InventoryServices {
   async function requireStaff(auth: VerifiedAuth | null) {
     if (!auth) throw new UnauthenticatedError();
@@ -139,31 +146,31 @@ export function createInventoryServices(ports: {
         ports.store.getSettings(),
         ports.store.listVariantThresholds(),
       ]);
-      const quantities = await ports.store.quantitiesByBranchFor(ids);
-      const low: Array<Omit<LowStockVariantDto, "variant">> = [];
-      for (const branchId of branchIds) for (const variantId of ids) {
-        const availableQuantity = quantities.get(branchId)?.get(variantId) ?? 0;
-        const override = overrides.get(variantId);
+      const identities = await ports.variants.getVariants(ids);
+      const byId = new Map(identities.map((identity) => [identity.id, identity]));
+      const operational = ids.flatMap((id) => {
+        const identity = byId.get(id);
+        return identity?.purpose === "operational" ? [identity] : [];
+      });
+      const quantities = await ports.store.productQuantitiesByRetailBranch(
+        [...new Set(operational.map((identity) => identity.product.id))],
+      );
+      const low: LowStockVariantDto[] = [];
+      for (const branchId of branchIds) for (const identity of operational) {
+        const availableQuantity = quantities.get(branchId)?.get(identity.product.id) ?? 0;
+        const override = overrides.get(identity.id);
         const threshold = override ?? settings.lowStockThreshold;
-        if (availableQuantity > threshold) {
-          continue;
-        }
+        if (availableQuantity > threshold) continue;
         low.push({
           branchId,
-          variantId,
+          variantId: identity.id,
           availableQuantity,
           threshold,
           thresholdSource: override === undefined || override === null ? "global" : "variant",
+          variant: identity,
         });
       }
-      const variants = await hydrateVariants(low.map((row) => row.variantId));
-      return low.map((row) => {
-        const variant = variants.get(row.variantId);
-        if (!variant) {
-          throw new InventoryValidationError("المتغير المحدد غير موجود.");
-        }
-        return { ...row, variant };
-      });
+      return low;
     },
 
     async getSettings(auth) {
@@ -371,16 +378,97 @@ export function createInventoryServices(ports: {
         created: result.created,
       };
     },
+
+    async listStockLocations(auth): Promise<StockLocationDto[]> {
+      await requireManager(auth);
+      return ports.store.listStockLocations();
+    },
+
+    async listProductLocationStock(auth): Promise<ProductLocationStockDto[]> {
+      await requireManager(auth);
+      const [locations, ids] = await Promise.all([
+        ports.store.listStockLocations(),
+        ports.variants.listIds(),
+      ]);
+      const identities = ids.length === 0 ? [] : await ports.variants.getVariants(ids);
+      const products = new Map<string, { code: string; nameAr: string; operational: boolean }>();
+      for (const identity of identities) {
+        const operational = identity.purpose === "operational";
+        const current = products.get(identity.product.id);
+        if (!current || (operational && !current.operational)) {
+          products.set(identity.product.id, {
+            code: identity.product.code,
+            nameAr: identity.product.nameAr,
+            operational,
+          });
+        }
+      }
+      const productIds = [...products.keys()];
+      const quantities = await ports.store.productQuantitiesByLocation(productIds);
+      return [...products.entries()]
+        .sort((left, right) => left[1].nameAr.localeCompare(right[1].nameAr, "ar") || left[1].code.localeCompare(right[1].code))
+        .map(([productId, product]) => ({
+          productId,
+          code: product.code,
+          nameAr: product.nameAr,
+          locations: locations.map((location) => ({
+            branchId: location.id,
+            code: location.code,
+            nameAr: location.nameAr,
+            kind: location.kind,
+            quantity: quantities.get(location.id)?.get(productId) ?? 0,
+          })),
+        }));
+    },
+
+    async transfer(auth, input): Promise<StockTransferDto> {
+      const manager = await requireManager(auth);
+      const body = expectObject(input, "بيانات النقل غير صالحة.");
+      assertAllowedKeys(body, TRANSFER_KEYS, "بيانات النقل غير صالحة.");
+      const operationId = assertUuid(body.operationId, "معرّف العملية غير صالح.");
+      const sourceBranchId = assertUuid(body.sourceBranchId, "مكان المصدر غير موجود.");
+      const destinationBranchId = assertUuid(body.destinationBranchId, "مكان الوجهة غير موجود.");
+      const productId = assertUuid(body.productId, "المنتج المحدد غير موجود.");
+      const quantity = assertQuantity(body.quantity, "الكمية غير صالحة.");
+      if (sourceBranchId === destinationBranchId) {
+        throw new InventoryValidationError("لا يمكن نقل المخزون إلى المكان نفسه.");
+      }
+      const payloadFingerprint = await sha256(JSON.stringify({
+        destinationBranchId, productId, quantity, sourceBranchId,
+      }));
+      const row = await ports.uow.run((tx) => tx.transferProduct({
+        operationId, sourceBranchId, destinationBranchId, productId, quantity,
+        actorStaffId: manager.id, payloadFingerprint,
+      }));
+      return {
+        id: row.id,
+        operationId: row.operationId,
+        sourceBranchId: row.sourceBranchId,
+        destinationBranchId: row.destinationBranchId,
+        productId: row.productId,
+        quantity: row.quantity,
+        recordedAt: row.recordedAt.toISOString(),
+        created: row.created,
+      };
+    },
   };
 }
 
-export function createInventoryAvailabilityReader(store: Pick<InventoryReadStore, "quantitiesFor" | "quantitiesByBranchFor">) {
+export function createInventoryAvailabilityReader(
+  store: Pick<InventoryReadStore, "quantitiesFor" | "quantitiesByBranchFor" | "productQuantitiesFor" | "productQuantitiesByRetailBranch">,
+) {
   return {
     quantitiesFor(branchId: string, variantIds: string[]) {
       return store.quantitiesFor(branchId, variantIds);
     },
     quantitiesByBranchFor(variantIds: string[]) {
       return store.quantitiesByBranchFor(variantIds);
+    },
+    productQuantitiesFor(branchId: string, productIds: string[]) {
+      return store.productQuantitiesFor(branchId, productIds);
+    },
+    productQuantitiesByRetailBranch(productIds: string[]) {
+      return store.productQuantitiesByRetailBranch(productIds);
     },
   };
 }

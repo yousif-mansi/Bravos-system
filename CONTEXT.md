@@ -5,12 +5,12 @@ BRAVOS is a men's clothing business with physical branches in Abshway and Fayoum
 ## Language
 
 **Branch inventory**:
-The available quantities of individual product variants held by one BRAVOS branch, independent of quantities held at the other branch. Online orders use an identified fulfillment branch rather than a separate website stock balance.
+The available quantities of products held by one BRAVOS retail branch, independent of the other branch and of the central warehouse. Online orders use an identified fulfillment branch rather than warehouse stock or a separate website balance.
 _Avoid_: Shared central quantity, separate website stock
 
 **Available stock**:
-The quantity of a product variant still available for new sales or orders. It excludes quantities already deducted for completed physical sales or confirmed online orders, including confirmed items still awaiting shipment.
-_Avoid_: All merchandise physically present
+The quantity of a product still available for new sales or orders at one location. Every website option of that product draws on this same quantity. It excludes quantities already deducted for completed physical sales or confirmed online orders, including confirmed items still awaiting shipment.
+_Avoid_: All merchandise physically present, size stock, color stock
 
 **Stock deduction**:
 A reduction in available stock for a completed physical sale or a confirmed online order.
@@ -18,7 +18,11 @@ _Avoid_: Shipment when referring to the online order's deduction point
 
 **Branch**:
 One of BRAVOS's two physical retail outlets: Abshway or Fayoum. Each branch holds its own stock and identifies its sales, employees, and expenses.
-_Avoid_: Separate business
+_Avoid_: Separate business, central warehouse
+
+**Central warehouse**:
+The physical location that receives new merchandise and supplies the two retail branches. It is not a retail branch and does not fulfill online orders.
+_Avoid_: Branch, website stock
 
 **Authorized branch**:
 A branch the manager has permitted an employee to work in using that employee's personal account.
@@ -45,15 +49,19 @@ An employee who completes physical sales in an authorized branch and can view th
 _Avoid_: Manager
 
 **Product**:
-A clothing item offered by BRAVOS that may have multiple size and color combinations.
+A clothing item offered by BRAVOS, identified by its product code, with one selling price and one stock quantity at each location.
 _Avoid_: Variant when referring to the product as a whole
 
+**Website option**:
+A size and color choice shown to online customers for one product. It records the customer's choice and uses the product's shared stock.
+_Avoid_: Separate stock balance, product variant when referring to a quantity
+
 **Product variant**:
-A specific size and color combination of a product with separately tracked quantities at each branch.
+A historical size and color identity already stored for a product. New branch sales and new receiving do not ask for one.
 _Avoid_: Separate product when referring only to a size or color combination
 
 **Product code**:
-The unique searchable code identifying a product as a whole. The employee selects the particular size and color variant separately.
+The unique searchable code identifying a product and its sellable quantity.
 _Avoid_: Barcode, variant code when referring to the product-level search code
 
 **Physical sale**:
@@ -102,7 +110,27 @@ _Avoid_: Catalog price change, configured promotion
 
 **Branch expense**:
 A business expense attributed to a branch and recorded by the manager or an employee, identifying its amount, date, category, and description.
-_Avoid_: Stock receiving when referring to merchandise purchases
+_Avoid_: Stock receiving when referring to merchandise purchases, supplier purchase
+
+**Supplier**:
+A party from whom BRAVOS buys merchandise. A supplier identifies purchases and has no account balance.
+_Avoid_: Creditor, vendor ledger
+
+**Supplier purchase**:
+One merchandise receipt and its cost, visible with its supplier and among expenses, without being deducted again as an operating expense.
+_Avoid_: Branch expense, duplicate purchase
+
+**Minimum selling price**:
+The lowest price per unit a physical sale may accept for a product after every discount. It is one value for the whole product.
+_Avoid_: Size minimum, hidden manager override
+
+**Customer**:
+A person identified by one full phone number who can be selected again at a physical sale. A sale may stay anonymous.
+_Avoid_: Guest checkout account, name match
+
+**Paid purchase**:
+Merchandise the customer has paid for: a completed physical sale, or an online order that was delivered.
+_Avoid_: Confirmed online order, pending order
 
 **Online order**:
 A customer's request to buy items through the online store using guest checkout and cash on delivery, handled by BRAVOS staff.
@@ -136,13 +164,9 @@ _Avoid_: Customer return after a completed delivery, restored stock
 A cancelled confirmed order whose sales value has been reversed while its merchandise remains unavailable until staff inspect it.
 _Avoid_: Automatically restored stock
 
-**Out-of-stock variant**:
-A size/color combination with no available quantity for customers to order. Other stocked variants of the product may remain available.
-_Avoid_: Out-of-stock product when another sellable variant is available
-
 **Out-of-stock product**:
-A product whose sellable variants are all unavailable. If publicly listed, it remains visible for browsing with an Out of Stock label and cannot be ordered.
-_Avoid_: Out-of-stock variant when referring to the whole product
+A publicly listed product whose shared retail quantity is zero. It remains visible for browsing with an Out of Stock label and cannot be ordered. A size or color stays selectable while that shared quantity is above zero.
+_Avoid_: A size that is out of stock on its own
 
 **Coming Soon product**:
 A product shown on the public website as a preview, with online ordering disabled. This website status does not by itself prevent an authorized physical sale of available merchandise.
@@ -152,12 +176,12 @@ _Avoid_: Hidden product
 A product excluded from the public store. This website status does not by itself prevent an authorized physical sale of available merchandise.
 _Avoid_: Out-of-stock product
 
-**Low-stock variant**:
-A product variant whose available quantity is at or below its configured alert threshold.
-_Avoid_: Out-of-stock variant when a positive quantity remains
+**Low-stock product**:
+A product whose available quantity at a retail branch is at or below its configured alert threshold.
+_Avoid_: Out-of-stock product when a positive quantity remains
 
 **Stock adjustment**:
-A manager's correction of a variant's recorded available quantity after verifying a discrepancy, attributed to that manager and accompanied by a reason.
+A manager's correction of a product's recorded available quantity at a branch after verifying a discrepancy, attributed to that manager and accompanied by a reason.
 _Avoid_: Stock receiving, sale cancellation
 
 **Order representative**:
@@ -165,15 +189,19 @@ The assigned employee responsible for checking online orders and confirming them
 _Avoid_: Automated confirmation when referring to the representative's decision
 
 **Stock receiving**:
-The receipt of purchased merchandise into the selected BRAVOS branch's inventory.
-_Avoid_: Branch transfer
+The receipt of purchased merchandise into the central warehouse.
+_Avoid_: Branch transfer, website fulfillment
+
+**Stock transfer**:
+A manager's record that goods moved from one location to another at the physical handover.
+_Avoid_: Dispatch, goods in transit
 
 **Stock batch**:
-A group of received units of one product variant with its own purchase cost and separately tracked remaining quantities at each branch. A return to another branch retains its original batch provenance.
+A group of received units of one product with its own purchase cost and separately tracked remaining quantities at each location. Moving or returning units keeps that original cost.
 _Avoid_: Average cost, separate public product
 
 **First in, first out (FIFO)**:
-The allocation of sold or confirmed-order units from the oldest available stock batch at the supplying branch before newer batches. Sellable returns retain the original allocated batch costs at the branch receiving them.
+The allocation of sold or confirmed-order units from the oldest available stock batch of that product at the supplying location before newer batches. Sellable returns retain the original allocated batch costs at the branch receiving them.
 _Avoid_: Average cost, newest batch first
 
 **Cost price**:
@@ -181,5 +209,5 @@ The internal purchase cost retained for a stock batch, visible only to the owner
 _Avoid_: Selling price
 
 **Selling price**:
-The listed price at which merchandise is offered to customers, consistent for a variant across both physical branches and the website. A product has a default price and may have size/color price overrides.
-_Avoid_: Cost price
+The listed price of a product, the same for every size and color, both retail branches, and the website.
+_Avoid_: Cost price, size price, color price

@@ -428,6 +428,38 @@ module.exports = {
       from: { path: "^packages/online-orders" },
       to: { path: "^packages/(catalog|inventory|receiving|pricing|sales|expenses|returns|corrections|storefront-config|persistence)" },
     },
+    {
+      name: "staff-storefront-no-print-connector",
+      comment: "Staff and storefront reach the connector over loopback HTTP, not by importing its server.",
+      severity: "error",
+      from: { path: "^apps/(internal|storefront)" },
+      to: { path: "^apps/print-connector" },
+    },
+    {
+      name: "print-contracts-are-pure",
+      comment: "Print contracts stay free of apps, business packages, and Node IO.",
+      severity: "error",
+      from: { path: "^packages/print-contracts" },
+      to: {
+        path: "(^apps/|^packages/(?!print-contracts)|^node:|better-auth|fastify|\\bpg\\b|react|next|vite|dexie)",
+      },
+    },
+    {
+      name: "print-connector-contracts-only",
+      comment: "The print connector may depend only on @bravos/print-contracts among workspace packages.",
+      severity: "error",
+      from: { path: "^apps/print-connector" },
+      to: {
+        path: "(^apps/(api|internal|storefront)|packages/(identity|catalog|inventory|receiving|pricing|sales|expenses|returns|corrections|storefront-config|opening-import|backup|restore|reporting|analytics|report-export|persistence|online-orders|contracts)|\\bpg\\b|better-auth|fastify)",
+      },
+    },
+    {
+      name: "no-private-print-contracts-imports",
+      comment: "Cross-package imports must use the print-contracts public entry.",
+      severity: "error",
+      from: { pathNot: "^packages/print-contracts/src" },
+      to: { path: "^packages/print-contracts/src/(?!index\\.ts$).+" },
+    },
   ],
   options: {
     exclude: {
