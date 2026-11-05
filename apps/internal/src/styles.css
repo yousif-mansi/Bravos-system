@@ -1109,6 +1109,15 @@ button, .button, input, select {
 }
 .section-heading-row h2 { margin: 0; }
 .section-heading-row .field { min-width: min(100%, 16rem); }
+.stock-location-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin: 0 0 0.75rem;
+}
+.stock-location-filters button[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--brand-accent) 18%, var(--surface-elevated));
+}
 .data-table-wrap { overflow-x: auto; max-width: 100%; min-width: 0; }
 .data-table tr[data-selected="true"] {
   background: color-mix(in srgb, var(--confirm-bg) 14%, transparent);

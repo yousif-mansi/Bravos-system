@@ -7,6 +7,8 @@ import { ensureOwner } from "../../apps/api/src/bootstrap.ts";
 import { applyMigrations } from "@bravos/persistence";
 import { startPostgresCluster, type PostgresCluster } from "@bravos/testkit";
 
+const WAREHOUSE_BRANCH_ID = "33333333-3333-4333-8333-333333333333";
+
 const INTERNAL_ORIGIN = "http://127.0.0.1:5173";
 const PUBLIC_ORIGIN = "http://127.0.0.1:3000";
 
@@ -764,46 +766,44 @@ test("low-stock evaluates each retail branch on the operational product pool", a
   expect(settings.body).toEqual({ lowStockThreshold: 3 });
   const unstocked = await api(manager, "GET", "/api/internal/inventory/low-stock");
   expect(unstocked.status).toBe(200);
-  expect(unstocked.body).toHaveLength(2);
-  expect(unstocked.body).toEqual(
-    expect.arrayContaining([
-      expect.objectContaining({
-        variantId: operationalVariantId,
-        branchId: abshwayId,
-        availableQuantity: 0,
-        threshold: 3,
-        thresholdSource: "global",
-      }),
-      expect.objectContaining({
-        variantId: operationalVariantId,
-        branchId: fayoumId,
-        availableQuantity: 0,
-        threshold: 3,
-        thresholdSource: "global",
-      }),
-    ]),
-  );
+  expect(unstocked.body.filter((item: { variantId: string }) => item.variantId === operationalVariantId)).toEqual([]);
 
-  await api(manager, "POST", "/api/internal/receiving/receipts", {
+  const warehouseOnly = await api(manager, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
-    branchId: abshwayId,
+    branchId: WAREHOUSE_BRANCH_ID,
     receiptDate: "2026-09-11",
     lines: [
       { variantId: seed.variantId, quantity: 3, unitCostPiasters: 5000 },
       { variantId: seed.secondVariantId, quantity: 4, unitCostPiasters: 5000 },
     ],
   });
+  expect(warehouseOnly.status).toBe(201);
+  // Restore accepts archived zero balance rows. A row without a branch movement
+  // must not make a warehouse-only product eligible at the retail branch.
+  await built.pool.query(
+    `INSERT INTO inventory_batch_balance (batch_id, branch_id, remaining_quantity)
+     SELECT batch_id, $1, 0 FROM inventory_batch_balance WHERE branch_id = $2`,
+    [fayoumId, WAREHOUSE_BRANCH_ID],
+  );
+  const stillUnstocked = await api(manager, "GET", "/api/internal/inventory/low-stock");
+  expect(stillUnstocked.status).toBe(200);
+  expect(stillUnstocked.body.filter((item: { variantId: string }) => item.variantId === operationalVariantId)).toEqual([]);
+  const warehouseOnlyReport = await api(manager, "GET", "/api/internal/reports/management?period=today");
+  expect(warehouseOnlyReport.status).toBe(200);
+  expect(warehouseOnlyReport.body.lowStock).toEqual([]);
+
+  const transferred = await api(manager, "POST", "/api/internal/inventory/transfers", {
+    operationId: crypto.randomUUID(),
+    sourceBranchId: WAREHOUSE_BRANCH_ID,
+    destinationBranchId: abshwayId,
+    productId: seed.productId,
+    quantity: 7,
+  });
+  expect(transferred.status, JSON.stringify(transferred.body)).toBe(201);
   const initial = await api(manager, "GET", "/api/internal/inventory/low-stock");
   expect(initial.status).toBe(200);
-  expect(initial.body.filter((item: { branchId: string }) => item.branchId === abshwayId)).toEqual([]);
-  expect(initial.body.filter((item: { branchId: string }) => item.branchId === fayoumId)).toEqual([
-    expect.objectContaining({
-      variantId: operationalVariantId,
-      availableQuantity: 0,
-      threshold: 3,
-      thresholdSource: "global",
-    }),
-  ]);
+  expect(initial.body.filter((item: { variantId: string; branchId: string }) => item.variantId === operationalVariantId && item.branchId === abshwayId)).toEqual([]);
+  expect(initial.body.filter((item: { variantId: string; branchId: string }) => item.variantId === operationalVariantId && item.branchId === fayoumId)).toEqual([]);
 
   const raised = await api(manager, "PATCH", "/api/internal/inventory/settings", { lowStockThreshold: 4 });
   expect(raised.status).toBe(200);
@@ -863,22 +863,44 @@ test("low-stock evaluates each retail branch on the operational product pool", a
   expect(cleared.body.updatedByStaffId).toEqual(expect.any(String));
   expect(cleared.body.updatedAt).toEqual(expect.any(String));
   const afterClear = await api(manager, "GET", "/api/internal/inventory/low-stock");
-  expect(afterClear.body.filter((item: { branchId: string }) => item.branchId === abshwayId)).toEqual([]);
-  expect(afterClear.body.filter((item: { branchId: string }) => item.branchId === fayoumId)).toEqual([
-    expect.objectContaining({
-      variantId: operationalVariantId,
-      availableQuantity: 0,
-      threshold: 4,
-      thresholdSource: "global",
-    }),
-  ]);
+  expect(afterClear.body.filter((item: { variantId: string; branchId: string }) => item.variantId === operationalVariantId && item.branchId === abshwayId)).toEqual([]);
+  expect(afterClear.body.filter((item: { variantId: string; branchId: string }) => item.variantId === operationalVariantId && item.branchId === fayoumId)).toEqual([]);
 
   const zero = await api(manager, "PATCH", "/api/internal/inventory/settings", { lowStockThreshold: 0 });
   expect(zero.status).toBe(200);
   expect(zero.body).toEqual({ lowStockThreshold: 0 });
   const afterZero = await api(manager, "GET", "/api/internal/inventory/low-stock");
-  expect(afterZero.body.filter((item: { branchId: string }) => item.branchId === abshwayId)).toEqual([]);
-  expect(afterZero.body.filter((item: { branchId: string }) => item.branchId === fayoumId)).toHaveLength(1);
+  expect(afterZero.body.filter((item: { variantId: string; branchId: string }) => item.variantId === operationalVariantId && item.branchId === abshwayId)).toEqual([]);
+  expect(afterZero.body.filter((item: { variantId: string; branchId: string }) => item.variantId === operationalVariantId && item.branchId === fayoumId)).toEqual([]);
+
+  await api(manager, "POST", "/api/internal/active-branch", { branchId: abshwayId });
+  const soldOut = await api(manager, "POST", "/api/internal/sales", {
+    saleId: crypto.randomUUID(),
+    operationId: crypto.randomUUID(),
+    physicallyCompleted: true,
+    employeeDiscountPiasters: 0,
+    lines: [{ variantId: operationalVariantId, quantity: 7 }],
+  });
+  expect(soldOut.status, JSON.stringify(soldOut.body)).toBe(201);
+  const afterSoldOut = await api(manager, "GET", "/api/internal/inventory/low-stock");
+  expect(afterSoldOut.status).toBe(200);
+  expect(afterSoldOut.body).toEqual([
+    expect.objectContaining({
+      branchId: abshwayId,
+      variantId: operationalVariantId,
+      availableQuantity: 0,
+      threshold: 0,
+      thresholdSource: "global",
+    }),
+  ]);
+  const soldOutReport = await api(manager, "GET", "/api/internal/reports/management?period=today");
+  expect(soldOutReport.status).toBe(200);
+  expect(soldOutReport.body.lowStock).toEqual(afterSoldOut.body);
+  const untouchedBranchReport = await api(
+    manager, "GET", `/api/internal/reports/management?period=today&branchId=${fayoumId}`,
+  );
+  expect(untouchedBranchReport.status).toBe(200);
+  expect(untouchedBranchReport.body.lowStock).toEqual([]);
 });
 
 test("cashier lookup uses active branch availability and selling prices without cost data", async () => {

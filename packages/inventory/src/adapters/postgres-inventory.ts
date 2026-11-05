@@ -96,6 +96,7 @@ export function createPostgresInventoryStore(queryable: Queryable): InventoryRea
     productQuantitiesFor: (branchId, productIds) => productQuantitiesFor(queryable, branchId, productIds),
     productQuantitiesByRetailBranch: (productIds) => productQuantitiesByRetailBranch(queryable, productIds),
     productQuantitiesByLocation: (productIds) => productQuantitiesByLocation(queryable, productIds),
+    stockedProductIdsByRetailBranch: () => stockedProductIdsByRetailBranch(queryable),
     currentStockVersion: () => currentStockVersion(queryable),
     referencedVariantIds: (variantIds) => referencedVariantIds(queryable, variantIds),
     async listBatches() {
@@ -1560,6 +1561,30 @@ async function productQuantitiesByRetailBranch(
     byBranch.set(row.branch_id, quantities);
   }
   return byBranch;
+}
+
+async function stockedProductIdsByRetailBranch(
+  queryable: Queryable,
+): Promise<Map<string, Set<string>>> {
+  // A depleted balance remains eligible when its branch has a movement for that batch.
+  // A restored zero balance with no corresponding movement is not evidence of stock.
+  const result = await queryable.query<{ branch_id: string; product_id: string }>(
+    `SELECT DISTINCT balance.branch_id, batch.product_id
+     FROM inventory_batch_balance balance
+     JOIN inventory_batch batch ON batch.id = balance.batch_id
+     JOIN branch ON branch.id = balance.branch_id AND branch.kind = 'retail'
+     WHERE balance.remaining_quantity > 0 OR EXISTS (
+       SELECT 1 FROM inventory_movement movement
+       WHERE movement.batch_id = balance.batch_id AND movement.branch_id = balance.branch_id
+     )`,
+  );
+  const stocked = new Map<string, Set<string>>();
+  for (const row of result.rows) {
+    const products = stocked.get(row.branch_id) ?? new Set<string>();
+    products.add(row.product_id);
+    stocked.set(row.branch_id, products);
+  }
+  return stocked;
 }
 
 /** Same product pool as retail availability, including the warehouse and explicit zeros. */

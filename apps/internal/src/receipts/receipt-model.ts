@@ -34,14 +34,14 @@ export type ReceiptView = {
   branchName: string;
   /** Printed only when configured. A missing phone is never a customer-facing warning. */
   contactPhone: string | null;
-  /** Legacy POS reference when the completed sale has one. */
+  /** Central POS reference when the completed sale has one. */
   serverReference: string | null;
   /**
    * Full local operation id. Kept for internal traceability.
    * It is not a customer receipt number.
    */
   localOperationReference: string;
-  /** Customer receipt number: BRV, then the legacy POS reference, then a pending label. */
+  /** The receipt's selected number, with the central POS reference as a legacy fallback. */
   printedReference: string;
   occurredAtLabel: string;
   /** Cashier display name only. Staff ids stay off the receipt. */

@@ -157,14 +157,31 @@ test("an inspected return credits current-offer replacement merchandise and reco
 test("a cheaper replacement applies only its merchandise value as credit and pays the remaining cash refund", async () => {
   const manager = await signIn("owner", "owner-pass-1");
   await api(manager, "POST", "/api/internal/active-branch", { branchId: abshwayId });
-  await built.pool.query("SELECT setval('sales_sale_reference_number_seq', 999998, TRUE)");
+  await built.pool.query("UPDATE sales_pos_reference_counter SET last_number = 999998 WHERE singleton");
   await built.pool.query("SELECT setval('returns_return_reference_number_seq', 999999, TRUE)");
-  const products = await seedProduct(manager, [28000, 20000]);
-  const originalBatch = await receive(manager, products.variantIds[0]!, 1, 10000);
-  const replacementBatch = await receive(manager, products.variantIds[1]!, 1, 9000, fayoumId);
+  const category = await api(manager, "POST", "/api/internal/catalog/categories", { nameAr: "مرتجعات التسلسل" });
+  expect(category.status).toBe(201);
+  async function operationalVariant(code: string, price: number): Promise<string> {
+    const product = await api(manager, "POST", "/api/internal/catalog/products", {
+      code,
+      nameAr: "قميص مرتجع",
+      descriptionAr: "اختبار الإرجاع",
+      categoryId: category.body.id,
+      defaultSellingPricePiasters: price,
+      publication: "hidden",
+      imageRefs: [],
+      variants: [],
+    });
+    expect(product.status, JSON.stringify(product.body)).toBe(201);
+    return product.body.operationalVariantId;
+  }
+  const originalVariant = await operationalVariant("RET-POS-ORIGINAL", 28000);
+  const replacementVariant = await operationalVariant("RET-POS-REPLACEMENT", 20000);
+  const originalBatch = await receive(manager, originalVariant, 1, 10000);
+  const replacementBatch = await receive(manager, replacementVariant, 1, 9000, fayoumId);
   const originalSale = await sale(manager, {
     occurredAt: "2026-09-10T12:00:00.000Z",
-    lines: [{ variantId: products.variantIds[0]!, quantity: 1 }],
+    lines: [{ variantId: originalVariant, quantity: 1 }],
   });
   expect(originalSale.body.reference).toBe("POS-999999");
   const source = (await api(manager, "GET", `/api/internal/returns/sources?reference=${originalSale.body.id}`)).body[0];
@@ -175,7 +192,7 @@ test("a cheaper replacement applies only its merchandise value as credit and pay
   });
   expect(drafted.body.reference).toBe("RET-1000000");
   const quote = await exchangeQuote(manager, drafted.body.id, drafted.body.revision, [
-    { variantId: products.variantIds[1], quantity: 1 },
+    { variantId: replacementVariant, quantity: 1 },
   ]);
   const command = {
     ...quote.body.settlement,
@@ -223,18 +240,32 @@ test("a cheaper replacement applies only its merchandise value as credit and pay
   expect(returnCorrection.body.actual).toMatchObject({ originalRefundPaidPiasters: 8000, netRefundPaidPiasters: 8000 });
 
   const appliedBeforeDowngrade = await listAppliedMigrations(built.pool);
-  while ((await listAppliedMigrations(built.pool)).at(-1) !== "030_branch_inventory.sql") {
-    expect(await revertLastMigration(built.pool)).toBeTruthy();
-  }
+  expect(await revertLastMigration(built.pool)).toBe("038_pos_reference_counter.sql");
+  const retainedSales = await built.pool.query<{ reference: string }>(
+    "SELECT reference FROM sales_sale WHERE id = ANY($1::uuid[])",
+    [[originalSale.body.id, command.replacementSaleId]],
+  );
+  expect(retainedSales.rows.map(({ reference }) => reference).sort()).toEqual(["POS-1000000", "POS-999999"]);
+  const legacySequence = await built.pool.query<{ last_value: string; is_called: boolean }>(
+    "SELECT last_value::text, is_called FROM sales_sale_reference_number_seq",
+  );
+  expect(legacySequence.rows[0]).toEqual({ last_value: "1000001", is_called: false });
   const beforeGuard = await listAppliedMigrations(built.pool);
+  expect(beforeGuard.at(-1)).toBe("037_operational_stock.sql");
   await expect(revertLastMigration(built.pool)).rejects.toMatchObject({
-    code: "P0001", message: "Cannot roll back branch inventory after stock activity.",
+    code: "55000", message: "Cannot revert operational stock while operational batches exist",
   });
   expect(await listAppliedMigrations(built.pool)).toEqual(beforeGuard);
-  await applyMigrations(built.pool);
+  expect(await applyMigrations(built.pool)).toEqual(["038_pos_reference_counter.sql"]);
   expect(await listAppliedMigrations(built.pool)).toEqual(appliedBeforeDowngrade);
   const retainedAfterGuard = await api(manager, "GET", `/api/internal/returns/${drafted.body.id}`);
   expect(retainedAfterGuard.body.exchange).toEqual(paid.body.exchange);
+  await receive(manager, originalVariant, 1, 10000);
+  const nextSale = await sale(manager, {
+    occurredAt: "2026-09-15T12:00:00.000Z",
+    lines: [{ variantId: originalVariant, quantity: 1 }],
+  });
+  expect(nextSale.body.reference).toBe("POS-1000001");
 });
 
 test("repeated replacement lines share one quantity limit and shortage rolls back the inspected return", async () => {

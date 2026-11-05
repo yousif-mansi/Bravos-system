@@ -1,5 +1,5 @@
 import pg, { type Pool, type PoolClient, type QueryResultRow } from "pg";
-import { OPERATIONAL_STOCK_SCHEMA } from "@bravos/contracts";
+import { backupSchemaProfile, OPERATIONAL_STOCK_SCHEMA } from "@bravos/contracts";
 import { KNOWN_BACKUP_SCHEMAS, RECEIPT_NUMBERING_SCHEMA } from "../application/backup.ts";
 import type { BackupReaderSet, BackupSnapshotMetadata, BackupUnitOfWork } from "../application/ports.ts";
 
@@ -77,7 +77,7 @@ async function readMetadata(client: PoolClient, readers: BackupReaderSet): Promi
   const returnsReturnReferenceSequence = await readers.returns.readReferenceSequence();
   const sourceGeneration = await readers.restore.readRestoreGeneration();
   const capturedAt = captured.rows[0]?.captured_at;
-  const schemaVersion = migration.rows[0]?.id;
+  const schemaVersion = backupSchemaProfile(migration.rows[0]?.id);
   if (!capturedAt || !schemaVersion || !Number.isSafeInteger(sourceGeneration) || sourceGeneration < 0) {
     throw new Error("Backup metadata is incomplete.");
   }

@@ -90,7 +90,6 @@ test("production precache serves first offline POS navigation and survives a sam
     await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
     const checkout = page.getByRole("form", { name: "إتمام البيع" });
     await checkout.getByLabel("خصم الموظف بالجنيه").fill("10");
-    await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
     await checkout.getByRole("button", { name: "إتمام البيع" }).click();
     await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
     await expect(page.getByTestId("sale-details")).toContainText("150");
@@ -232,7 +231,6 @@ test("production offline queue survives restart then automatically syncs after r
     await page.getByLabel("اللون").selectOption({ label: "لون مزامنة" });
     await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
     const checkout = page.getByRole("form", { name: "إتمام البيع" });
-    await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
     await checkout.getByRole("button", { name: "إتمام البيع" }).click();
     await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
     const original = await readPosSales(page);
@@ -364,7 +362,6 @@ test("waiting service worker with an unknown schema defers activation", async ({
   await page.getByLabel("اللون").selectOption({ label: "لون تحديث" });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
-  await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   const queued = await readPosSales(page);
@@ -574,7 +571,6 @@ test("schema 2 individual paid units and signed-in session survive upgrade and o
     await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
     const checkout = page.getByRole("form", { name: "إتمام البيع" });
     await checkout.getByLabel("خصم الموظف بالجنيه").fill("1");
-    await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
     await checkout.getByRole("button", { name: "إتمام البيع" }).click();
     await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
     const snapshot = await page.evaluate(async () => {
@@ -774,7 +770,6 @@ test("schema 2 completed sales missing paid-unit allocations defer upgrade and k
     await page.getByLabel("اللون").selectOption({ label: "لون ناقص" });
     await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
     const checkout = page.getByRole("form", { name: "إتمام البيع" });
-    await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
     await checkout.getByRole("button", { name: "إتمام البيع" }).click();
     await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
     const original = await readPosSales(page);
@@ -979,7 +974,6 @@ test("explicit logout from catalog, staff and receiving pages blocks offline res
   await page.getByLabel("اللون").selectOption({ label: "لون خروج" });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
-  await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   const queued = await readPosSales(page);
@@ -1085,7 +1079,6 @@ test("a fresh cashier login keeps an old cached session from becoming current af
   await page.getByLabel("اللون").selectOption({ label: "لون جلسة" });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
-  await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   const original = (await readPosSales(page))[0];

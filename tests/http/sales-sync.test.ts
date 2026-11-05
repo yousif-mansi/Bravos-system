@@ -831,10 +831,10 @@ test("snapshot receipt registration is optional, idempotent, and does not use th
     { id: registrationId, device_id: deviceId, prefix: "1" },
     { id: otherRegistrationId, device_id: otherDeviceId, prefix: "2" },
   ]);
-  const posSequence = await built.pool.query<{ is_called: boolean }>(
-    "SELECT is_called FROM sales_sale_reference_number_seq",
+  const posCounter = await built.pool.query<{ last_number: string }>(
+    "SELECT last_number::text FROM sales_pos_reference_counter WHERE singleton",
   );
-  expect(posSequence.rows[0]?.is_called).toBe(false);
+  expect(posCounter.rows[0]?.last_number).toBe("0");
 });
 
 test("concurrent receipt registration ids that differ only by case take one prefix", async () => {

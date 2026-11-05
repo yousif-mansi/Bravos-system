@@ -82,9 +82,30 @@ test("internal refinements keep one sale, supplier draft, customers, and stock l
   await expect(zeroRow.locator("td").nth(1)).toHaveText("0 · غير متوفر");
   await expect(zeroRow.locator("td").nth(2)).toHaveText("0 · غير متوفر");
   await expect(zeroRow.locator("td").nth(3)).toHaveText("0 · غير متوفر");
+  const locationFilters = page.getByRole("group", { name: "تصفية أماكن المخزون" });
+  await expect(locationFilters.getByRole("button")).toHaveCount(3);
+  const allStock = locationFilters.getByRole("button", { name: "كل المخزون", exact: true });
+  const ibshaway = locationFilters.getByRole("button", { name: "أبشواي", exact: true });
+  const fayoum = locationFilters.getByRole("button", { name: "الفيوم", exact: true });
+  await expect(allStock).toHaveAttribute("aria-pressed", "true");
+  await ibshaway.click();
+  await expect(zeroRow).toHaveCount(0);
+  await expect(page.getByText("لا توجد منتجات مطابقة في أماكن المخزون المحددة.")).toBeVisible();
+  await page.locator("#stockQuery").fill(code.toLowerCase());
+  await expect(stocked.locator("td").nth(2)).toHaveText("1");
+  await fayoum.click();
+  await expect(fayoum).toHaveAttribute("aria-pressed", "true");
+  await expect(stocked).toHaveCount(0);
+  await allStock.click();
+  await expect(stocked).toBeVisible();
   await page.screenshot({ path: path.join(visualDir, "receiving-stock-1440.png") });
 
   const draftCode = `DRAFT-${suffix}`;
+  const receive = page.getByRole("form", { name: "تسجيل إذن استلام" });
+  const newProduct = page.getByRole("form", { name: "إضافة منتج إلى المخزون" });
+  await expect(newProduct).toHaveCount(0);
+  await expect(receive.getByRole("button", { name: /^إضافة منتج/ })).toHaveCount(2);
+  await receive.getByRole("button", { name: "إضافة منتج جديد" }).click();
   await page.locator("#newInventoryCode").fill(draftCode);
   await page.locator("#newInventoryName").fill("مسودة المورد");
   await page.locator("#newInventoryCategory").selectOption(category.body.id);
@@ -92,6 +113,7 @@ test("internal refinements keep one sale, supplier draft, customers, and stock l
   await page.locator("#newInventoryMinimum").fill("200");
   await page.locator("#newInventoryQuantity").fill("4");
   await page.locator("#newInventoryCost").fill("80");
+  await page.getByRole("button", { name: "إضافة منتج موجود" }).click();
   await page.locator("[id^='product-']").selectOption(product.body.id);
   await page.locator("[id^='qty-']").fill("2");
   await page.locator("[id^='cost-']").fill("40");
@@ -100,7 +122,8 @@ test("internal refinements keep one sale, supplier draft, customers, and stock l
   await expect(page.getByTestId("inline-supplier-notice")).toHaveText("تم اختيار المورد.");
   const supplierId = await page.locator("#receiptSupplier").inputValue();
   expect(supplierId).not.toBe("");
-  await expect(page.locator("#newInventorySupplier")).toHaveValue(supplierId);
+  await expect(receive.getByRole("combobox", { name: "المورد", exact: true })).toHaveCount(1);
+  await expect(page.getByLabel("تاريخ الاستلام", { exact: true })).toHaveCount(1);
   await expect(page.locator("#receiptSupplier")).toHaveValue(supplierId);
   await expect(page.locator("#newInventoryCode")).toHaveValue(draftCode);
   await expect(page.locator("#newInventoryName")).toHaveValue("مسودة المورد");
@@ -120,12 +143,47 @@ test("internal refinements keep one sale, supplier draft, customers, and stock l
   const suppliers = await staffApi(page, "GET", "/api/internal/suppliers");
   expect(suppliers.body.filter((item: { nameAr: string }) => item.nameAr === supplierName)).toHaveLength(1);
 
-  await page.locator("[id^='product-']").selectOption("");
-  await page.getByRole("button", { name: "حفظ الاستلام" }).click();
+  let productWrites = 0;
+  await page.route("**/api/internal/catalog/products", async (route) => {
+    if (route.request().method() !== "POST") {
+      await route.continue();
+      return;
+    }
+    productWrites += 1;
+    const result = await route.fetch();
+    expect(result.status()).toBe(201);
+    await route.abort("connectionreset");
+  });
+  await newProduct.getByRole("button", { name: "حفظ المنتج وإضافته إلى الإذن" }).click();
+  await expect(page.getByRole("alert").filter({ hasText: "تعذر إكمال إنشاء المنتج." })).toBeVisible();
+  await expect(newProduct.getByLabel("رمز المنتج / SKU")).toHaveValue(draftCode);
+  await newProduct.getByRole("button", { name: "استعادة منتج محفوظ برمزه" }).click();
+  expect(productWrites).toBe(1);
+  await expect(newProduct).toHaveCount(0);
+  const rows = receive.locator(".receipt-variant-row");
+  await expect(rows).toHaveCount(2);
+  await expect(rows.nth(1).getByLabel("الكمية")).toHaveValue("4");
+  await expect(rows.nth(1).getByLabel("تكلفة الشراء للجنيه")).toHaveValue("80");
+  const receiptsWhileDraft = await staffApi(page, "GET", "/api/internal/receiving/receipts");
+  expect(receiptsWhileDraft.body).toHaveLength(receiptsBefore.body.length);
+
+  const existingProduct = rows.first().getByLabel("المنتج", { exact: true });
+  await existingProduct.selectOption("");
+  await receive.getByRole("button", { name: "حفظ الاستلام" }).click();
   await expect(page.getByRole("alert").filter({ hasText: "يجب تحديد المنتج لكل صنف." })).toBeVisible();
   const receiptsAfter = await staffApi(page, "GET", "/api/internal/receiving/receipts");
   expect(receiptsAfter.body).toHaveLength(receiptsBefore.body.length);
   await page.screenshot({ path: path.join(visualDir, "receiving-feedback-1440.png") });
+
+  await existingProduct.selectOption(product.body.id);
+  await receive.getByRole("button", { name: "حفظ الاستلام" }).click();
+  await expect(page.getByText("تم حفظ إذن الاستلام.", { exact: true })).toBeVisible();
+  const detail = page.getByTestId("receipt-details");
+  await expect(detail).toContainText("الكمية المستلمة: 2 — تكلفة شراء الوحدة: 40 ج.م.");
+  await expect(detail).toContainText("الكمية المستلمة: 4 — تكلفة شراء الوحدة: 80 ج.م.");
+  const receiptsAfterSave = await staffApi(page, "GET", "/api/internal/receiving/receipts");
+  expect(receiptsAfterSave.body).toHaveLength(receiptsBefore.body.length + 1);
+  expect(receiptsAfterSave.body.find((receipt: { supplierId: string }) => receipt.supplierId === supplierId)?.lines).toHaveLength(2);
 
   const confirmColor = await page.getByTestId("create-inline-supplier").evaluate((element) => getComputedStyle(element).backgroundColor);
   expect([[20, 108, 67], [15, 107, 60]]).toContainEqual(rgbChannels(confirmColor));
@@ -139,8 +197,7 @@ test("internal refinements keep one sale, supplier draft, customers, and stock l
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByLabel("اسم الزبون (اختياري)").fill(customerName);
   await checkout.getByLabel("هاتف الزبون (اختياري)").fill(customerPhone);
-  await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
-  await expect(page.getByTestId("accepted-prices")).toBeVisible();
+  await checkout.getByLabel("خصم الموظف بالجنيه").fill("5");
   await expect(page.getByTestId("complete-sale-print")).toBeVisible();
   const saleResponse = page.waitForResponse((response) => {
     const url = new URL(response.url());

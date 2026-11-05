@@ -9,28 +9,38 @@ test("manager maintains a product and cashier looks it up by code", async ({ pag
   await expect(page.getByRole("heading", { name: "اختيار الفرع النشط" })).toBeVisible();
   await page.getByRole("button", { name: "أبشواي" }).click();
   await page.getByRole("link", { name: "استلام المخزون" }).click();
-  await page.locator("summary").filter({ hasText: "تجهيز التصنيف والمقاس واللون" }).click();
+  await page.locator("summary").filter({ hasText: "تجهيز التصنيف" }).click();
   const categoryForm = page.getByRole("form", { name: "إضافة تصنيف للمخزون" });
   await categoryForm.getByLabel("تصنيف جديد").fill("تيشيرتات");
   await categoryForm.getByRole("button", { name: "إضافة التصنيف" }).click();
-  const sizeForm = page.getByRole("form", { name: "إضافة مقاس للمخزون" });
-  await sizeForm.getByLabel("مقاس جديد").fill("L");
-  await sizeForm.getByRole("button", { name: "إضافة المقاس" }).click();
-  const colorForm = page.getByRole("form", { name: "إضافة لون للمخزون" });
-  await colorForm.getByLabel("لون جديد").fill("أسود");
-  await colorForm.getByRole("button", { name: "إضافة اللون" }).click();
-  await page.getByLabel("الفرع الذي ستدخل إليه الكمية").selectOption({ label: "أبشواي" });
+  await expect(page.getByRole("status")).toContainText("تم حفظ التصنيف");
+  const size = await staffApi(page, "POST", "/api/internal/catalog/sizes", { nameAr: "L" });
+  expect(size.status).toBe(201);
+  const color = await staffApi(page, "POST", "/api/internal/catalog/colors", { nameAr: "أسود" });
+  expect(color.status).toBe(201);
+  await page.getByRole("button", { name: "إضافة منتج جديد" }).click();
   const intake = page.getByRole("form", { name: "إضافة منتج إلى المخزون" });
   await intake.getByLabel("رمز المنتج / SKU").fill("TS-E2E");
   await intake.getByLabel("اسم المنتج").fill("تيشيرت تجريبي");
   await intake.getByLabel("التصنيف").selectOption({ label: "تيشيرتات" });
   await intake.getByLabel("سعر البيع الافتراضي بالجنيه").fill("250");
-  await intake.getByLabel("المقاس").selectOption({ label: "L" });
-  await intake.getByLabel("اللون").selectOption({ label: "أسود" });
   await intake.getByLabel("الكمية").fill("3");
   await intake.getByLabel("تكلفة الشراء بالجنيه").fill("100");
-  await intake.getByRole("button", { name: "حفظ المنتج والكمية" }).click();
+  await intake.getByRole("button", { name: "حفظ المنتج وإضافته إلى الإذن" }).click();
+  await expect(intake).toHaveCount(0);
+  await page.getByRole("button", { name: "حفظ الاستلام" }).click();
   await expect(page.getByRole("status").filter({ hasText: "تم حفظ إذن الاستلام." })).toBeVisible();
+  const receivedProduct = await seedHiddenWebsiteOption(page, "TS-E2E", "L", "أسود");
+  const workspace = await staffApi(page, "GET", "/api/internal/workspace");
+  expect(workspace.status).toBe(200);
+  const transfer = await staffApi(page, "POST", "/api/internal/inventory/transfers", {
+    operationId: crypto.randomUUID(),
+    sourceBranchId: "33333333-3333-4333-8333-333333333333",
+    destinationBranchId: workspace.body.activeBranch.id,
+    productId: receivedProduct.id,
+    quantity: 3,
+  });
+  expect(transfer.status, JSON.stringify(transfer.body)).toBe(201);
   await page.getByRole("link", { name: "المنتجات" }).click();
   await expect(page.getByRole("heading", { name: "المنتجات" }).locator("..").getByText("تيشيرت تجريبي", { exact: true })).toBeVisible();
   await expect(page.getByText("رمز المنتج: TS-E2E", { exact: false })).toBeVisible();
@@ -59,11 +69,8 @@ test("manager maintains a product and cashier looks it up by code", async ({ pag
   await lookupForm.getByRole("textbox", { name: "رمز المنتج" }).fill("TS-E2E");
   await lookupForm.getByRole("button", { name: "بحث" }).click();
   await expect(page.getByTestId("lookup-result")).toContainText("تيشيرت تجريبي");
-  await openLookupLists(page);
-  await page.getByLabel("المقاس").selectOption({ label: "L" });
-  await page.getByLabel("اللون").selectOption({ label: "أسود" });
   await expect(page.getByTestId("selected-variant")).toContainText("سعر البيع: 250 ج.م.");
-  await expect(page.getByTestId("available-quantity")).toHaveText("الكمية المتاحة: 3");
+  await expect(page.getByTestId("available-quantity")).toHaveText("الكمية المتاحة في الفرع: 3");
   await expect(page.getByText(/تكلفة|ربح|شراء/)).toHaveCount(0);
 });
 
@@ -95,17 +102,19 @@ test("manager renames taxonomy, selects an inventory SKU, and keeps existing ima
   await expect(page.getByRole("status")).toContainText("تم حفظ اللون.");
 
   await page.getByRole("link", { name: "استلام المخزون" }).click();
+  await page.getByRole("button", { name: "إضافة منتج جديد" }).click();
   const intake = page.getByRole("form", { name: "إضافة منتج إلى المخزون" });
   await intake.getByLabel("رمز المنتج / SKU").fill("JK-E2E");
   await intake.getByLabel("اسم المنتج").fill("جاكيت تجريبي");
   await intake.getByLabel("التصنيف").selectOption({ label: "جاكيتات" });
   await intake.getByLabel("سعر البيع الافتراضي بالجنيه").fill("400");
-  await intake.getByLabel("المقاس").selectOption({ label: "S" });
-  await intake.getByLabel("اللون").selectOption({ label: "أحمر" });
   await intake.getByLabel("الكمية").fill("2");
   await intake.getByLabel("تكلفة الشراء بالجنيه").fill("180");
-  await intake.getByRole("button", { name: "حفظ المنتج والكمية" }).click();
+  await intake.getByRole("button", { name: "حفظ المنتج وإضافته إلى الإذن" }).click();
+  await expect(intake).toHaveCount(0);
+  await page.getByRole("button", { name: "حفظ الاستلام" }).click();
   await expect(page.getByRole("status").filter({ hasText: "تم حفظ إذن الاستلام." })).toBeVisible();
+  await seedHiddenWebsiteOption(page, "JK-E2E", "S", "أحمر");
   await page.getByRole("link", { name: "المنتجات" }).click();
   await expect(page.getByRole("heading", { name: "المنتجات" }).locator("..").getByText("جاكيت تجريبي", { exact: true })).toBeVisible();
 
@@ -131,8 +140,8 @@ test("manager renames taxonomy, selects an inventory SKU, and keeps existing ima
   await productCard.getByRole("button", { name: "تعديل" }).click();
   const editForm = page.getByRole("form", { name: "تعديل منتج" });
   await expect(editForm.getByLabel("التصنيف").locator("option:checked")).toHaveText("معاطف");
-  await expect(editForm.getByLabel("المقاس", { exact: true })).toHaveValue("XS");
-  await expect(editForm.getByLabel("اللون", { exact: true })).toHaveValue("نبيتي");
+  await expect(editForm.getByLabel("المقاس", { exact: true }).locator("option:checked")).toHaveText("XS");
+  await expect(editForm.getByLabel("اللون", { exact: true }).locator("option:checked")).toHaveText("نبيتي");
   await editForm.getByRole("checkbox", { name: "عرض هذه التركيبة" }).uncheck();
   await editForm.getByRole("button", { name: "حفظ التعديل" }).click();
   await expect(page.getByRole("status")).toContainText("تم تحديث المنتج.");
@@ -180,26 +189,34 @@ test("manager renames taxonomy, selects an inventory SKU, and keeps existing ima
     onlineVisible: false,
   });
 
+  await sizeForm.getByLabel("اسم المقاس").fill("XL");
+  await sizeForm.getByRole("button", { name: "حفظ المقاس" }).click();
+  await expect(page.getByRole("status")).toContainText("تم حفظ المقاس.");
+  await page.locator("article.staff-item").filter({ hasText: "جاكيت تجريبي" }).getByRole("button", { name: "تعديل" }).click();
+  const configureOptions = page.getByRole("form", { name: "تعديل منتج" });
+  await configureOptions.getByRole("button", { name: "إضافة خيار للموقع" }).click();
+  const draftOption = configureOptions.locator(".variant-row").last();
+  await draftOption.getByLabel("المقاس", { exact: true }).selectOption({ label: "XL" });
+  await draftOption.getByLabel("اللون", { exact: true }).selectOption({ label: "نبيتي" });
+  await draftOption.getByRole("checkbox", { name: "عرض هذه التركيبة" }).uncheck();
+  await configureOptions.getByRole("button", { name: "حفظ التعديل" }).click();
+  await expect(page.getByRole("status")).toContainText("تم تحديث المنتج.");
+
   await page.getByRole("link", { name: "استلام المخزون" }).click();
-  await page.locator("summary").filter({ hasText: "تجهيز التصنيف والمقاس واللون" }).click();
-  const newSize = page.getByRole("form", { name: "إضافة مقاس للمخزون" });
-  await newSize.getByLabel("مقاس جديد").fill("XL");
-  await newSize.getByRole("button", { name: "إضافة المقاس" }).click();
-  const extension = page.getByRole("form", { name: "إضافة منتج إلى المخزون" });
-  await extension.getByRole("radio", { name: "مقاس ولون جديدان لمنتج موجود" }).check();
-  await extension.getByLabel("اختر المنتج الموجود برمزه").selectOption({ label: "JK-E2E — جاكيت تجريبي" });
-  await extension.getByLabel("المقاس").selectOption({ label: "XL" });
-  await extension.getByLabel("اللون").selectOption({ label: "نبيتي" });
-  await extension.getByLabel("الكمية").fill("4");
-  await extension.getByLabel("تكلفة الشراء بالجنيه").fill("180");
-  await extension.getByRole("button", { name: "حفظ التركيبة والكمية" }).click();
+  const receive = page.getByRole("form", { name: "تسجيل إذن استلام" });
+  await receive.getByRole("button", { name: "إضافة منتج موجود" }).click();
+  await receive.getByLabel("المنتج", { exact: true }).selectOption({ label: "JK-E2E — جاكيت تجريبي" });
+  await receive.getByLabel("الكمية").fill("4");
+  await receive.getByLabel("تكلفة الشراء للجنيه").fill("180");
+  await receive.getByRole("button", { name: "حفظ الاستلام" }).click();
   await expect(page.getByRole("status").filter({ hasText: "تم حفظ إذن الاستلام." })).toBeVisible();
+  await expect(page.getByTestId("receipt-details")).toContainText("الكمية المستلمة: 4 — تكلفة شراء الوحدة: 180 ج.م.");
   await page.getByRole("link", { name: "المنتجات" }).click();
   await page.getByLabel("رمز المنتج", { exact: true }).first().fill("JK-E2E");
   await page.getByRole("button", { name: "عرض المنتج" }).click();
   const extendedForm = page.getByRole("form", { name: "تعديل منتج" });
   await expect(extendedForm.getByRole("checkbox", { name: "عرض هذه التركيبة" })).toHaveCount(2);
-  const newPair = extendedForm.locator(".variant-row").filter({ has: page.locator('input[value="XL"]') });
+  const newPair = extendedForm.locator(".variant-row").filter({ has: page.locator('select[id^="variant-size-"] option:checked', { hasText: "XL" }) });
   await expect(newPair.getByRole("checkbox", { name: "عرض هذه التركيبة" })).not.toBeChecked();
   await newPair.getByRole("checkbox", { name: "عرض هذه التركيبة" }).check();
   await extendedForm.getByLabel("حالة الموقع").selectOption("available");
@@ -404,6 +421,35 @@ async function chooseAbshway(page: Page) {
     nameAr: "أبشواي",
   });
   await expect(page.getByTestId("active-branch")).toHaveText("أبشواي");
+}
+
+async function seedHiddenWebsiteOption(page: Page, code: string, sizeName: string, colorName: string) {
+  const [products, sizes, colors] = await Promise.all([
+    staffApi(page, "GET", "/api/internal/catalog/products"),
+    staffApi(page, "GET", "/api/internal/catalog/sizes"),
+    staffApi(page, "GET", "/api/internal/catalog/colors"),
+  ]);
+  expect(products.status).toBe(200);
+  expect(sizes.status).toBe(200);
+  expect(colors.status).toBe(200);
+  const product = products.body.find((item: { code: string }) => item.code === code);
+  const size = sizes.body.find((item: { nameAr: string }) => item.nameAr === sizeName);
+  const color = colors.body.find((item: { nameAr: string }) => item.nameAr === colorName);
+  expect(product).toBeTruthy();
+  expect(size).toBeTruthy();
+  expect(color).toBeTruthy();
+  const seeded = await staffApi(page, "PATCH", `/api/internal/catalog/products/${product.id}`, {
+    code: product.code,
+    nameAr: product.nameAr,
+    descriptionAr: product.descriptionAr,
+    categoryId: product.category.id,
+    defaultSellingPricePiasters: product.defaultSellingPricePiasters,
+    publication: product.publication,
+    imageRefs: product.imageRefs,
+    variants: [{ sizeId: size.id, colorId: color.id, onlineVisible: false }],
+  });
+  expect(seeded.status, JSON.stringify(seeded.body)).toBe(200);
+  return seeded.body;
 }
 
 async function staffApi(page: Page, method: "GET" | "PATCH" | "POST", url: string, payload?: unknown) {

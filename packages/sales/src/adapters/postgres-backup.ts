@@ -1,4 +1,4 @@
-import { OPERATIONAL_STOCK_SCHEMA, type BackupTableSnapshot } from "@bravos/contracts";
+import { backupSchemaProfile, OPERATIONAL_STOCK_SCHEMA, type BackupTableSnapshot } from "@bravos/contracts";
 import type { QueryResultRow } from "pg";
 
 type Queryable = {
@@ -60,6 +60,17 @@ export function createPostgresSalesBackupReader(queryable: Queryable) {
       return result;
     },
     async readReferenceSequence(): Promise<{ lastValue: string; isCalled: boolean }> {
+      const storage = await queryable.query<{ has_counter: boolean }>(
+        "SELECT to_regclass('sales_pos_reference_counter') IS NOT NULL AS has_counter",
+      );
+      if (storage.rows[0]?.has_counter) {
+        const current = await queryable.query<{ last_number: string }>(
+          "SELECT last_number::text FROM sales_pos_reference_counter WHERE singleton",
+        );
+        const last = current.rows[0]?.last_number;
+        if (last === undefined) throw new Error("Physical-sale reference counter is missing.");
+        return last === "0" ? { lastValue: "1", isCalled: false } : { lastValue: last, isCalled: true };
+      }
       const rows = await queryable.query<{ last_value: string; is_called: boolean }>(
         "SELECT last_value::text, is_called FROM sales_sale_reference_number_seq",
       );
@@ -84,7 +95,7 @@ export function createPostgresSalesBackupReader(queryable: Queryable) {
 // Older named profiles must not be queried for the registry or sales_receipt_prefix_seq.
 async function backupProfile(queryable: Queryable): Promise<"operational" | "receipt-numbering" | "historical"> {
   const rows = await queryable.query<{ id: string }>("SELECT id FROM schema_migrations ORDER BY id DESC LIMIT 1");
-  const schemaVersion = rows.rows[0]?.id;
+  const schemaVersion = backupSchemaProfile(rows.rows[0]?.id);
   if (schemaVersion === OPERATIONAL_STOCK_SCHEMA) return "operational";
   if (schemaVersion === RECEIPT_NUMBERING_SCHEMA) return "receipt-numbering";
   if (schemaVersion && HISTORICAL_BACKUP_SCHEMAS.has(schemaVersion)) return "historical";

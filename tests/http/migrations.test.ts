@@ -56,7 +56,7 @@ test("apply, down the latest migration, and reapply works with multiple migratio
       "031_sale_payments.sql",
       "032_catalog_online_variants.sql",
       "033_human_references.sql",
-      "034_order_recognition_branch.sql", "035_return_reason.sql", "036_receipt_numbering.sql", "037_operational_stock.sql",
+      "034_order_recognition_branch.sql", "035_return_reason.sql", "036_receipt_numbering.sql", "037_operational_stock.sql", "038_pos_reference_counter.sql",
     ]);
     expect(await listAppliedMigrations(pool)).toEqual(first);
     expect(await tableNames(pool)).toEqual(
@@ -419,7 +419,7 @@ test("008 down expands counted unit ranges into one legacy row per ordinal", asy
       "031_sale_payments.sql",
       "032_catalog_online_variants.sql",
       "033_human_references.sql",
-      "034_order_recognition_branch.sql", "035_return_reason.sql", "036_receipt_numbering.sql", "037_operational_stock.sql",
+      "034_order_recognition_branch.sql", "035_return_reason.sql", "036_receipt_numbering.sql", "037_operational_stock.sql", "038_pos_reference_counter.sql",
     ]);
     const restored = await pool.query<{ unit_index: number; quantity: number; paid_piasters: number }>(
       `SELECT unit_index, quantity, paid_piasters FROM sales_sale_unit ORDER BY unit_index`,
@@ -463,7 +463,7 @@ test("029 refuses to discard restore history or retained sales during rollback",
     expect(await constraintDeferrable(pool, "expense_operation_expense_fk")).toBe(false);
     expect(await applyMigrations(pool)).toEqual([
       "029_restore.sql", "030_branch_inventory.sql", "031_sale_payments.sql",
-      "032_catalog_online_variants.sql", "033_human_references.sql", "034_order_recognition_branch.sql", "035_return_reason.sql", "036_receipt_numbering.sql", "037_operational_stock.sql",
+      "032_catalog_online_variants.sql", "033_human_references.sql", "034_order_recognition_branch.sql", "035_return_reason.sql", "036_receipt_numbering.sql", "037_operational_stock.sql", "038_pos_reference_counter.sql",
     ]);
     expect(await unguardedBusinessTables(pool)).toEqual([]);
     expect(await constraintDeferrable(pool, "expense_operation_expense_fk")).toBe(true);
@@ -497,7 +497,7 @@ test("028 refuses to discard retained analytics events during rollback", async (
     expect(await applyMigrations(pool)).toEqual([
       "028_aggregate_analytics.sql", "029_restore.sql", "030_branch_inventory.sql",
       "031_sale_payments.sql", "032_catalog_online_variants.sql", "033_human_references.sql",
-      "034_order_recognition_branch.sql", "035_return_reason.sql", "036_receipt_numbering.sql", "037_operational_stock.sql",
+      "034_order_recognition_branch.sql", "035_return_reason.sql", "036_receipt_numbering.sql", "037_operational_stock.sql", "038_pos_reference_counter.sql",
     ]);
   } finally {
     await pool.end();
@@ -564,7 +564,7 @@ test("020 backfills each legacy till from its latest snapshot without inventing 
       "031_sale_payments.sql",
       "032_catalog_online_variants.sql",
       "033_human_references.sql",
-      "034_order_recognition_branch.sql", "035_return_reason.sql", "036_receipt_numbering.sql", "037_operational_stock.sql",
+      "034_order_recognition_branch.sql", "035_return_reason.sql", "036_receipt_numbering.sql", "037_operational_stock.sql", "038_pos_reference_counter.sql",
     ]);
     const knownTills = await pool.query<{
       device_id: string;
@@ -781,11 +781,11 @@ test("receipt identity check allows SQL NULL and canonical conflict text, and re
     `);
     await pool.query(`
       INSERT INTO sales_sale (
-        id, operation_id, branch_id, sold_by_staff_id, sold_by_display_name,
+        id, reference, operation_id, branch_id, sold_by_staff_id, sold_by_display_name,
         occurred_at, original_total_piasters, employee_discount_piasters,
         final_total_piasters, payload_fingerprint, physically_completed, cash_received_piasters
       ) VALUES (
-        $1, 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbb01', '11111111-1111-4111-8111-111111111111',
+        $1, 'POS-000001', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbb01', '11111111-1111-4111-8111-111111111111',
         'receipt-shape', 'شكل', now(), 1000, 0, 1000, $2, true, 1000
       )
     `, [saleId, fingerprint]);

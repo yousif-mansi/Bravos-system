@@ -1,9 +1,12 @@
 import { expect, test, type Page, type Request } from "@playwright/test";
 import { openLookupLists } from "./support/open-lookup-lists";
+import { finalizePosSale } from "./support/pos-checkout";
 
 const internal = "http://127.0.0.1:5174";
+const warehouseBranchId = "33333333-3333-4333-8333-333333333333";
 const BRV = /^BRV-\d+-\d+$/;
 const BRV_TEXT = /BRV-\d+-\d+/;
+const POS_TEXT = /POS-\d{6,}/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 type Numbering = {
@@ -18,6 +21,7 @@ type LocalSale = {
   operationId: string;
   staffId: string;
   syncStatus?: string;
+  reference?: string | null;
   receiptReference?: string;
   receiptNumberingConflict?: true;
   payloadFingerprint?: string | null;
@@ -89,9 +93,16 @@ async function seed(page: Page, quantity: number): Promise<Seeded> {
   const workspace = await api(page, "GET", "/api/internal/workspace");
   await api(page, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
-    branchId: workspace.activeBranch.id,
+    branchId: warehouseBranchId,
     receiptDate: "2026-10-05",
-    lines: [{ variantId: product.variants[0].id, quantity, unitCostPiasters: 4000 }],
+    lines: [{ productId: product.id, quantity, unitCostPiasters: 4000 }],
+  });
+  await api(page, "POST", "/api/internal/inventory/transfers", {
+    operationId: crypto.randomUUID(),
+    sourceBranchId: warehouseBranchId,
+    destinationBranchId: workspace.activeBranch.id,
+    productId: product.id,
+    quantity,
   });
   return { code: product.code, sizeId: size.id, colorId: color.id, variantId: product.variants[0].id };
 }
@@ -101,19 +112,20 @@ async function openLookup(page: Page) {
   await expect(page.getByRole("form", { name: "البحث برمز المنتج" })).toBeVisible();
 }
 
-async function sellOne(page: Page, seeded: Seeded, button: "complete-sale" | "complete-sale-print") {
+async function sellOne(
+  page: Page, seeded: Seeded, button: "complete-sale" | "complete-sale-print", receipt = BRV_TEXT, available?: number,
+) {
   const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
   await lookup.getByLabel("رمز المنتج").fill(seeded.code);
   await lookup.getByLabel("رمز المنتج").press("Enter");
-  await expect(page.getByTestId("lookup-result")).toContainText(seeded.code);
-  await openLookupLists(page);
-  await page.locator("#lookupSize").selectOption(seeded.sizeId);
-  await page.locator("#lookupColor").selectOption(seeded.colorId);
-  await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
-  const checkout = page.getByRole("form", { name: "إتمام البيع" });
-  await checkout.getByRole("button", { name: "قبول الأسعار", exact: true }).click();
-  await page.getByTestId(button).click();
-  await expect(page.getByTestId("sale-details")).toContainText(/رقم الإيصال: BRV-\d+-\d+/);
+  const selection = page.getByTestId("lookup-result");
+  await expect(selection).toContainText(seeded.code);
+  if (available !== undefined) {
+    await expect(selection.getByTestId("available-quantity")).toHaveText(`الكمية المتاحة في الفرع: ${available}`);
+  }
+  await selection.getByTestId("add-operational").click();
+  await finalizePosSale(page.getByRole("form", { name: "إتمام البيع" }), page, { print: button === "complete-sale-print" });
+  await expect(page.getByTestId("sale-details")).toContainText(new RegExp(`رقم الإيصال: ${receipt.source}`));
 }
 
 async function readPosDb(page: Page): Promise<PosDb> {
@@ -235,9 +247,10 @@ test("passive login, workspace, and stock snapshots omit registration", async ({
 test("connected and cached offline sales keep one receipt through reload, reprint, and returns", async ({ page }) => {
   test.setTimeout(90_000);
   await page.addInitScript(() => {
-    const root = window.top as Window & { __receiptPrintCalls?: number };
+    const root = window.top as Window & { __receiptPrintCalls?: number; __lastReceiptText?: string };
     root.__receiptPrintCalls ??= 0;
     window.print = () => {
+      root.__lastReceiptText = document.body.textContent ?? "";
       window.dispatchEvent(new Event("afterprint"));
       root.__receiptPrintCalls = (root.__receiptPrintCalls ?? 0) + 1;
     };
@@ -248,34 +261,41 @@ test("connected and cached offline sales keep one receipt through reload, reprin
   await openLookup(page);
   await waitForPrefix(page);
   await expect.poll(() => bodies.some((body) => typeof body.receiptRegistrationId === "string")).toBe(true);
-  await sellOne(page, seeded, "complete-sale");
+  await sellOne(page, seeded, "complete-sale-print", POS_TEXT, 2);
   const firstText = await page.getByTestId("sale-details").innerText();
-  const first = firstText.match(BRV_TEXT)?.[0];
-  expect(first).toMatch(BRV);
+  const first = firstText.match(POS_TEXT)?.[0];
+  expect(first).toMatch(POS_TEXT);
   expect(firstText.includes("عملية محلية")).toBe(false);
+  await expect.poll(() => page.evaluate(() => (window.top as Window & { __receiptPrintCalls?: number }).__receiptPrintCalls ?? 0)).toBe(1);
+  await expect.poll(() => page.evaluate(() => (window.top as Window & { __lastReceiptText?: string }).__lastReceiptText)).toContain(first!);
+  const firstAlias = (await readPosDb(page)).sales.find((sale) => sale.reference === first)?.receiptReference;
+  expect(firstAlias).toMatch(BRV);
   const afterFirst = readyNumbering(await readPosDb(page));
   expect(afterFirst.nextSequence).not.toBe("1");
-  await page.getByTestId("reprint-receipt").click();
-  await expect.poll(() => page.evaluate(() => (window.top as Window & { __receiptPrintCalls?: number }).__receiptPrintCalls ?? 0)).toBe(1);
-  expect(readyNumbering(await readPosDb(page)).nextSequence).toBe(afterFirst.nextSequence);
-  await expect(page.getByTestId("sale-details")).toContainText(`رقم الإيصال: ${first}`);
 
   await page.reload();
   await page.goto(`${internal}/sales`);
   await expect(page.getByTestId("sale-list")).toContainText(first!);
   await expect(page.getByTestId("sale-list")).not.toContainText("عملية محلية");
+  await page.getByTestId("sale-list").getByRole("button", { name: new RegExp(first!) }).click();
+  await expect(page.getByTestId("sale-details")).toContainText(`رقم الإيصال: ${first}`);
+  await page.getByTestId("reprint-receipt").click();
+  await expect.poll(() => page.evaluate(() => (window.top as Window & { __receiptPrintCalls?: number }).__receiptPrintCalls ?? 0)).toBe(1);
+  await expect.poll(() => page.evaluate(() => (window.top as Window & { __lastReceiptText?: string }).__lastReceiptText)).toContain(first!);
+  expect(readyNumbering(await readPosDb(page)).nextSequence).toBe(afterFirst.nextSequence);
 
   await openLookup(page);
+  await expect(page.getByTestId("pos-product-tile").filter({ hasText: seeded.code })).toContainText("متاح بالفرع: 1");
   await page.context().setOffline(true);
-  await sellOne(page, seeded, "complete-sale-print");
+  await sellOne(page, seeded, "complete-sale-print", BRV_TEXT, 1);
   const second = (await page.getByTestId("sale-details").innerText()).match(BRV_TEXT)?.[0];
   expect(second).toMatch(BRV);
-  expect(second).not.toBe(first);
+  expect(second).not.toBe(firstAlias);
   const offlineState = await readPosDb(page);
   const offlineSecond = offlineState.sales.find((sale) => sale.receiptReference === second);
   expect(offlineSecond?.syncStatus).toBe("pending");
   expect(offlineSecond?.receiptClaim?.reference).toBe(second);
-  expect(offlineState.sales.map((sale) => sale.receiptReference).sort()).toEqual([first, second].sort());
+  expect(offlineState.sales.map((sale) => sale.receiptReference).sort()).toEqual([firstAlias, second].sort());
   await page.context().setOffline(false);
   await page.goto(`${internal}/workspace`);
   const passiveFrom = bodies.length;
@@ -286,8 +306,8 @@ test("connected and cached offline sales keep one receipt through reload, reprin
   await expect.poll(() => bodies.length).toBeGreaterThan(passiveFrom);
   expect(bodies.slice(passiveFrom).every((body) => !Object.hasOwn(body, "receiptRegistrationId"))).toBe(true);
   const synced = await readPosDb(page);
-  const kept = synced.sales.find((sale) => sale.receiptReference === first);
-  expect(kept?.receiptClaim?.reference).toBe(first);
+  const kept = synced.sales.find((sale) => sale.reference === first);
+  expect(kept?.receiptClaim?.reference).toBe(firstAlias);
   expect(kept?.payloadFingerprint).toMatch(/^[0-9a-f]{64}$/i);
 
   await page.route("**/api/internal/sales/pos-snapshots", async (route) => {
@@ -300,13 +320,22 @@ test("connected and cached offline sales keep one receipt through reload, reprin
     await route.fulfill({ response, json });
   });
   await page.reload();
-  await expect.poll(async () => (await readPosDb(page)).sales.find((sale) => sale.id === kept?.id)?.receiptClaim?.reference).toBe(first);
+  await expect.poll(async () => (await readPosDb(page)).sales.find((sale) => sale.id === kept?.id)?.receiptClaim?.reference).toBe(firstAlias);
+
+  const syncedSecond = synced.sales.find((sale) => sale.receiptReference === second);
+  expect(syncedSecond?.reference).toMatch(POS_TEXT);
+  await page.goto(`${internal}/sales?saleId=${syncedSecond!.id}`);
+  await expect(page.getByTestId("sale-details")).toContainText(`رقم الإيصال: ${second}`);
+  await page.getByTestId("reprint-receipt").click();
+  await expect.poll(() => page.evaluate(() => (window.top as Window & { __lastReceiptText?: string }).__lastReceiptText)).toContain(second!);
 
   await page.goto(`${internal}/returns`);
-  await page.getByLabel("رقم الطلب").fill(first!);
-  await page.getByRole("button", { name: "بحث" }).click();
-  await expect(page.getByTestId("return-source-list")).toContainText(`إيصال ${first}`);
-  await expect(page.getByTestId("return-source-list")).not.toContainText(kept?.operationId ?? "");
+  for (const reference of [second!, syncedSecond!.reference!]) {
+    await page.getByLabel("رقم الطلب").fill(reference);
+    await page.getByRole("button", { name: "بحث" }).click();
+    await expect(page.getByTestId("return-source-list")).toContainText(`إيصال ${syncedSecond!.reference}`);
+    await expect(page.getByTestId("return-source-list")).not.toContainText(syncedSecond!.operationId);
+  }
 });
 
 test("two tabs allocate different counters and a failed sale rolls the counter back", async ({ page, context }) => {
@@ -369,8 +398,6 @@ test("two tabs allocate different counters and a failed sale rolls the counter b
   await page.locator("#lookupSize").selectOption(seeded.sizeId);
   await page.locator("#lookupColor").selectOption(seeded.colorId);
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
-  const checkout = page.getByRole("form", { name: "إتمام البيع" });
-  await checkout.getByRole("button", { name: "قبول الأسعار", exact: true }).click();
   await page.getByTestId("complete-sale").click();
   await expect(page.getByRole("alert")).toContainText("تعذر حفظ البيع");
   const afterFailure = await readPosDb(page);
@@ -566,7 +593,8 @@ test("sales list, detail, and deep link reprint keep the local number when the s
     await route.fulfill({ response, json: fulfilled });
   });
   await page.goto(`${internal}/sales?saleId=${saleId}`);
-  const row = page.getByTestId("sale-list").getByRole("button", { name: new RegExp(printed!) });
+  expect(saved?.reference).toMatch(POS_TEXT);
+  const row = page.getByTestId("sale-list").getByRole("button", { name: new RegExp(saved!.reference!) });
   await expect(row).toBeVisible();
   await expect(row).not.toContainText("BRV-9-999999");
   await expect(page.getByTestId("sale-details")).toContainText(`رقم الإيصال: ${printed}`);

@@ -34,6 +34,79 @@ beforeEach(async () => {
   await startApp();
 });
 
+test("completed sales allocate consecutive official POS references without burning quotes or retries", async () => {
+  const manager = await signIn("owner", "owner-pass-1");
+  await api(manager, "POST", "/api/internal/active-branch", { branchId: abshwayId });
+  const seed = await seedShirt(manager, { price: 12000 });
+  await receive(manager, seed.variantId, 8, 4000);
+
+  const first = await api(manager, "POST", "/api/internal/sales", saleBody(seed.variantId, 1));
+  expect(first.status).toBe(201);
+  expect(first.body.reference).toBe("POS-000001");
+  const second = await api(manager, "POST", "/api/internal/sales", saleBody(seed.variantId, 1));
+  expect(second.status).toBe(201);
+  expect(second.body.reference).toBe("POS-000002");
+
+  const quoteId = crypto.randomUUID();
+  const quoteOperation = crypto.randomUUID();
+  const quoted = await api(manager, "POST", "/api/internal/sales/prepare", {
+    saleId: quoteId,
+    operationId: quoteOperation,
+    employeeDiscountPiasters: 0,
+    lines: [{ variantId: seed.variantId, quantity: 1 }],
+  });
+  expect(quoted.status).toBe(201);
+  expect(quoted.body.reference).toBe(quoteId);
+  expect(quoted.body.physicallyCompleted).toBe(false);
+  const afterQuote = await api(manager, "POST", "/api/internal/sales", saleBody(seed.variantId, 1));
+  expect(afterQuote.body.reference).toBe("POS-000003");
+
+  const completedQuote = await api(manager, "POST", "/api/internal/sales", {
+    saleId: quoteId,
+    operationId: quoteOperation,
+    physicallyCompleted: true,
+    employeeDiscountPiasters: 0,
+    lines: [{ variantId: seed.variantId, quantity: 1 }],
+  });
+  expect(completedQuote.status).toBe(201);
+  expect(completedQuote.body.reference).toBe("POS-000004");
+  const replay = await api(manager, "POST", "/api/internal/sales", {
+    saleId: quoteId,
+    operationId: quoteOperation,
+    physicallyCompleted: true,
+    employeeDiscountPiasters: 0,
+    lines: [{ variantId: seed.variantId, quantity: 1 }],
+  });
+  expect(replay.status).toBe(200);
+  expect(replay.body.reference).toBe("POS-000004");
+
+  const concurrentBodies = [saleBody(seed.variantId, 1), saleBody(seed.variantId, 1)];
+  const concurrent = await Promise.all(concurrentBodies.map((body) => api(manager, "POST", "/api/internal/sales", body)));
+  expect(concurrent.map((item) => item.status).sort()).toEqual([201, 201]);
+  expect(concurrent.map((item) => item.body.reference).sort()).toEqual(["POS-000005", "POS-000006"]);
+
+  const retryable = saleBody(seed.variantId, 1);
+  await built.pool.query(`
+    CREATE FUNCTION fail_sale_line_for_numbering_test() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+      RAISE EXCEPTION 'Injected failure after the sale number is allocated';
+    END;
+    $$;
+    CREATE TRIGGER fail_sale_line_for_numbering_test
+    BEFORE INSERT ON sales_sale_line FOR EACH ROW EXECUTE FUNCTION fail_sale_line_for_numbering_test();
+  `);
+  try {
+    expect((await api(manager, "POST", "/api/internal/sales", retryable)).status).toBe(500);
+  } finally {
+    await built.pool.query(`
+      DROP TRIGGER fail_sale_line_for_numbering_test ON sales_sale_line;
+      DROP FUNCTION fail_sale_line_for_numbering_test();
+    `);
+  }
+  const afterRollback = await api(manager, "POST", "/api/internal/sales", retryable);
+  expect(afterRollback).toMatchObject({ status: 201, body: { reference: "POS-000007" } });
+});
+
 test("unauthenticated cash-sale completion is rejected", async () => {
   const result = await api(undefined, "POST", "/api/internal/sales", {
     saleId: crypto.randomUUID(),

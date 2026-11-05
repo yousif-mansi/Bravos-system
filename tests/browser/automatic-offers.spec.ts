@@ -64,7 +64,7 @@ test("manager creates an offer and the connected cashier keeps its accepted valu
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByLabel("الكمية").fill("2");
   await checkout.getByLabel("خصم الموظف بالجنيه").fill("20");
-  await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
+  await checkout.getByTestId("complete-sale").click();
   const quote = page.getByTestId("accepted-prices");
   await expect(quote).toContainText("الأصلي: 600 ج.م.");
   await expect(quote.getByTestId("automatic-offer-breakdown")).toContainText("خمسون جنيهاً للمتصفح — 50 ج.م.");

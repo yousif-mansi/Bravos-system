@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { SaleDto } from "@bravos/contracts";
 import { accountGeneration } from "../account-session.ts";
 import { formatEgpFromPiasters } from "../money.ts";
-import { customerReceiptNumber, RECEIPT_NUMBER_CONFLICT } from "../receipt-number.ts";
+import { acknowledgedPosReference, customerReceiptNumber, RECEIPT_NUMBER_CONFLICT, withSelectedReceiptNumber } from "../receipt-number.ts";
 import {
   printSaleReceipt,
   receiptPhoneWarning,
@@ -50,6 +50,12 @@ export function SaleSummary({
   const options = resolveReceiptOptions();
   const phoneWarning = receiptPhoneWarning(options);
   const canReprint = sale.physicallyCompleted === true;
+  const receiptNumber = customerReceiptNumber({
+    receiptReference: withSelectedReceiptNumber(sale).receiptReference ?? null,
+    reference: sale.reference,
+    blockedIds: [sale.id, sale.operationId],
+  });
+  const saleNumber = acknowledgedPosReference(sale.reference);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -93,11 +99,8 @@ export function SaleSummary({
   return (
     <section className="card" data-testid="sale-details">
       <h2>تفاصيل البيع</h2>
-      <p>رقم الإيصال: {customerReceiptNumber({
-        receiptReference: sale.receiptReference ?? null,
-        reference: sale.reference,
-        blockedIds: [sale.id, sale.operationId],
-      })}</p>
+      <p>رقم الإيصال: {receiptNumber}</p>
+      {saleNumber && saleNumber !== receiptNumber ? <p>رقم البيع: {saleNumber}</p> : null}
       {sale.receiptNumberingConflict ? <p data-testid="receipt-number-conflict">{RECEIPT_NUMBER_CONFLICT}</p> : null}
       <p>الموظف: {sale.soldByDisplayName}</p>
       <p>الفرع: {sale.branch.nameAr}</p>

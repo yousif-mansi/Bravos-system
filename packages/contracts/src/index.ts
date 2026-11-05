@@ -6,6 +6,11 @@ export const OPERATIONAL_SIZE_ID = "a0000000-0000-4000-8000-000000000001";
 export const OPERATIONAL_COLOR_ID = "a0000000-0000-4000-8000-000000000002";
 export const OPERATIONAL_STOCK_SCHEMA = "037_operational_stock.sql";
 
+/** Migration 038 keeps the 037 archive rows and existing physical-sale high-water metadata. */
+export function backupSchemaProfile(migrationId: string | undefined): string | undefined {
+  return migrationId === "038_pos_reference_counter.sql" ? OPERATIONAL_STOCK_SCHEMA : migrationId;
+}
+
 export type StaffRole = "manager" | "employee";
 
 export type BranchDto = {

@@ -140,11 +140,12 @@ export function createInventoryServices(ports: {
 
     async listLowStock(auth) {
       await requireManager(auth);
-      const [ids, branchIds, settings, overrides] = await Promise.all([
+      const [ids, branchIds, settings, overrides, stocked] = await Promise.all([
         ports.variants.listIds(),
         ports.store.listBranchIds(),
         ports.store.getSettings(),
         ports.store.listVariantThresholds(),
+        ports.store.stockedProductIdsByRetailBranch(),
       ]);
       const identities = await ports.variants.getVariants(ids);
       const byId = new Map(identities.map((identity) => [identity.id, identity]));
@@ -156,19 +157,24 @@ export function createInventoryServices(ports: {
         [...new Set(operational.map((identity) => identity.product.id))],
       );
       const low: LowStockVariantDto[] = [];
-      for (const branchId of branchIds) for (const identity of operational) {
-        const availableQuantity = quantities.get(branchId)?.get(identity.product.id) ?? 0;
-        const override = overrides.get(identity.id);
-        const threshold = override ?? settings.lowStockThreshold;
-        if (availableQuantity > threshold) continue;
-        low.push({
-          branchId,
-          variantId: identity.id,
-          availableQuantity,
-          threshold,
-          thresholdSource: override === undefined || override === null ? "global" : "variant",
-          variant: identity,
-        });
+      for (const branchId of branchIds) {
+        const stockedProducts = stocked.get(branchId);
+        if (!stockedProducts) continue;
+        for (const identity of operational) {
+          if (!stockedProducts.has(identity.product.id)) continue;
+          const availableQuantity = quantities.get(branchId)?.get(identity.product.id) ?? 0;
+          const override = overrides.get(identity.id);
+          const threshold = override ?? settings.lowStockThreshold;
+          if (availableQuantity > threshold) continue;
+          low.push({
+            branchId,
+            variantId: identity.id,
+            availableQuantity,
+            threshold,
+            thresholdSource: override === undefined || override === null ? "global" : "variant",
+            variant: identity,
+          });
+        }
       }
       return low;
     },

@@ -1,4 +1,4 @@
-import { OPERATIONAL_STOCK_SCHEMA, type BackupKnownUnsynchronizedTillDto, type BackupTableSnapshot } from "@bravos/contracts";
+import { backupSchemaProfile, OPERATIONAL_STOCK_SCHEMA, type BackupKnownUnsynchronizedTillDto, type BackupTableSnapshot } from "@bravos/contracts";
 import type { QueryResultRow } from "pg";
 
 type Queryable = {
@@ -43,7 +43,7 @@ type UnsynchronizedTillRow = {
 export function createPostgresInventoryBackupReader(queryable: Queryable) {
   return {
     async readBackupTables(): Promise<BackupTableSnapshot[]> {
-      const tables = (await latestMigrationId(queryable)) === OPERATIONAL_STOCK_SCHEMA
+      const tables = backupSchemaProfile(await latestMigrationId(queryable)) === OPERATIONAL_STOCK_SCHEMA
         ? [...TABLES, TRANSFER_TABLE]
         : TABLES;
       const result: BackupTableSnapshot[] = [];

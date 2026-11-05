@@ -1,3 +1,4 @@
+import { stageUnpaidPosQuote } from "./support/pos-checkout";
 import { expect, test, type Browser, type Page } from "@playwright/test";
 import { openLookupLists } from "./support/open-lookup-lists";
 
@@ -39,18 +40,18 @@ test("manager creates a coupon and cashier can apply, remove, reapply, and compl
   await expect(checkout.getByTestId("sale-cart")).toContainText(catalog.code);
   await expect(page.getByTestId("accepted-prices")).toHaveCount(0);
   expect(productLookupRequests).toEqual([]);
-  await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
+  await checkout.getByTestId("complete-sale").click();
   await expect(page.getByTestId("coupon-breakdown")).toContainText("browser50 — 50 ج.م.");
   await expect(page.getByTestId("accepted-prices")).toContainText("الإجمالي: 250 ج.م.");
 
   await couponInput.fill("");
   await expect(page.getByTestId("accepted-prices")).toHaveCount(0);
-  await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
+  await stageUnpaidPosQuote(checkout);
   await expect(page.getByTestId("coupon-breakdown")).toHaveCount(0);
   await expect(page.getByTestId("accepted-prices")).toContainText("الإجمالي: 300 ج.م.");
 
   await couponInput.fill("BROWSER50");
-  await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
+  await checkout.getByTestId("complete-sale").click();
   await expect(page.getByTestId("coupon-breakdown")).toContainText("50 ج.م.");
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
@@ -123,7 +124,7 @@ test("cached offer and coupon prices survive offline completion while usage stay
   await addProduct(page, catalog.code, catalog.sizeName, catalog.colorName);
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByLabel("كود الكوبون", { exact: true }).fill("OFFLINE-CACHED-50");
-  await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
+  await checkout.getByTestId("complete-sale").click();
   await expect(page.getByRole("alert")).toContainText("بلغ الكوبون الحد الأقصى للاستخدام.");
   await expect(page.getByTestId("accepted-prices")).toHaveCount(0);
 });
@@ -153,7 +154,7 @@ test("a Cairo-midnight handover keeps its accepted cached offer while a fresh of
 
   await addProduct(page, catalog.code, catalog.sizeName, catalog.colorName);
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
-  await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
+  await checkout.getByTestId("complete-sale").click();
   await expect(page.getByTestId("automatic-offer-breakdown")).toContainText("30 ج.م.");
   await expect(page.getByTestId("accepted-prices")).toContainText("الإجمالي: 270 ج.م.");
 
@@ -180,7 +181,7 @@ test("a Cairo-midnight handover keeps its accepted cached offer while a fresh of
 
   await context.setOffline(true);
   await addProduct(page, catalog.code, catalog.sizeName, catalog.colorName);
-  await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
+  await stageUnpaidPosQuote(checkout);
   await expect(page.getByTestId("automatic-offer-breakdown")).toHaveCount(0);
   await expect(page.getByTestId("accepted-prices")).toContainText("الإجمالي: 300 ج.م.");
 });
@@ -207,7 +208,7 @@ test("a last-use race preserves the paid prepared sale and exposes the coupon di
   await addProduct(page, catalog.code, catalog.sizeName, catalog.colorName);
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await page.getByLabel("كود الكوبون", { exact: true }).fill("ONLY-ONE-E2E");
-  await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
+  await checkout.getByTestId("complete-sale").click();
   await expect(page.getByTestId("coupon-breakdown")).toContainText("ONLY-ONE-E2E — 50 ج.م.");
   await expect(page.getByTestId("accepted-prices")).toContainText("الإجمالي: 150 ج.م.");
 
@@ -334,7 +335,7 @@ async function completeCachedCouponSale(
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByLabel("كود الكوبون", { exact: true }).fill(couponCode);
   await checkout.getByLabel("خصم الموظف بالجنيه").fill("20");
-  await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
+  await checkout.getByTestId("complete-sale").click();
   await expect(page.getByTestId("automatic-offer-breakdown")).toContainText("30 ج.م.");
   await expect(page.getByTestId("coupon-breakdown")).toContainText("50 ج.م.");
   await expect(page.getByTestId("accepted-prices")).toContainText("الإجمالي: 200 ج.م.");

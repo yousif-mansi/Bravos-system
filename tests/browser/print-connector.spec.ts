@@ -187,8 +187,6 @@ test("pairing is once per browser, keeps the generic label size, and routes docu
   await page.locator("#lookupSize").selectOption(size.id);
   await page.locator("#lookupColor").selectOption(color.id);
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
-  const checkout = page.getByRole("form", { name: "إتمام البيع" });
-  await checkout.getByRole("button", { name: "قبول الأسعار", exact: true }).click();
   await context.setOffline(true);
   let printed = "";
   try {

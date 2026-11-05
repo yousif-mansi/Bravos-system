@@ -57,6 +57,9 @@ test("staff intake is product-level and storefront options share one quantity", 
   expect(moved.status, JSON.stringify(moved.body)).toBe(201);
 
   await page.goto("http://127.0.0.1:5174/receiving");
+  const receive = page.getByRole("form", { name: "تسجيل إذن استلام" });
+  await receive.getByRole("button", { name: "إضافة منتج موجود" }).click();
+  await receive.getByRole("button", { name: "إضافة منتج جديد" }).click();
   const intake = page.getByRole("form", { name: "إضافة منتج إلى المخزون" });
   await expect(intake.getByLabel("سعر البيع الافتراضي بالجنيه")).toBeVisible();
   await expect(intake.getByLabel("الحد الأدنى للبيع بالجنيه (اختياري)")).toBeVisible();

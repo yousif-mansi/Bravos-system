@@ -465,15 +465,16 @@ async function inventorySnapshot(context: ReportingReadContext) {
 }
 
 async function lowStockSnapshot(context: ReportingReadContext, branchId: string | null) {
-  const [variantIds, settings, thresholds] = await Promise.all([
+  const [variantIds, settings, thresholds, stocked] = await Promise.all([
     context.catalog.listVariantIds(), context.inventory.getSettings(), context.inventory.listVariantThresholds(),
+    context.inventory.stockedProductIdsByRetailBranch(),
   ]);
   const identities = (await context.catalog.getVariants(variantIds)).filter((identity) => identity.purpose === "operational");
   const quantitiesByBranch = await context.inventory.productQuantitiesByRetailBranch(
     [...new Set(identities.map((identity) => identity.product.id))],
   );
   return identities.flatMap((identity) => [...quantitiesByBranch.entries()]
-    .filter(([id]) => !branchId || id === branchId)
+    .filter(([id]) => (!branchId || id === branchId) && (stocked.get(id)?.has(identity.product.id) ?? false))
     .flatMap(([id, quantities]) => {
       const availableQuantity = quantities.get(identity.product.id) ?? 0;
       const override = thresholds.get(identity.id);

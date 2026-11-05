@@ -1,3 +1,4 @@
+import { stageUnpaidPosQuote } from "./support/pos-checkout";
 import { expect, test, type Page, type Route } from "@playwright/test";
 import { openLookupLists } from "./support/open-lookup-lists";
 
@@ -744,7 +745,7 @@ async function attemptAcceptPrices(page: Page, seed: { code: string; nameAr?: st
   await expect(color).toBeEnabled();
   await color.selectOption({ label: seed.colorName });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
-  await page.getByRole("form", { name: "إتمام البيع" }).getByRole("button", { name: "قبول الأسعار" }).click();
+  await stageUnpaidPosQuote(page.getByRole("form", { name: "إتمام البيع" }));
 }
 
 async function addAndPrice(
@@ -787,7 +788,7 @@ async function addAndPrice(
   if (details?.discountReason) {
     await checkout.getByLabel("سبب الخصم (اختياري)").fill(details.discountReason);
   }
-  await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
+  await stageUnpaidPosQuote(checkout);
   await expect(page.getByTestId("accepted-prices")).toBeVisible();
 }
 

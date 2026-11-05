@@ -258,9 +258,12 @@ export function createPostgresSaleStore(queryable: Queryable): SaleStore {
     async insert(input) {
       await queryable.query("SAVEPOINT sale_insert");
       try {
+        const reference = input.physicallyCompleted
+          ? await allocateOfficialPosReference(queryable)
+          : input.id;
         const inserted = await queryable.query<{ id: string }>(
           `INSERT INTO sales_sale (
-             id, operation_id, branch_id, sold_by_staff_id, sold_by_display_name, discounted_by_staff_id,
+             id, reference, operation_id, branch_id, sold_by_staff_id, sold_by_display_name, discounted_by_staff_id,
              occurred_at, recorded_at, customer_name, customer_phone, original_total_piasters,
              automatic_offer_discount_piasters, applied_automatic_offer_id, applied_automatic_offer_name_ar,
              applied_automatic_offer_type, applied_automatic_offer_percentage_basis_points,
@@ -277,11 +280,12 @@ export function createPostgresSaleStore(queryable: Queryable): SaleStore {
              $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
              $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34,
               $35, $36, $37, $38, $39, $40, $41, $42,
-              $43, $44, $45
+              $43, $44, $45, $46
            ) ON CONFLICT (id) DO NOTHING
            RETURNING id`,
           [
             input.id,
+            reference,
             input.operationId,
             input.branchId,
             input.soldByStaffId,
@@ -329,20 +333,21 @@ export function createPostgresSaleStore(queryable: Queryable): SaleStore {
           ],
         );
         if (!inserted.rows[0]) {
-          await queryable.query("RELEASE SAVEPOINT sale_insert");
+          await queryable.query("ROLLBACK TO SAVEPOINT sale_insert");
           const existing = await loadById(queryable, input.id);
           if (!existing) {
             throw new OperationConflictError();
           }
+          await queryable.query("RELEASE SAVEPOINT sale_insert");
           return { kind: "existing", record: existing };
         }
         await linkCustomer(queryable, input.id, input.customerName, input.customerPhone, input.soldByStaffId);
         await insertLines(queryable, input.id, input.lines);
-        await queryable.query("RELEASE SAVEPOINT sale_insert");
         const loaded = await loadById(queryable, input.id);
         if (!loaded) {
           throw new Error("Created sale could not be loaded.");
         }
+        await queryable.query("RELEASE SAVEPOINT sale_insert");
         return { kind: "created", record: loaded };
       } catch (error) {
         await queryable.query("ROLLBACK TO SAVEPOINT sale_insert").catch(() => undefined);
@@ -354,6 +359,15 @@ export function createPostgresSaleStore(queryable: Queryable): SaleStore {
     },
 
     async updateCompletion(input) {
+      const current = await queryable.query<{ reference: string }>(
+        "SELECT reference FROM sales_sale WHERE id = $1 FOR UPDATE",
+        [input.id],
+      );
+      const currentReference = current.rows[0]?.reference;
+      if (!currentReference) throw new Error("Sale to complete could not be loaded.");
+      const officialReference = OFFICIAL_POS_REFERENCE.test(currentReference)
+        ? null
+        : await allocateOfficialPosReference(queryable);
       await queryable.query(
         `UPDATE sales_sale
          SET occurred_at = $2, recorded_at = $3, physically_completed = true, costs_incomplete = $4,
@@ -367,7 +381,8 @@ export function createPostgresSaleStore(queryable: Queryable): SaleStore {
               payment_method = COALESCE($12, payment_method),
               cash_received_piasters = COALESCE($13, cash_received_piasters),
               online_received_piasters = COALESCE($14, online_received_piasters),
-              payload_fingerprint = COALESCE($15, payload_fingerprint)
+              payload_fingerprint = COALESCE($15, payload_fingerprint),
+              reference = COALESCE($16, reference)
          WHERE id = $1`,
         [
           input.id,
@@ -385,6 +400,7 @@ export function createPostgresSaleStore(queryable: Queryable): SaleStore {
           input.payment?.cashPiasters ?? null,
           input.payment?.onlinePiasters ?? null,
           input.payloadFingerprint ?? null,
+          officialReference,
         ],
       );
       for (const line of input.lines) {
@@ -1289,4 +1305,19 @@ function receiptSearchMetadata(row: {
     ...(row.receipt_reference ? { receiptReference: row.receipt_reference } : {}),
     ...(row.receipt_numbering_conflict ? { receiptNumberingConflict: true as const } : {}),
   };
+}
+
+const OFFICIAL_POS_REFERENCE = /^POS-[0-9]+$/;
+async function allocateOfficialPosReference(queryable: Queryable): Promise<string> {
+  const formatted = await queryable.query<{ reference: string }>(
+    `UPDATE sales_pos_reference_counter
+     SET last_number = last_number + 1
+     WHERE singleton
+     RETURNING bravos_human_reference('POS-', last_number) AS reference`,
+  );
+  const reference = formatted.rows[0]?.reference;
+  if (!reference || !OFFICIAL_POS_REFERENCE.test(reference)) {
+    throw new Error("Official POS reference was not allocated.");
+  }
+  return reference;
 }

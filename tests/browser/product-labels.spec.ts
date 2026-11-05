@@ -274,7 +274,6 @@ test("offline label printer to scanner to receipt flow synchronizes one sale and
     await page.locator("#lookupSize").selectOption(data.size.id);
     await page.locator("#lookupColor").selectOption(data.color.id);
     await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
-    await checkout.getByRole("button", { name: "قبول الأسعار", exact: true }).click();
     await page.getByTestId("complete-sale-print").click();
     await expect(page.getByTestId("sale-details")).toBeVisible();
     await expect(page.getByRole("status").filter({ hasText: "تم حفظ البيع" })).toBeVisible();

@@ -408,6 +408,7 @@ export type InventoryReadStore = {
   productQuantitiesFor(branchId: string, productIds: string[]): Promise<Map<string, number>>;
   productQuantitiesByRetailBranch(productIds: string[]): Promise<Map<string, Map<string, number>>>;
   productQuantitiesByLocation(productIds: string[]): Promise<Map<string, Map<string, number>>>;
+  stockedProductIdsByRetailBranch(): Promise<Map<string, Set<string>>>;
   listBranchIds(): Promise<string[]>;
   listStockLocations(): Promise<StockLocationDto[]>;
   currentStockVersion(): Promise<number>;

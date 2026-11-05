@@ -1,3 +1,4 @@
+import { stageUnpaidPosQuote } from "./support/pos-checkout";
 import { expect, test, type Page } from "@playwright/test";
 
 test("cashier completes an offline cash sale from an issued snapshot and keeps 275/175", async ({ page }) => {
@@ -19,9 +20,8 @@ test("cashier completes an offline cash sale from an issued snapshot and keeps 2
   await addTwoPricedProducts(page, seed);
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByLabel("خصم الموظف بالجنيه").fill("50");
-  await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
-  await expect(page.getByTestId("accepted-prices")).toContainText("450");
-  await checkout.getByRole("button", { name: "إتمام البيع" }).click();
+  await expect(checkout).toContainText("450");
+  await checkout.getByTestId("complete-sale").click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   await expect(page.getByTestId("sale-details")).toContainText("275");
   await expect(page.getByTestId("sale-details")).toContainText("175");
@@ -50,7 +50,7 @@ test("local stock effects reject selling three of two remaining units across rep
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByLabel("الكمية").first().fill("3");
-  await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
+  await checkout.getByTestId("complete-sale").click();
   await expect(page.getByRole("alert")).toContainText("الكمية المتاحة غير كافية.");
   await expect(page.getByTestId("accepted-prices")).toHaveCount(0);
   await expect(checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة")).toHaveCount(0);
@@ -83,8 +83,7 @@ test("two tabs cannot sell the same remaining cached unit", async ({ context }) 
     await lookup.getByRole("button", { name: "بحث" }).click();
     await tab.getByRole("button", { name: "إضافة إلى السلة" }).click();
     const checkout = tab.getByRole("form", { name: "إتمام البيع" });
-    await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
-    await expect(tab.getByTestId("accepted-prices")).toBeVisible();
+    await stageUnpaidPosQuote(checkout);
   }
   await page.getByRole("form", { name: "إتمام البيع" }).getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
@@ -93,7 +92,7 @@ test("two tabs cannot sell the same remaining cached unit", async ({ context }) 
   await expect(shortage).toContainText("الكمية المتاحة غير كافية.");
   await expect(page2.getByRole("status").filter({ hasText: "تم حفظ البيع." })).toHaveCount(0);
   await expect(page2.getByTestId("sale-cart")).toContainText(seed.code);
-  await expect(page2.getByRole("button", { name: "إعادة المحاولة" })).toBeVisible();
+  await expect(page2.getByTestId("complete-sale")).toBeVisible();
   const state = await readPosState(page);
   expect(state.sales).toHaveLength(1);
   const saved = state.sales[0];
@@ -120,8 +119,7 @@ test("storage failure does not claim a saved sale", async ({ page }) => {
   await lookup.getByRole("button", { name: "بحث" }).click();
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
-  await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
-  await expect(page.getByTestId("accepted-prices")).toBeVisible();
+  await stageUnpaidPosQuote(checkout);
   await page.evaluate(() => {
     const add = IDBObjectStore.prototype.add;
     const put = IDBObjectStore.prototype.put;
@@ -161,8 +159,7 @@ test("aborted IndexedDB writes roll back and retry the same completed sale ident
   await lookup.getByRole("button", { name: "بحث" }).click();
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
-  await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
-  await expect(page.getByTestId("accepted-prices")).toBeVisible();
+  await stageUnpaidPosQuote(checkout);
   const pendingBefore = await readPosState(page);
   await page.evaluate(() => {
     const add = IDBObjectStore.prototype.add;
@@ -203,7 +200,7 @@ test("aborted IndexedDB writes roll back and retry the same completed sale ident
       proto.put = proto.__bravosPut;
     }
   });
-  await checkout.getByRole("button", { name: "إعادة المحاولة" }).click();
+  await checkout.getByTestId("complete-sale").click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   const saved = await readPosState(page);
   expect(saved.sales).toHaveLength(1);
@@ -232,8 +229,7 @@ test("sign-out preserves queued sales and another cashier cannot read or submit 
   await lookup.getByRole("button", { name: "بحث" }).click();
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
-  await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
-  await checkout.getByRole("button", { name: "إتمام البيع" }).click();
+  await checkout.getByTestId("complete-sale").click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   const original = (await readPosState(page)).sales[0];
   expect(original?.soldByDisplayName).toBe("كاشير تجريبي");
@@ -358,8 +354,7 @@ test("a delayed manager sales response cannot overwrite a cashier after another 
   await lookup.getByRole("button", { name: "بحث" }).click();
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
-  await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
-  await checkout.getByRole("button", { name: "إتمام البيع" }).click();
+  await checkout.getByTestId("complete-sale").click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   let releaseSales: () => void = () => undefined;
   const heldSales = new Promise<void>((resolve) => {
@@ -609,8 +604,7 @@ test("a fresh cashier login keeps an old cached session from becoming current", 
   await lookup.getByRole("button", { name: "بحث" }).click();
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
-  await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
-  await checkout.getByRole("button", { name: "إتمام البيع" }).click();
+  await checkout.getByTestId("complete-sale").click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   const original = (await readPosState(page)).sales[0];
   expect(original?.staffId).toBeTruthy();
@@ -666,9 +660,7 @@ test("cached availability stays distinct from local effects so 5 then 1 then 4 s
     await result.getByRole("button", { name: "إضافة إلى السلة" }).click();
     const checkout = page.getByRole("form", { name: "إتمام البيع" });
     await checkout.getByLabel("الكمية").fill(String(quantity));
-    await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
-    await expect(page.getByTestId("accepted-prices")).toBeVisible();
-    await checkout.getByRole("button", { name: "إتمام البيع" }).click();
+    await checkout.getByTestId("complete-sale").click();
     await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   }
   await sell(1);
@@ -698,8 +690,7 @@ test("retrying a committed last-unit sale recovers the original fact", async ({ 
   await lookup.getByRole("button", { name: "بحث" }).click();
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
-  await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
-  await checkout.getByRole("button", { name: "إتمام البيع" }).click();
+  await checkout.getByTestId("complete-sale").click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   const first = (await readPosState(page)).sales[0];
   await page.evaluate(async () => {
@@ -757,7 +748,7 @@ test("retrying a committed last-unit sale recovers the original fact", async ({ 
   });
   await page.reload();
   await expect(page.getByRole("heading", { name: "البحث عن منتج" })).toBeVisible();
-  await page.getByRole("button", { name: "إعادة المحاولة" }).click();
+  await page.getByTestId("complete-sale").click();
   await expect(page.getByRole("status")).toContainText(/تم حفظ البيع|تم العثور على البيع المحفوظ/);
   const after = await readPosState(page);
   expect(after.sales).toHaveLength(1);
@@ -778,7 +769,7 @@ test("another tab replacing the snapshot cannot reprice an accepted quote", asyn
   await addTwoPricedProducts(page, seed);
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByLabel("خصم الموظف بالجنيه").fill("50");
-  await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
+  await stageUnpaidPosQuote(checkout);
   await expect(page.getByTestId("accepted-prices")).toContainText("450");
   const page2 = await context.newPage();
   await page2.goto("http://127.0.0.1:5174/workspace");
@@ -923,7 +914,7 @@ test("legacy pending markers survive failed writes and colliding staff rows", as
   const pendingIds = [...migrated.pending, ...migrated.legacyPending].map((row) => row.saleId).sort();
   expect(pendingIds).toContain(firstSale);
   expect(pendingIds).toContain(secondSale);
-  await expect(page.getByRole("button", { name: "التحقق من النتيجة" })).toBeVisible();
+  await expect(page.getByTestId("complete-sale")).toBeVisible();
   await expect(page.getByRole("alert")).toContainText("تم تسليم البضاعة واستلام المبلغ");
   void seed;
 });
@@ -990,8 +981,7 @@ test("explicit offline sign-out blocks POS until online reauthentication", async
   await lookup.getByRole("button", { name: "بحث" }).click();
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
-  await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
-  await checkout.getByRole("button", { name: "إتمام البيع" }).click();
+  await checkout.getByTestId("complete-sale").click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   const original = (await readPosState(page)).sales[0];
   await page.context().setOffline(true);
@@ -1022,8 +1012,7 @@ test("reconnect retries the original accepted sale once without repricing", asyn
   await lookup.getByRole("button", { name: "بحث" }).click();
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
-  await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
-  await checkout.getByRole("button", { name: "إتمام البيع" }).click();
+  await checkout.getByTestId("complete-sale").click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   const local = (await readPosState(page)).sales[0];
   expect(local?.finalTotalPiasters).toBe(21000);
@@ -1126,8 +1115,7 @@ test("queued sales survive a preserving schema upgrade and unsafe upgrades stay 
   await lookup.getByRole("button", { name: "بحث" }).click();
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
-  await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
-  await checkout.getByRole("button", { name: "إتمام البيع" }).click();
+  await checkout.getByTestId("complete-sale").click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   const original = (await readPosState(page)).sales[0];
   const version = await page.evaluate(async () => {

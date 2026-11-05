@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { openLookupLists } from "./support/open-lookup-lists";
+import { finalizePosSale, stageUnpaidPosQuote } from "./support/pos-checkout";
 
 const internal = "http://127.0.0.1:5174";
 
@@ -122,13 +123,14 @@ test("cashier browses real staff categories and actual variant prices without kn
   await expect(page.getByTestId("lookup-result").getByText(/تكلفة|ربح|شراء/)).toHaveCount(0);
 });
 
-test("browsing and exact code lookup preserve accepted prices while cart changes invalidate them", async ({ page }) => {
+test("browsing and exact code lookup preserve quoted amounts while cart changes invalidate them", async ({ page }) => {
   const data = await seed(page);
   await openPos(page);
   await chooseM(page, data);
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
-  await checkout.getByRole("button", { name: "قبول الأسعار", exact: true }).click();
+  await checkout.getByLabel("خصم الموظف بالجنيه").fill("5");
+  await stageUnpaidPosQuote(checkout);
   const accepted = page.getByTestId("accepted-prices");
   await expect(accepted).toBeVisible();
   const acceptedText = await accepted.innerText();
@@ -143,8 +145,8 @@ test("browsing and exact code lookup preserve accepted prices while cart changes
   await expect(accepted).toHaveText(acceptedText, { useInnerText: true });
   await checkout.getByLabel("الكمية", { exact: true }).fill("2");
   await expect(accepted).toHaveCount(0);
-  await expect(checkout.getByRole("button", { name: "إتمام البيع", exact: true })).toBeDisabled();
-  await checkout.getByRole("button", { name: "قبول الأسعار", exact: true }).click();
+  await expect(checkout.getByTestId("complete-sale")).toBeEnabled();
+  await stageUnpaidPosQuote(checkout);
   await expect(accepted).toBeVisible();
 });
 
@@ -162,16 +164,13 @@ test("offline browse refreshes after completion, rejects known overselling and k
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByLabel("الكمية", { exact: true }).fill("3");
-  await checkout.getByRole("button", { name: "قبول الأسعار", exact: true }).click();
+  await checkout.getByTestId("complete-sale").click();
   await expect(page.getByRole("alert").filter({ hasText: "الكمية المتاحة غير كافية" })).toBeVisible();
   await expect(page.getByTestId("accepted-prices")).toHaveCount(0);
   await expect(checkout.getByLabel("الكمية", { exact: true })).toBeEnabled();
   await expect(checkout.getByRole("button", { name: "إعادة المحاولة", exact: true })).toHaveCount(0);
   await checkout.getByLabel("الكمية", { exact: true }).fill("1");
-  await checkout.getByRole("button", { name: "قبول الأسعار", exact: true }).click();
-  await expect(page.getByTestId("accepted-prices")).toBeVisible();
-  await checkout.getByRole("button", { name: "إتمام البيع", exact: true }).click();
-  await expect(page.getByRole("status").filter({ hasText: "تم حفظ البيع" })).toBeVisible();
+  await finalizePosSale(checkout, page);
   await expect(page.getByTestId("available-quantity")).toHaveText("الكمية المتاحة: 1");
   await expect(page.getByTestId("pos-product-tile").filter({ hasText: data.product.code })).toContainText("متاح بالفرع: 2");
   await context.setOffline(false);
@@ -193,7 +192,7 @@ test("POS uses two lanes on desktop and tablet, stacks on phones and keeps check
   await openPos(page);
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await expect(checkout.getByLabel("اسم الزبون (اختياري)")).toHaveCount(0);
-  await expect(checkout.getByRole("button", { name: "قبول الأسعار", exact: true })).toBeDisabled();
+  await expect(checkout.getByTestId("complete-sale")).toBeDisabled();
   await page.getByLabel("ابحث بالاسم أو الكود").fill(data.product.nameAr);
   const tile = page.getByTestId("pos-product-tile").filter({ hasText: data.product.code });
   await tile.focus();
@@ -204,7 +203,7 @@ test("POS uses two lanes on desktop and tablet, stacks on phones and keeps check
   await page.getByLabel("اللون", { exact: true }).selectOption(data.colors[0].id);
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
   await checkout.getByLabel("خصم الموظف بالجنيه").fill("5");
-  await checkout.getByRole("button", { name: "قبول الأسعار", exact: true }).click();
+  await stageUnpaidPosQuote(checkout);
   await expect(page.getByTestId("accepted-prices")).toBeVisible();
   await checkout.getByRole("radio", { name: "دفع مقسّم" }).check();
   for (const width of [1440, 1024, 390]) {
@@ -238,14 +237,13 @@ test("another tab's completed offline sale refreshes known availability without 
   await context.setOffline(true);
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
-  await checkout.getByRole("button", { name: "قبول الأسعار", exact: true }).click();
+  await checkout.getByLabel("خصم الموظف بالجنيه").fill("5");
+  await stageUnpaidPosQuote(checkout);
   await expect(page.getByTestId("accepted-prices")).toBeVisible();
   const acceptedText = await page.getByTestId("accepted-prices").innerText();
   await second.getByRole("button", { name: "إضافة إلى السلة" }).click();
   const secondCheckout = second.getByRole("form", { name: "إتمام البيع" });
-  await secondCheckout.getByRole("button", { name: "قبول الأسعار", exact: true }).click();
-  await expect(second.getByTestId("accepted-prices")).toBeVisible();
-  await secondCheckout.getByRole("button", { name: "إتمام البيع", exact: true }).click();
+  await finalizePosSale(secondCheckout, second);
   await expect(second.getByRole("status").filter({ hasText: "تم حفظ البيع" })).toBeVisible();
   await expect(page.getByTestId("available-quantity")).toHaveText("الكمية المتاحة: 1");
   await expect(page.getByTestId("pos-product-tile").filter({ hasText: data.product.code })).toContainText("متاح بالفرع: 2");
@@ -285,10 +283,7 @@ test("a remote same-cashier branch reselection keeps automatic sync running afte
   await context.setOffline(true);
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
-  await checkout.getByRole("button", { name: "قبول الأسعار", exact: true }).click();
-  await expect(page.getByTestId("accepted-prices")).toBeVisible();
-  await checkout.getByRole("button", { name: "إتمام البيع", exact: true }).click();
-  await expect(page.getByRole("status").filter({ hasText: "تم حفظ البيع" })).toBeVisible();
+  await finalizePosSale(checkout, page);
 
   type LocalFact = {
     id: string; operationId: string; staffId: string; soldByStaffId: string; branch: { id: string };

@@ -97,13 +97,12 @@ test("manager maintains fixed bundles and Buy-X-Get-Y rules in the Arabic offer 
 
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByLabel("الكمية").nth(0).fill("3");
-  await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
+  await checkout.getByTestId("complete-sale").click();
   await expect(page.getByTestId("accepted-prices")).toContainText("العرض التلقائي: حزمة المتصفح");
   await expect(page.getByTestId("accepted-prices")).toContainText("الإجمالي: 260 ج.م.");
 
-  await checkout.getByRole("button", { name: "إلغاء عرض السعر" }).click();
   await checkout.getByLabel("الكمية").nth(0).fill("2");
-  await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
+  await checkout.getByTestId("complete-sale").click();
   await expect(page.getByTestId("accepted-prices")).toContainText("العرض التلقائي: مكافأة المتصفح");
   await expect(page.getByTestId("accepted-prices")).toContainText("الإجمالي: 350 ج.م.");
 });

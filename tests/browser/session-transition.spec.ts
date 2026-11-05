@@ -242,7 +242,6 @@ async function queueOwnerSale(page: Page) {
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByLabel("اسم الزبون (اختياري)").fill("زبون جلسة محفوظ");
   await checkout.getByLabel("هاتف الزبون (اختياري)").fill("01055557777");
-  await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   const state = await readLocalState(page);

@@ -19,7 +19,15 @@ import {
 } from "../pos.ts";
 import { mergeVariantQuantities, SalesValidationError } from "@bravos/sales/browser";
 import { accountGeneration, subscribeAccount } from "../account-session.ts";
-import { preservedSummaryReceipt } from "../receipt-number.ts";
+import { preservedSummaryReceipt, rememberAcknowledgedReceiptNumber } from "../receipt-number.ts";
+import {
+  AMOUNT_CONFIRMATION_NOTICE,
+  displayedSaleAmounts,
+  estimatedSaleTotal,
+  paymentForDisplayedTotal,
+  quotedSaleAmounts,
+  saleAmountsDiffer,
+} from "../pos-finalize.ts";
 import { getRestorePause } from "../restore-api.ts";
 import { isNetworkFailure } from "../session.ts";
 import { EmptyState } from "../ui/EmptyState.tsx";
@@ -134,13 +142,11 @@ export default function LookupPage({
   const [receiptStatus, setReceiptStatus] = useState("");
   const [searchError, setSearchError] = useState("");
   const [pendingSale, setPendingSale] = useState<PendingSale | null>(null);
-  const [frozenPayload, setFrozenPayload] = useState<SalePayload | null>(null);
   const inFlightRef = useRef(false);
   const pendingSaleRef = useRef<PendingSale | null>(null);
   const frozenPayloadRef = useRef<SalePayload | null>(null);
   const submittedRef = useRef<PendingSale | null>(null);
   const invalidationTailRef = useRef(Promise.resolve());
-  const revisionBlockRef = useRef(false);
   const localIdentityRef = useRef<{ saleId: string; operationId: string } | null>(null);
   const foreignRecoveryRef = useRef<PendingSale | null>(null);
   const foreignRecoverySnapshotRef = useRef<PosPriceSnapshotDto | null>(null);
@@ -148,8 +154,6 @@ export default function LookupPage({
   const quoteGenerationRef = useRef<number | null>(null);
   const cartRef = useRef<CartLine[]>([]);
   const revisionEpochRef = useRef(0);
-  const submitEpochRef = useRef(0);
-  const [revisionBlock, setRevisionBlock] = useState(false);
   const [foreignRecovery, setForeignRecovery] = useState<PendingSale | null>(null);
   const [effectiveByVariant, setEffectiveByVariant] = useState<Record<string, number>>({});
   const [stockPause, setStockPause] = useState<StockPauseDto | null>(null);
@@ -157,6 +161,7 @@ export default function LookupPage({
   const quoteOriginRef = useRef<"server" | "snapshot" | null>(null);
   const quoteSnapshotRef = useRef<PosPriceSnapshotDto | null>(null);
   const quoteCachedRef = useRef<Map<string, number> | null>(null);
+  const confirmActionRef = useRef<"complete" | "print" | null>(null);
   const browseRequestRef = useRef(0);
   const browseMountedRef = useRef(false);
   const browseNetworkRef = useRef(0);
@@ -389,6 +394,7 @@ export default function LookupPage({
     quoteOriginRef.current = null;
     quoteSnapshotRef.current = null;
     quoteCachedRef.current = null;
+    confirmActionRef.current = null;
   }, [workspace.staff.id]);
 
   useEffect(() => {
@@ -434,7 +440,6 @@ export default function LookupPage({
       setPendingSale(pending);
       if (stored.payload) {
         frozenPayloadRef.current = stored.payload;
-        setFrozenPayload(stored.payload);
         setCustomerName(stored.payload.customerName ?? "");
         setCustomerPhone(stored.payload.customerPhone ?? "");
         setCouponCode(stored.payload.couponCode ?? "");
@@ -484,8 +489,8 @@ export default function LookupPage({
             return;
           }
           if (stored.physicallyCompleted) {
-            setError("تم تسليم البضاعة واستلام المبلغ. لا تطلب الدفع مرة أخرى. أعد المحاولة لحفظ البيع.");
-            if (found && !found.physicallyCompleted) {
+            setError("تم تسليم البضاعة واستلام المبلغ. لا تطلب الدفع مرة أخرى. أعد إتمام البيع للحفظ.");
+            if (found && !found.physicallyCompleted && (!stored.quote || !stored.quoteOrigin)) {
               setQuote(found);
               const recovered = await completeSale(saleWriteFromRecord(found, stored.occurredAt, stored.snapshot?.restoreGeneration ?? null, stored.payload?.payment));
               if (!cancelled && recovered.physicallyCompleted) {
@@ -509,7 +514,7 @@ export default function LookupPage({
             };
             pendingSaleRef.current = prepared;
             setPendingSale(prepared);
-            setNotice("تم استعادة الأسعار المقبولة.");
+            setNotice("تم استعادة المبلغ المستحق.");
             return;
           }
           if (stored.phase === "uncertain") {
@@ -649,28 +654,21 @@ export default function LookupPage({
       setError("قيمة الخصم غير صالحة.");
       return null;
     }
-    let payment: SalePaymentDto | undefined;
-    if (quote) {
-      const total = quote.finalTotalPiasters;
-      if (paymentMethod === "cash") payment = { method: "cash", cashPiasters: total, onlinePiasters: 0 };
-      else if (paymentMethod === "online") payment = { method: "online", cashPiasters: 0, onlinePiasters: total };
-      else {
-        const cash = egpInputToPiasters(cashEgp);
-        const online = egpInputToPiasters(onlineEgp);
-        if (cash === null || online === null || cash <= 0 || online <= 0 || cash + online !== total) {
-          setError("أدخل مبلغ النقد والدفع الإلكتروني بحيث يساوي مجموعهما إجمالي البيع.");
-          return null;
-        }
-        payment = { method: "split", cashPiasters: cash, onlinePiasters: online };
-      }
+    if (customerName.trim().length > 120 || customerPhone.trim().length > 40
+      || discountReason.trim().length > 200) {
+      setError("راجع الاسم والهاتف وسبب الخصم.");
+      return null;
     }
+    const payment = paymentForDisplayedTotal(
+      paymentMethod, displayedPayableTotal, egpInputToPiasters(cashEgp), egpInputToPiasters(onlineEgp),
+    );
     return {
       customerName: customerName.trim() || null,
       customerPhone: customerPhone.trim() || null,
       couponCode: couponCode.trim().toLocaleUpperCase("en-US") || null,
       employeeDiscountPiasters: discountPiasters,
       discountReason: discountReason.trim() || null,
-      ...(payment ? { payment } : {}),
+      payment,
       lines: cart.map((line) => ({ variantId: line.variant.id, quantity: line.quantity })),
     };
   }
@@ -685,14 +683,13 @@ export default function LookupPage({
       return false;
     }
     revisionEpochRef.current += 1;
-    revisionBlockRef.current = true;
-    setRevisionBlock(true);
     frozenPayloadRef.current = null;
-    setFrozenPayload(null);
     setQuote(null);
     quoteOriginRef.current = null;
     quoteSnapshotRef.current = null;
     quoteCachedRef.current = null;
+    confirmActionRef.current = null;
+    setNotice("");
     const expectedId = pendingSaleRef.current?.saleId ?? null;
     invalidationTailRef.current = invalidationTailRef.current.then(() => abandonPreparedQuote(expectedId));
     return true;
@@ -719,7 +716,6 @@ export default function LookupPage({
     frozenPayloadRef.current = null;
     localIdentityRef.current = null;
     setPendingSale(null);
-    setFrozenPayload(null);
   }
 
   async function acceptSale(sale: SaleDto, messageAr: string) {
@@ -736,7 +732,6 @@ export default function LookupPage({
       frozenPayloadRef.current = null;
       localIdentityRef.current = null;
       setPendingSale(null);
-      setFrozenPayload(null);
       setQuote(null);
       setCart([]);
       setCustomerName("");
@@ -744,12 +739,14 @@ export default function LookupPage({
       setCouponCode("");
       setDiscountEgp("0");
       setDiscountReason("");
-      revisionBlockRef.current = false;
-      setRevisionBlock(false);
+      setPaymentMethod("cash");
+      setCashEgp("");
+      setOnlineEgp("");
     }
     if (recoveringForeign && !recoveringLocal) {
       setQuote(null);
     }
+    confirmActionRef.current = null;
     setCompleted(sale);
     setNotice(messageAr);
     setError("");
@@ -861,13 +858,21 @@ export default function LookupPage({
     };
   }
 
-  async function persistPhysicalSale(pending: PendingSale, payload: SalePayload): Promise<SaleDto> {
+  async function persistPhysicalSale(
+    pending: PendingSale,
+    payload: SalePayload,
+    pinnedQuote = quote,
+    pricing = {
+      origin: quoteOriginRef.current,
+      snapshot: quoteSnapshotRef.current,
+      cached: quoteCachedRef.current,
+      restoreGeneration: quoteGenerationRef.current,
+    },
+  ): Promise<SaleDto> {
     const occurredAt = pending.occurredAt ?? new Date().toISOString();
-    const pinnedQuote = quote;
-    const pinnedSnapshot = quoteSnapshotRef.current;
-    const origin = quoteOriginRef.current;
+    const { snapshot: pinnedSnapshot, origin } = pricing;
     if (pinnedQuote && origin === "server") {
-      const restoreGeneration = quoteGenerationRef.current ?? pinnedSnapshot?.restoreGeneration ?? null;
+      const restoreGeneration = pricing.restoreGeneration ?? pinnedSnapshot?.restoreGeneration ?? null;
       const recorded = await pos.recordCompleted(
         offlineFromQuote({
           staffId: workspace.staff.id,
@@ -879,7 +884,7 @@ export default function LookupPage({
           snapshotId: null,
           ...(restoreGeneration !== null ? { restoreGeneration } : {}),
         }),
-        quoteCachedRef.current ?? cachedQuantitiesFromCart(cart),
+        pricing.cached ?? cachedQuantitiesFromCart(cart),
       );
       notifyPosStockChange({ staffId: recorded.staffId, branchId: recorded.branch.id });
       return saleFromOffline(recorded);
@@ -898,7 +903,7 @@ export default function LookupPage({
           restoreGeneration: pinnedSnapshot.restoreGeneration,
           pricingOccurredAt: pending.pricingOccurredAt ?? pinnedQuote.occurredAt,
         }),
-        quoteCachedRef.current ?? cachedQuantitiesFromSnapshot(pinnedSnapshot),
+        pricing.cached ?? cachedQuantitiesFromSnapshot(pinnedSnapshot),
       );
       notifyPosStockChange({ staffId: recorded.staffId, branchId: recorded.branch.id });
       return saleFromOffline(recorded);
@@ -906,17 +911,15 @@ export default function LookupPage({
     throw new PosStorageError("لم تكتمل جاهزية نقطة البيع دون اتصال بعد.");
   }
 
-  async function syncPersistedSale(saleId: string) {
+  async function syncPersistedSale(saleId: string): Promise<SaleDto | null> {
     const generation = accountGeneration();
     const staffId = workspace.staff.id;
     const branchId = workspace.activeBranch?.id;
     const expectedContext = `${staffId}:${branchId ?? ""}`;
-    const rows = await pos.listUnsynced(staffId);
-    const local = rows.find((row) => row.id === saleId);
-    if (!local || local.staffId !== staffId || local.branch.id !== branchId) {
-      return;
-    }
     try {
+      const rows = await pos.listUnsynced(staffId);
+      const local = rows.find((row) => row.id === saleId);
+      if (!local || local.staffId !== staffId || local.branch.id !== branchId) return null;
       const synced =
         local.kind === "accepted" && local.snapshotId
           ? await acceptOfflineSale(await acceptedPayload(local))
@@ -928,14 +931,20 @@ export default function LookupPage({
         && contextRef.current === expectedContext
       ) {
         setCompleted((current) => preservedSummaryReceipt(current, local.id, synced));
+        void refreshBrowse();
       }
-      await refreshBrowse();
+      return synced;
     } catch (caught) {
-      setError(`${syncOutcomeMessage(caught)} البيع المكتمل محفوظ محلياً وسيظل ضمن المبيعات غير المرسلة.`);
+      if (browseMountedRef.current && accountGeneration() === generation && contextRef.current === expectedContext) {
+        setError(`${syncOutcomeMessage(caught)} البيع المكتمل محفوظ محلياً وسيظل ضمن المبيعات غير المرسلة.`);
+      }
+      return null;
     }
   }
 
-  async function printPersistedReceipt(sale: SaleDto, generation: number, staffId: string, branchId: string | undefined) {
+  async function printPersistedReceipt(
+    sale: SaleDto, generation: number, staffId: string, branchId: string | undefined, acknowledged?: SaleDto | null,
+  ) {
     const expectedContext = `${staffId}:${branchId ?? ""}`;
     const stillCurrent = () =>
       browseMountedRef.current
@@ -947,7 +956,11 @@ export default function LookupPage({
     setReceiptError("");
     setReceiptStatus("جارٍ تجهيز الإيصال…");
     try {
-      const result = await printCompletedBranchReceipt(sale, (message) => {
+      const receiptSale = acknowledged && rememberAcknowledgedReceiptNumber(acknowledged) ? acknowledged : sale;
+      if (receiptSale !== sale) {
+        setCompleted((current) => current?.id === sale.id ? receiptSale : current);
+      }
+      const result = await printCompletedBranchReceipt(receiptSale, (message) => {
         if (stillCurrent()) setReceiptStatus(message);
       });
       if (!stillCurrent()) {
@@ -963,24 +976,26 @@ export default function LookupPage({
     }
   }
 
-  async function submit(kind: "prepare" | "complete", options?: { print?: boolean }) {
+  async function submit(options?: { print?: boolean }) {
     if (inFlightRef.current) {
       return;
     }
+    const requestedAction: "complete" | "print" = options?.print ? "print" : "complete";
+    if (confirmActionRef.current && confirmActionRef.current !== requestedAction) {
+      confirmActionRef.current = requestedAction;
+      setNotice(AMOUNT_CONFIRMATION_NOTICE);
+      return;
+    }
     inFlightRef.current = true;
-    setPending(kind);
+    setPending("complete");
     setError("");
     setNotice("");
-    if (kind === "complete") {
-      setReceiptError("");
-      setReceiptStatus("");
-    }
+    setReceiptError("");
+    setReceiptStatus("");
     const epoch = revisionEpochRef.current;
-    submitEpochRef.current = epoch;
     const generation = accountGeneration();
-    const physical = kind === "complete";
     const alreadySaved = pendingSaleRef.current?.physicallyCompleted === true;
-    if ((stockPause || restorePause) && (kind === "prepare" || !alreadySaved)) {
+    if ((stockPause || restorePause) && !alreadySaved) {
       inFlightRef.current = false;
       setPending("");
       setError(restorePause
@@ -1031,16 +1046,29 @@ export default function LookupPage({
         }
       }
     }
-    if (physical && revisionBlockRef.current && !pendingSaleRef.current?.physicallyCompleted) {
-      inFlightRef.current = false;
-      setPending("");
-      setError("أكد الأسعار بعد تعديل السلة قبل إتمام البيع.");
+    if (!alreadySaved && !pendingSaleRef.current && foreignRecoveryRef.current) {
+      try {
+        await recoverOperation(foreignRecoveryRef.current, false);
+      } catch (caught) {
+        setError(caught instanceof ApiError ? caught.messageAr : "تعذر التحقق من البيع.");
+      } finally {
+        inFlightRef.current = false;
+        setPending("");
+      }
       return;
     }
-    const payload =
-      physical && pendingSaleRef.current?.physicallyCompleted && frozenPayloadRef.current
-        ? frozenPayloadRef.current
-        : parsePayload();
+    if (alreadySaved && pendingSaleRef.current && (!quote || !quoteOriginRef.current)) {
+      try {
+        await recoverOperation(pendingSaleRef.current, true);
+      } catch (caught) {
+        setError(caught instanceof ApiError ? caught.messageAr : "تعذر استعادة البيع.");
+      } finally {
+        inFlightRef.current = false;
+        setPending("");
+      }
+      return;
+    }
+    const payload = formIsFrozen() ? frozenPayloadRef.current ?? parsePayload() : parsePayload();
     if (!payload) {
       inFlightRef.current = false;
       setPending("");
@@ -1054,20 +1082,14 @@ export default function LookupPage({
       setError("تعذر تجهيز عملية البيع.");
       return;
     }
-    if (revisionEpochRef.current !== epoch) {
+    if (accountGeneration() !== generation || revisionEpochRef.current !== epoch) {
       inFlightRef.current = false;
       setPending("");
-      setError("أكد الأسعار بعد تعديل السلة قبل إتمام البيع.");
-      return;
-    }
-    if (physical && revisionBlockRef.current && !pendingSaleRef.current?.physicallyCompleted) {
-      inFlightRef.current = false;
-      setPending("");
-      setError("أكد الأسعار بعد تعديل السلة قبل إتمام البيع.");
+      setError("تغيّرت السلة. أعد إتمام البيع بعد مراجعتها.");
       return;
     }
     const editablePending = pendingSaleRef.current;
-    if (kind === "prepare" && !editablePending?.physicallyCompleted &&
+    if (!alreadySaved && !editablePending?.physicallyCompleted &&
       (!editablePending || editablePending.phase === "prepared" || editablePending.phase === "rejected")) {
       // A known local shortage is an editable validation failure, before any
       // uncertain command is persisted or sent. Existing uncertain/paid records stay frozen.
@@ -1087,7 +1109,7 @@ export default function LookupPage({
       }
     }
     let local = pendingSaleRef.current;
-    if (local && kind === "prepare" && local.phase === "rejected") {
+    if (local && !alreadySaved && local.phase === "rejected") {
       local = null;
     }
     if (!local) {
@@ -1099,7 +1121,7 @@ export default function LookupPage({
       local = {
         ...createPendingSale({
           staffId: workspace.staff.id,
-          physicallyCompleted: physical,
+          physicallyCompleted: false,
           payload,
           occurredAt: null,
         }),
@@ -1108,9 +1130,10 @@ export default function LookupPage({
       };
     }
     submittedRef.current = local;
-    const printAfterPersist = Boolean(physical && options?.print);
+    const printAfterPersist = Boolean(options?.print);
     let persistedForPrint: SaleDto | null = null;
-    if (physical && !local.occurredAt) {
+    let printAcknowledgement: Promise<SaleDto | null> | undefined;
+    if (alreadySaved && !local.occurredAt) {
       local = { ...local, occurredAt: new Date().toISOString(), physicallyCompleted: true, payload };
       submittedRef.current = local;
       pendingSaleRef.current = local;
@@ -1125,15 +1148,15 @@ export default function LookupPage({
       setPending("");
       return;
     }
-    if (revisionEpochRef.current !== epoch) {
+    if (accountGeneration() !== generation || revisionEpochRef.current !== epoch) {
       inFlightRef.current = false;
       setPending("");
-      setError("أكد الأسعار بعد تعديل السلة قبل إتمام البيع.");
+      setError("تغيّرت السلة. أعد إتمام البيع بعد مراجعتها.");
       return;
     }
-    if (kind === "prepare" && navigator.onLine) {
+    if (!alreadySaved && navigator.onLine) {
       // A server quote remembers the restore generation it was accepted under, without issuing a POS snapshot.
-      quoteGenerationRef.current = null;
+      if (!quote) quoteGenerationRef.current = null;
       try {
         const state = await getRestorePause();
         setRestorePause(state.pause);
@@ -1143,19 +1166,20 @@ export default function LookupPage({
           setError("العمل متوقف مؤقتاً لمراجعة استعادة البيانات. لا تبدأ بيعاً جديداً.");
           return;
         }
-        quoteGenerationRef.current = state.currentGeneration;
+        if (!quote) quoteGenerationRef.current = state.currentGeneration;
       } catch {
         /* the server records the current generation when the sale is completed */
       }
     }
     try {
+      if (accountGeneration() !== generation || revisionEpochRef.current !== epoch) return;
       const pendingRecord = {
         staffId: workspace.staff.id,
         saleId: local.saleId,
         operationId: local.operationId,
         phase: "uncertain" as const,
         digest,
-        physicallyCompleted: physical || local.physicallyCompleted,
+        physicallyCompleted: alreadySaved || local.physicallyCompleted,
         payload,
         occurredAt: local.occurredAt,
         pricingOccurredAt: local.pricingOccurredAt ?? null,
@@ -1169,8 +1193,8 @@ export default function LookupPage({
         const stored = await pos.loadPending(workspace.staff.id);
         setError(
           stored?.physicallyCompleted
-            ? "تم تسليم البضاعة واستلام المبلغ. لا تطلب الدفع مرة أخرى. تحقق من النتيجة أو أعد المحاولة بنفس البيانات."
-            : "توجد عملية بيع غير مؤكدة. تحقق من نتيجتها قبل بدء بيع جديد.",
+            ? "تم تسليم البضاعة واستلام المبلغ. لا تطلب الدفع مرة أخرى. أعد إتمام البيع لاستعادة العملية بنفس البيانات."
+            : "توجد عملية بيع غير مؤكدة. أعد إتمام البيع لاستعادة العملية.",
         );
         submittedRef.current = local;
         localIdentityRef.current = { saleId: local.saleId, operationId: local.operationId };
@@ -1202,119 +1226,130 @@ export default function LookupPage({
         ...local,
         digest,
         phase: "uncertain",
-        physicallyCompleted: physical || local.physicallyCompleted,
+        physicallyCompleted: alreadySaved || local.physicallyCompleted,
         payload,
       };
       pendingSaleRef.current = nextPending;
       submittedRef.current = nextPending;
       setPendingSale(nextPending);
       frozenPayloadRef.current = payload;
-      setFrozenPayload(payload);
+      const { payment: _preparePayment, ...quoteFields } = payload;
       const body = {
         saleId: nextPending.saleId,
         operationId: nextPending.operationId,
         occurredAt: nextPending.occurredAt,
-        ...payload,
+        ...quoteFields,
       };
-      if (kind === "complete") {
-        const saved = await persistPhysicalSale(nextPending, payload);
-        await acceptSale(saved, "تم حفظ البيع.");
-        void syncPersistedSale(saved.id);
-        if (printAfterPersist && saved.physicallyCompleted) {
-          persistedForPrint = saved;
+      let pinnedQuote = quote;
+      let completePayload = payload;
+      let completing = nextPending;
+      if (!alreadySaved) {
+        const cash = egpInputToPiasters(cashEgp);
+        const online = egpInputToPiasters(onlineEgp);
+        const beforeAmounts = displayedSaleAmounts({
+          quote,
+          cartListedTotal,
+          employeeDiscountPiasters: payload.employeeDiscountPiasters,
+          paymentMethod,
+          cashPiasters: cash,
+          onlinePiasters: online,
+        });
+        let result: SaleDto;
+        if (quote && quoteOriginRef.current) {
+          result = quote;
+        } else {
+          try {
+            result = await prepareSale(body);
+            quoteOriginRef.current = "server";
+            quoteCachedRef.current = cachedQuantitiesFromCart(cart);
+          } catch (caught) {
+            if (!isNetworkFailure(caught)) throw caught;
+            result = await quoteFromSnapshot(nextPending, payload);
+          }
         }
-      } else {
-      await assertLocalCartStock(cart);
-      let result: SaleDto;
-      try {
-        result = await prepareSale(body);
-        quoteOriginRef.current = "server";
-        quoteCachedRef.current = cachedQuantitiesFromCart(cart);
-      } catch (caught) {
-        if (!isNetworkFailure(caught)) {
-          throw caught;
+        if (accountGeneration() !== generation || revisionEpochRef.current !== epoch) return;
+        if (result.physicallyCompleted) {
+          await acceptSale(result, "تم العثور على البيع المحفوظ.");
+          return;
         }
-        result = await quoteFromSnapshot(nextPending, payload);
-      }
-      if (revisionEpochRef.current !== epoch) {
-        setError("أكد الأسعار بعد تعديل السلة قبل إتمام البيع.");
-        revisionBlockRef.current = true;
-        setRevisionBlock(true);
-        setQuote(null);
-        return;
-      }
-      if (result.physicallyCompleted) {
-        await acceptSale(result, "تم العثور على البيع المحفوظ.");
-        return;
-      }
-      const prepared: PendingSale = {
-        ...nextPending,
-        phase: "prepared",
-        payload,
-        pricingOccurredAt: quoteOriginRef.current === "snapshot" ? result.occurredAt : null,
-      };
-      pendingSaleRef.current = prepared;
-      await withPendingSaleLock(workspace.staff.id, () =>
-        pos.savePending({
-          staffId: workspace.staff.id,
-          saleId: prepared.saleId,
-          operationId: prepared.operationId,
-          phase: "prepared",
-          digest,
-          physicallyCompleted: false,
-          payload,
-          occurredAt: prepared.occurredAt,
-          pricingOccurredAt: prepared.pricingOccurredAt ?? null,
-          quote: result,
+
+        const payment = paymentForDisplayedTotal(paymentMethod, result.finalTotalPiasters, cash, online);
+        completePayload = { ...payload, payment };
+        const afterAmounts = quotedSaleAmounts(result, payment);
+        const changed = saleAmountsDiffer(beforeAmounts, afterAmounts)
+          || (!quote && result.lines.some((line) => cart.some((item) =>
+            item.variant.id === line.variantId && item.variant.sellingPricePiasters !== line.listedUnitPricePiasters)));
+        const invalidPayment = payment.method === "split"
+          && (payment.cashPiasters <= 0 || payment.onlinePiasters <= 0
+            || payment.cashPiasters + payment.onlinePiasters !== result.finalTotalPiasters);
+        const priced = { ...result, payment };
+        completing = {
+          ...nextPending,
+          phase: changed || invalidPayment ? "prepared" : "uncertain",
+          digest: await digestSalePayload(completePayload),
+          payload: completePayload,
+          pricingOccurredAt: quoteOriginRef.current === "snapshot" ? result.occurredAt : null,
+          physicallyCompleted: !changed && !invalidPayment,
+          occurredAt: changed || invalidPayment ? null : new Date().toISOString(),
+        };
+        const savedMarker = await withPendingSaleLock(workspace.staff.id, () => pos.savePending({
+          ...pendingRecord,
+          ...completing,
+          quote: priced,
           snapshot: quoteSnapshotRef.current,
           quoteOrigin: quoteOriginRef.current,
           cachedByVariant: recordFromCached(quoteCachedRef.current),
-        }),
-      );
-      setPendingSale(prepared);
-      setQuote(result);
-      revisionBlockRef.current = false;
-      setRevisionBlock(false);
-      setNotice("تم قبول الأسعار.");
+        }));
+        if (savedMarker !== "assigned" || accountGeneration() !== generation) return;
+        pendingSaleRef.current = completing;
+        submittedRef.current = completing;
+        frozenPayloadRef.current = completePayload;
+        setPendingSale(completing);
+        setQuote(priced);
+        pinnedQuote = priced;
+        if (changed) {
+          confirmActionRef.current = requestedAction;
+          setNotice(AMOUNT_CONFIRMATION_NOTICE);
+        }
+        if (invalidPayment) {
+          setError("أدخل مبلغ النقد والدفع الإلكتروني بحيث يساوي مجموعهما إجمالي البيع.");
+        }
+        if (changed || invalidPayment) return;
+      }
+      const connectedPricing = quoteOriginRef.current === "server";
+      const saved = await persistPhysicalSale(completing, completePayload, pinnedQuote);
+      await acceptSale(saved, "تم حفظ البيع.");
+      const acknowledgement = syncPersistedSale(saved.id);
+      if (printAfterPersist && saved.physicallyCompleted) {
+        persistedForPrint = saved;
+        if (navigator.onLine && connectedPricing) printAcknowledgement = acknowledgement;
       }
     } catch (caught) {
       const current = submittedRef.current ?? pendingSaleRef.current;
-      if (caught instanceof PosStorageError) {
-        if (current) {
-          const uncertain: PendingSale = {
-            ...current,
-            phase: "uncertain",
-            physicallyCompleted: physical || current.physicallyCompleted,
-            payload,
-          };
-          pendingSaleRef.current = uncertain;
-          setPendingSale(uncertain);
-        }
-        setError("تعذر حفظ البيع محلياً. لا تطلب الدفع مرة أخرى. أعد المحاولة للحفظ.");
+      if (caught instanceof SalesValidationError && current && !alreadySaved) {
+        await abandonRejectedSale(current);
+        setError(caught.message);
         return;
       }
-      if (caught instanceof SalesValidationError) {
-        if (current && (physical || current.physicallyCompleted)) {
-          const uncertain: PendingSale = {
-            ...current,
-            phase: "uncertain",
-            physicallyCompleted: true,
-            payload,
-          };
-          pendingSaleRef.current = uncertain;
-          setPendingSale(uncertain);
+      if (current?.physicallyCompleted) {
+        setError("تعذر حفظ البيع محلياً. لا تطلب الدفع مرة أخرى. أعد إتمام البيع للحفظ.");
+        return;
+      }
+      if (caught instanceof PosStorageError || caught instanceof SalesValidationError) {
+        if (current && pendingSaleRef.current?.saleId === current.saleId) {
+          await abandonRejectedSale(current);
         }
         setError(caught.message);
         return;
       }
-      if (caught instanceof ApiError && caught.status === 409) {
-        const found = await lookupSaleOperation(current?.operationId ?? "");
+      if (caught instanceof ApiError && caught.status === 409 && current) {
+        const found = await lookupSaleOperation(current.operationId).catch(() => null);
         if (found?.physicallyCompleted) {
           await acceptSale(found, "تم العثور على البيع المحفوظ.");
           return;
         }
       }
-      if (caught instanceof ApiError && (caught.status === 400 || caught.status === 404) && current && !current.physicallyCompleted) {
+      if (caught instanceof ApiError && (caught.status === 400 || caught.status === 404) && current) {
         const rejected: PendingSale = { ...current, phase: "rejected", digest: null };
         await withPendingSaleLock(workspace.staff.id, () =>
           pos.savePending({
@@ -1337,7 +1372,6 @@ export default function LookupPage({
         submittedRef.current = rejected;
         frozenPayloadRef.current = null;
         setPendingSale(rejected);
-        setFrozenPayload(null);
         setError(caught.messageAr);
         return;
       }
@@ -1346,7 +1380,7 @@ export default function LookupPage({
           ...current,
           phase: "uncertain",
           digest,
-          physicallyCompleted: physical || current.physicallyCompleted,
+          physicallyCompleted: alreadySaved || current.physicallyCompleted,
           payload,
         };
         await withPendingSaleLock(workspace.staff.id, () =>
@@ -1371,8 +1405,8 @@ export default function LookupPage({
         setPendingSale(uncertain);
       }
       setError(
-        physical || current?.physicallyCompleted
-          ? "تم تسليم البضاعة واستلام المبلغ. لا تطلب الدفع مرة أخرى. أعد المحاولة لحفظ البيع."
+        alreadySaved || current?.physicallyCompleted
+          ? "تم تسليم البضاعة واستلام المبلغ. لا تطلب الدفع مرة أخرى. أعد إتمام البيع للحفظ."
           : caught instanceof ApiError
             ? caught.messageAr
             : "تعذر حفظ البيع.",
@@ -1382,16 +1416,33 @@ export default function LookupPage({
       setPending("");
     }
     if (persistedForPrint) {
+      const acknowledged = printAcknowledgement ? await boundedPrintAcknowledgement(printAcknowledgement) : null;
       await printPersistedReceipt(
         persistedForPrint,
         generation,
         workspace.staff.id,
         workspace.activeBranch?.id,
+        acknowledged,
       );
     }
   }
 
   async function recoverOperation(current: PendingSale, adoptQuote: boolean) {
+    if (current.physicallyCompleted && !adoptQuote) {
+      const stored = (await pos.listRecoverablePending(workspace.staff.id))
+        .find((row) => row.saleId === current.saleId && row.operationId === current.operationId);
+      if (stored?.physicallyCompleted && stored.payload && stored.quote && stored.quoteOrigin) {
+        const saved = await persistPhysicalSale(current, stored.payload, stored.quote, {
+          origin: stored.quoteOrigin,
+          snapshot: stored.snapshot,
+          cached: stored.cachedByVariant ? cachedFromRecord(stored.cachedByVariant) : null,
+          restoreGeneration: stored.snapshot?.restoreGeneration ?? null,
+        });
+        await acceptSale(saved, "تم حفظ البيع.");
+        void syncPersistedSale(saved.id);
+        return;
+      }
+    }
     const found = await lookupSaleOperation(current.operationId);
     if (found?.physicallyCompleted) {
       await acceptSale(found, "تم العثور على البيع المحفوظ.");
@@ -1399,7 +1450,7 @@ export default function LookupPage({
     }
     if (current.physicallyCompleted) {
       if (adoptQuote) {
-        setError("تم تسليم البضاعة واستلام المبلغ. لا تطلب الدفع مرة أخرى. أعد المحاولة لحفظ البيع.");
+        setError("تم تسليم البضاعة واستلام المبلغ. لا تطلب الدفع مرة أخرى. أعد إتمام البيع للحفظ.");
       }
       if (found && !found.physicallyCompleted) {
         if (adoptQuote) {
@@ -1417,78 +1468,57 @@ export default function LookupPage({
           await acceptSale(recovered, "تم حفظ البيع.");
         }
       } else if (!adoptQuote) {
-        setError("تم تسليم البضاعة واستلام المبلغ. لا تطلب الدفع مرة أخرى. أعد المحاولة لحفظ البيع.");
+        setError("تم تسليم البضاعة واستلام المبلغ. لا تطلب الدفع مرة أخرى. أعد إتمام البيع للحفظ.");
       }
       return;
     }
     if (found && !found.physicallyCompleted) {
       if (!adoptQuote) {
-        setError("توجد عملية بيع غير مؤكدة. تحقق من نتيجتها قبل بدء بيع جديد.");
+        setError("توجد عملية بيع غير مؤكدة. أعد إتمام البيع لاستعادة العملية.");
         return;
       }
       setQuote(found);
       const prepared: PendingSale = { ...current, phase: "prepared" };
       pendingSaleRef.current = prepared;
       setPendingSale(prepared);
-      setNotice("تم استعادة الأسعار المقبولة.");
+      setNotice("تم استعادة المبلغ المستحق.");
       return;
     }
-    setError("لم يُؤكد الحفظ بعد. أعد المحاولة أو تحقق لاحقاً.");
+    setError("لم يُؤكد الحفظ بعد. أعد إتمام البيع لاحقاً.");
   }
 
-  async function onCheckResult() {
-    const local = pendingSaleRef.current;
-    const foreign = foreignRecoveryRef.current;
-    if (inFlightRef.current || (!local && !foreign)) {
-      return;
-    }
-    inFlightRef.current = true;
-    setPending("check");
-    setError("");
-    try {
-      if (local) {
-        await recoverOperation(local, true);
-        return;
-      }
-      if (foreign) {
-        await recoverOperation(foreign, false);
-      }
-    } catch (caught) {
-      setError(caught instanceof ApiError ? caught.messageAr : "تعذر التحقق من البيع.");
-    } finally {
-      inFlightRef.current = false;
-      setPending("");
-    }
+  async function abandonRejectedSale(current: PendingSale) {
+    await withPendingSaleLock(workspace.staff.id, () => pos.clearPending(workspace.staff.id, current.saleId));
+    pendingSaleRef.current = null;
+    submittedRef.current = null;
+    localIdentityRef.current = null;
+    frozenPayloadRef.current = null;
+    setPendingSale(null);
   }
 
-  async function onCheckForeign() {
-    const foreign = foreignRecoveryRef.current;
-    if (!foreign || inFlightRef.current) {
-      return;
-    }
-    inFlightRef.current = true;
-    setPending("check");
-    setError("");
-    try {
-      await recoverOperation(foreign, false);
-    } catch (caught) {
-      setError(caught instanceof ApiError ? caught.messageAr : "تعذر التحقق من البيع.");
-    } finally {
-      inFlightRef.current = false;
-      setPending("");
-    }
-  }
-
-  const submitting = pending === "prepare" || pending === "complete" || pending === "check";
+  const submitting = pending === "complete" || pending === "check";
   const formLocked = Boolean(
     submitting || (pendingSale && (pendingSale.physicallyCompleted || pendingSale.phase === "uncertain")),
   );
-  const paymentBalancePiasters = quote && paymentMethod === "split"
-    ? quote.finalTotalPiasters - (egpInputToPiasters(cashEgp) ?? 0) - (egpInputToPiasters(onlineEgp) ?? 0)
+  const cartListedTotal = cart.reduce((sum, line) => sum + line.variant.sellingPricePiasters * line.quantity, 0);
+  const displayedPayableTotal = quote?.finalTotalPiasters
+    ?? estimatedSaleTotal(cartListedTotal, egpInputToPiasters(discountEgp) ?? 0);
+  const paymentBalancePiasters = paymentMethod === "split"
+    ? displayedPayableTotal - (egpInputToPiasters(cashEgp) ?? 0) - (egpInputToPiasters(onlineEgp) ?? 0)
     : 0;
   const cartUnitCount = cart.reduce((sum, line) => sum + line.quantity, 0);
-  const cartListedTotal = cart.reduce((sum, line) => sum + line.variant.sellingPricePiasters * line.quantity, 0);
   const checkoutHasDetails = cart.length > 0 || Boolean(quote) || Boolean(pendingSale);
+  const canFinalize = Boolean(
+    pendingSale?.physicallyCompleted
+    || pendingSale?.phase === "uncertain"
+    || foreignRecovery
+    || cart.length > 0,
+  );
+  const finalizeDisabled = Boolean(
+    ((stockPause || restorePause) && !pendingSale?.physicallyCompleted)
+    || pending
+    || !canFinalize,
+  );
 
   return (
     <main className="shell pos-workspace">
@@ -1570,10 +1600,7 @@ export default function LookupPage({
       <form
         className="card pos-checkout"
         aria-label="إتمام البيع"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void submit(pendingSale?.physicallyCompleted ? "complete" : "prepare");
-        }}
+        onSubmit={(event) => event.preventDefault()}
       >
         <div className="pos-section-heading pos-checkout-heading"><h2>سلة البيع</h2><span className="muted">{cartUnitCount} قطعة</span></div>
         <div className="pos-checkout-body">
@@ -1633,7 +1660,7 @@ export default function LookupPage({
         </div> : null}
         {quote ? (
           <section className="pos-accepted-prices" data-testid="accepted-prices">
-            <h3>الأسعار المقبولة</h3>
+            <h3>المبلغ المستحق</h3>
             <p>الأصلي: {formatEgpFromPiasters(quote.originalTotalPiasters)}</p>
             {quote.appliedAutomaticOffer ? (
               <p data-testid="automatic-offer-breakdown">
@@ -1647,7 +1674,7 @@ export default function LookupPage({
             <p>الإجمالي: {formatEgpFromPiasters(quote.finalTotalPiasters)}</p>
           </section>
         ) : null}
-        {quote ? (
+        {checkoutHasDetails ? (
           <fieldset className="field pos-payment" disabled={formLocked}>
             <legend>طريقة الدفع</legend>
             <label><input type="radio" name="payment-method" value="cash" checked={paymentMethod === "cash"} onChange={() => setPaymentMethod("cash")} /> نقداً بالكامل</label>
@@ -1667,29 +1694,29 @@ export default function LookupPage({
         ) : null}
         </div>
         <div className="pos-checkout-footer">
-        <p className="pos-cart-total"><span>{quote ? "الإجمالي المقبول" : "إجمالي الأصناف"}</span><strong>{formatEgpFromPiasters(quote?.finalTotalPiasters ?? cartListedTotal)}</strong></p>
-        {!quote && cart.length > 0 ? <p className="pos-total-note">قبل العروض والكوبون وخصم الموظف. اقبل الأسعار لمعرفة المبلغ المستحق.</p> : null}
+        <p className="pos-cart-total"><span>{quote ? "الإجمالي المستحق" : "الإجمالي بعد خصم الموظف"}</span><strong>{formatEgpFromPiasters(displayedPayableTotal)}</strong></p>
+        {!quote && cart.length > 0 ? <p className="pos-total-note">قبل تطبيق العروض والكوبون.</p> : null}
         {error ? <div className="error" role="alert">{error}</div> : null}
-        {notice ? <div className="notice" role="status">{notice}</div> : null}
+        {notice ? (
+          <div
+            className="notice"
+            role="status"
+            {...(notice === AMOUNT_CONFIRMATION_NOTICE ? { "data-testid": "pos-amount-confirmation" } : {})}
+          >
+            {notice}
+          </div>
+        ) : null}
         {receiptStatus ? <p className="notice" role="status" data-testid="pos-receipt-status">{receiptStatus}</p> : null}
         {receiptError ? <p className="error" role="alert" data-testid="pos-receipt-error">{receiptError}</p> : null}
         <div className="actions">
-          <button type="button" disabled={Boolean(stockPause) || Boolean(restorePause) || Boolean(pending) || cart.length === 0 || formLocked} onClick={() => void submit("prepare")}>
-            {pending === "prepare" ? "جارٍ قبول الأسعار…" : "قبول الأسعار"}
-          </button>
-          {quote && !formLocked ? (
-            <button type="button" className="secondary" onClick={() => beginCartRevision()}>
-              إلغاء عرض السعر
-            </button>
-          ) : null}
           <button
             type="button"
             className="confirm pos-complete"
             data-testid="complete-sale"
             aria-labelledby="complete-without-print-label"
             aria-describedby="complete-without-print"
-            disabled={((Boolean(stockPause) || Boolean(restorePause)) && !pendingSale?.physicallyCompleted) || Boolean(pending) || revisionBlock || (!quote && !pendingSale?.physicallyCompleted)}
-            onClick={() => void submit("complete")}
+            disabled={finalizeDisabled}
+            onClick={() => void submit()}
           >
             <span id="complete-without-print-label">{pending === "complete" ? "جارٍ الحفظ…" : "إتمام البيع"}</span>
             <span id="complete-without-print">بدون طباعة</span>
@@ -1698,32 +1725,11 @@ export default function LookupPage({
             type="button"
             className="confirm pos-complete"
             data-testid="complete-sale-print"
-            disabled={((Boolean(stockPause) || Boolean(restorePause)) && !pendingSale?.physicallyCompleted) || Boolean(pending) || revisionBlock || (!quote && !pendingSale?.physicallyCompleted)}
-            onClick={() => void submit("complete", { print: true })}
+            disabled={finalizeDisabled}
+            onClick={() => void submit({ print: true })}
           >
             {pending === "complete" ? "جارٍ الحفظ…" : "حفظ البيع وطباعة الإيصال"}
           </button>
-          {pendingSale ? (
-            <>
-              <button type="button" className="secondary" onClick={() => void onCheckResult()}>
-                التحقق من النتيجة
-              </button>
-              {pendingSale.phase === "uncertain" ? (
-                <button type="button" onClick={() => void submit(pendingSale.physicallyCompleted ? "complete" : "prepare")}>
-                  إعادة المحاولة
-                </button>
-              ) : null}
-            </>
-          ) : foreignRecovery ? (
-            <button type="button" className="secondary" onClick={() => void onCheckForeign()}>
-              التحقق من النتيجة
-            </button>
-          ) : null}
-          {pendingSale && foreignRecovery ? (
-            <button type="button" className="secondary" onClick={() => void onCheckForeign()}>
-              التحقق من العملية الأخرى
-            </button>
-          ) : null}
         </div>
         </div>
       </form>
@@ -1732,4 +1738,16 @@ export default function LookupPage({
       {completed ? <SaleSummary key={completed.id} sale={completed} /> : null}
     </main>
   );
+}
+
+async function boundedPrintAcknowledgement(pending: Promise<SaleDto | null>): Promise<SaleDto | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      pending,
+      new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), 1500); }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }

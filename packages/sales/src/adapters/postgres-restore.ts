@@ -43,6 +43,18 @@ export function createPostgresSalesRestorePort(queryable: Queryable) {
       const recordedNext = BigInt(sequence.lastValue) + (sequence.isCalled ? 1n : 0n);
       const referencedNext = BigInt(highest.rows[0]?.max_number ?? "0") + 1n;
       const next = recordedNext > referencedNext ? recordedNext : referencedNext;
+      const storage = await queryable.query<{ has_counter: boolean }>(
+        "SELECT to_regclass('sales_pos_reference_counter') IS NOT NULL AS has_counter",
+      );
+      if (storage.rows[0]?.has_counter) {
+        await queryable.query(
+          `UPDATE sales_pos_reference_counter
+           SET last_number = GREATEST(last_number, $1::bigint)
+           WHERE singleton`,
+          [(next - 1n).toString()],
+        );
+        return;
+      }
       await queryable.query("SELECT setval('sales_sale_reference_number_seq', $1::bigint, false)", [next.toString()]);
     },
     // Exact pre-036 sale columns, then receipt_identity: null. Does not default any other missing field.

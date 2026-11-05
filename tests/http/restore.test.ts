@@ -222,7 +222,7 @@ test("stages, pauses and activates twice, keeps a paid old-generation sale for o
   await built.pool.query("SELECT setval('online_order_reference_number_seq', 50, TRUE)");
   expect((await receive(manager, variantId, 3)).status).toBe(201);
   // A restored reference at the six-digit boundary must outrank even a stale archived sequence.
-  await built.pool.query("SELECT setval('sales_sale_reference_number_seq', 999998, TRUE)");
+  await built.pool.query("UPDATE sales_pos_reference_counter SET last_number = 999998 WHERE singleton");
   const boundarySourceSale = await api(manager, "POST", "/api/internal/sales", {
     saleId: crypto.randomUUID(), operationId: crypto.randomUUID(), physicallyCompleted: true,
     occurredAt: new Date().toISOString(), employeeDiscountPiasters: 0,
@@ -355,6 +355,7 @@ test("wrong passwords, damaged files, invalid links, unsupported schemas and una
   // Authenticated 033 data must fail compatibility before staging. A relabeled 036 payload
   // never reaches that check, so export the real profile and restore the current schema first.
   const factsBeforeLegacy = await businessCounts(built.pool);
+  expect(await revertLastMigration(built.pool)).toBe("038_pos_reference_counter.sql");
   expect(await revertLastMigration(built.pool)).toBe("037_operational_stock.sql");
   expect(await revertLastMigration(built.pool)).toBe("036_receipt_numbering.sql");
   expect(await revertLastMigration(built.pool)).toBe("035_return_reason.sql");
@@ -507,6 +508,7 @@ test.each(["035", "034"])("restores an authentic %s return profile with readable
   });
   expect(draft.status, JSON.stringify(draft.body)).toBe(201);
   // Generate an actual old-schema archive, rather than relabeling current rows.
+  expect(await revertLastMigration(built.pool)).toBe("038_pos_reference_counter.sql");
   expect(await revertLastMigration(built.pool)).toBe("037_operational_stock.sql");
   expect(await revertLastMigration(built.pool)).toBe("036_receipt_numbering.sql");
   if (profile === "034") expect(await revertLastMigration(built.pool)).toBe("035_return_reason.sql");

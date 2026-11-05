@@ -1,3 +1,4 @@
+import { stageUnpaidPosQuote } from "./support/pos-checkout";
 import { createHash, randomUUID } from "node:crypto";
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
 import { openLookupLists } from "./support/open-lookup-lists";
@@ -307,7 +308,7 @@ async function addAndPrice(
   await page.getByLabel("اللون").selectOption({ label: seed.colorName });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
-  await checkout.getByRole("button", { name: "قبول الأسعار" }).click();
+  await stageUnpaidPosQuote(checkout);
   await expect(page.getByTestId("accepted-prices")).toBeVisible();
 }
 

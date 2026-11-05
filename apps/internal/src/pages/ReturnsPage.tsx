@@ -18,7 +18,7 @@ import {
   updateReturnDraft,
 } from "../returns-api.ts";
 import { egpInputToPiasters, formatEgpFromPiasters, piastersToEgpInput } from "../money.ts";
-import { customerReceiptNumber, RECEIPT_NUMBER_CONFLICT } from "../receipt-number.ts";
+import { officialSaleNumber, RECEIPT_NUMBER_CONFLICT } from "../receipt-number.ts";
 import { calculateReturnRefundSuggestion, type ReturnLineSelection } from "../return-refund.ts";
 import { EmptyState } from "../ui/EmptyState.tsx";
 import { useRevealFeedback } from "../ui/useRevealFeedback.ts";
@@ -34,7 +34,7 @@ import {
 
 function sourceHeading(source: ReturnSourceDto): string {
   if (source.channel === "online") return `طلب ${source.reference}`;
-  return `إيصال ${customerReceiptNumber({
+  return `إيصال ${officialSaleNumber({
     receiptReference: source.receiptReference ?? null,
     reference: source.reference,
     blockedIds: [source.source.id],

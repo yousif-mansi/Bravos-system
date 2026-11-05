@@ -8,6 +8,7 @@ import {
 import { accountGeneration, subscribeAccount } from "../account-session.ts";
 import { ConnectorClientError, hasPairingToken, submitConnectorJob } from "../printing/connector-client.ts";
 import { claimBrowserPrint, releaseBrowserPrint } from "../printing/browser-print-lock.ts";
+import { withSelectedReceiptNumber } from "../receipt-number.ts";
 import { resolveReceiptOptions } from "./receipt-options.ts";
 import { buildReceiptView, isCompletedSale, type ReceiptOptions, type ReceiptView } from "./receipt-model.ts";
 import { finalizeReceiptDocumentSize, renderReceiptDocument } from "./receipt-document.ts";
@@ -223,7 +224,7 @@ function fill(job: PrintJob, sale: SaleDto, overrides?: Partial<ReceiptOptions>)
   doc.open();
   doc.write("<!DOCTYPE html><html><head></head><body></body></html>");
   doc.close();
-  const view = buildReceiptView(sale, resolveReceiptOptions(overrides));
+  const view = buildReceiptView(withSelectedReceiptNumber(sale), resolveReceiptOptions(overrides));
   renderReceiptDocument(doc, view, fontBaseUrl());
   return { printWindow, contentWidthMm: view.contentWidthMm };
 }
@@ -347,7 +348,7 @@ async function printReceiptThroughConnector(
   generation: number,
   onProgress: ((message: string) => void) | undefined,
 ): Promise<ReceiptPrintResult> {
-  const view = buildReceiptView(sale, resolveReceiptOptions(overrides));
+  const view = buildReceiptView(withSelectedReceiptNumber(sale), resolveReceiptOptions(overrides));
   const id = crypto.randomUUID();
   const job = connectorReceiptJob(view, id);
   let printToken: symbol;

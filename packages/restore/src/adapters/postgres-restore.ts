@@ -10,6 +10,7 @@ import type {
 import {
   OPERATIONAL_COLOR_ID,
   OPERATIONAL_SIZE_ID,
+  backupSchemaProfile,
   OPERATIONAL_STOCK_SCHEMA,
   WAREHOUSE_BRANCH_CODE,
   WAREHOUSE_BRANCH_ID,
@@ -876,7 +877,8 @@ async function failuresOf(work: Array<Promise<unknown>>): Promise<unknown[]> {
 // 035 also adds an empty registry and a null receipt identity. 034 also adds the nullable
 // return reason. Older profiles still fail. The stored manifest is never rewritten.
 async function schemaBridge(queryable: Queryable, schemaVersion: string): Promise<SchemaBridge> {
-  const latest = (await queryable.query<{ id: string }>("SELECT id FROM schema_migrations ORDER BY id DESC LIMIT 1")).rows[0]?.id;
+  const migration = await queryable.query<{ id: string }>("SELECT id FROM schema_migrations ORDER BY id DESC LIMIT 1");
+  const latest = backupSchemaProfile(migration.rows[0]?.id);
   if (schemaVersion === latest) return "exact";
   if (latest === OPERATIONAL_STOCK_SCHEMA && schemaVersion === RECEIPT_SCHEMA) return "operational";
   if (latest === OPERATIONAL_STOCK_SCHEMA && schemaVersion === RETURN_REASON_SCHEMA) return "receipt-and-operational";

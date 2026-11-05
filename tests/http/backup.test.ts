@@ -348,8 +348,14 @@ test("business flows created through the application are archived table by table
     lastValue: sequence.rows[0]!.last_value,
     isCalled: sequence.rows[0]!.is_called,
   });
+  const saleCounter = await built.pool.query<{ last_number: string }>(
+    "SELECT last_number::text FROM sales_pos_reference_counter WHERE singleton",
+  );
+  expect(decoded.manifest.salesSaleReferenceSequence).toEqual({
+    lastValue: saleCounter.rows[0]!.last_number,
+    isCalled: true,
+  });
   for (const [sequenceName, manifestSequence] of [
-    ["sales_sale_reference_number_seq", decoded.manifest.salesSaleReferenceSequence],
     ["returns_return_reference_number_seq", decoded.manifest.returnsReturnReferenceSequence],
     ["sales_receipt_prefix_seq", decoded.manifest.salesReceiptPrefixSequence],
   ] as const) {
@@ -508,6 +514,7 @@ test("receipt numbering archive keeps an unbounded sequence, registry rows, and 
     (sale!.receipt_identity as Record<string, unknown>).reference = "x".repeat(81);
   }, "Invalid receipt identity in backup.");
 
+  expect(await revertLastMigration(built.pool)).toBe("038_pos_reference_counter.sql");
   expect(await revertLastMigration(built.pool)).toBe("037_operational_stock.sql");
   expect(await revertLastMigration(built.pool)).toBe("036_receipt_numbering.sql");
   const profile035 = await downloadBackup(manager);

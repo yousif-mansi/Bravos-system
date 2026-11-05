@@ -4,6 +4,7 @@ import { openLookupLists } from "./support/open-lookup-lists";
 const internal = "http://127.0.0.1:5174";
 const contactPhone = "01017412287";
 const shots = ".scratch/pos-hardware-20261026/screenshots";
+const warehouseBranchId = "33333333-3333-4333-8333-333333333333";
 
 type SaleLine = { variantId: string; paidPiasters: number; originalPiasters: number; variant: { product: { nameAr: string; code: string } } };
 type Sale = {
@@ -39,7 +40,7 @@ async function login(page: Page) {
   await expect(page.getByTestId("active-branch")).toContainText("أبشواي");
 }
 
-async function seed(page: Page) {
+async function seed(page: Page, { operationalStock = false } = {}) {
   await login(page);
   const tag = crypto.randomUUID().slice(0, 8);
   const category = await api(page, "POST", "/api/internal/catalog/categories", { nameAr: `قمصان الإيصال ${tag}` });
@@ -60,10 +61,23 @@ async function seed(page: Page) {
   const variant = product.variants[0];
   await api(page, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
-    branchId: workspace.activeBranch.id,
+    branchId: operationalStock ? warehouseBranchId : workspace.activeBranch.id,
     receiptDate: "2026-10-05",
-    lines: [{ variantId: variant.id, quantity: 2, unitCostPiasters: 5000 }],
+    lines: [{
+      ...(operationalStock ? { productId: product.id } : { variantId: variant.id }),
+      quantity: 2,
+      unitCostPiasters: 5000,
+    }],
   });
+  if (operationalStock) {
+    await api(page, "POST", "/api/internal/inventory/transfers", {
+      operationId: crypto.randomUUID(),
+      sourceBranchId: warehouseBranchId,
+      destinationBranchId: workspace.activeBranch.id,
+      productId: product.id,
+      quantity: 2,
+    });
+  }
   return { tag, product, size, color, variant, nameAr };
 }
 
@@ -132,18 +146,14 @@ test("lowercase product-code Enter finds the cached product online and offline w
 
 test("complete without printing persists one sale and leaves reprint available", async ({ page }) => {
   await page.addInitScript(installPrintHarness, { throwInstead: false });
-  const data = await seed(page);
+  const data = await seed(page, { operationalStock: true });
   await openLookup(page);
-  const beforeSales = await salesForVariant(page, data.variant.id);
-  const beforeStock = await available(page, data.product.code, data.variant.id);
+  const beforeSales = await salesForVariant(page, data.product.operationalVariantId);
+  const branchStock = async () => (await api(page, "GET", `/api/internal/catalog/lookup?code=${data.product.code}`)).availableQuantity;
+  const beforeStock = await branchStock();
 
   await lookupCode(page, data.product.code);
-  await openLookupLists(page);
-  await page.locator("#lookupSize").selectOption(data.size.id);
-  await page.locator("#lookupColor").selectOption(data.color.id);
-  await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
-  const checkout = page.getByRole("form", { name: "إتمام البيع" });
-  await checkout.getByRole("button", { name: "قبول الأسعار", exact: true }).click();
+  await page.getByTestId("add-operational").click();
   await page.getByTestId("complete-sale").click();
 
   await expect(page.getByRole("status").filter({ hasText: "تم حفظ البيع" })).toBeVisible();
@@ -153,11 +163,11 @@ test("complete without printing persists one sale and leaves reprint available",
   await expect(page.getByTestId("reprint-receipt")).toBeVisible();
   await expect(page.getByTestId("complete-sale-print")).toBeDisabled();
   expect(await page.evaluate(() => (window as Window & { __receiptPrintCalls?: number }).__receiptPrintCalls ?? 0)).toBe(0);
-  await expect.poll(async () => (await salesForVariant(page, data.variant.id)).length).toBe(beforeSales.length + 1);
-  const afterSales = await salesForVariant(page, data.variant.id);
+  await expect.poll(async () => (await salesForVariant(page, data.product.operationalVariantId)).length).toBe(beforeSales.length + 1);
+  const afterSales = await salesForVariant(page, data.product.operationalVariantId);
   expect(afterSales).toHaveLength(beforeSales.length + 1);
   expect(afterSales.at(-1)?.finalTotalPiasters).toBe(12000);
-  await expect.poll(() => available(page, data.product.code, data.variant.id)).toBe(beforeStock - 1);
+  await expect.poll(branchStock).toBe(beforeStock - 1);
 });
 
 test("receipt preview renders the completed sale at 58mm and 80mm", async ({ page }) => {
@@ -173,7 +183,6 @@ test("receipt preview renders the completed sale at 58mm and 80mm", async ({ pag
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByLabel("اسم الزبون (اختياري)").fill(customerName);
   await checkout.getByLabel("هاتف الزبون (اختياري)").fill(customerPhone);
-  await checkout.getByRole("button", { name: "قبول الأسعار", exact: true }).click();
   await page.getByTestId("complete-sale").click();
   await expect(page.getByTestId("sale-details")).toBeVisible();
   await expect.poll(async () => (await salesForVariant(page, data.variant.id)).length).toBe(1);
@@ -315,8 +324,6 @@ test("stubbed offline receipt print runs once per request and does not sell agai
   await page.locator("#lookupSize").selectOption(data.size.id);
   await page.locator("#lookupColor").selectOption(data.color.id);
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
-  const checkout = page.getByRole("form", { name: "إتمام البيع" });
-  await checkout.getByRole("button", { name: "قبول الأسعار", exact: true }).click();
   await expect(page.getByTestId("pos-product-tile").filter({ hasText: data.product.code })).toBeVisible();
   await page.screenshot({ path: `${shots}/pos-completion-options.png`, fullPage: true });
   if (process.env.BRAVOS_HW_PRODUCTION === "1") {
@@ -362,18 +369,14 @@ test("stubbed offline receipt print runs once per request and does not sell agai
 
 test("complete and print shows a local save error and does not sell when sales storage rejects", async ({ page }) => {
   await page.addInitScript(installPrintHarness, { throwInstead: false });
-  const data = await seed(page);
+  const data = await seed(page, { operationalStock: true });
   await openLookup(page);
-  const beforeSales = await salesForVariant(page, data.variant.id);
-  const beforeStock = await available(page, data.product.code, data.variant.id);
+  const beforeSales = await salesForVariant(page, data.product.operationalVariantId);
+  const branchStock = async () => (await api(page, "GET", `/api/internal/catalog/lookup?code=${data.product.code}`)).availableQuantity;
+  const beforeStock = await branchStock();
 
   await lookupCode(page, data.product.code);
-  await openLookupLists(page);
-  await page.locator("#lookupSize").selectOption(data.size.id);
-  await page.locator("#lookupColor").selectOption(data.color.id);
-  await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
-  const checkout = page.getByRole("form", { name: "إتمام البيع" });
-  await checkout.getByRole("button", { name: "قبول الأسعار", exact: true }).click();
+  await page.getByTestId("add-operational").click();
 
   await page.evaluate(() => {
     const proto = IDBObjectStore.prototype;
@@ -405,8 +408,8 @@ test("complete and print shows a local save error and does not sell when sales s
     await expect(page.getByTestId("sale-details")).toHaveCount(0);
     await expect(page.locator('iframe[title="إيصال الطباعة"]')).toHaveCount(0);
     expect(await page.evaluate(() => (window.top as Window & { __receiptPrintCalls?: number }).__receiptPrintCalls ?? 0)).toBe(0);
-    expect(await salesForVariant(page, data.variant.id)).toHaveLength(beforeSales.length);
-    expect(await available(page, data.product.code, data.variant.id)).toBe(beforeStock);
+    expect(await salesForVariant(page, data.product.operationalVariantId)).toHaveLength(beforeSales.length);
+    expect(await branchStock()).toBe(beforeStock);
   } finally {
     await page.evaluate(() => {
       (window as Window & { __bravosRestoreSalesIdb?: () => void }).__bravosRestoreSalesIdb?.();
@@ -453,8 +456,6 @@ test("reprint cancelled by the same staff account during font preparation does n
   await page.locator("#lookupSize").selectOption(data.size.id);
   await page.locator("#lookupColor").selectOption(data.color.id);
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
-  const checkout = page.getByRole("form", { name: "إتمام البيع" });
-  await checkout.getByRole("button", { name: "قبول الأسعار", exact: true }).click();
   await page.getByTestId("complete-sale").click();
   await expect(page.getByTestId("sale-details")).toBeVisible();
   await expect.poll(async () => (await salesForVariant(page, data.variant.id)).length).toBe(beforeSales.length + 1);
