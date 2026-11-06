@@ -35,6 +35,9 @@ import {
 import { egpInputToPiasters, formatEgpFromPiasters, piastersToEgpInput } from "../money.ts";
 import { EmptyState } from "../ui/EmptyState.tsx";
 import { useRevealFeedback } from "../ui/useRevealFeedback.ts";
+import { BusinessTabs, DetailPanel, TablePagination } from "../ui/BusinessUi.tsx";
+import { TransferPanel } from "./TransferPage.tsx";
+import "./ReceivingPage.css";
 
 import {
   assignPendingReceive,
@@ -300,6 +303,24 @@ export default function ReceivingPage({
   workspace: WorkspaceDto;
   onChanged: (workspace: WorkspaceDto | null) => void;
 }) {
+  const canTransfer = workspace.staff.role === "manager" && workspace.capabilities.manageInventory;
+  const tabItems = [
+    { id: "receive", label: "استلام بضاعة" },
+    { id: "locations", label: "أرصدة المخازن" },
+    { id: "transfers", label: "تحويل مخزون", disabled: !canTransfer },
+    { id: "low-stock", label: "المخزون المنخفض" },
+    { id: "history", label: "سجل الاستلام" },
+  ] as const;
+  const [tab, setTab] = useState(() => {
+    const requested = new URLSearchParams(window.location.search).get("tab");
+    return tabItems.some((item) => item.id === requested && !("disabled" in item && item.disabled)) ? requested! : "receive";
+  });
+  const [transferDirty, setTransferDirty] = useState(false);
+  const [stockPage, setStockPage] = useState(1);
+  const [lowPage, setLowPage] = useState(1);
+  const [lowQuery, setLowQuery] = useState("");
+  const [historyQuery, setHistoryQuery] = useState("");
+  const [historyPage, setHistoryPage] = useState(1);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [pending, setPending] = useState("");
@@ -314,6 +335,7 @@ export default function ReceivingPage({
   const [categoryParentId, setCategoryParentId] = useState("");
   const [suppliers, setSuppliers] = useState<SupplierDto[]>([]);
   const [supplierName, setSupplierName] = useState("");
+  const [addingSupplier, setAddingSupplier] = useState(false);
   const [supplierError, setSupplierError] = useState("");
   const [supplierNotice, setSupplierNotice] = useState("");
   const [receiptSupplierId, setReceiptSupplierId] = useState("");
@@ -321,6 +343,7 @@ export default function ReceivingPage({
   const [stockQuery, setStockQuery] = useState("");
   const [stockLocationFilter, setStockLocationFilter] = useState<"all" | "abshway" | "fayoum">("all");
   const supplierInFlight = useRef(false);
+  const stockRefreshRevisionRef = useRef(0);
   const [branchId, setBranchId] = useState(workspace.activeBranch?.id ?? workspace.authorizedBranches[0]?.id ?? "");
   const receiptFeedback = useRevealFeedback<HTMLElement>();
   const correctionFeedback = useRevealFeedback<HTMLFormElement>();
@@ -359,7 +382,11 @@ export default function ReceivingPage({
   }
 
   function refreshStockRows() {
-    return listProductLocationStock().then(setStockRows, () => setStockRows(null));
+    const revision = ++stockRefreshRevisionRef.current;
+    return listProductLocationStock().then(
+      (rows) => { if (revision === stockRefreshRevisionRef.current) setStockRows(rows); },
+      () => { if (revision === stockRefreshRevisionRef.current) setStockRows(null); },
+    );
   }
 
   async function refresh() {
@@ -449,7 +476,7 @@ export default function ReceivingPage({
     return () => window.removeEventListener("storage", onStorage);
   }, [workspace.staff.id]);
 
-  const selectedReceipt = receipts.find((item) => item.id === selectedReceiptId) ?? receipts[0] ?? null;
+  const selectedReceipt = receipts.find((item) => item.id === selectedReceiptId) ?? null;
   const formLocked = pendingReceive?.phase === "uncertain" && frozenPayload !== null;
   const canAddNewProduct = !pendingReceive || pendingReceive.phase === "rejected";
   useEffect(() => {
@@ -462,6 +489,13 @@ export default function ReceivingPage({
     matchesNameOrSku(row, stockQuery)
     && (stockLocationFilter === "all" || locationQuantity(row, stockLocationFilter) > 0),
   );
+
+  const visibleLowStock = lowStock.filter((item) => matchesNameOrSku(item.variant.product, lowQuery));
+  const historyNeedle = historyQuery.trim().toLocaleLowerCase();
+  const visibleReceipts = receipts.filter((receipt) => !historyNeedle || [receipt.supplierNameAr ?? "", receipt.receiptDate, ...receipt.lines.map((line) => line.variant.product.code)].some((value) => value.toLocaleLowerCase().includes(historyNeedle)));
+  const safeStockPage = Math.min(stockPage, Math.max(1, Math.ceil(visibleStockRows.length / 20)));
+  const safeLowPage = Math.min(lowPage, Math.max(1, Math.ceil(visibleLowStock.length / 20)));
+  const safeHistoryPage = Math.min(historyPage, Math.max(1, Math.ceil(visibleReceipts.length / 20)));
 
   function parseDraftLines(): ReceivePayloadLines | null {
     if (lines.length === 0) {
@@ -831,7 +865,7 @@ export default function ReceivingPage({
   }
 
   function beginCorrection() {
-    if (!selectedReceipt) return;
+    if (!selectedReceipt || correctionInFlightRef.current || correctionRetryReady) return;
     resetCorrectionAttempt();
     setCorrectionReason("");
     setCorrectionLines(selectedReceipt.lines.map((line) => ({
@@ -866,6 +900,7 @@ export default function ReceivingPage({
       return;
     }
     correctionInFlightRef.current = true;
+    setPending("correction");
     try {
       const payload: CorrectionPayload = {
         receiptId: selectedReceipt.id,
@@ -882,7 +917,6 @@ export default function ReceivingPage({
         ? correctionAttemptRef.current
         : { digest, operationId: crypto.randomUUID() };
       correctionAttemptRef.current = attempt;
-      setPending("correction");
       setError("");
       setNotice("");
       await correctReceipt(selectedReceipt.id, {
@@ -894,9 +928,9 @@ export default function ReceivingPage({
       resetCorrectionAttempt();
       setEditingCorrection(false);
       setNotice("تم حفظ تصحيح إذن الاستلام.");
-      await refresh();
+      await refresh().catch(() => setError("تم حفظ التصحيح، لكن تعذر تحديث بيانات الاستلام. أعد تحميل الصفحة."));
     } catch (caught) {
-      if (caught instanceof ApiError && caught.status >= 400 && caught.status < 500) {
+      if ((caught instanceof ApiError && caught.status >= 400 && caught.status < 500) || !correctionAttemptRef.current) {
         resetCorrectionAttempt();
       } else {
         setCorrectionRetryReady(true);
@@ -937,6 +971,11 @@ export default function ReceivingPage({
   }
 
   async function openReceiptDetails(receiptId: string) {
+    if (correctionInFlightRef.current || correctionRetryReady) {
+      setError("نتيجة التصحيح غير مؤكدة. أعد محاولة التصحيح بالبيانات نفسها قبل فتح إذن آخر.");
+      return;
+    }
+    if (editingCorrection && receiptId !== selectedReceiptId && !window.confirm("لديك تصحيح غير محفوظ. هل تريد عرض إذن آخر؟")) return;
     if (detailLoadingId) return;
     setDetailLoadingId(receiptId);
     setError("");
@@ -954,8 +993,33 @@ export default function ReceivingPage({
     }
   }
 
+  function closeReceiptDetails() {
+    if (correctionInFlightRef.current || correctionRetryReady) {
+      setError("نتيجة التصحيح غير مؤكدة. أعد محاولة التصحيح بالبيانات نفسها قبل إغلاق التفاصيل.");
+      return;
+    }
+    if (editingCorrection && !window.confirm("لديك تصحيح غير محفوظ. هل تريد إغلاق التفاصيل؟")) return;
+    setEditingCorrection(false);
+    resetCorrectionAttempt();
+    setSelectedReceiptId(null);
+  }
+
+  function changeTab(next: string) {
+    if (next === tab || (next === "transfers" && !canTransfer)) return;
+    const dirtyReceive = lines.length > 0 || addingNewProduct || Boolean(supplierName.trim() || categoryName.trim() || receiptSupplierId) || receiptDate !== todayCairoDate();
+    const dirty = (tab === "receive" && dirtyReceive) || (tab === "transfers" && transferDirty) || (tab === "history" && editingCorrection);
+    if (dirty && !window.confirm("لديك بيانات غير محفوظة. هل تريد الانتقال؟ ستبقى البيانات في هذه الصفحة.")) return;
+    setTab(next);
+    if (next === "transfers") void refreshStockRows();
+    const url = new URL(window.location.href);
+    if (next === "receive") url.searchParams.delete("tab"); else url.searchParams.set("tab", next);
+    window.history.replaceState(window.history.state, "", url);
+  }
+  const totalQuantity = lines.reduce((sum, line) => sum + (Number(line.quantity) || 0), 0);
+  const totalCost = lines.reduce((sum, line) => sum + (egpInputToPiasters(line.costEgp) ?? 0) * (Number(line.quantity) || 0), 0);
+
   return (
-    <main className="shell receiving-page">
+    <main className="shell business-page receiving-page">
       <header className="page-hero">
         <h1>استلام المخزون</h1>
       </header>
@@ -965,6 +1029,8 @@ export default function ReceivingPage({
       {error ? <div className="error point-feedback" role="alert">{error}</div> : null}
       {notice ? <div className="notice point-feedback" role="status">{notice}</div> : null}
 
+      <BusinessTabs id="receiving-tabs" label="أقسام المخزون" value={tab} items={tabItems} onChange={changeTab} />
+      <div role="tabpanel" id="receiving-tabs-panel-locations" aria-labelledby="receiving-tabs-tab-locations" hidden={tab !== "locations"}>
       <section className="card" aria-label="أماكن المخزون" aria-busy={stockRows === undefined}>
         <div className="section-heading-row">
           <h2>أماكن المخزون</h2>
@@ -989,7 +1055,7 @@ export default function ReceivingPage({
               </tr>
             </thead>
             <tbody>
-              {visibleStockRows.map((row) => (
+              {visibleStockRows.slice((safeStockPage - 1) * 20, safeStockPage * 20).map((row) => (
                 <tr key={row.productId}>
                   <td>{row.nameAr} <span className="muted" dir="ltr">{row.code}</span></td>
                   <td>{locationCell(row, "warehouse")}</td>
@@ -1000,11 +1066,14 @@ export default function ReceivingPage({
             </tbody>
           </table>
         </div>
+        <TablePagination page={safeStockPage} pageSize={20} total={visibleStockRows.length} onPageChange={setStockPage} />
         {stockRows === undefined ? <p className="muted">جارٍ تحميل المخزون…</p> : null}
-        {stockRows === null ? <p className="error" role="alert">تعذر تحميل أماكن المخزون.</p> : null}
+        {stockRows === null ? <div className="error" role="alert">تعذر تحميل أماكن المخزون. <button type="button" onClick={() => { setStockRows(undefined); void refreshStockRows(); }}>إعادة المحاولة</button></div> : null}
         {stockRows && visibleStockRows.length === 0 ? <p className="empty">لا توجد منتجات مطابقة في أماكن المخزون المحددة.</p> : null}
       </section>
 
+      </div>
+      <div role="tabpanel" id="receiving-tabs-panel-receive" aria-labelledby="receiving-tabs-tab-receive" hidden={tab !== "receive"}>
       <section className="card stacked-form" aria-labelledby="receive-stock-title">
         <form aria-label="تسجيل إذن استلام" onSubmit={(event) => void onSubmit(event)}>
           <div className="page-hero">
@@ -1030,7 +1099,16 @@ export default function ReceivingPage({
                 </select>
               </div>
               <div className="field">
-                <label htmlFor="newSupplierName">مورد جديد</label>
+                <label htmlFor="receiptDate">تاريخ الاستلام</label>
+                <input id="receiptDate" type="date" value={receiptDate} onChange={(event) => setReceiptDate(event.target.value)} required disabled={formLocked} />
+              </div>
+              <button type="button" className="secondary" aria-expanded={addingSupplier} aria-controls="new-supplier-inline" disabled={formLocked || Boolean(pending)} onClick={() => setAddingSupplier((open) => !open)}>
+                {addingSupplier ? "إغلاق المورد الجديد" : "مورد جديد"}
+              </button>
+            </div>
+            <div id="new-supplier-inline" className="receiving-supplier-create" hidden={!addingSupplier}>
+              <div className="field">
+                <label htmlFor="newSupplierName">اسم المورد الجديد</label>
                 <input
                   id="newSupplierName"
                   value={supplierName}
@@ -1052,17 +1130,6 @@ export default function ReceivingPage({
             {supplierNotice ? <div className="notice" role="status" data-testid="inline-supplier-notice">{supplierNotice}</div> : null}
           </div>
 
-          <div className="field">
-            <label htmlFor="receiptDate">تاريخ الاستلام</label>
-            <input
-              id="receiptDate"
-              type="date"
-              value={receiptDate}
-              onChange={(event) => setReceiptDate(event.target.value)}
-              required
-              disabled={formLocked}
-            />
-          </div>
           {desktop && lines.length > 0 ? (
             <MerchandiseFilters
               idPrefix="receipt-browse"
@@ -1076,12 +1143,13 @@ export default function ReceivingPage({
               onClear={() => { setReceiptBrowseCategoryId(""); setReceiptBrowseQuery(""); }}
             />
           ) : null}
+          <div className="business-table-wrap receiving-draft-table"><table className="business-table"><thead><tr><th>المنتج</th><th>الرمز</th><th>الكمية</th><th>تكلفة الوحدة</th><th>الإجمالي</th><th>حذف</th></tr></thead><tbody>
           {lines.map((line, index) => {
             const product = products.find((item) => item.id === line.productId);
             return (
-              <div className="variant-row receipt-variant-row" key={line.key}>
-                <div className="field">
-                  <label htmlFor={`product-${line.key}`}>المنتج</label>
+              <tr key={line.key}>
+                <td><div className="field">
+                  <label className="receiving-visually-hidden" htmlFor={`product-${line.key}`}>المنتج</label>
                   <select
                     id={`product-${line.key}`}
                     value={line.productId}
@@ -1103,9 +1171,10 @@ export default function ReceivingPage({
                     />
                   </select>
                   {product ? <p className="category-path">المسار: {categoryPath(categories, product.category.id) || product.category.nameAr}</p> : null}
-                </div>
-                <div className="field">
-                  <label htmlFor={`qty-${line.key}`}>الكمية</label>
+                </div></td>
+                <td dir="ltr">{product?.code ?? "—"}</td>
+                <td><div className="field">
+                  <label className="receiving-visually-hidden" htmlFor={`qty-${line.key}`}>الكمية</label>
                   <input
                     id={`qty-${line.key}`}
                     inputMode="numeric"
@@ -1118,9 +1187,9 @@ export default function ReceivingPage({
                     required
                     disabled={formLocked}
                   />
-                </div>
-                <div className="field">
-                  <label htmlFor={`cost-${line.key}`}>تكلفة الشراء للجنيه</label>
+                </div></td>
+                <td><div className="field">
+                  <label className="receiving-visually-hidden" htmlFor={`cost-${line.key}`}>تكلفة الشراء بالجنيه</label>
                   <input
                     id={`cost-${line.key}`}
                     value={line.costEgp}
@@ -1132,19 +1201,22 @@ export default function ReceivingPage({
                     required
                     disabled={formLocked}
                   />
-                </div>
-                <button
+                </div></td>
+                <td>{formatEgpFromPiasters((egpInputToPiasters(line.costEgp) ?? 0) * (Number(line.quantity) || 0))}</td>
+                <td><button
                   type="button"
                   className="danger"
                   disabled={formLocked}
                   onClick={() => setLines(lines.filter((item) => item.key !== line.key))}
                 >
                   حذف الصنف
-                </button>
-              </div>
+                </button></td>
+              </tr>
             );
           })}
-          <div className="actions">
+          </tbody></table></div>
+          <div className="actions business-actions receiving-save">
+            <p>الأصناف: {lines.length} · القطع: {totalQuantity} · الإجمالي: {formatEgpFromPiasters(totalCost)}</p>
             {pendingReceive ? (
               <button
                 type="button"
@@ -1210,9 +1282,9 @@ export default function ReceivingPage({
         ) : null}
       </section>
 
-      <section className="card" aria-label="تجهيز تصنيفات المخزون">
+      <section id="intake-category" className="card" aria-label="تجهيز تصنيفات المخزون">
         <details className="business-disclosure">
-        <summary>تجهيز التصنيف</summary>
+        <summary>إضافة تصنيف جديد</summary>
         <form aria-label="إضافة تصنيف للمخزون" onSubmit={(event) => void addCategory(event)}>
           <div className="field"><label htmlFor="intakeCategoryName">تصنيف جديد</label><input id="intakeCategoryName" value={categoryName} onChange={(event) => setCategoryName(event.target.value)} required /></div>
           <div className="field"><label htmlFor="intakeCategoryParent">التصنيف الرئيسي (اختياري)</label><select id="intakeCategoryParent" value={categoryParentId} onChange={(event) => setCategoryParentId(event.target.value)}><option value="">تصنيف رئيسي</option>{categories.filter((item) => item.parentId === null).map((item) => <option key={item.id} value={item.id}>{item.nameAr}</option>)}</select></div>
@@ -1221,22 +1293,20 @@ export default function ReceivingPage({
         </details>
       </section>
 
+      </div>
+      <div role="tabpanel" id="receiving-tabs-panel-transfers" aria-labelledby="receiving-tabs-tab-transfers" hidden={tab !== "transfers"}>{canTransfer ? <TransferPanel workspace={workspace} onDirtyChange={setTransferDirty} active={tab === "transfers"} stockRows={stockRows ?? null} onCompleted={() => { void refresh().catch(() => setError("تم النقل، لكن تعذر تحديث بيانات المخزون. أعد تحميل الصفحة.")); }} /> : null}</div>
+      <div role="tabpanel" id="receiving-tabs-panel-low-stock" aria-labelledby="receiving-tabs-tab-low-stock" hidden={tab !== "low-stock"}>
       <section className="card" aria-label="المخزون المنخفض">
           <h2>المخزون المنخفض</h2>
-          {lowStock.length === 0 ? (
-            <EmptyState title="المخزون كويس" message="مفيش أصناف وصلت لحد التنبيه." />
+          <div className="field"><label htmlFor="lowStockQuery">بحث بالاسم أو الرمز</label><input id="lowStockQuery" value={lowQuery} onChange={(event) => { setLowQuery(event.target.value); setLowPage(1); }} /></div>
+          {visibleLowStock.length === 0 ? (
+            <EmptyState title={lowQuery ? "لا توجد نتائج مطابقة" : "المخزون كويس"} message={lowQuery ? "غيّر البحث لعرض أصناف أخرى." : "مفيش أصناف وصلت لحد التنبيه."} />
           ) : (
-            <div className="staff-list" data-testid="low-stock-list">
-              {lowStock.map((item) => (
-                <article className="staff-item" key={`${item.branchId}:${item.variantId}`}>
-                  <p>
-                    {item.variant.product.code} / {item.variant.product.nameAr}
-                  </p>
-                  <p>الفرع: {placeName(item.branchId)} — المتاح: {item.availableQuantity} — الحد: {item.threshold}</p>
-                </article>
-              ))}
-            </div>
+            <div className="business-table-wrap" data-testid="low-stock-list"><table className="business-table"><thead><tr><th>المنتج</th><th>الرمز</th><th>المكان</th><th>المتاح</th><th>الحد</th></tr></thead><tbody>
+              {visibleLowStock.slice((safeLowPage - 1) * 20, safeLowPage * 20).map((item) => <tr key={`${item.branchId}:${item.variantId}`}><td>{item.variant.product.nameAr}</td><td>{item.variant.product.code}</td><td>{placeName(item.branchId)}</td><td>{item.availableQuantity}</td><td>{item.threshold}</td></tr>)}
+            </tbody></table></div>
           )}
+          <TablePagination page={safeLowPage} pageSize={20} total={visibleLowStock.length} onPageChange={setLowPage} />
           <details className="business-disclosure">
             <summary>إعدادات التنبيه</summary>
             <form aria-label="حد التنبيه العام" onSubmit={(event) => void onSaveThreshold(event)}>
@@ -1270,33 +1340,28 @@ export default function ReceivingPage({
           </details>
       </section>
 
-      <div className="grid two">
-        <section className="card" aria-label="سجل الاستلام">
-          {receipts.length === 0 ? (
-            <EmptyState title="لسه مفيش استلام" message="سجّل أول إذن من النموذج فوق." />
+      </div>
+      <div role="tabpanel" id="receiving-tabs-panel-history" aria-labelledby="receiving-tabs-tab-history" hidden={tab !== "history"}>
+      <div className="receiving-history">
+        <div className="business-master-detail">
+        <section className="card business-list-panel" aria-label="سجل الاستلام">
+          <h2>سجل الاستلام</h2>
+          <div className="field"><label htmlFor="receiptHistoryQuery">بحث بالمورد أو الرمز أو التاريخ</label><input id="receiptHistoryQuery" value={historyQuery} onChange={(event) => { setHistoryQuery(event.target.value); setHistoryPage(1); }} /></div>
+          {visibleReceipts.length === 0 ? (
+            <EmptyState title={historyQuery ? "لا توجد نتائج مطابقة" : "لسه مفيش استلام"} message={historyQuery ? "غيّر البحث لعرض أذون أخرى." : "سجّل أول إذن من نموذج الاستلام."} />
           ) : (
-            <details className="business-disclosure">
-              <summary>سجل الاستلام</summary>
-              <div className="business-archive-scroll" role="region" aria-label="سجل الاستلام" tabIndex={0}>
-                <div className="staff-list" data-testid="receipt-list">
-                  {receipts.map((receipt) => (
-                    <article className="staff-item business-archive-row" key={receipt.id}>
-                      <button type="button" className="secondary" disabled={Boolean(detailLoadingId)} aria-busy={detailLoadingId === receipt.id} onClick={() => void openReceiptDetails(receipt.id)}>
-                        {detailLoadingId === receipt.id ? "جارٍ تحميل التفاصيل…" : "عرض التفاصيل"}
-                      </button>
-                      <p>التاريخ: {receipt.receiptDate} · الفرع: {placeName(receipt.branchId)}</p>
-                      <p>{receipt.lines.map((line) => line.variant.product.code).join("، ")}</p>
-                      <p className="muted">أصناف: {receipt.lines.length}</p>
-                    </article>
-                  ))}
-                </div>
-              </div>
-            </details>
+            <div className="business-table-wrap" data-testid="receipt-list"><table className="business-table"><thead><tr><th>التاريخ</th><th>المورد</th><th>المكان</th><th>الأصناف</th><th>القيمة</th><th>التفاصيل</th></tr></thead><tbody>
+              {visibleReceipts.slice((safeHistoryPage - 1) * 20, safeHistoryPage * 20).map((receipt) => <tr key={receipt.id}><td>{receipt.receiptDate}</td><td>{receipt.supplierNameAr ?? "—"}</td><td>{placeName(receipt.branchId)}</td><td>{receipt.lines.length} · {receipt.lines.map((line) => line.variant.product.code).join("، ")}</td><td>{formatEgpFromPiasters(receipt.lines.reduce((sum, line) => sum + line.effectiveQuantity * line.effectiveUnitCostPiasters, 0))}</td><td><button type="button" className="secondary" disabled={Boolean(detailLoadingId)} aria-busy={detailLoadingId === receipt.id} onClick={() => void openReceiptDetails(receipt.id)}>{detailLoadingId === receipt.id ? "جارٍ تحميل التفاصيل…" : "عرض التفاصيل"}</button></td></tr>)}
+            </tbody></table></div>
           )}
+          <TablePagination page={safeHistoryPage} pageSize={20} total={visibleReceipts.length} onPageChange={setHistoryPage} />
+        </section>
           {selectedReceipt ? (
+            <DetailPanel title="تفاصيل الإذن" onClose={closeReceiptDetails}>
             <section ref={receiptFeedback.regionRef} className={`reveal-feedback${receiptFeedback.highlighted ? " is-highlighted" : ""}`} data-testid="receipt-details">
-              <h3 ref={receiptFeedback.headingRef} tabIndex={-1}>تفاصيل الإذن</h3>
+              <h3 className="receiving-visually-hidden" ref={receiptFeedback.headingRef} tabIndex={-1}>تفاصيل الإذن</h3>
               <p>تاريخ الاستلام: {selectedReceipt.receiptDate}</p>
+              <p>المورد: {selectedReceipt.supplierNameAr ?? "بدون مورد"}</p>
               <p>الفرع: {placeName(selectedReceipt.branchId)}</p>
               {selectedReceipt.lines.map((line) => (
                 <div key={line.id} className="staff-item">
@@ -1306,15 +1371,17 @@ export default function ReceivingPage({
                 </div>
               ))}
               <div className="actions">
-                <button type="button" className="secondary" onClick={beginCorrection}>تصحيح الإذن</button>
+                <button type="button" className="secondary" disabled={editingCorrection || pending === "correction" || correctionRetryReady} onClick={beginCorrection}>تصحيح الإذن</button>
               </div>
               {editingCorrection ? (
                 <form ref={correctionFeedback.regionRef} className={`stacked-form reveal-feedback${correctionFeedback.highlighted ? " is-highlighted" : ""}`} aria-label="تصحيح إذن الاستلام" onSubmit={(event) => void onCorrectReceipt(event)}>
                   <h4 ref={correctionFeedback.headingRef} tabIndex={-1}>تصحيح إذن الاستلام</h4>
+                  {correctionRetryReady ? <p role="status">نتيجة التصحيح غير مؤكدة. أعد محاولة التصحيح بالبيانات نفسها للتحقق من النتيجة.</p> : null}
                   <div className="field">
                     <label htmlFor="receivingCorrectionReason">سبب التصحيح</label>
                     <input
                       id="receivingCorrectionReason"
+                      disabled={pending === "correction" || correctionRetryReady}
                       value={correctionReason}
                       onChange={(event) => {
                         resetCorrectionAttempt();
@@ -1330,6 +1397,7 @@ export default function ReceivingPage({
                         <label htmlFor={`correctionQuantity-${line.lineId}`}>الكمية</label>
                         <input
                           id={`correctionQuantity-${line.lineId}`}
+                          disabled={pending === "correction" || correctionRetryReady}
                           inputMode="numeric"
                           value={line.quantity}
                           onChange={(event) => {
@@ -1345,6 +1413,7 @@ export default function ReceivingPage({
                         <label htmlFor={`correctionCost-${line.lineId}`}>تكلفة الشراء بالجنيه</label>
                         <input
                           id={`correctionCost-${line.lineId}`}
+                          disabled={pending === "correction" || correctionRetryReady}
                           value={line.costEgp}
                           onChange={(event) => {
                             resetCorrectionAttempt();
@@ -1365,7 +1434,8 @@ export default function ReceivingPage({
                           ? "إعادة محاولة التصحيح"
                           : "حفظ التصحيح"}
                     </button>
-                    <button type="button" className="secondary" onClick={() => {
+                    <button type="button" className="secondary" disabled={pending === "correction" || correctionRetryReady} onClick={() => {
+                      if (correctionInFlightRef.current || correctionRetryReady) return;
                       resetCorrectionAttempt();
                       setEditingCorrection(false);
                     }}>إلغاء</button>
@@ -1395,8 +1465,9 @@ export default function ReceivingPage({
                 </div>
               ) : null}
             </section>
+            </DetailPanel>
           ) : null}
-        </section>
+        </div>
 
         <section className="card" aria-label="تفاصيل دفعات الشراء">
           {batches.length === 0 ? (
@@ -1420,6 +1491,7 @@ export default function ReceivingPage({
             </details>
           )}
         </section>
+      </div>
       </div>
 
     </main>

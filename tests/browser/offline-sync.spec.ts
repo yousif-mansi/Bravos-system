@@ -1,4 +1,4 @@
-import { stageUnpaidPosQuote } from "./support/pos-checkout";
+import { openPosOptionalDetails, stageUnpaidPosQuote } from "./support/pos-checkout";
 import { expect, test, type Page, type Route } from "@playwright/test";
 import { openLookupLists } from "./support/open-lookup-lists";
 
@@ -779,6 +779,7 @@ async function addAndPrice(
   await color.selectOption({ label: seed.colorName });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
+  await openPosOptionalDetails(checkout);
   if (details?.customerName) {
     await checkout.getByLabel("اسم الزبون (اختياري)").fill(details.customerName);
   }

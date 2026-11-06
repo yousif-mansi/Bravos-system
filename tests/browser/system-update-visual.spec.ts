@@ -1,3 +1,4 @@
+import { openPosOptionalDetails } from "./support/pos-checkout";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { expect, test, type Page } from "@playwright/test";
@@ -67,6 +68,8 @@ test("staff intake is product-level and storefront options share one quantity", 
   await expect(intake.getByLabel("المقاس واللون")).toHaveCount(0);
   await expect(page.getByRole("radio", { name: "مقاس ولون جديدان لمنتج موجود" })).toHaveCount(0);
   await expect(page.getByRole("form", { name: "تسجيل إذن استلام" }).getByLabel("المنتج").first()).toBeVisible();
+  page.once("dialog", (dialog) => void dialog.accept());
+  await page.getByRole("tab", { name: "أرصدة المخازن" }).click();
   await expect(page.getByRole("region", { name: "أماكن المخزون" })).toBeVisible();
   await expect(page.getByTestId("stock-location-table")).toBeVisible();
   await page.screenshot({ path: path.join(visualDir, "receiving.png"), fullPage: true });
@@ -118,14 +121,17 @@ test("staff intake is product-level and storefront options share one quantity", 
   const saleCart = page.getByTestId("sale-cart");
   await expect(saleCart).toContainText(code);
   await expect(saleCart).not.toContainText(`مقاس ${suffix}`);
+  await openPosOptionalDetails(page.getByRole("form", { name: "إتمام البيع" }));
   await expect(page.getByLabel("هاتف الزبون (اختياري)")).toBeVisible();
   await page.screenshot({ path: path.join(visualDir, "pos-lookup.png"), fullPage: true });
 
   await page.goto("http://127.0.0.1:5174/catalog");
+  await page.getByRole("button", { name: "إدارة التصنيفات والمقاسات والألوان" }).click();
   await expect(page.getByRole("form", { name: "إضافة مقاس" }).getByLabel("اسم المقاس")).toBeVisible();
   await expect(page.getByRole("form", { name: "إضافة لون" }).getByLabel("اسم اللون")).toBeVisible();
-  await page.getByLabel("رمز المنتج").fill(code);
-  await page.getByRole("button", { name: "عرض المنتج" }).click();
+  await page.getByRole("button", { name: "إغلاق التصنيفات والمقاسات والألوان" }).click();
+  await page.getByTestId("catalog-browse-filters").locator("#catalog-browse-query").fill(code);
+  await page.getByRole("button", { name: `منتج مرئي ${suffix}`, exact: true }).click();
   const editor = page.getByRole("form", { name: "تعديل منتج" });
   await expect(editor.getByLabel("سعر البيع بالجنيه")).toHaveValue("1000");
   await expect(editor.getByLabel("الحد الأدنى للبيع بالجنيه (اختياري)")).toHaveValue("900");

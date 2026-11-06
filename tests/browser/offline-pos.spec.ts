@@ -1,4 +1,4 @@
-import { stageUnpaidPosQuote } from "./support/pos-checkout";
+import { openPosOptionalDetails, stageUnpaidPosQuote } from "./support/pos-checkout";
 import { expect, test, type Page } from "@playwright/test";
 
 test("cashier completes an offline cash sale from an issued snapshot and keeps 275/175", async ({ page }) => {
@@ -19,6 +19,7 @@ test("cashier completes an offline cash sale from an issued snapshot and keeps 2
 
   await addTwoPricedProducts(page, seed);
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
+  await openPosOptionalDetails(checkout);
   await checkout.getByLabel("خصم الموظف بالجنيه").fill("50");
   await expect(checkout).toContainText("450");
   await checkout.getByTestId("complete-sale").click();
@@ -768,6 +769,7 @@ test("another tab replacing the snapshot cannot reprice an accepted quote", asyn
   await page.route("**/api/internal/sales/accepted", (route) => route.abort("failed"));
   await addTwoPricedProducts(page, seed);
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
+  await openPosOptionalDetails(checkout);
   await checkout.getByLabel("خصم الموظف بالجنيه").fill("50");
   await stageUnpaidPosQuote(checkout);
   await expect(page.getByTestId("accepted-prices")).toContainText("450");

@@ -173,6 +173,9 @@ export default function LookupPage({
 
   const { scanInputRef, onScanKeyDown, focusScanInput } = useProductCodeScanner();
   const [sizeFocusNonce, setSizeFocusNonce] = useState(0);
+  useEffect(() => {
+    scanInputRef.current?.focus({ preventScroll: true });
+  }, [scanInputRef]);
   contextRef.current = contextKey;
   cartRef.current = cart;
 
@@ -597,20 +600,24 @@ export default function LookupPage({
   const selectedEffective = selected ? Math.max(0, effectiveByVariant[selected.id] ?? product?.availableQuantity ?? 0) : 0;
   const selectedCartQuantity = product ? cart.filter((line) => line.product.id === product.id).reduce((sum, line) => sum + line.quantity, 0) : 0;
 
-  function addSelected() {
-    if (!product || !selected) {
-      if (product) setError("حدّث قائمة المنتجات قبل البيع.");
+  function addProduct(item: CashierProductLookupDto) {
+    const variant = sellableVariant(item);
+    if (!variant) {
+      setError("حدّث قائمة المنتجات قبل البيع.");
       return;
     }
-    if (selectedCartQuantity >= selectedEffective) return;
+    const available = Math.max(0, effectiveByVariant[variant.id] ?? item.availableQuantity);
+    const quantityInCart = cart.filter((line) => line.product.id === item.id).reduce((sum, line) => sum + line.quantity, 0);
+    if (quantityInCart >= available) return;
     if (!beginCartRevision()) return;
     setCart((current) => {
-      const existing = current.find((line) => line.product.id === product.id);
+      const existing = current.find((line) => line.product.id === item.id);
       if (existing) {
         return current.map((line) => line.key === existing.key ? { ...line, quantity: line.quantity + 1 } : line);
       }
-      return [...current, { key: crypto.randomUUID(), product, variant: selected, quantity: 1 }];
+      return [...current, { key: crypto.randomUUID(), product: item, variant, quantity: 1 }];
     });
+    setCode("");
     focusScanInput();
   }
 
@@ -1507,6 +1514,10 @@ export default function LookupPage({
     ? displayedPayableTotal - (egpInputToPiasters(cashEgp) ?? 0) - (egpInputToPiasters(onlineEgp) ?? 0)
     : 0;
   const cartUnitCount = cart.reduce((sum, line) => sum + line.quantity, 0);
+  const cartQuantities: Record<string, number> = {};
+  for (const line of cart) {
+    cartQuantities[line.product.id] = (cartQuantities[line.product.id] ?? 0) + line.quantity;
+  }
   const checkoutHasDetails = cart.length > 0 || Boolean(quote) || Boolean(pendingSale);
   const canFinalize = Boolean(
     pendingSale?.physicallyCompleted
@@ -1545,14 +1556,14 @@ export default function LookupPage({
         onSubmit={(event) => void onSearch(event)}
       >
         <div className="field">
-          <label htmlFor="lookupCode">رمز المنتج</label>
+          <label htmlFor="lookupCode">رمز المنتج أو اسم الصنف</label>
           <input
             id="lookupCode"
             ref={scanInputRef}
             value={code}
             onChange={(event) => setCode(event.target.value)}
             onKeyDown={onScanKeyDown}
-            placeholder="الكود الكامل للبحث المباشر"
+            placeholder="اسم الصنف أو الكود الكامل أو مسح الباركود"
             autoComplete="off"
             autoCorrect="off"
             spellCheck={false}
@@ -1583,7 +1594,7 @@ export default function LookupPage({
               {selectedEffective === 0 ? (
                 <p className="muted">غير متوفر في المخزون حتى يتم الاستلام.</p>
               ) : (
-                <button type="button" data-testid="add-operational" disabled={formLocked || Boolean(stockPause) || Boolean(restorePause) || selectedCartQuantity >= selectedEffective} onClick={addSelected}>إضافة إلى السلة</button>
+                <button type="button" data-testid="add-operational" disabled={formLocked || Boolean(stockPause) || Boolean(restorePause) || selectedCartQuantity >= selectedEffective} onClick={() => addProduct(product)}>إضافة إلى السلة</button>
               )}
             </div>
           ) : (
@@ -1591,7 +1602,7 @@ export default function LookupPage({
           )}
         </section>
       ) : null}
-      <ProductBrowser key={contextKey} products={browseProducts} quantities={effectiveByVariant} selectedId={product?.id} loading={browseLoading} message={browseMessage} onRetry={() => void refreshBrowse(true)} onSelect={(item) => {
+      <ProductBrowser key={contextKey} products={browseProducts} quantities={effectiveByVariant} cartQuantities={cartQuantities} selectedId={product?.id} loading={browseLoading} message={browseMessage} filter={code} disabled={formLocked || Boolean(stockPause) || Boolean(restorePause)} onAdd={addProduct} onRetry={() => void refreshBrowse(true)} onSelect={(item) => {
         setProduct(item);
         setSizeFocusNonce((nonce) => nonce + 1);
       }} />
@@ -1612,9 +1623,12 @@ export default function LookupPage({
               <li key={line.key}>
                 <div><p className="pos-cart-name">{line.product.nameAr}</p>
                 <p className="pos-cart-meta">{line.product.code}</p>
-                <p className="pos-cart-meta">سعر الوحدة: {formatEgpFromPiasters(line.variant.sellingPricePiasters)}</p></div>
-                <div className="field">
+                <p className="pos-cart-meta">سعر الوحدة: {formatEgpFromPiasters(line.variant.sellingPricePiasters)}</p>
+                <p className="pos-cart-meta">الإجمالي: {formatEgpFromPiasters(line.variant.sellingPricePiasters * line.quantity)}</p></div>
+                <div className="field pos-quantity">
                   <label htmlFor={`qty-${line.key}`}>الكمية</label>
+                  <div className="pos-quantity-controls">
+                  <button type="button" className="secondary" aria-label={`تقليل كمية ${line.product.nameAr}`} disabled={formLocked || line.quantity <= 1} onClick={() => updateQuantity(line.key, line.quantity - 1)}>−</button>
                   <input
                     id={`qty-${line.key}`}
                     type="number"
@@ -1624,6 +1638,8 @@ export default function LookupPage({
                     disabled={formLocked}
                     onChange={(event) => updateQuantity(line.key, Number(event.target.value))}
                   />
+                  <button type="button" className="secondary" aria-label={`زيادة كمية ${line.product.nameAr}`} disabled={formLocked || line.quantity >= Math.max(1, (effectiveByVariant[line.variant.id] ?? line.variant.availableQuantity) - cart.filter((item) => item.product.id === line.product.id && item.key !== line.key).reduce((sum, item) => sum + item.quantity, 0))} onClick={() => updateQuantity(line.key, line.quantity + 1)}>+</button>
+                  </div>
                 </div>
                 <button type="button" className="danger" disabled={formLocked} onClick={() => updateQuantity(line.key, 0)}>
                   حذف
@@ -1632,7 +1648,9 @@ export default function LookupPage({
             ))}
           </ul>
         )}
-        {checkoutHasDetails ? <div className="pos-checkout-fields">
+        {checkoutHasDetails ? <details className="pos-optional-details">
+        <summary>العميل والخصم والكوبون <span className="muted">{[customerName || customerPhone ? "بيانات العميل مضافة" : "عميل اختياري", couponCode ? "كوبون مضاف" : "", discountEgp && discountEgp !== "0" ? `خصم ${discountEgp} ج.م` : ""].filter(Boolean).join(" • ")}</span></summary>
+        <div className="pos-checkout-fields">
         <div className="field">
           <label htmlFor="customerName">اسم الزبون (اختياري)</label>
           <input id="customerName" value={customerName} disabled={formLocked} onChange={(event) => { if (beginCartRevision()) setCustomerName(event.target.value); }} />
@@ -1657,7 +1675,7 @@ export default function LookupPage({
           <label htmlFor="discountReason">سبب الخصم (اختياري)</label>
           <input id="discountReason" value={discountReason} disabled={formLocked} onChange={(event) => { if (beginCartRevision()) setDiscountReason(event.target.value); }} />
         </div>
-        </div> : null}
+        </div></details> : null}
         {quote ? (
           <section className="pos-accepted-prices" data-testid="accepted-prices">
             <h3>المبلغ المستحق</h3>

@@ -97,7 +97,7 @@ export function SaleSummary({
   }
 
   return (
-    <section className="card" data-testid="sale-details">
+    <section className="card sale-summary" data-testid="sale-details">
       <h2>تفاصيل البيع</h2>
       <p>رقم الإيصال: {receiptNumber}</p>
       {saleNumber && saleNumber !== receiptNumber ? <p>رقم البيع: {saleNumber}</p> : null}
@@ -141,14 +141,25 @@ export function SaleSummary({
           <p>وقت اكتشاف التعارض: {formatTime(sale.couponUsageDiscrepancy.detectedAt)}</p>
         </div>
       ) : null}
-      <ul>
-        {sale.lines.map((line) => (
-          <li key={line.id}>
-            {line.variant.product.code} / {line.variant.size.nameAr} / {line.variant.color.nameAr} — {line.quantity} × {formatEgpFromPiasters(line.listedUnitPricePiasters)}
-            {" "}مدفوع {formatEgpFromPiasters(line.paidPiasters)}
-          </li>
-        ))}
-      </ul>
+      <div className="business-table-wrap">
+        <table className="business-table" aria-label="أصناف البيع">
+          <thead><tr><th>الصنف</th><th>الكمية</th><th>سعر الوحدة</th><th>المدفوع</th></tr></thead>
+          <tbody>{sale.lines.map((line) => (
+            <tr key={line.id}>
+              <td>
+                <strong>{line.variant.product.nameAr}</strong>
+                <small dir="auto">{line.variant.product.code}</small>
+                {[line.variant.size.nameAr, line.variant.color.nameAr].filter((value) => value.trim() && value !== "—").length > 0 ? (
+                  <div><small>{[line.variant.size.nameAr, line.variant.color.nameAr].filter((value) => value.trim() && value !== "—").join(" / ")}</small></div>
+                ) : null}
+              </td>
+              <td className="numeric">{line.quantity}</td>
+              <td className="numeric">{formatEgpFromPiasters(line.listedUnitPricePiasters)}</td>
+              <td className="numeric">{formatEgpFromPiasters(line.paidPiasters)}</td>
+            </tr>
+          ))}</tbody>
+        </table>
+      </div>
       {canReprint ? (
         <div className="actions">
           {phoneWarning ? <p className="muted" data-testid="receipt-phone-warning">{phoneWarning}</p> : null}

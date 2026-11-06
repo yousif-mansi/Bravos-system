@@ -1,3 +1,4 @@
+import { openPosOptionalDetails } from "./support/pos-checkout";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { expect, test, type Page } from "@playwright/test";
@@ -70,6 +71,7 @@ test("internal refinements keep one sale, supplier draft, customers, and stock l
   const receiptsBefore = await staffApi(page, "GET", "/api/internal/receiving/receipts");
 
   await page.goto("http://127.0.0.1:5174/receiving");
+  await page.getByRole("tab", { name: "أرصدة المخازن" }).click();
   const stock = page.getByTestId("stock-location-table");
   await expect(stock).toBeVisible();
   await page.locator("#stockQuery").fill(code);
@@ -100,6 +102,7 @@ test("internal refinements keep one sale, supplier draft, customers, and stock l
   await expect(stocked).toBeVisible();
   await page.screenshot({ path: path.join(visualDir, "receiving-stock-1440.png") });
 
+  await page.getByRole("tab", { name: "استلام بضاعة" }).click();
   const draftCode = `DRAFT-${suffix}`;
   const receive = page.getByRole("form", { name: "تسجيل إذن استلام" });
   const newProduct = page.getByRole("form", { name: "إضافة منتج إلى المخزون" });
@@ -117,6 +120,7 @@ test("internal refinements keep one sale, supplier draft, customers, and stock l
   await page.locator("[id^='product-']").selectOption(product.body.id);
   await page.locator("[id^='qty-']").fill("2");
   await page.locator("[id^='cost-']").fill("40");
+  await page.getByRole("button", { name: "مورد جديد", exact: true }).click();
   await page.locator("#newSupplierName").fill(supplierName);
   await page.getByTestId("create-inline-supplier").click();
   await expect(page.getByTestId("inline-supplier-notice")).toHaveText("تم اختيار المورد.");
@@ -160,10 +164,10 @@ test("internal refinements keep one sale, supplier draft, customers, and stock l
   await newProduct.getByRole("button", { name: "استعادة منتج محفوظ برمزه" }).click();
   expect(productWrites).toBe(1);
   await expect(newProduct).toHaveCount(0);
-  const rows = receive.locator(".receipt-variant-row");
+  const rows = receive.locator(".receiving-draft-table tbody tr");
   await expect(rows).toHaveCount(2);
   await expect(rows.nth(1).getByLabel("الكمية")).toHaveValue("4");
-  await expect(rows.nth(1).getByLabel("تكلفة الشراء للجنيه")).toHaveValue("80");
+  await expect(rows.nth(1).getByLabel("تكلفة الشراء بالجنيه")).toHaveValue("80");
   const receiptsWhileDraft = await staffApi(page, "GET", "/api/internal/receiving/receipts");
   expect(receiptsWhileDraft.body).toHaveLength(receiptsBefore.body.length);
 
@@ -178,6 +182,8 @@ test("internal refinements keep one sale, supplier draft, customers, and stock l
   await existingProduct.selectOption(product.body.id);
   await receive.getByRole("button", { name: "حفظ الاستلام" }).click();
   await expect(page.getByText("تم حفظ إذن الاستلام.", { exact: true })).toBeVisible();
+  page.once("dialog", (dialog) => void dialog.accept());
+  await page.getByRole("tab", { name: "سجل الاستلام" }).click();
   const detail = page.getByTestId("receipt-details");
   await expect(detail).toContainText("الكمية المستلمة: 2 — تكلفة شراء الوحدة: 40 ج.م.");
   await expect(detail).toContainText("الكمية المستلمة: 4 — تكلفة شراء الوحدة: 80 ج.م.");
@@ -195,6 +201,7 @@ test("internal refinements keep one sale, supplier draft, customers, and stock l
   await lookup.getByRole("button", { name: "بحث" }).click();
   await page.getByTestId("add-operational").click();
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
+  await openPosOptionalDetails(checkout);
   await checkout.getByLabel("اسم الزبون (اختياري)").fill(customerName);
   await checkout.getByLabel("هاتف الزبون (اختياري)").fill(customerPhone);
   await checkout.getByLabel("خصم الموظف بالجنيه").fill("5");
@@ -227,6 +234,7 @@ test("internal refinements keep one sale, supplier draft, customers, and stock l
 
   await page.setViewportSize({ width: 390, height: 800 });
   await page.goto("http://127.0.0.1:5174/receiving");
+  await page.getByRole("tab", { name: "أرصدة المخازن" }).click();
   await expect(page.getByTestId("stock-location-table")).toBeVisible();
   const overflow = await page.locator(".data-table-wrap").first().evaluate((element) => ({
     contained: element.scrollWidth >= element.clientWidth,

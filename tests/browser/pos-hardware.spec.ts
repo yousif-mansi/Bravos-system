@@ -1,3 +1,4 @@
+import { openPosOptionalDetails } from "./support/pos-checkout";
 import { expect, test, type Page } from "@playwright/test";
 import { openLookupLists } from "./support/open-lookup-lists";
 
@@ -181,6 +182,7 @@ test("receipt preview renders the completed sale at 58mm and 80mm", async ({ pag
   await page.locator("#lookupColor").selectOption(data.color.id);
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
+  await openPosOptionalDetails(checkout);
   await checkout.getByLabel("اسم الزبون (اختياري)").fill(customerName);
   await checkout.getByLabel("هاتف الزبون (اختياري)").fill(customerPhone);
   await page.getByTestId("complete-sale").click();

@@ -1,4 +1,4 @@
-import { stageUnpaidPosQuote } from "./support/pos-checkout";
+import { openPosOptionalDetails, stageUnpaidPosQuote } from "./support/pos-checkout";
 import { expect, test, type Page, type Route } from "@playwright/test";
 import type { SaleDto, SalePaymentDto } from "@bravos/contracts";
 import type { OfflineCompletedSale } from "@bravos/sales/browser";
@@ -72,6 +72,7 @@ test("receiving, split sale and authorized sales view form one connected workflo
   await page.getByTestId("add-operational").click();
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByLabel("الكمية").fill("3");
+  await openPosOptionalDetails(checkout);
   await checkout.getByLabel("خصم الموظف بالجنيه").fill("50");
   await checkout.getByLabel("سبب الخصم (اختياري)").fill("اتفاق الصندوق");
   await expect(checkout).toContainText("850 ج.م.");
@@ -696,6 +697,7 @@ test("invalid employee discount stays editable then completes after correction",
   await page.getByLabel("اللون").selectOption({ label: "لون خصم" });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
+  await openPosOptionalDetails(checkout);
   await checkout.getByLabel("خصم الموظف بالجنيه").fill("abc");
   await checkout.getByTestId("complete-sale").click();
   await expect(page.getByRole("alert")).toContainText("قيمة الخصم غير صالحة.");
@@ -1148,6 +1150,7 @@ test("cart edits during delayed prepare cannot complete a stale quote", async ({
     await route.continue();
   });
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
+  await openPosOptionalDetails(checkout);
   await checkout.getByTestId("complete-sale").click();
   await expect(checkout.getByRole("button", { name: "جارٍ الحفظ…" }).first()).toBeVisible();
   await expect(checkout.getByLabel("الكمية")).toBeDisabled();

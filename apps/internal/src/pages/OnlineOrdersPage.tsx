@@ -9,8 +9,10 @@ import type {
 import type { PublicProductDto, PublicProductSummaryDto } from "@bravos/contracts/public";
 import { accountGeneration } from "../account-session.ts";
 import { EmptyState } from "../ui/EmptyState.tsx";
+import { BusinessTabs, Modal, TablePagination } from "../ui/BusinessUi.tsx";
 import { PageLoading } from "../ui/PageLoading.tsx";
 import { useRevealFeedback } from "../ui/useRevealFeedback.ts";
+import "./OnlineOrdersPage.css";
 import {
   abandonOnlineOrderFailedReturnInspection,
   ApiError,
@@ -201,6 +203,10 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
   const currentRouteIdentity = useRef(routeIdentity);
   currentRouteIdentity.current = routeIdentity;
   const [orders, setOrders] = useState<OnlineOrderDto[]>([]);
+  const [orderTab, setOrderTab] = useState("pending");
+  const [orderQuery, setOrderQuery] = useState("");
+  const [orderPage, setOrderPage] = useState(1);
+  const [review, setReview] = useState<"confirm" | "cancel" | null>(null);
   const [selected, setSelected] = useState<OnlineOrderDto | null>(null);
   const [settings, setSettings] = useState<OnlineOrderSettingsDto | null>(null);
   const [waitHours, setWaitHours] = useState("");
@@ -250,6 +256,7 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
       && lifecycle.current === token
       && currentRouteIdentity.current === routeIdentity;
     setLoading(true);
+    setReview(null);
     setLoadFailed(false);
     setPending("");
     setError("");
@@ -772,13 +779,28 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
     setCustomerAgreed(false);
   }
 
+  const savedLines = selected?.agreedRevision?.quote.lines ?? selected?.lines.map((line) => ({ variantId: line.variantId, quantity: line.requestedQuantity })) ?? [];
+  const agreementChanged = Boolean(selected) && (agreementLines.length !== savedLines.length || agreementLines.some((line) => !savedLines.some((saved) => saved.variantId === line.variantId && String(saved.quantity) === line.quantity)) || couponCode !== (selected?.agreedRevision?.quote.couponCode ?? selected?.requestedCouponCode ?? ""));
+  const detailDirty = agreementChanged || Boolean(contactNote || cancellationReason || preShipmentCancellationReason || deliveryFailureReason || customerReceivedAt || inspectionAbandonReason || failedCloseReason || agreementQuote || customerAgreed || itemsSetAside || preShipmentItemsInspected || Object.keys(inspectionDraft).length);
+  useEffect(() => {
+    if (!orderId || !detailDirty) return;
+    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [orderId, detailDirty]);
+
   if (loading) {
     return <PageLoading />;
   }
 
+  const orderGroup = (order: OnlineOrderDto) => order.status === "pending" ? "pending" : order.status.startsWith("cancelled_") ? "cancelled" : "active";
+  const orderSearch = orderQuery.trim().toLocaleLowerCase();
+  const visibleOrders = orders.filter((order) => orderGroup(order) === orderTab && [order.reference, order.customerName, order.primaryPhone, order.alternatePhone].some((value) => value?.toLocaleLowerCase().includes(orderSearch)));
+  const currentOrderPage = Math.min(orderPage, Math.max(1, Math.ceil(visibleOrders.length / 20)));
+
   return (
-    <main className="shell online-orders-page">
-      <header className="page-hero">
+    <main className="shell business-page online-orders-page">
+      <header className="business-page-header">
         <h1>الطلبات الأونلاين</h1>
       </header>
       {error ? <div className="error point-feedback" role="alert">{error}</div> : null}
@@ -789,7 +811,7 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
       {loadFailed ? null : !orderId ? (
         <>
           {manager && settings ? (
-            <form className="card order-settings" aria-label="إعدادات تعذر الوصول" onSubmit={(event) => { event.preventDefault(); void saveSettings(); }}>
+            <details className="business-secondary-details"><summary>إعدادات تعذر الوصول</summary><form className="card order-settings" aria-label="إعدادات تعذر الوصول" onSubmit={(event) => { event.preventDefault(); void saveSettings(); }}>
               <h2>إعدادات تعذر الوصول</h2>
               <p className="muted">الإلغاء يدوي فقط بعد انقضاء المهلة وتسجيل العدد الأدنى من المحاولات مع سبب.</p>
               <div className="grid two">
@@ -803,29 +825,23 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
                 </div>
               </div>
               <button type="submit" disabled={Boolean(pending)}>{pending === "settings" ? pendingCopy(pending) : "حفظ الإعدادات"}</button>
-            </form>
+            </form></details>
           ) : null}
-          <section className="card">
+          <BusinessTabs id="order-tabs" label="حالة الطلبات" value={orderTab} items={[{ id: "pending", label: "بانتظار التأكيد", count: orders.filter((order) => orderGroup(order) === "pending").length }, { id: "active", label: "المؤكدة وما بعدها" }, { id: "cancelled", label: "الملغاة" }]} onChange={(value) => { setOrderTab(value); setOrderPage(1); }} />
+          <div className="business-toolbar"><label>بحث عن رقم الطلب أو العميل أو الهاتف <input type="search" value={orderQuery} onChange={(event) => { setOrderQuery(event.target.value); setOrderPage(1); }} /></label></div>
+          <section className="business-list-panel" role="tabpanel" id={`order-tabs-panel-${orderTab}`} aria-labelledby={`order-tabs-tab-${orderTab}`}>
             <h2>طلبات العملاء</h2>
-            {orders.length === 0 ? <EmptyState title="لسه مفيش طلبات" message="أول ما عميل يطلب، الطلب هيظهر هنا." /> : (
-              <div className="list-stack">
-                {orders.map((order) => (
-                  <article className="summary-card online-order-row" data-testid="online-order-row" key={order.id}>
-                    <div>
-                      <strong>{order.reference}</strong>
-                      <p>{order.customerName} — {statusLabel(order.status)}</p>
-                      <p className="muted">{formatDate(order.submittedAt)} — {formatEgpFromPiasters(order.agreedRevision?.quote.finalTotalPiasters ?? order.requestedFinalTotalPiasters)}</p>
-                    </div>
-                    <Link className="button secondary" to={`/online-orders/${order.id}`}>فتح التفاصيل</Link>
-                  </article>
-                ))}
-              </div>
-            )}
+            {orders.length === 0 ? <EmptyState title="لسه مفيش طلبات" message="أول ما عميل يطلب، الطلب هيظهر هنا." /> : visibleOrders.length === 0 ? <p>لا توجد طلبات تطابق الحالة والبحث.</p> : <>
+              <div className="business-table-wrap"><table className="business-table"><thead><tr><th>رقم الطلب</th><th>العميل</th><th>الهاتف</th><th>التاريخ</th><th>الإجمالي</th><th>الحالة</th><th>التفاصيل</th></tr></thead><tbody>
+                {visibleOrders.slice((currentOrderPage - 1) * 20, currentOrderPage * 20).map((order) => <tr data-testid="online-order-row" key={order.id}><td>{order.reference}</td><td>{order.customerName}</td><td dir="ltr">{order.primaryPhone}</td><td>{formatDate(order.submittedAt)}</td><td>{formatEgpFromPiasters(order.agreedRevision?.quote.finalTotalPiasters ?? order.requestedFinalTotalPiasters)}</td><td>{statusLabel(order.status)}</td><td><Link className="button secondary" to={`/online-orders/${order.id}`}>فتح التفاصيل</Link></td></tr>)}
+              </tbody></table></div>
+              <TablePagination page={currentOrderPage} pageSize={20} total={visibleOrders.length} onPageChange={setOrderPage} />
+            </>}
           </section>
         </>
       ) : selected ? (
         <>
-          <div className="actions order-back"><button className="secondary" type="button" onClick={() => navigate("/online-orders")}>العودة إلى الطلبات</button></div>
+          <div className="actions order-back"><button className="secondary" type="button" onClick={() => { if (!detailDirty || window.confirm("لديك تغييرات غير محفوظة. هل تريد العودة إلى الطلبات؟")) navigate("/online-orders"); }}>العودة إلى الطلبات</button></div>
           <section ref={detailFeedback.regionRef} className={`card order-heading reveal-feedback${detailFeedback.highlighted ? " is-highlighted" : ""}`}>
             <div>
               <h2 ref={detailFeedback.headingRef} tabIndex={-1}>{selected.reference}</h2>
@@ -847,45 +863,58 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
             </section>
           ) : null}
 
-          <section className="card" role="region" aria-label="الطلب الأصلي">
-            <h2>الطلب الأصلي كما أرسله العميل</h2>
-            <div className="grid two order-customer-details">
-              <div><strong>العميل</strong><p>{selected.customerName}</p></div>
-              <div>
-                <strong>الموبايل الأساسي</strong>
-                <p dir="ltr">{selected.primaryPhone}</p>
-                <a href={whatsappUrl(selected.primaryPhone)} target="_blank" rel="noreferrer">فتح واتساب</a>
+          <section className="card order-compact" role="region" aria-label="ملخص الطلب">
+            <div className="order-compact-grid">
+              <div className="order-customer">
+                <h2>بيانات العميل</h2>
+                <p><strong>{selected.customerName}</strong></p>
+                <p><bdi>{selected.primaryPhone}</bdi>{selected.alternatePhone ? <> · <bdi>{selected.alternatePhone}</bdi></> : null}</p>
+                <p>{selected.deliveryArea.nameAr} · {selected.detailedAddress}</p>
+                {selected.landmark ? <p>علامة مميزة: {selected.landmark}</p> : null}
+                {selected.notes ? <p>ملاحظات: {selected.notes}</p> : null}
+                {selected.primaryPhone.replace(/\D/g, "").length >= 10 ? <a className="button secondary" href={whatsappUrl(selected.primaryPhone)} target="_blank" rel="noreferrer">فتح واتساب</a> : null}
               </div>
-              <div><strong>رقم بديل</strong><p dir="ltr">{selected.alternatePhone ?? "غير مسجل"}</p></div>
-              <div><strong>منطقة التوصيل</strong><p>{selected.deliveryArea.nameAr}</p></div>
-              <div><strong>العنوان</strong><p>{selected.detailedAddress}</p></div>
-              <div><strong>علامة مميزة</strong><p>{selected.landmark ?? "غير مسجلة"}</p></div>
-              <div><strong>ملاحظات العميل</strong><p>{selected.notes ?? "لا توجد"}</p></div>
+              <div className="order-compact-items">
+                <h2>{selected.agreedRevision ? "الأصناف المتفق عليها" : "الأصناف المطلوبة"}</h2>
+                <div className="order-compact-lines"><OrderLines lines={selected.agreedRevision ? selected.agreedRevision.quote.lines.map((line) => ({ key: line.variantId, name: line.productNameAr, variant: `${line.sizeNameAr} / ${line.colorNameAr}`, quantity: line.quantity, total: line.merchandiseTotalPiasters, quantityLabel: "الكمية" })) : selected.lines.map((line) => ({ key: line.id, name: line.productNameAr, variant: `${line.sizeNameAr} / ${line.colorNameAr}`, quantity: line.requestedQuantity, total: line.requestedMerchandiseTotalPiasters, quantityLabel: "الكمية المطلوبة" }))} /></div>
+                <p className="order-compact-total">التوصيل: {formatEgpFromPiasters(selected.agreedRevision?.quote.deliveryFeePiasters ?? selected.requestedDeliveryFeePiasters)} · الإجمالي: <strong>{formatEgpFromPiasters(selected.agreedRevision?.quote.finalTotalPiasters ?? selected.requestedFinalTotalPiasters)}</strong></p>
+                <p className="muted">{selected.agreedRevision ? "المبلغ المتفق عليه مع العميل" : "المبلغ المطلوب عند إرسال الطلب"}</p>
+              </div>
             </div>
-            <OrderLines
-              lines={selected.lines.map((line) => ({
-                key: line.id,
-                name: line.productNameAr,
-                variant: `${line.sizeNameAr} / ${line.colorNameAr}`,
-                quantity: line.requestedQuantity,
-                total: line.requestedMerchandiseTotalPiasters,
-                quantityLabel: "الكمية المطلوبة",
-              }))}
-            />
-            <PriceSummary
-              original={selected.requestedMerchandiseOriginalPiasters}
-              automatic={selected.requestedAutomaticOfferDiscountPiasters}
-              coupon={selected.requestedCouponDiscountPiasters}
-              merchandise={selected.requestedMerchandiseTotalPiasters}
-              delivery={selected.requestedDeliveryFeePiasters}
-              final={selected.requestedFinalTotalPiasters}
-            />
-            <PromotionSummary
-              offer={selected.requestedAppliedAutomaticOffer}
-              coupon={selected.requestedAppliedCoupon}
-            />
+            <div className="business-actions order-primary-actions">
+              {selected.status === "pending" ? <button type="button" onClick={() => setReview("confirm")}>مراجعة تأكيد الطلب</button> : null}
+              {selected.actionEligibility.canCancelBeforeShipment ? <button type="button" className="secondary" onClick={() => setReview("cancel")}>مراجعة إلغاء الطلب</button> : null}
+            </div>
           </section>
 
+          <Modal open={review === "confirm" && selected.status === "pending"} title="مراجعة تأكيد الطلب" onClose={() => setReview(null)} closeDisabled={Boolean(pending)}>
+            {selected.agreedRevision ? (
+              <form className="confirmation-card" aria-label="تأكيد تجهيز الطلب" onSubmit={(event) => { event.preventDefault(); void confirm().then(() => setReview(null)); }}>
+                <p>الطلب {selected.reference} · الإجمالي المتفق عليه {formatEgpFromPiasters(selected.agreedRevision.quote.finalTotalPiasters)}</p>
+                <p>طابق الأصناف الفعلية مع الاتفاق الحالي وافصلها عن المخزون المتاح قبل التأكيد.</p>
+                {confirmationNeedsReview ? <p className="error">يلزم إنشاء مراجعة سعر جديدة وحفظ موافقة العميل قبل التأكيد.</p> : null}
+                <div className="field"><label htmlFor="online-fulfillment-branch">فرع تجهيز الطلب</label><select id="online-fulfillment-branch" value={fulfillmentBranchId} disabled={frozen || confirmationNeedsReview} onChange={(event) => { setFulfillmentBranchId(event.target.value); setItemsSetAside(false); }} required>{workspace.authorizedBranches.filter((branch) => manager || branch.id === workspace.activeBranch?.id).map((branch) => <option key={branch.id} value={branch.id}>{branch.nameAr}</option>)}</select></div>
+                <label className="checkbox-row"><input type="checkbox" checked={itemsSetAside} disabled={frozen || confirmationNeedsReview} onChange={(event) => setItemsSetAside(event.target.checked)} />وجدت الأصناف الفعلية وفصلتها لهذا الطلب</label>
+                <button type="submit" className="confirm" disabled={frozen || confirmationNeedsReview || !itemsSetAside || !fulfillmentBranchId}>{pending === "confirmation" ? pendingCopy(pending) : "تأكيد الطلب وخصم المخزون"}</button>
+              </form>
+            ) : <p>لا يمكن تأكيد الطلب قبل حفظ اتفاق العميل على المنتجات والأسعار من «إدارة الطلب والسجل» أدناه.</p>}
+          </Modal>
+          <Modal open={review === "cancel" && selected.actionEligibility.canCancelBeforeShipment} title="مراجعة إلغاء الطلب" onClose={() => setReview(null)} closeDisabled={Boolean(pending)}>
+            <form className="cancellation-card" aria-label={selected.status === "pending" ? "إلغاء طلب معلق قبل الشحن" : "إلغاء طلب مؤكد قبل الشحن"} onSubmit={(event) => { event.preventDefault(); void cancelBeforeShipment().then(() => setReview(null)); }}>
+              <p>الطلب {selected.reference} · {selected.customerName}</p>
+              <p>{selected.status === "confirmed" ? "يُلغى البيع الآن. تبقى الأصناف محمية من البيع حتى استلامها وفحصها، ثم تُعاد الكمية الصالحة فقط للمخزون." : "هذا الطلب لم يحجز مخزوناً ولم يستهلك كوبوناً، لذلك لا توجد كمية أو استخدام لاستعادتهما."}</p>
+              <div className="field"><label htmlFor="pre-shipment-cancellation-reason">سبب الإلغاء قبل الشحن</label><textarea id="pre-shipment-cancellation-reason" value={preShipmentCancellationReason} disabled={frozen} onChange={(event) => setPreShipmentCancellationReason(event.target.value)} required /></div>
+              {selected.status === "confirmed" ? <label className="checkbox-row"><input type="checkbox" checked={preShipmentItemsInspected} disabled={frozen} onChange={(event) => setPreShipmentItemsInspected(event.target.checked)} />استلمت جميع الأصناف وفحصتها وهي صالحة للبيع</label> : null}
+              <button className="danger" type="submit" disabled={frozen || !preShipmentCancellationReason.trim()}>{selected.status === "confirmed" ? "إلغاء الطلب" : "إلغاء الطلب من دون تغيير المخزون"}</button>
+            </form>
+          </Modal>
+          <details className="business-secondary-details"><summary>إدارة الطلب والسجل</summary>
+          {selected.agreedRevision ? <AgreementSnapshot quote={selected.agreedRevision.quote} agreedAt={selected.agreedRevision.agreedAt} actorId={selected.agreedRevision.agreedByStaffId} /> : null}
+          <section className="card" role="region" aria-label="الطلب الأصلي"><h2>الطلب الأصلي كما أرسله العميل</h2>
+            <OrderLines lines={selected.lines.map((line) => ({ key: line.id, name: line.productNameAr, variant: `${line.sizeNameAr} / ${line.colorNameAr}`, quantity: line.requestedQuantity, total: line.requestedMerchandiseTotalPiasters, quantityLabel: "الكمية المطلوبة" }))} />
+            <PriceSummary original={selected.requestedMerchandiseOriginalPiasters} automatic={selected.requestedAutomaticOfferDiscountPiasters} coupon={selected.requestedCouponDiscountPiasters} merchandise={selected.requestedMerchandiseTotalPiasters} delivery={selected.requestedDeliveryFeePiasters} final={selected.requestedFinalTotalPiasters} />
+            <PromotionSummary offer={selected.requestedAppliedAutomaticOffer} coupon={selected.requestedAppliedCoupon} />
+          </section>
           <section className="card" data-testid="contact-attempts">
             <h2>محاولات التواصل</h2>
             {selected.contactAttempts.length === 0 ? <p className="empty">لم تُسجل محاولة تواصل بعد.</p> : selected.contactAttempts.map((attempt) => (
@@ -897,8 +926,6 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
               </article>
             ))}
           </section>
-
-          {selected.agreedRevision ? <AgreementSnapshot quote={selected.agreedRevision.quote} agreedAt={selected.agreedRevision.agreedAt} actorId={selected.agreedRevision.agreedByStaffId} /> : null}
 
           <OrderTimeline order={selected} />
 
@@ -934,24 +961,7 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
             </form>
           ) : null}
 
-          {selected.actionEligibility.canCancelBeforeShipment ? (
-            <form className="card cancellation-card" aria-label={selected.status === "pending" ? "إلغاء طلب معلق قبل الشحن" : "إلغاء طلب مؤكد قبل الشحن"} onSubmit={(event) => { event.preventDefault(); void cancelBeforeShipment(); }}>
-              <h2>إلغاء قبل الشحن</h2>
-              <p>
-                {selected.status === "confirmed"
-                  ? "يُلغى البيع الآن. تبقى الأصناف محمية من البيع حتى استلامها وفحصها، ثم تُعاد الكمية الصالحة فقط للمخزون."
-                  : "هذا الطلب لم يحجز مخزوناً ولم يستهلك كوبوناً، لذلك لا توجد كمية أو استخدام لاستعادتهما."}
-              </p>
-              <div className="field">
-                <label htmlFor="pre-shipment-cancellation-reason">سبب الإلغاء قبل الشحن</label>
-                <textarea id="pre-shipment-cancellation-reason" value={preShipmentCancellationReason} disabled={frozen} onChange={(event) => setPreShipmentCancellationReason(event.target.value)} required />
-              </div>
-              {selected.status === "confirmed" ? <label className="checkbox-row"><input type="checkbox" checked={preShipmentItemsInspected} disabled={frozen} onChange={(event) => setPreShipmentItemsInspected(event.target.checked)} />استلمت جميع الأصناف وفحصتها وهي صالحة للبيع</label> : null}
-              <button className="danger" type="submit" disabled={frozen || !preShipmentCancellationReason.trim()}>
-                {selected.status === "confirmed" ? "إلغاء الطلب" : "إلغاء الطلب من دون تغيير المخزون"}
-              </button>
-            </form>
-          ) : null}
+
 
           {selected.status === "delivery_failed"
             || (selected.status === "cancelled_before_shipment" && selected.preShipmentStockDisposition === "awaiting_inspection")
@@ -1097,21 +1107,6 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
                 ) : null}
               </form>
 
-              {selected.agreedRevision ? (
-                <form className="card confirmation-card" aria-label="تأكيد تجهيز الطلب" onSubmit={(event) => { event.preventDefault(); void confirm(); }}>
-                  <h2>تأكيد تجهيز الطلب</h2>
-                  <p>طابق الأصناف الفعلية مع الاتفاق الحالي وافصلها عن المخزون المتاح قبل التأكيد.</p>
-                  {confirmationNeedsReview ? <p className="error">يلزم إنشاء مراجعة سعر جديدة وحفظ موافقة العميل قبل التأكيد.</p> : null}
-                  <div className="field"><label htmlFor="online-fulfillment-branch">فرع تجهيز الطلب</label><select id="online-fulfillment-branch" value={fulfillmentBranchId} disabled={frozen || confirmationNeedsReview} onChange={(event) => { setFulfillmentBranchId(event.target.value); setItemsSetAside(false); }} required>{workspace.authorizedBranches.filter((branch) => manager || branch.id === workspace.activeBranch?.id).map((branch) => <option key={branch.id} value={branch.id}>{branch.nameAr}</option>)}</select></div>
-                  <label className="checkbox-row">
-                    <input type="checkbox" checked={itemsSetAside} disabled={frozen || confirmationNeedsReview} onChange={(event) => setItemsSetAside(event.target.checked)} />
-                    وجدت الأصناف الفعلية وفصلتها لهذا الطلب
-                  </label>
-                  <button type="submit" className="confirm" disabled={frozen || confirmationNeedsReview || !itemsSetAside || !fulfillmentBranchId}>{pending === "confirmation" ? pendingCopy(pending) : "تأكيد الطلب وخصم المخزون"}</button>
-                </form>
-              ) : (
-                <p className="card muted">لا يمكن تأكيد الطلب قبل حفظ اتفاق العميل على المنتجات والأسعار.</p>
-              )}
 
               <form className="card cancellation-card" aria-label="إلغاء طلب لتعذر الوصول" onSubmit={(event) => { event.preventDefault(); void cancelUnreachable(); }}>
                 <h2>إلغاء يدوي لتعذر الوصول</h2>
@@ -1128,6 +1123,7 @@ export default function OnlineOrdersPage({ workspace }: { workspace: WorkspaceDt
               </form>
             </>
           ) : null}
+          </details>
         </>
       ) : (
         <section className="card"><p className="empty">لم يتم العثور على الطلب.</p></section>

@@ -10,6 +10,7 @@ import { formatEgpFromPiasters } from "../money.ts";
 import { EmptyState } from "../ui/EmptyState.tsx";
 import { useRevealFeedback } from "../ui/useRevealFeedback.ts";
 import { SaleSummary } from "./SaleSummary.tsx";
+import { BusinessTabs, DetailPanel, TablePagination } from "../ui/BusinessUi.tsx";
 
 export default function SalesPage({
   workspace,
@@ -18,6 +19,11 @@ export default function SalesPage({
   workspace: WorkspaceDto;
   onChanged: (workspace: WorkspaceDto | null) => void;
 }) {
+  const [tab, setTab] = useState("branch");
+  const [query, setQuery] = useState("");
+  const [date, setDate] = useState("");
+  const [payment, setPayment] = useState("all");
+  const [page, setPage] = useState(1);
   const [searchParams] = useSearchParams();
   const requestedSaleId = searchParams.get("saleId");
   const [error, setError] = useState("");
@@ -27,6 +33,7 @@ export default function SalesPage({
   const [selected, setSelected] = useState<SaleDto | ManagerSaleDto | null>(null);
   const generationRef = useRef(accountGeneration());
   const detailRequest = useRef(0);
+  const detailTrigger = useRef<HTMLButtonElement | null>(null);
   const detailFeedback = useRevealFeedback<HTMLDivElement>();
   const [loading, setLoading] = useState(true);
   const [salesLoaded, setSalesLoaded] = useState(false);
@@ -116,7 +123,7 @@ export default function SalesPage({
         const requested = requestedResult.value;
         setSelected(withPreservedLocalReceipt(requested, local.find((sale) => sale.id === requested.id), staffId));
       } else {
-        setSelected((requestedSaleId ? rows.find((sale) => sale.id === requestedSaleId) : rows[0]) ?? null);
+        setSelected((requestedSaleId ? rows.find((sale) => sale.id === requestedSaleId) : null) ?? null);
       }
       if (requestedSaleId && requestedResult.status === "rejected") {
         const caught = requestedResult.reason;
@@ -183,82 +190,51 @@ export default function SalesPage({
 
   const managerSale = canSeeCosts && selected && "allocations" in selected ? selected : null;
 
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const matchesDate = (value: string) => !date || new Intl.DateTimeFormat("en-CA", { timeZone: "Africa/Cairo", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(value)) === date;
+  const filteredSales = sales.filter((sale) => matchesDate(sale.occurredAt)
+    && (payment === "all" || sale.payment.method === payment)
+    && [sale.reference, sale.receiptReference, sale.customerName, sale.customerPhone, sale.soldByDisplayName, sale.branch.nameAr, ...sale.lines.map((line) => line.variant.product.nameAr)].some((value) => value?.toLocaleLowerCase().includes(normalizedQuery)));
+  const filteredOrders = confirmedOrders.filter((order) => matchesDate(order.confirmedAt!)
+    && [order.reference, order.customerName, order.primaryPhone].some((value) => value.toLocaleLowerCase().includes(normalizedQuery)));
+  const total = tab === "branch" ? filteredSales.length : filteredOrders.length;
+  const currentPage = Math.min(page, Math.max(1, Math.ceil(total / 20)));
+  const start = (currentPage - 1) * 20;
+
   return (
-    <main className="shell">
-      <header className="page-hero">
-        <h1>المبيعات</h1>
-        {workspace.capabilities.cashier ? (
-          <Link className="button" to="/lookup" aria-label="نقطة البيع البحث عن منتج">نقطة البيع</Link>
-        ) : null}
-      </header>
+    <main className="shell business-page">
+      <header className="business-page-header"><h1>المبيعات</h1>{workspace.capabilities.cashier ? <Link className="button" to="/lookup" aria-label="نقطة البيع البحث عن منتج">نقطة البيع</Link> : null}</header>
       {error ? <div className="error" role="alert">{error}</div> : null}
       {notice ? <p className="notice" role="status">{notice}</p> : null}
       {error ? <button type="button" className="secondary" disabled={loading || Boolean(loadingSaleId)} onClick={() => failedSaleId ? void openSale(failedSaleId) : setReloadRevision((current) => current + 1)}>{failedSaleId ? "إعادة محاولة فتح البيع" : "إعادة تحميل المبيعات"}</button> : null}
       {loading ? <p role="status">جارٍ تحميل المبيعات…</p> : null}
       {loadingSaleId ? <p role="status">جارٍ فتح تفاصيل البيع…</p> : null}
-      <div className="grid two">
-        <section className="card">
-          <h2>مبيعات الفروع</h2>
-          {!loading && salesLoaded && sales.length === 0 ? (
-            <EmptyState title="مفيش مبيعات تظهر" message="أول ما تبيع، العملية هتظهر هنا." />
-          ) : sales.length > 0 ? (
-            <ul data-testid="sale-list">
-              {sales.map((sale) => (
-                <li key={sale.id}>
-                  <button type="button" className="secondary" aria-pressed={selected?.id === sale.id} aria-busy={loadingSaleId === sale.id} disabled={loadingSaleId === sale.id} onClick={() => void openSale(sale.id)}>
-                    {officialSaleNumber({ receiptReference: sale.receiptReference ?? null, reference: sale.reference, blockedIds: [sale.id, sale.operationId] })} — {sale.soldByDisplayName} — {sale.branch.nameAr} — {formatEgpFromPiasters(sale.finalTotalPiasters)}
-                    {sale.recordedAt ? "" : " — غير مزامن"}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          ) : null}
+      <BusinessTabs id="sales-tabs" label="نوع المبيعات" value={tab} items={[{ id: "branch", label: "مبيعات الفروع" }, ...(workspace.staff.role === "manager" ? [{ id: "online", label: "الطلبات الإلكترونية" }] : [])]} onChange={(value) => { setTab(value); setPage(1); setSelected(null); }} />
+      <div className="business-toolbar">
+        <label>بحث <input type="search" value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} placeholder="رقم البيع أو العميل" /></label>
+        <label>التاريخ <input type="date" value={date} onChange={(event) => { setDate(event.target.value); setPage(1); }} /></label>
+        {tab === "branch" ? <label>طريقة الدفع <select value={payment} onChange={(event) => { setPayment(event.target.value); setPage(1); }}><option value="all">الكل</option><option value="cash">نقداً</option><option value="online">إلكترونياً</option><option value="split">مقسّم</option></select></label> : null}
+      </div>
+      <div className={selected && tab === "branch" ? "business-master-detail" : ""}>
+        <section className="business-list-panel" role="tabpanel" id={`sales-tabs-panel-${tab}`} aria-labelledby={`sales-tabs-tab-${tab}`}>
+          {tab === "branch" ? <>
+            {!loading && salesLoaded && sales.length === 0 ? <EmptyState title="مفيش مبيعات تظهر" message="أول ما تبيع، العملية هتظهر هنا." /> : null}
+            {sales.length > 0 ? <div className="business-table-wrap"><table className="business-table" data-testid="sale-list"><thead><tr><th>رقم البيع</th><th>التاريخ</th><th>العميل</th><th>الفرع / الموظف</th><th>الدفع</th><th>الإجمالي</th><th>المزامنة</th><th><span className="sr-only">التفاصيل</span></th></tr></thead><tbody>{filteredSales.slice(start, start + 20).map((sale) => <tr key={sale.id}>
+              <td>{officialSaleNumber({ receiptReference: sale.receiptReference ?? null, reference: sale.reference, blockedIds: [sale.id, sale.operationId] })}</td><td>{new Date(sale.occurredAt).toLocaleString("ar-EG", { timeZone: "Africa/Cairo" })}</td><td>{sale.customerName || "—"}</td><td>{sale.branch.nameAr} · {sale.soldByDisplayName}</td><td>{sale.payment.method === "cash" ? "نقداً" : sale.payment.method === "online" ? "إلكترونياً" : "مقسّم"}</td><td>{formatEgpFromPiasters(sale.finalTotalPiasters)}</td><td>{sale.recordedAt ? "مزامن" : "غير مزامن"}</td><td><button type="button" className="secondary" aria-pressed={selected?.id === sale.id} aria-busy={loadingSaleId === sale.id} disabled={loadingSaleId === sale.id} onClick={(event) => { detailTrigger.current = event.currentTarget; void openSale(sale.id); }}>فتح التفاصيل</button></td>
+            </tr>)}</tbody></table></div> : null}
+            {sales.length > 0 && filteredSales.length === 0 ? <p>لا توجد مبيعات تطابق البحث والمرشحات.</p> : null}
+          </> : <div data-testid="confirmed-online-sales">
+            {ordersPhase === "loading" ? <p role="status">جارٍ تحميل الطلبات المؤكدة…</p> : ordersPhase === "error" ? <><p className="error" role="alert">تعذر تحميل الطلبات المؤكدة.</p><button type="button" className="secondary" onClick={() => setReloadRevision((current) => current + 1)}>إعادة تحميل الطلبات المؤكدة</button></> : confirmedOrders.length === 0 ? <p className="muted">لا توجد طلبات تم تأكيدها بعد.</p> : <div className="business-table-wrap"><table className="business-table"><thead><tr><th>الطلب</th><th>العميل</th><th>فرع التجهيز</th><th>التأكيد</th><th>الإجمالي المتفق عليه</th><th>الحالة</th><th>التفاصيل</th></tr></thead><tbody>{filteredOrders.slice(start, start + 20).map((order) => <tr key={order.id}><td>{order.reference}</td><td>{order.customerName}</td><td>{workspace.authorizedBranches.find((branch) => branch.id === order.fulfillmentBranchId)?.nameAr ?? "—"}</td><td>{new Date(order.confirmedAt!).toLocaleString("ar-EG", { timeZone: "Africa/Cairo" })}</td><td>{formatEgpFromPiasters(order.confirmedQuote?.finalTotalPiasters ?? 0)}</td><td>{onlineOrderStatus(order.status)}</td><td><Link to={`/online-orders/${order.id}`}>فتح التفاصيل</Link></td></tr>)}</tbody></table></div>}
+            {ordersPhase === "ready" && confirmedOrders.length > 0 && filteredOrders.length === 0 ? <p>لا توجد طلبات تطابق البحث والمرشحات.</p> : null}
+          </div>}
+          {total > 0 ? <TablePagination page={currentPage} pageSize={20} total={total} onPageChange={setPage} /> : null}
         </section>
-        {workspace.staff.role === "manager" ? (
-          <section className="card" data-testid="confirmed-online-sales">
-            <h2>الطلبات الإلكترونية بعد التأكيد وحالات الإلغاء</h2>
-            {ordersPhase === "loading" ? <p role="status">جارٍ تحميل الطلبات المؤكدة…</p> : ordersPhase === "error" ? <>
-              <p className="error" role="alert">تعذر تحميل الطلبات المؤكدة. أعد محاولة التحميل.</p>
-              <button type="button" className="secondary" disabled={loading || Boolean(loadingSaleId)} onClick={() => setReloadRevision((current) => current + 1)}>إعادة تحميل الطلبات المؤكدة</button>
-            </> : confirmedOrders.length === 0 ? <p className="muted">لا توجد طلبات تم تأكيدها بعد.</p> : (
-              <ul>
-                {confirmedOrders.map((order) => (
-                  <li key={order.id}>
-                    <Link to={`/online-orders/${order.id}`}>
-                      {order.reference} — {order.customerName} — {order.fulfillmentBranchId
-                        ? workspace.authorizedBranches.find((branch) => branch.id === order.fulfillmentBranchId)?.nameAr ?? "—"
-                        : "—"} — {formatEgpFromPiasters(order.confirmedQuote?.finalTotalPiasters ?? 0)} — {new Date(order.confirmedAt!).toLocaleString("ar-EG", { timeZone: "Africa/Cairo" })} — {onlineOrderStatus(order.status)}
-                    </Link>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-        ) : null}
-        {selected ? (
-          <div ref={detailFeedback.regionRef} className={`reveal-feedback${detailFeedback.highlighted ? " is-highlighted" : ""}`} data-testid="sale-detail-region" aria-busy={Boolean(loadingSaleId)}>
-            <h2 ref={detailFeedback.headingRef} tabIndex={-1}>بيع {officialSaleNumber({ receiptReference: selected.receiptReference ?? null, reference: selected.reference, blockedIds: [selected.id, selected.operationId] })}</h2>
-            <SaleSummary key={selected.id} sale={selected} printDisabled={Boolean(loadingSaleId)} />
-            {managerSale ? <Link className="button secondary" to={`/corrections?target=sale&id=${selected.id}`}>تصحيح تسجيل هذا البيع</Link> : null}
-            {managerSale ? (
-              <section className="card" data-testid="sale-costs">
-                <h2>تكلفة الدفعات</h2>
-                {managerSale.costsIncomplete ? <p>أساس التكلفة غير مكتمل.</p> : null}
-                {managerSale.allocations.length === 0 ? (
-                  <p className="muted">لا توجد تخصيصات تكلفة.</p>
-                ) : (
-                  <ul>
-                    {managerSale.allocations.map((item) => (
-                      <li key={`${item.batchId}-${item.variantId}`}>
-                        {item.quantity} × {formatEgpFromPiasters(item.unitCostPiasters)}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </section>
-            ) : null}
-          </div>
-        ) : null}
+        {selected && tab === "branch" ? <DetailPanel title="تفاصيل البيع" onClose={() => { setSelected(null); detailTrigger.current?.focus(); }}><div ref={detailFeedback.regionRef} className={`reveal-feedback${detailFeedback.highlighted ? " is-highlighted" : ""}`} data-testid="sale-detail-region" aria-busy={Boolean(loadingSaleId)}>
+          <h2 ref={detailFeedback.headingRef} tabIndex={-1}>بيع {officialSaleNumber({ receiptReference: selected.receiptReference ?? null, reference: selected.reference, blockedIds: [selected.id, selected.operationId] })}</h2>
+          <SaleSummary key={selected.id} sale={selected} printDisabled={Boolean(loadingSaleId)} />
+          {managerSale ? <Link className="button secondary" to={`/corrections?target=sale&id=${selected.id}`}>تصحيح تسجيل هذا البيع</Link> : null}
+          {managerSale ? <section className="card" data-testid="sale-costs"><h2>تكلفة الدفعات</h2>{managerSale.costsIncomplete ? <p>أساس التكلفة غير مكتمل.</p> : null}{managerSale.allocations.length === 0 ? <p className="muted">لا توجد تخصيصات تكلفة.</p> : <ul>{managerSale.allocations.map((item) => <li key={`${item.batchId}-${item.variantId}`}>{item.quantity} × {formatEgpFromPiasters(item.unitCostPiasters)}</li>)}</ul>}</section> : null}
+        </div></DetailPanel> : null}
       </div>
     </main>
   );

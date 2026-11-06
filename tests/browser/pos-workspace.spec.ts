@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { openLookupLists } from "./support/open-lookup-lists";
-import { finalizePosSale, stageUnpaidPosQuote } from "./support/pos-checkout";
+import { finalizePosSale, openPosOptionalDetails, stageUnpaidPosQuote } from "./support/pos-checkout";
 
 const internal = "http://127.0.0.1:5174";
 
@@ -129,6 +129,7 @@ test("browsing and exact code lookup preserve quoted amounts while cart changes 
   await chooseM(page, data);
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
+  await openPosOptionalDetails(checkout);
   await checkout.getByLabel("خصم الموظف بالجنيه").fill("5");
   await stageUnpaidPosQuote(checkout);
   const accepted = page.getByTestId("accepted-prices");
@@ -202,6 +203,7 @@ test("POS uses two lanes on desktop and tablet, stacks on phones and keeps check
   await page.getByLabel("المقاس", { exact: true }).selectOption(data.sizes[0].id);
   await page.getByLabel("اللون", { exact: true }).selectOption(data.colors[0].id);
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
+  await openPosOptionalDetails(checkout);
   await checkout.getByLabel("خصم الموظف بالجنيه").fill("5");
   await stageUnpaidPosQuote(checkout);
   await expect(page.getByTestId("accepted-prices")).toBeVisible();
@@ -237,6 +239,7 @@ test("another tab's completed offline sale refreshes known availability without 
   await context.setOffline(true);
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
+  await openPosOptionalDetails(checkout);
   await checkout.getByLabel("خصم الموظف بالجنيه").fill("5");
   await stageUnpaidPosQuote(checkout);
   await expect(page.getByTestId("accepted-prices")).toBeVisible();

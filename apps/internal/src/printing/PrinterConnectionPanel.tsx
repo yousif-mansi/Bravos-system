@@ -142,7 +142,8 @@ export function PrinterConnectionPanel() {
   const status = connection ? messageFor(connection) : "جارٍ التحقق من برنامج الطباعة…";
 
   return (
-    <section className="printer-connection" data-testid="printer-connection" aria-label="برنامج الطباعة على هذا الجهاز">
+    <details className="printer-connection" data-testid="printer-connection">
+      <summary>برنامج الطباعة {connection === null ? "— جارٍ التحقق" : connection.state === "paired" && connection.rendererReady ? "— جاهز لاستلام الأوامر" : "— يحتاج متابعة"}</summary>
       <p className="quiet-status" role="status" data-testid="printer-connection-status">{status}</p>
       {remembered ? (
         <>
@@ -183,6 +184,6 @@ export function PrinterConnectionPanel() {
         </form>
       )}
       {error ? <p className="error" role="alert" data-testid="printer-connection-error">{error}</p> : null}
-    </section>
+    </details>
   );
 }

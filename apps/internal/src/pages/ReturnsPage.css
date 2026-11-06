@@ -1,0 +1,41 @@
+.returns-page .return-lookup { display: flex; align-items: end; gap: .75rem; flex-wrap: wrap; }
+.returns-page .return-lookup .field { margin: 0; }
+.returns-page .return-lookup-input { flex: 1 1 18rem; }
+.returns-page .return-lookup input, .returns-page .return-lookup select { width: 100%; }
+.returns-page .return-search details { margin: .75rem 0; }
+.returns-page .business-table-wrap { overflow-x: auto; margin-block: .75rem; }
+.returns-page .business-table { width: 100%; border-collapse: collapse; }
+.returns-page .business-table th, .returns-page .business-table td { text-align: start; vertical-align: middle; padding: .6rem; }
+.returns-page .return-items input { width: 5rem; max-width: 100%; }
+.returns-page .return-history-section > summary, .returns-page .business-secondary-details > summary { cursor: pointer; }
+.returns-page .return-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.returns-page .business-actions { display: flex; flex-wrap: wrap; gap: .75rem; margin-top: 1rem; }
+@media (max-width: 600px) {
+  .returns-page .return-lookup > .field, .returns-page .return-lookup > button { flex: 1 1 100%; }
+}
+.returns-page .return-detail-heading { display: flex; align-items: center; justify-content: space-between; gap: .75rem; flex-wrap: wrap; }
+.returns-page .return-detail-heading h2 { margin: 0; }
+.returns-page .return-search { display: block; }
+.returns-page .return-lookup { width: 100%; }
+.returns-page .return-lookup > .field:first-child { flex: 0 1 13rem; }
+.returns-page .return-lookup-input { min-width: 0; }
+.returns-page > .branch-banner { padding: .4rem .75rem; margin-bottom: .75rem; font-size: .9rem; }
+@media (max-width: 600px) {
+  .returns-page .return-lookup > .field:first-child { flex: 1 1 100%; }
+}
+.returns-page .return-search-section > summary { cursor: pointer; }
+.returns-page .return-search-section[open] > summary { margin-bottom: .75rem; }
+.returns-page .return-editor > h2 { margin: 0 0 .5rem; }
+.returns-page .return-invoice-summary { display: flex; flex-wrap: wrap; gap: .4rem 1.5rem; padding: .5rem .75rem; margin-bottom: .5rem; background: var(--surface-muted); border: 1px solid var(--border); border-radius: .5rem; }
+.returns-page .return-invoice-summary span { display: flex; flex-direction: column; min-width: 0; }
+.returns-page .return-invoice-summary small { color: var(--muted); }
+.returns-page .return-items-wrap { max-height: 13rem; overflow: auto; }
+.returns-page .return-items thead th { position: sticky; top: 0; background: var(--surface-muted); z-index: 1; }
+.returns-page .return-editor-fields { display: grid; grid-template-columns: minmax(10rem, 1fr) minmax(14rem, 2fr) minmax(10rem, 1fr); align-items: end; gap: .75rem; }
+.returns-page .return-editor-fields .field { margin: 0; }
+.returns-page .return-editor .notice { padding: .5rem .75rem; margin-block: .5rem; }
+.returns-page .return-editor .notice p { margin: .25rem 0 0; }
+.returns-page .return-editor .business-actions { position: sticky; bottom: 0; z-index: 2; padding: .5rem; background: var(--surface); border-top: 1px solid var(--border); }
+@media (max-width: 800px) {
+  .returns-page .return-editor-fields { grid-template-columns: 1fr; }
+}

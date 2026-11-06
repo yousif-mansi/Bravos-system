@@ -1,4 +1,4 @@
-import { stageUnpaidPosQuote } from "./support/pos-checkout";
+import { openPosOptionalDetails, stageUnpaidPosQuote } from "./support/pos-checkout";
 import { expect, test, type Browser, type Page } from "@playwright/test";
 import { openLookupLists } from "./support/open-lookup-lists";
 
@@ -30,6 +30,7 @@ test("manager creates a coupon and cashier can apply, remove, reapply, and compl
   await addProduct(page, catalog.code, catalog.sizeName, catalog.colorName);
 
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
+  await openPosOptionalDetails(checkout);
   const couponInput = checkout.getByLabel("كود الكوبون", { exact: true });
   const productLookupRequests: string[] = [];
   page.on("request", (request) => {
@@ -123,6 +124,7 @@ test("cached offer and coupon prices survive offline completion while usage stay
 
   await addProduct(page, catalog.code, catalog.sizeName, catalog.colorName);
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
+  await openPosOptionalDetails(checkout);
   await checkout.getByLabel("كود الكوبون", { exact: true }).fill("OFFLINE-CACHED-50");
   await checkout.getByTestId("complete-sale").click();
   await expect(page.getByRole("alert")).toContainText("بلغ الكوبون الحد الأقصى للاستخدام.");
@@ -207,6 +209,7 @@ test("a last-use race preserves the paid prepared sale and exposes the coupon di
   await signIn(page, "cashier", "e2e-cashier-pass", false);
   await addProduct(page, catalog.code, catalog.sizeName, catalog.colorName);
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
+  await openPosOptionalDetails(checkout);
   await page.getByLabel("كود الكوبون", { exact: true }).fill("ONLY-ONE-E2E");
   await checkout.getByTestId("complete-sale").click();
   await expect(page.getByTestId("coupon-breakdown")).toContainText("ONLY-ONE-E2E — 50 ج.م.");
@@ -333,6 +336,7 @@ async function completeCachedCouponSale(
 ) {
   await addProduct(page, catalog.code, catalog.sizeName, catalog.colorName);
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
+  await openPosOptionalDetails(checkout);
   await checkout.getByLabel("كود الكوبون", { exact: true }).fill(couponCode);
   await checkout.getByLabel("خصم الموظف بالجنيه").fill("20");
   await checkout.getByTestId("complete-sale").click();

@@ -23,7 +23,6 @@ const StaffPage = lazy(() => import("./pages/StaffPage.tsx"));
 const CatalogPage = lazy(() => import("./pages/CatalogPage.tsx"));
 const LookupPage = lazy(() => import("./pages/LookupPage.tsx"));
 const ReceivingPage = lazy(() => import("./pages/ReceivingPage.tsx"));
-const TransferPage = lazy(() => import("./pages/TransferPage.tsx"));
 const SuppliersPage = lazy(() => import("./pages/SuppliersPage.tsx"));
 const CustomersPage = lazy(() => import("./pages/CustomersPage.tsx"));
 const SalesPage = lazy(() => import("./pages/SalesPage.tsx"));
@@ -488,7 +487,7 @@ export function App() {
           path="/transfers"
           element={
             workspace?.staff.role === "manager" && workspace.capabilities.manageInventory ? (
-              guarded(<TransferPage workspace={workspace} onChanged={replaceWorkspace} />)
+              <Navigate to="/receiving?tab=transfers" replace />
             ) : (
               <Navigate to={workspace ? "/workspace" : "/login"} replace />
             )

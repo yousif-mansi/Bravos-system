@@ -2,6 +2,20 @@ import { expect, test, type Page } from "@playwright/test";
 
 const WAREHOUSE_BRANCH_ID = "33333333-3333-4333-8333-333333333333";
 
+async function showHistory(page: Page, code?: string) {
+  const acceptDraftWarning = (dialog: import("@playwright/test").Dialog) => void dialog.accept();
+  page.on("dialog", acceptDraftWarning);
+  try {
+    await page.getByRole("tab", { name: "سجل الاستلام" }).click();
+  } finally {
+    page.off("dialog", acceptDraftWarning);
+  }
+  if (code) {
+    await page.getByLabel("بحث بالمورد أو الرمز أو التاريخ").fill(code);
+    await page.getByTestId("receipt-list").getByRole("row").filter({ hasText: code }).getByRole("button", { name: "عرض التفاصيل" }).click();
+  }
+}
+
 test("manager sees concise receipt facts and expands correction audit after a safe retry", async ({ page }) => {
   await page.goto("http://127.0.0.1:5174/login");
   await page.getByLabel("اسم الدخول").fill("owner");
@@ -32,8 +46,9 @@ test("manager sees concise receipt facts and expands correction audit after a sa
   expect(receipt.status).toBe(201);
 
   await page.getByRole("link", { name: "استلام المخزون" }).click();
-  await page.locator("summary").filter({ hasText: "سجل الاستلام" }).click();
-  const receiptCard = page.getByTestId("receipt-list").getByText("RC-E2E").locator("..");
+  await page.getByRole("tab", { name: "سجل الاستلام" }).click();
+  await page.getByLabel("بحث بالمورد أو الرمز أو التاريخ").fill("RC-E2E");
+  const receiptCard = page.getByTestId("receipt-list").getByRole("row").filter({ hasText: "RC-E2E" });
   await receiptCard.getByRole("button", { name: "عرض التفاصيل" }).click();
   const details = page.getByTestId("receipt-details");
   await expect(details.getByText("الكمية المستلمة: 2 — تكلفة شراء الوحدة: 100 ج.م.", { exact: true })).toHaveCount(1);
@@ -129,7 +144,7 @@ test("manager receives separate cost batches and cashier sees their branch quant
   await form.getByRole("button", { name: "إضافة منتج موجود" }).click();
   const products = form.getByLabel("المنتج", { exact: true });
   const quantities = form.getByLabel("الكمية");
-  const costs = form.getByLabel("تكلفة الشراء للجنيه");
+  const costs = form.getByLabel("تكلفة الشراء بالجنيه");
   await products.nth(0).selectOption({ label: "PT-E2E — بنطلون تجريبي" });
   await quantities.nth(0).fill("10");
   await costs.nth(0).fill("100");
@@ -138,6 +153,8 @@ test("manager receives separate cost batches and cashier sees their branch quant
   await costs.nth(1).fill("140");
   await form.getByRole("button", { name: "حفظ الاستلام" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ إذن الاستلام.");
+  page.once("dialog", (dialog) => void dialog.accept());
+  await page.getByRole("tab", { name: "أرصدة المخازن" }).click();
   await expect(page.getByRole("button", { name: "كل المخزون" })).toHaveAttribute("aria-pressed", "true");
   const stockedRow = page.getByTestId("stock-location-table").getByRole("row", { name: /PT-E2E/ });
   await expect(stockedRow).toBeVisible();
@@ -145,6 +162,7 @@ test("manager receives separate cost batches and cashier sees their branch quant
   await expect(page.getByTestId("stock-location-table").getByRole("row", { name: /PT-E2E/ })).toHaveCount(0);
   await page.getByRole("button", { name: "كل المخزون" }).click();
   await expect(stockedRow).toBeVisible();
+  await showHistory(page);
   await expect(page.getByTestId("receipt-details")).toContainText("الكمية المستلمة: 10 — تكلفة شراء الوحدة: 100 ج.م.");
   await expect(page.getByTestId("receipt-details")).toContainText("الكمية المستلمة: 10 — تكلفة شراء الوحدة: 140 ج.م.");
   await page.locator("summary").filter({ hasText: "تفاصيل دفعات الشراء" }).click();
@@ -154,7 +172,8 @@ test("manager receives separate cost batches and cashier sees their branch quant
   await expect(costBatches.getByText("تكلفة شراء الوحدة: 140 ج.م.", { exact: true })).toBeVisible();
   await expect(costBatches.getByText(/^المتبقي بالمخزون: 10 · حسب الفرع:/)).toHaveCount(2);
   await expect(costBatches.getByText(/الأصلية|الفعالة/)).toHaveCount(0);
-  const lowStockRows = page.getByTestId("low-stock-list").locator("article").filter({ hasText: "PT-E2E" });
+  await page.getByRole("tab", { name: "المخزون المنخفض" }).click();
+  const lowStockRows = page.getByTestId("low-stock-list").getByRole("row").filter({ hasText: "PT-E2E" });
   await expect(lowStockRows).toHaveCount(0);
 
   const batches = await staffApi(page, "GET", "/api/internal/inventory/batches");
@@ -227,7 +246,7 @@ test("lost receiving response retries the same operation without duplicating sto
   await form.getByRole("button", { name: "إضافة منتج موجود" }).click();
   await form.getByLabel("المنتج", { exact: true }).selectOption({ label: "SH-E2E — حذاء تجريبي" });
   await form.getByLabel("الكمية").fill("5");
-  await form.getByLabel("تكلفة الشراء للجنيه").fill("80");
+  await form.getByLabel("تكلفة الشراء بالجنيه").fill("80");
 
   const operationIds: string[] = [];
   let dropFirst = true;
@@ -296,7 +315,7 @@ test("lost response then edit, reload and check result keep a single receiving e
   await form.getByRole("button", { name: "إضافة منتج موجود" }).click();
   await form.getByLabel("المنتج", { exact: true }).selectOption({ label: "CT-E2E — معطف تجريبي" });
   await form.getByLabel("الكمية").fill("5");
-  await form.getByLabel("تكلفة الشراء للجنيه").fill("90");
+  await form.getByLabel("تكلفة الشراء بالجنيه").fill("90");
 
   const operationIds: string[] = [];
   let dropFirst = true;
@@ -322,7 +341,7 @@ test("lost response then edit, reload and check result keep a single receiving e
   await expect(page.getByRole("alert")).toBeVisible();
   await expect(page.getByTestId("pending-operation")).toBeVisible();
   await expect(form.getByLabel("الكمية")).toBeDisabled();
-  await expect(form.getByLabel("تكلفة الشراء للجنيه")).toBeDisabled();
+  await expect(form.getByLabel("تكلفة الشراء بالجنيه")).toBeDisabled();
   await expect(form.getByLabel("الكمية")).toHaveValue("5");
   await expect(page.getByRole("button", { name: "التحقق من النتيجة" })).toBeVisible();
   await expect(page.getByRole("button", { name: "إعادة المحاولة" })).toBeVisible();
@@ -335,12 +354,14 @@ test("lost response then edit, reload and check result keep a single receiving e
     await checkResult.click();
   }
   await expect(page.getByRole("status")).toContainText("تم العثور على إذن الاستلام المحفوظ.");
+  await showHistory(page);
   await expect(page.getByTestId("receipt-details")).toContainText("الكمية المستلمة: 5 — تكلفة شراء الوحدة: 90 ج.م.");
 
   await page.getByRole("link", { name: "العودة لمساحة العمل" }).click();
   await expect(page.getByRole("heading", { name: "مساحة العمل" })).toBeVisible();
   await page.getByRole("link", { name: "استلام المخزون" }).click();
   await expect(page.getByRole("heading", { name: "استلام المخزون", exact: true })).toBeVisible();
+  await showHistory(page, "CT-E2E");
   await expect(page.getByTestId("receipt-details")).toContainText("الكمية المستلمة: 5 — تكلفة شراء الوحدة: 90 ج.م.");
 
   expect(new Set(operationIds).size).toBe(1);
@@ -391,7 +412,7 @@ test("a rejected receiving operation keeps its identity and can be retried after
   await form.getByRole("button", { name: "إضافة منتج موجود" }).click();
   await form.getByLabel("المنتج", { exact: true }).selectOption({ label: "HT-E2E — قبعة تجريبية" });
   await form.getByLabel("الكمية").fill("2");
-  await form.getByLabel("تكلفة الشراء للجنيه").fill("40");
+  await form.getByLabel("تكلفة الشراء بالجنيه").fill("40");
 
   const operationIds: string[] = [];
   let rejectFirst = true;
@@ -463,7 +484,7 @@ test("two synchronous submit events before digest settles keep one receiving eff
   await form.getByRole("button", { name: "إضافة منتج موجود" }).click();
   await form.getByLabel("المنتج", { exact: true }).selectOption({ label: "DS-E2E — حزام مزدوج" });
   await form.getByLabel("الكمية").fill("4");
-  await form.getByLabel("تكلفة الشراء للجنيه").fill("55");
+  await form.getByLabel("تكلفة الشراء بالجنيه").fill("55");
 
   const operationIds: string[] = [];
   await page.route("**/api/internal/receiving/receipts", async (route) => {
@@ -534,7 +555,7 @@ test("lost request before send retries the same identity without duplicating sto
   await form.getByRole("button", { name: "إضافة منتج موجود" }).click();
   await form.getByLabel("المنتج", { exact: true }).selectOption({ label: "LB-E2E — جورب إرسال" });
   await form.getByLabel("الكمية").fill("6");
-  await form.getByLabel("تكلفة الشراء للجنيه").fill("20");
+  await form.getByLabel("تكلفة الشراء بالجنيه").fill("20");
 
   const operationIds: string[] = [];
   let dropFirst = true;
@@ -603,7 +624,7 @@ test("pending receiving identity survives closing the page and reopening a fresh
   await form.getByRole("button", { name: "إضافة منتج موجود" }).click();
   await form.getByLabel("المنتج", { exact: true }).selectOption({ label: "CL-E2E — وشاح إغلاق" });
   await form.getByLabel("الكمية").fill("7");
-  await form.getByLabel("تكلفة الشراء للجنيه").fill("30");
+  await form.getByLabel("تكلفة الشراء بالجنيه").fill("30");
 
   await page.route("**/api/internal/receiving/receipts", async (route) => {
     if (route.request().method() !== "POST") {
@@ -640,6 +661,7 @@ test("pending receiving identity survives closing the page and reopening a fresh
     await checkResult.click();
   }
   await expect(next.getByRole("status")).toContainText("تم العثور على إذن الاستلام المحفوظ.");
+  await showHistory(next);
   await expect(next.getByTestId("receipt-details")).toContainText("الكمية المستلمة: 7 — تكلفة شراء الوحدة: 30 ج.م.");
 
   const receipts = await staffApi(next, "GET", "/api/internal/receiving/receipts");
@@ -708,14 +730,14 @@ test("an already-open second tab cannot overwrite or clear another tab's uncerta
   await formA.getByRole("button", { name: "إضافة منتج موجود" }).click();
   await formA.getByLabel("المنتج", { exact: true }).selectOption({ label: "TA-E2E — منتج التبويب أ" });
   await formA.getByLabel("الكمية").fill("5");
-  await formA.getByLabel("تكلفة الشراء للجنيه").fill("70");
+  await formA.getByLabel("تكلفة الشراء بالجنيه").fill("70");
 
   const formB = pageB.getByRole("form", { name: "تسجيل إذن استلام" });
   await formB.getByLabel("تاريخ الاستلام").fill("2026-09-11");
   await formB.getByRole("button", { name: "إضافة منتج موجود" }).click();
   await formB.getByLabel("المنتج", { exact: true }).selectOption({ label: "TB-E2E — منتج التبويب ب" });
   await formB.getByLabel("الكمية").fill("8");
-  await formB.getByLabel("تكلفة الشراء للجنيه").fill("80");
+  await formB.getByLabel("تكلفة الشراء بالجنيه").fill("80");
 
   await page.route("**/api/internal/receiving/receipts", async (route) => {
     if (route.request().method() !== "POST") {
@@ -767,6 +789,7 @@ test("an already-open second tab cannot overwrite or clear another tab's uncerta
     await checkResult.click();
   }
   await expect(reopened.getByRole("status")).toContainText("تم العثور على إذن الاستلام المحفوظ.");
+  await showHistory(reopened);
   await expect(reopened.getByTestId("receipt-details")).toContainText("الكمية المستلمة: 5 — تكلفة شراء الوحدة: 70 ج.م.");
 
   const batches = await staffApi(reopened, "GET", "/api/internal/inventory/batches");
@@ -820,7 +843,7 @@ test("tab A keeps its frozen operation after tab B recovers and clears the share
   await formA.getByRole("button", { name: "إضافة منتج موجود" }).click();
   await formA.getByLabel("المنتج", { exact: true }).selectOption({ label: "FA-E2E — منتج التجميد" });
   await formA.getByLabel("الكمية").fill("6");
-  await formA.getByLabel("تكلفة الشراء للجنيه").fill("45");
+  await formA.getByLabel("تكلفة الشراء بالجنيه").fill("45");
   await page.locator("#receipt-browse-query").fill("لا-يطابق-FA");
   await expect(formA.getByRole("button", { name: "حفظ الاستلام" })).toBeEnabled();
   const receiptSubmits = await nativeSubmitCount(page, "تسجيل إذن استلام");
@@ -909,6 +932,7 @@ test("tab A keeps its frozen operation after tab B recovers and clears the share
 
   await formA.getByRole("button", { name: /حفظ الاستلام|إعادة المحاولة/ }).click();
   await expect(page.getByRole("status")).toContainText(/تم حفظ إذن الاستلام|تم العثور على إذن الاستلام المحفوظ/);
+  await showHistory(page);
   await expect(page.getByTestId("receipt-details")).toContainText("الكمية المستلمة: 6 — تكلفة شراء الوحدة: 45 ج.م.");
   expect(operationIds).toHaveLength(2);
   expect(new Set(operationIds).size).toBe(1);
@@ -1024,7 +1048,7 @@ async function fillSameAccountReceive(target: Page, quantity: string) {
   await form.getByRole("button", { name: "إضافة منتج موجود" }).click();
   await form.getByLabel("المنتج", { exact: true }).selectOption({ label: "SS-E2E — تحقق الحساب المشترك" });
   await form.getByLabel("الكمية").fill(quantity);
-  await form.getByLabel("تكلفة الشراء للجنيه").fill("45");
+  await form.getByLabel("تكلفة الشراء بالجنيه").fill("45");
   return form;
 }
 

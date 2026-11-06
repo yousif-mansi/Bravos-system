@@ -1,3 +1,4 @@
+import { openPosOptionalDetails } from "./support/pos-checkout";
 import { expect, test, type Page } from "@playwright/test";
 import type { WorkspaceDto } from "@bravos/contracts";
 import type { OfflinePosServices } from "@bravos/sales/browser";
@@ -240,6 +241,7 @@ async function queueOwnerSale(page: Page) {
   await page.getByLabel("اللون").selectOption({ label: `لون ${code}` });
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
+  await openPosOptionalDetails(checkout);
   await checkout.getByLabel("اسم الزبون (اختياري)").fill("زبون جلسة محفوظ");
   await checkout.getByLabel("هاتف الزبون (اختياري)").fill("01055557777");
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();

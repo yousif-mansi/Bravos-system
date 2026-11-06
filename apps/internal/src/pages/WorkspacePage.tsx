@@ -17,6 +17,7 @@ import {
 import { formatEgpFromPiasters } from "../money.ts";
 import { posCodeIsCached } from "../offline-ready.ts";
 import { PrinterConnectionPanel } from "../printing/PrinterConnectionPanel.tsx";
+import "./workspace-page.css";
 import { acknowledgeRestoreDevice, getRestorePause } from "../restore-api.ts";
 import {
   acceptedPayload,
@@ -611,30 +612,30 @@ export function WorkspacePage({
 
   return (
     <main className="shell dashboard-page">
-      <header className="page-hero">
+      <header className="dashboard-header">
         <div>
           <p className="eyebrow">أهلاً، {workspace.staff.displayName}</p>
-          <h1>الرئيسية<span className="sr-only"> مساحة العمل</span></h1>
-          <p className="page-subtitle">{workspace.staff.role === "manager" ? "ملخص كل الفروع والمتجر" : "ابدأ البيع"}</p>
+          <h1>لوحة التحكم<span className="sr-only"> مساحة العمل</span></h1>
+          <p className="page-subtitle">{workspace.staff.role === "manager" ? "ملخص كل الفروع والمتجر" : "مساحة العمل"}</p>
         </div>
+        {workspace.capabilities.cashier ? (
+          <Link className="dashboard-primary" to="/lookup" aria-label="نقطة البيع البحث عن منتج">بيع جديد</Link>
+        ) : null}
       </header>
 
-      {workspace.capabilities.cashier ? (
-        <Link className="sell-now" to="/lookup" aria-label="نقطة البيع البحث عن منتج">
-          <strong>نقطة البيع</strong>
-          <span>ابدأ بيع من الكود</span>
-        </Link>
-      ) : null}
-      {workspace.capabilities.cashier && ready ? (
-        <p className="quiet-status" data-testid="offline-ready" role="status">جاهز للعمل دون اتصال</p>
-      ) : null}
-      {workspace.capabilities.cashier && !ready ? (
-        <p className="quiet-status" data-testid="offline-not-ready">نقطة البيع بتتجهز</p>
-      ) : null}
-      <PrinterConnectionPanel />
+      <div className="dashboard-status" aria-label="حالة الجهاز والاتصال">
+        <span className={`dashboard-status-item${online ? "" : " is-warning"}`} role="status">{online ? "متصل" : "غير متصل"}</span>
+        {workspace.capabilities.cashier && ready ? (
+          <span className="dashboard-status-item" data-testid="offline-ready" role="status">جاهز للعمل دون اتصال</span>
+        ) : null}
+        {workspace.capabilities.cashier && !ready ? (
+          <span className="dashboard-status-item is-warning" data-testid="offline-not-ready">نقطة البيع بتتجهز</span>
+        ) : null}
+        <PrinterConnectionPanel />
+      </div>
 
       {observedPause ? (
-        <div className="alert alert-danger" data-testid="stock-pause" role="alert">
+        <div className="alert alert-danger" id="stock-pause" data-testid="stock-pause" role="alert">
           <strong>تصحيح كمية شغال</strong>
           <p>ما تبدأش بيع جديد لحد ما التصحيح يخلص.</p>
           {pauseAcknowledged ? (
@@ -652,7 +653,7 @@ export function WorkspacePage({
         </div>
       ) : null}
       {observedRestorePause ? (
-        <div className="alert alert-danger" data-testid="restore-pause" role="alert">
+        <div className="alert alert-danger" id="restore-pause" data-testid="restore-pause" role="alert">
           <strong>استعادة بيانات شغالة</strong>
           <p>ما تبدأش بيع جديد لحد ما الاستعادة تخلص.</p>
           {restorePauseAcknowledged ? (
@@ -676,12 +677,12 @@ export function WorkspacePage({
         <div className="alert alert-danger" data-testid="sync-error" role="alert">{syncError}</div>
       ) : null}
       {updateDeferred ? (
-        <div className="alert alert-warn" data-testid="update-deferred" role="status">
+        <div className="alert alert-warn" id="update-deferred" data-testid="update-deferred" role="status">
           في تحديث مستني المبيعات المتأخرة تتبعت.
         </div>
       ) : null}
       {workspace.capabilities.manageStaff && otherPending > 0 ? (
-        <div className="alert alert-warn" data-testid="foreign-queue">
+        <div className="alert alert-warn" id="foreign-queue" data-testid="foreign-queue">
           <p>مبيعات محفوظة لحساب تاني: {otherPending}</p>
           <button
             className="secondary"
@@ -697,25 +698,34 @@ export function WorkspacePage({
 
       {workspace.staff.role === "manager" ? (
         <section className="kpi-grid" aria-label="ملخص كل الفروع والمتجر">
-          <article className="kpi-card">
+          <Link className="kpi-card dashboard-kpi-link" to="/reports">
             <strong>{todaySales ?? "—"}</strong>
             <span>صافي مبيعات اليوم — كل الفروع والمتجر</span>
             <small>{summaryDetail("sales", `${todayCount} عملية`)}</small>
-          </article>
-          <article className="kpi-card">
+          </Link>
+          <Link className="kpi-card dashboard-kpi-link" to="/online-orders">
             <strong>{pendingOrders === null ? "—" : pendingOrders}</strong>
             <span>طلبات المتجر المعلقة</span>
             <small>{summaryDetail("orders", "كل الطلبات من غير تأكيد")}</small>
-          </article>
-          <article className="kpi-card">
-            <strong>{lowStockCount === null ? "—" : lowStockCount}</strong>
-            <span>مخزون الفروع يحتاج متابعة</span>
-            <small>{summaryDetail("stock", "أصناف قليلة حالياً")}</small>
-          </article>
+          </Link>
+          {workspace.capabilities.manageInventory ? (
+            <Link className="kpi-card dashboard-kpi-link" to="/receiving?tab=low-stock">
+              <strong>{lowStockCount === null ? "—" : lowStockCount}</strong>
+              <span>مخزون الفروع يحتاج متابعة</span>
+              <small>{summaryDetail("stock", "أصناف قليلة حالياً")}</small>
+            </Link>
+          ) : (
+            <article className="kpi-card">
+              <strong>{lowStockCount === null ? "—" : lowStockCount}</strong>
+              <span>مخزون الفروع يحتاج متابعة</span>
+              <small>{summaryDetail("stock", "أصناف قليلة حالياً")}</small>
+            </article>
+          )}
           <article className={`kpi-card${unsynced > 0 ? " is-warn" : ""}`}>
             <strong>{unsynced}</strong>
             <span>مبيعات الجهاز الحالي لسه متبعتش</span>
             <small data-testid="unsynced-count">مبيعات غير مزامنة: {unsynced}</small>
+            {showSyncDock ? <a href="#sync-controls">متابعة المزامنة</a> : null}
           </article>
         </section>
       ) : (
@@ -737,14 +747,18 @@ export function WorkspacePage({
         <p className="system-status">{backupHint}</p>
       ) : null}
 
+      <div className="dashboard-panels">
       {needsAttention && workspace.staff.role === "manager" ? (
         <section className="card attention-card" aria-label="محتاج متابعة">
           <h2>محتاج متابعة</h2>
           <ul>
-            {unsynced > 0 ? <li>{unsynced} بيعة لسه متبعتش</li> : null}
-            {(pendingOrders ?? 0) > 0 ? <li>{pendingOrders} طلب جديد</li> : null}
-            {(lowStockCount ?? 0) > 0 ? <li>{lowStockCount} صنف قليل</li> : null}
-            {otherPending > 0 ? <li>{otherPending} بيعة على حساب تاني</li> : null}
+            {unsynced > 0 || syncError ? <li><a href="#sync-controls">{unsynced > 0 ? `${unsynced} بيعة لسه متبعتش` : "مشكلة في المزامنة"}</a></li> : null}
+            {(pendingOrders ?? 0) > 0 ? <li><Link to="/online-orders">{pendingOrders} طلب معلق</Link></li> : null}
+            {(lowStockCount ?? 0) > 0 ? <li>{workspace.capabilities.manageInventory ? <Link to="/receiving?tab=low-stock">{lowStockCount} صنف قليل</Link> : `${lowStockCount} صنف قليل`}</li> : null}
+            {workspace.capabilities.manageStaff && otherPending > 0 ? <li><a href="#foreign-queue">{otherPending} بيعة على حساب تاني</a></li> : null}
+            {observedPause ? <li><a href="#stock-pause">تصحيح كمية شغال</a></li> : null}
+            {observedRestorePause ? <li><a href="#restore-pause">استعادة بيانات شغالة</a></li> : null}
+            {updateDeferred ? <li><a href="#update-deferred">تحديث مستني المزامنة</a></li> : null}
           </ul>
         </section>
       ) : null}
@@ -765,6 +779,9 @@ export function WorkspacePage({
                 <span>القائمة</span>
               </Link>
             ) : null}
+            {online && workspace.activeBranch && workspace.staff.role === "manager" && workspace.capabilities.manageInventory ? (
+              <Link className="action-tile" to="/returns"><strong>المرتجعات</strong><span>متابعة المرتجعات</span></Link>
+            ) : null}
             {online && workspace.staff.role === "manager" ? (
               <Link className="action-tile" to="/reports">
                 <strong>التقارير</strong>
@@ -775,8 +792,10 @@ export function WorkspacePage({
         </section>
       ) : null}
 
+      </div>
+
       {showSyncDock ? (
-        <section className="sync-dock">
+        <section className="sync-dock" id="sync-controls">
           {syncStatus ? <p data-testid="sync-status" role="status">{syncStatus}</p> : null}
           {unsynced > 0 ? (
             <p className="muted" data-testid="sync-foreground-note">في مبيعات لسه متبعتش. النظام بيحاول إرسالها تلقائياً وأنت متصل، وبيعيد المحاولة عند رجوع الاتصال.</p>
@@ -793,7 +812,7 @@ export function WorkspacePage({
         </section>
       ) : (
         <>
-          <p className="sr-only" data-testid="sync-foreground-note"> </p>
+          <p className="sr-only" id="sync-controls" data-testid="sync-foreground-note"> </p>
           <button className="sr-only" type="button" data-testid="retry-sync" disabled={!online || syncing} onClick={() => void retryNow()}>
             إعادة المحاولة
           </button>

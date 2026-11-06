@@ -28,8 +28,8 @@ test("manager publishes product media and customers see only selectable stocked 
   });
   expect(created.status).toBe(201);
   await page.reload();
-  await page.getByLabel("رمز المنتج", { exact: true }).first().fill("MEDIA-E2E-17");
-  await page.getByRole("button", { name: "عرض المنتج" }).click();
+  await page.getByRole("button", { name: "قميص برافوس المصور", exact: true }).click();
+  await page.getByRole("tab", { name: "المتجر الإلكتروني" }).click();
   const form = page.getByRole("form", { name: "تعديل منتج" });
   await form.getByLabel("الوصف").fill("قميص قطني بصورة حقيقية");
   await form.getByLabel("دليل المقاسات (اختياري)").fill("XL17 — عرض الصدر 54 سم");
@@ -63,9 +63,11 @@ test("manager publishes product media and customers see only selectable stocked 
   ]);
   await uploadObserved;
   await expect(form.getByRole("button", { name: "حفظ التعديل" })).toBeDisabled();
+  await openCatalogTaxonomy(page);
   const categoryDuringUpload = page.getByRole("form", { name: "إضافة تصنيف" });
   await categoryDuringUpload.getByLabel("اسم التصنيف").fill("تصنيف أثناء الرفع 17");
   await categoryDuringUpload.getByRole("button", { name: "حفظ التصنيف" }).click();
+  await closeCatalogTaxonomy(page);
   await expect(page.getByText("تم حفظ التصنيف.", { exact: true })).toBeVisible();
   await expect(form.getByRole("button", { name: "حفظ التعديل" })).toBeDisabled();
   releaseUpload();
@@ -218,21 +220,37 @@ async function signInManager(page: Page) {
 }
 
 async function createTaxonomy(page: Page) {
+  await openCatalogTaxonomy(page);
   const category = page.getByRole("form", { name: "إضافة تصنيف" });
   await category.getByLabel("اسم التصنيف").fill("قمصان 17");
   await category.getByRole("button", { name: "حفظ التصنيف" }).click();
+  await closeCatalogTaxonomy(page);
   await expect(page.getByRole("status")).toContainText("تم حفظ التصنيف");
+  await openCatalogTaxonomy(page);
   const size = page.getByRole("form", { name: "إضافة مقاس" });
   await size.getByLabel("اسم المقاس").fill("XL17");
   await size.getByRole("button", { name: "حفظ المقاس" }).click();
+  await closeCatalogTaxonomy(page);
   await expect(page.getByText("تم حفظ المقاس.", { exact: true })).toBeVisible();
+  await openCatalogTaxonomy(page);
   const color = page.getByRole("form", { name: "إضافة لون" });
   await color.getByLabel("اسم اللون").fill("أخضر 17");
   await color.getByRole("button", { name: "حفظ اللون" }).click();
+  await closeCatalogTaxonomy(page);
   await expect(page.getByText("تم حفظ اللون.", { exact: true })).toBeVisible();
+  await openCatalogTaxonomy(page);
   await color.getByLabel("اسم اللون").fill("رملي 17");
   await color.getByRole("button", { name: "حفظ اللون" }).click();
+  await closeCatalogTaxonomy(page);
   await expect(page.getByText("تم حفظ اللون.", { exact: true })).toBeVisible();
+}
+
+async function openCatalogTaxonomy(page: Page) {
+  await page.getByRole("button", { name: "إدارة التصنيفات والمقاسات والألوان" }).click();
+}
+
+async function closeCatalogTaxonomy(page: Page) {
+  await page.getByRole("button", { name: "إغلاق التصنيفات والمقاسات والألوان" }).click();
 }
 
 function productWrite(

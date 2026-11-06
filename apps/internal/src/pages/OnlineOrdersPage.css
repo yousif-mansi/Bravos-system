@@ -1,0 +1,18 @@
+.order-compact-grid { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr); gap: 1.25rem; }
+.order-compact-grid > * { min-width: 0; }
+.order-compact h2 { margin: 0 0 0.6rem; }
+.order-customer p { margin: 0 0 0.45rem; overflow-wrap: anywhere; }
+.order-customer .button { margin-top: 0.4rem; }
+.order-compact-lines { max-height: 13rem; overflow-y: auto; }
+.order-compact-lines .order-lines { margin-top: 0; gap: 0; }
+.order-compact-lines .order-line { padding: 0.4rem 0; }
+.order-compact-total { border-top: 1px solid var(--line); margin: 0.6rem 0 0.25rem; padding-top: 0.6rem; }
+.order-compact-items > .muted { margin: 0; }
+.order-primary-actions { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 0.9rem; }
+.online-orders-page .business-secondary-details > summary { cursor: pointer; font-weight: 700; }
+.online-orders-page .business-secondary-details > .card { margin-top: 0.75rem; }
+@media (max-width: 700px) {
+  .order-compact-grid { grid-template-columns: minmax(0, 1fr); }
+  .order-compact-lines { max-height: none; }
+  .order-primary-actions > button { flex: 1 1 100%; }
+}

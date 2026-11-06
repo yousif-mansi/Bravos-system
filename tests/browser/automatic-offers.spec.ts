@@ -1,3 +1,4 @@
+import { openPosOptionalDetails } from "./support/pos-checkout";
 import { expect, test, type Page } from "@playwright/test";
 import { openLookupLists } from "./support/open-lookup-lists";
 
@@ -63,6 +64,7 @@ test("manager creates an offer and the connected cashier keeps its accepted valu
 
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByLabel("الكمية").fill("2");
+  await openPosOptionalDetails(checkout);
   await checkout.getByLabel("خصم الموظف بالجنيه").fill("20");
   await checkout.getByTestId("complete-sale").click();
   const quote = page.getByTestId("accepted-prices");

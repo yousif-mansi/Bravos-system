@@ -1,3 +1,4 @@
+import { openPosOptionalDetails } from "./support/pos-checkout";
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
@@ -89,6 +90,7 @@ test("production precache serves first offline POS navigation and survives a sam
     await page.getByLabel("اللون").selectOption({ label: "لون إنتاج" });
     await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
     const checkout = page.getByRole("form", { name: "إتمام البيع" });
+    await openPosOptionalDetails(checkout);
     await checkout.getByLabel("خصم الموظف بالجنيه").fill("10");
     await checkout.getByRole("button", { name: "إتمام البيع" }).click();
     await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
@@ -570,6 +572,7 @@ test("schema 2 individual paid units and signed-in session survive upgrade and o
     await page.getByLabel("اللون").selectOption({ label: "لون ترقية" });
     await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
     const checkout = page.getByRole("form", { name: "إتمام البيع" });
+    await openPosOptionalDetails(checkout);
     await checkout.getByLabel("خصم الموظف بالجنيه").fill("1");
     await checkout.getByRole("button", { name: "إتمام البيع" }).click();
     await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
