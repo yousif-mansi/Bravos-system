@@ -50,6 +50,7 @@ test("individually available products cannot quote a split basket and customer i
   await receive(page, fixture.b, y.body.variants[0].id, 1);
   await addProduct(page, x.body.id);
   await addProduct(page, y.body.id);
+  await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${STORE}/checkout`);
   await fillCustomer(page, fixture.areaId);
   const before = (await savedCart(page)).items;
@@ -69,7 +70,7 @@ test("individually available products cannot quote a split basket and customer i
   await expectCustomer(page, fixture.areaId);
   expect((await savedCart(page)).items).toEqual(before);
   await checkout(page).getByRole("button", { name: "Place order request" }).click();
-  await expect(page.getByRole("heading", { name: "Order request received" })).toBeVisible();
+  await expectAcknowledgementInViewport(page, "Order request received");
   const accepted = await page.evaluate(() => JSON.parse(localStorage.getItem("bravos-guest-checkout-v1") ?? "null"));
   expect(accepted.request).toMatchObject({
     alternatePhone: "01212345678",
@@ -81,6 +82,8 @@ test("individually available products cannot quote a split basket and customer i
   expect(replay.status).toBe(200);
   expect(replay.body).toEqual(accepted.result);
   expectPublicSafe(replay.body);
+  await page.reload();
+  await expectAcknowledgementInViewport(page, "Order request already received");
 });
 
 test("a basket losing its common branch after review rejects submission without an order and can be reviewed again", async ({ page }) => {
@@ -317,6 +320,15 @@ function expectPublicSafe(value: unknown, path = "response") {
 }
 
 function checkout(page: Page) { return page.getByRole("form", { name: "Checkout" }); }
+async function expectAcknowledgementInViewport(page: Page, name: string) {
+  const heading = page.getByRole("heading", { name, exact: true });
+  await expect(heading).toBeFocused();
+  await expect.poll(() => heading.evaluate((element) => {
+    const bounds = element.getBoundingClientRect();
+    const headerBottom = document.querySelector(".store-header")?.getBoundingClientRect().bottom ?? 0;
+    return bounds.top >= headerBottom && bounds.bottom <= window.innerHeight;
+  })).toBe(true);
+}
 async function savedCart(page: Page) { return page.evaluate(() => JSON.parse(localStorage.getItem("bravos-guest-cart-v1") ?? "null")); }
 
 async function staffApi(page: Page, method: "GET" | "POST" | "PATCH", url: string, payload?: unknown) {

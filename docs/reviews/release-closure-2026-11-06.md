@@ -77,3 +77,59 @@ Candidate `ec4f544b` was published. Windows CI `42206124355` cleared the product
 Source inspection identified an installed-font dependency: the native helper loaded Cairo into a `PrivateFontCollection` but constructed each `Font` using its name, rather than the private `FontFamily`. The follow-up uses and retains that private family, disposing it with the other renderer resources. It does not install a font or alter system settings. This follows the private-font ownership model in [Microsoft's documentation](https://learn.microsoft.com/en-us/dotnet/api/system.drawing.text.privatefontcollection). The failure's precise runtime stage was not present in the original CI assertions; failed preview assertions now retain their bounded result code.
 
 The follow-up native renderer file passed **10/10 locally**, `private-font-renderer.log`. A new matching CI run is required to confirm that this correction resolves the clean-runner failure; do not treat the earlier red run as green.
+
+## Built-artifact rehearsal and candidate follow-up
+
+Candidate `d71389e9` cleared the complete Windows static/build job in run `42206919197`, including the previously failing native previews. Its full HTTP job recorded **246 passed / 30 failed across 36 files**. The failures were confined to three older fixture files that still assigned independent size/color prices. Test data now uses distinct products for distinct prices; the existing monetary, FIFO, return, permission and replay assertions remain. The low-stock assertion uses the product's operational stock identifier, while online orders still submit their actual website-option identifier.
+
+- `http-fixtures.log`: **16 passed / 1 failed** after the pricing setup repair; the remaining failure was the obsolete low-stock identifier expectation.
+- `http-fixtures-fixed.log`: fresh **17/17 passed** across reporting edge cases and coupons after correcting that expectation.
+- `http-returns-fixed.log`: separate **18/18 passed** for Returns after correcting its fixture setup.
+
+These are affected-file reruns, not one fresh full HTTP pass. The candidate browser job was still running at this checkpoint. A later matching CI result is required before release sign-off.
+
+### Canonical Windows production-mode startup
+
+A separate managed checkout at `d71389e9` was installed with the pinned frozen lockfile and built successfully: API, staff/PWA and storefront, plus bundle separation. It used a new disposable PostgreSQL cluster, isolated database, external media directory and protected operator recovery directory. No business database, ordinary preview artifact, browser queue, pairing, driver or physical printer was changed.
+
+The documented `pnpm release:rehearse` command successfully started the built artifacts on its normal ports: API **3010**, staff **5173**, storefront **3000**. All three returned HTTP 200. Fresh migrations **001–038** and owner bootstrap succeeded; anonymous staff access returned 401 and the authenticated session cookie was HttpOnly. With ordering closed, public quote returned **503 PUBLIC_ORDERING_DISABLED**. A coordinated stop closed all three application ports; the lab was then restarted with ordering enabled for synthetic checkout verification only.
+
+This permitted canonical execution supersedes the unresolved historical startup-rejection boundary for local runtime verification. It does not establish the undocumented cause of that earlier approval refusal. The existing guide accurately anticipates the transient storefront health-probe connection refusal while the API initializes; readiness subsequently succeeded. Do not describe startup as entirely free of transient log errors, or treat loopback HTTP as hosted HTTPS evidence.
+
+### Storefront performance and visual evidence
+
+The approved generated sample range supplied **30 products across four categories**, with sample media uploaded and warehouse/branch quantities entered through the existing feature APIs in the disposable database. Fayoum delivery was configured at **50 EGP** in that database only. The original evaluation data remained unchanged.
+
+The attach-only performance tool needed its product readiness selector aligned with the existing separate color and size controls. Budgets, throttling, observation period and sample count were unchanged; its **7/7 script checks** passed. The initial partial run is retained beside the corrected run. The corrected matrix completed **24 cold samples**: four routes × two viewports × three runs, at the tool's fixed 150 ms / 1.6 Mbps / 4× CPU conditions.
+
+| Route | Phone median LCP | Desktop median LCP | Highest CLS across both viewports |
+| --- | --- | --- | --- |
+| Homepage | 1.440 s | 1.472 s | 0.001124 |
+| Product | 0.940 s | 1.016 s | 0.009977 |
+| Bag | 0.756 s | 0.784 s | 0.002974 |
+| Checkout | 0.736 s | 0.768 s | 0.001285 |
+
+These are local synthetic-catalog laboratory results. They are not field measurements, representative future merchandise-photo measurements, a matched historical-baseline comparison, or a blanket SF-11 acceptance claim.
+
+Production captures cover full vertical homepage traversal, every horizontal category row and all **30 products** at **390 px and 1440 px**, plus product, bag and checkout. The successful traversal recorded no page exceptions, failed HTTP assets or document horizontal overflow. Natural viewport captures are retained for main visual review. The first capture harness waited for network-idle and later encountered ambiguous selectors during streamed page transitions; those harness failures remain in separate logs and were corrected without application changes. Settled vertical captures use instant scripted scrolling so screenshots do not represent an in-flight smooth scroll as a layout defect.
+
+### Built customer-to-operations smoke
+
+`production-business-smoke.json` records actual browser/API execution against the disposable built stack:
+
+1. Owner login and branch selection through the built staff UI.
+2. Mobile guest checkout at **1099 + 50 = 1149 EGP**, yielding `BRV-000001`; the pending request left all branch quantities unchanged.
+3. Existing staff agreement and confirmation operations deducted exactly one unit from Abshway and none from Fayoum or the warehouse.
+4. Reloading the saved customer acknowledgment after staff confirmation showed **Order request already received**, explicitly avoided asserting current status, and did not resubmit the order.
+5. Cancellation after inspection restored exactly the deducted branch quantity.
+6. Built dashboard, POS, Products, Receiving, Reports and Backup routes were opened and captured. Initial dashboard loading indicators are not proof of final dashboard data completion.
+
+No real customer, delivery, payment, sale or print was created. This closes a local built-artifact integration check; target hosting, HTTPS/proxy configuration, retained monitoring, operator sign-off and external recovery evidence retain their separate release requirements.
+
+### Final local UX correction
+
+The mobile production walkthrough demonstrated that a successful checkout could retain the form's previous scroll position, leaving the acknowledgment heading and reference above the viewport. The acknowledgment heading now receives programmatic focus and an immediate reveal for new and saved results. This changes presentation only; submission identity, recovery, accepted amounts, cart persistence and stock operations are unchanged.
+
+The affected integration file passed **4/4 browser cases** in `browser-checkout-focus.log`, including explicit mobile focus/viewport assertions and saved-result reload. A separate storefront production build passed in `rehearsal-focus-build.log`. The rebuilt disposable rehearsal repeated the customer-to-operations smoke successfully (`production-business-smoke-after-focus.log`); both acknowledgment variants received focus and were in the viewport. The earlier screenshot showing the problem remains as `checkout-received-before-focus.png` beside the corrected capture. No full performance rerun was needed for an acknowledgment-only focus effect; the original timing matrix remains labeled with its exact pre-focus candidate.
+
+The category row's real loading, simulated 503 error with Retry, and successful recovery were also captured against the production artifact, `production-row-states-fixed.log`. The earlier capture script mistakenly used a Next step that only scrolled already loaded cards; its failed loading expectation is retained separately and is not described as an application fault.

@@ -323,9 +323,9 @@ test("a free reward suggests zero while the manager may authorize exchange credi
       buyQuantity: 1,
       rewardQuantity: 1,
       rewardPercentageBasisPoints: 10000,
-      buyProductIds: [rewarded.productId],
+      buyProductIds: rewarded.productIds,
       buyCategoryIds: [],
-      rewardProductIds: [rewarded.productId],
+      rewardProductIds: rewarded.productIds,
       rewardCategoryIds: [],
       startsOn: "2026-09-01", endsOn: "2026-09-30", active: true, allowCoupon: true,
       productIds: [], categoryIds: [],
@@ -1170,24 +1170,31 @@ async function seedProduct(session: Session, prices: number[]) {
   const suffix = crypto.randomUUID().slice(0, 6);
   const category = await api(session, "POST", "/api/internal/catalog/categories", { nameAr: `مرتجعات ${suffix}` });
   const size = await api(session, "POST", "/api/internal/catalog/sizes", { nameAr: `L مرتجع ${suffix}` });
-  const variants: Array<{ sizeId: string; colorId: string; sellingPricePiastersOverride: number | null }> = [];
+  expect(category.status, JSON.stringify(category.body)).toBe(201);
+  expect(size.status, JSON.stringify(size.body)).toBe(201);
+  const productIds: string[] = [];
+  const variantIds: string[] = [];
   for (const [index, price] of prices.entries()) {
     const color = await api(session, "POST", "/api/internal/catalog/colors", { nameAr: `لون مرتجع ${suffix} ${index}` });
-    variants.push({ sizeId: size.body.id, colorId: color.body.id, sellingPricePiastersOverride: price });
+    expect(color.status, JSON.stringify(color.body)).toBe(201);
+    const product = await api(session, "POST", "/api/internal/catalog/products", {
+      code: `RET-${crypto.randomUUID().slice(0, 6)}`,
+      nameAr: "قميص مرتجع",
+      descriptionAr: "اختبار الإرجاع",
+      categoryId: category.body.id,
+      defaultSellingPricePiasters: price,
+      publication: "hidden",
+      imageRefs: [],
+      variants: [{ sizeId: size.body.id, colorId: color.body.id }],
+    });
+    expect(product.status, JSON.stringify(product.body)).toBe(201);
+    productIds.push(product.body.id as string);
+    variantIds.push(product.body.variants[0].id as string);
   }
-  const product = await api(session, "POST", "/api/internal/catalog/products", {
-    code: `RET-${crypto.randomUUID().slice(0, 6)}`,
-    nameAr: "قميص مرتجع",
-    descriptionAr: "اختبار الإرجاع",
-    categoryId: category.body.id,
-    defaultSellingPricePiasters: prices[0],
-    publication: "hidden",
-    imageRefs: [],
-    variants,
-  });
   return {
-    productId: product.body.id as string,
-    variantIds: product.body.variants.map((variant: { id: string }) => variant.id) as string[],
+    productId: productIds[0]!,
+    productIds,
+    variantIds,
   };
 }
 

@@ -136,7 +136,8 @@ async function ready(page, route, lineCount) {
   await page.locator("main h1").first().waitFor({ timeout: conditions.timeoutMs });
   if (route === "home") await page.locator('main a[href^="/products/"]').first().waitFor({ timeout: conditions.timeoutMs });
   if (route === "product") {
-    await page.locator('.purchase-panel input[name="variant"]:enabled').first().waitFor({ state: "attached", timeout: conditions.timeoutMs });
+    await page.locator('.purchase-panel input[name="purchase-color"]:enabled').first().waitFor({ state: "attached", timeout: conditions.timeoutMs });
+    await page.locator('.purchase-panel input[name="purchase-size"]:enabled').first().waitFor({ state: "attached", timeout: conditions.timeoutMs });
     await page.waitForFunction(() => {
       const quantity = document.querySelector("#product-quantity");
       return quantity && !quantity.disabled && Number(quantity.max) >= 1;

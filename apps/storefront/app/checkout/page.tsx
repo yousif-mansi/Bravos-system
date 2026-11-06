@@ -61,6 +61,7 @@ export default function CheckoutPage() {
     Boolean(fields.alternatePhone.trim() || fields.landmark.trim() || fields.notes.trim()),
   );
   const recoveryStarted = useRef(false);
+  const resultHeading = useRef<HTMLHeadingElement>(null);
   const activeOperationId = useRef<string | null>(null);
   const submitStarted = useRef(false);
   const currentInputKey = useMemo(
@@ -69,6 +70,12 @@ export default function CheckoutPage() {
   );
   const currentInputKeyRef = useRef(currentInputKey);
   currentInputKeyRef.current = currentInputKey;
+
+  useEffect(() => {
+    if (!result) return;
+    resultHeading.current?.focus({ preventScroll: true });
+    resultHeading.current?.scrollIntoView({ behavior: "instant", block: "center" });
+  }, [result]);
 
   useEffect(() => {
     let active = true;
@@ -382,7 +389,7 @@ export default function CheckoutPage() {
     return (
       <main id="main-content" lang="en" dir="ltr" className={`checkout-page checkout-success ${styles.page} ${styles.success}`}>
         <p className="eyebrow">Order request</p>
-        <h1>{alreadyReceived ? "Order request already received" : "Order request received"}</h1>
+        <h1 ref={resultHeading} tabIndex={-1}>{alreadyReceived ? "Order request already received" : "Order request received"}</h1>
         <p className="order-reference">Order reference: <strong>{result.reference}</strong></p>
         <p role="status" className={`success ${styles.pendingNotice}`}>{alreadyReceived
           ? "This order request was already received and was not submitted again. This receipt does not establish its current status."

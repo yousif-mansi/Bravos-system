@@ -332,8 +332,9 @@ test("FIFO return cost, original branch and employee attribution change exactly 
 test("exchange reports full replacement revenue while credit and both cash directions remain settlement only", async () => {
   const manager = await signIn("owner", "owner-pass-1");
   await selectBranch(manager, abshwayId);
-  const { variantIds } = await seedProduct(manager, [28_000, 32_000, 20_000], "تسويات الاستبدال");
-  const [originalVariant, dearerVariant, cheaperVariant] = variantIds as [string, string, string];
+  const originalVariant = (await seedProduct(manager, [28_000], "تسويات الاستبدال الأصلية")).variantIds[0]!;
+  const dearerVariant = (await seedProduct(manager, [32_000], "تسويات الاستبدال الأعلى")).variantIds[0]!;
+  const cheaperVariant = (await seedProduct(manager, [20_000], "تسويات الاستبدال الأقل")).variantIds[0]!;
   await receive(manager, originalVariant, 2, 10_000, "2026-09-14");
   await receive(manager, dearerVariant, 1, 15_000, "2026-09-15");
   await selectBranch(manager, fayoumId);
@@ -731,7 +732,7 @@ test("a late unallocated sale cancelled without a stock reversal keeps its unkno
 test("online confirmation and each cancellation reversal use their own Cairo day and fulfillment branch", async () => {
   const manager = await signIn("owner", "owner-pass-1");
   await selectBranch(manager, abshwayId);
-  const { variantIds } = await seedProduct(manager, [30_000], "توقيت طلبات الفروع", "available");
+  const { variantIds, operationalVariantId } = await seedProduct(manager, [30_000], "توقيت طلبات الفروع", "available");
   const variantId = variantIds[0]!;
   await receive(manager, variantId, 1, 12_000, "2026-09-16");
   await selectBranch(manager, fayoumId);
@@ -763,8 +764,8 @@ test("online confirmation and each cancellation reversal use their own Cairo day
       branch: expect.objectContaining({ id: fayoumId }) }),
   ]));
   expect(confirmationDay.body.lowStock).toEqual(expect.arrayContaining([
-    expect.objectContaining({ branchId: abshwayId, variantId, availableQuantity: 0 }),
-    expect.objectContaining({ branchId: fayoumId, variantId, availableQuantity: 0 }),
+    expect.objectContaining({ branchId: abshwayId, variantId: operationalVariantId, availableQuantity: 0 }),
+    expect.objectContaining({ branchId: fayoumId, variantId: operationalVariantId, availableQuantity: 0 }),
   ]));
   const abshwayConfirmation = await api(manager, "GET",
     `/api/internal/reports/management?period=day&date=2026-09-16&channel=online&branchId=${abshwayId}`);
@@ -974,11 +975,11 @@ async function seedProduct(manager: Session, prices: number[], label: string,
   const size = await api(manager, "POST", "/api/internal/catalog/sizes", { nameAr: `مقاس ${suffix}` });
   expect(category.status).toBe(201);
   expect(size.status).toBe(201);
-  const variants: Array<{ sizeId: string; colorId: string; sellingPricePiastersOverride: number }> = [];
-  for (const [index, price] of prices.entries()) {
+  const variants: Array<{ sizeId: string; colorId: string }> = [];
+  for (const [index] of prices.entries()) {
     const color = await api(manager, "POST", "/api/internal/catalog/colors", { nameAr: `لون ${suffix} ${index}` });
     expect(color.status).toBe(201);
-    variants.push({ sizeId: size.body.id, colorId: color.body.id, sellingPricePiastersOverride: price });
+    variants.push({ sizeId: size.body.id, colorId: color.body.id });
   }
   const product = await api(manager, "POST", "/api/internal/catalog/products", {
     code: `EDGE-${suffix}`,
@@ -993,6 +994,7 @@ async function seedProduct(manager: Session, prices: number[], label: string,
   expect(product.status, JSON.stringify(product.body)).toBe(201);
   return {
     productId: product.body.id as string,
+    operationalVariantId: product.body.operationalVariantId as string,
     variantIds: product.body.variants.map((variant: { id: string }) => variant.id) as string[],
   };
 }

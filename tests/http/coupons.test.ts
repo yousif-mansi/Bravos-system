@@ -432,13 +432,13 @@ test.each([
     buyQuantity: 1,
     rewardQuantity: 1,
     rewardPercentageBasisPoints: example.rewardPercent,
-    buyProductIds: [catalog.productId],
-    rewardProductIds: [catalog.productId],
+    buyProductIds: catalog.productIds,
+    rewardProductIds: catalog.productIds,
   });
   const offer = await api(manager, "POST", "/api/internal/pricing/offers", rule);
   expect(offer.status).toBe(201);
   const code = `REWARD-${example.suffix}`;
-  const couponRule = couponBody({ code, fixedDiscountPiasters: 5_000, productIds: [catalog.productId] });
+  const couponRule = couponBody({ code, fixedDiscountPiasters: 5_000, productIds: catalog.productIds });
   const coupon = await api(manager, "POST", "/api/internal/pricing/coupons", couponRule);
   expect(coupon.status).toBe(201);
   const payload = {
@@ -530,27 +530,27 @@ async function seedCatalog(manager: Session, prefix: string, prices: number[]) {
   const colors = await Promise.all(prices.map((_, index) => api(manager, "POST", "/api/internal/catalog/colors", {
     nameAr: `لون ${prefix} ${index + 1}`,
   })));
-  const product = await api(manager, "POST", "/api/internal/catalog/products", {
-    code: `COUPON-${prefix}`,
-    nameAr: `منتج ${prefix}`,
+  const products = await Promise.all(prices.map((price, index) => api(manager, "POST", "/api/internal/catalog/products", {
+    code: `COUPON-${prefix}${index === 0 ? "" : `-${index + 1}`}`,
+    nameAr: `منتج ${prefix} ${index + 1}`,
     descriptionAr: "منتج لاختبار الكوبونات",
     categoryId: category.body.id,
-    defaultSellingPricePiasters: prices[0],
+    defaultSellingPricePiasters: price,
     publication: "hidden",
     imageRefs: [],
-    variants: colors.map((color, index) => ({
+    variants: [{
       sizeId: size.body.id,
-      colorId: color.body.id,
-      sellingPricePiastersOverride: prices[index] === prices[0] ? null : prices[index],
-    })),
-  });
-  expect(product.status).toBe(201);
+      colorId: colors[index]!.body.id,
+      sellingPricePiastersOverride: null,
+    }],
+  })));
+  for (const product of products) expect(product.status, JSON.stringify(product.body)).toBe(201);
   return {
-    code: product.body.code as string,
+    code: products[0]!.body.code as string,
     categoryId: category.body.id,
-    productId: product.body.id,
-    variantIds: prices.map((price) => product.body.variants.find((variant: { sellingPricePiasters: number }) =>
-      variant.sellingPricePiasters === price)?.id as string),
+    productId: products[0]!.body.id,
+    productIds: products.map((product) => product.body.id as string),
+    variantIds: products.map((product) => product.body.variants[0].id as string),
   };
 }
 
