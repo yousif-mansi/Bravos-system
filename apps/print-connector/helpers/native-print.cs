@@ -1518,6 +1518,7 @@ namespace Bravos.NativePrint
     IntPtr handle;
     IntPtr bytes;
     PrivateFontCollection collection;
+    FontFamily family;
 
     public static Fonts Load(string fontPath, string logoPath)
     {
@@ -1534,13 +1535,14 @@ namespace Bravos.NativePrint
         fonts.collection = new PrivateFontCollection();
         fonts.collection.AddMemoryFont(fonts.bytes, file.Length);
         if (fonts.collection.Families.Length < 1) { fonts.Error = "renderer_unavailable"; return fonts; }
-        string name = fonts.collection.Families[0].Name;
+        fonts.family = fonts.collection.Families[0];
+        string name = fonts.family.Name;
         if (name.IndexOf("Cairo", StringComparison.OrdinalIgnoreCase) < 0) { fonts.Error = "renderer_unavailable"; return fonts; }
-        fonts.LabelCode = Make(name, Mm(2.8));
-        fonts.LabelName = Make(name, Mm(2));
-        fonts.Body = Make(name, Px(12));
-        fonts.Title = Make(name, Px(13));
-        fonts.Total = Make(name, Px(16));
+        fonts.LabelCode = Make(fonts.family, Mm(2.8));
+        fonts.LabelName = Make(fonts.family, Mm(2));
+        fonts.Body = Make(fonts.family, Px(12));
+        fonts.Title = Make(fonts.family, Px(13));
+        fonts.Total = Make(fonts.family, Px(16));
         if (!Named(fonts.LabelCode) || !Named(fonts.Body)) { fonts.Error = "renderer_unavailable"; return fonts; }
         fonts.Logo = Image.FromFile(logoPath);
         if (fonts.Logo.Width < 8 || fonts.Logo.Height < 8 || fonts.Logo.Width > 4000 || fonts.Logo.Height > 4000)
@@ -1560,9 +1562,9 @@ namespace Bravos.NativePrint
       return AddFontMemResourceEx(data, length, IntPtr.Zero, ref installed);
     }
 
-    static Font Make(string name, int pixels)
+    static Font Make(FontFamily family, int pixels)
     {
-      return new Font(name, pixels, FontStyle.Regular, GraphicsUnit.Pixel);
+      return new Font(family, pixels, FontStyle.Regular, GraphicsUnit.Pixel);
     }
 
     static bool Named(Font font)
@@ -1588,6 +1590,7 @@ namespace Bravos.NativePrint
       if (Title != null) Title.Dispose();
       if (Total != null) Total.Dispose();
       if (Logo != null) Logo.Dispose();
+      if (family != null) family.Dispose();
       if (collection != null) collection.Dispose();
       if (handle != IntPtr.Zero) RemoveFontMemResourceEx(handle);
       if (bytes != IntPtr.Zero) Marshal.FreeCoTaskMem(bytes);

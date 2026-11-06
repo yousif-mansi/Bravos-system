@@ -69,3 +69,11 @@ GitHub currently has 19 open issues. Their labels and older descriptions are not
 - An actual operator pilot or device/browser result can only be recorded from observed execution. Client approval does not fill blank operational test records automatically.
 
 This is a working closure record. Append actual final verification, publication and residual blockers before giving release approval.
+
+## Clean-runner follow-up
+
+Candidate `ec4f544b` was published. Windows CI `42206124355` cleared the production audit and archive check, then reported 13 native/queue passes and four failed preview assertions; later jobs were skipped. Local native passes did not establish clean-machine portability.
+
+Source inspection identified an installed-font dependency: the native helper loaded Cairo into a `PrivateFontCollection` but constructed each `Font` using its name, rather than the private `FontFamily`. The follow-up uses and retains that private family, disposing it with the other renderer resources. It does not install a font or alter system settings. This follows the private-font ownership model in [Microsoft's documentation](https://learn.microsoft.com/en-us/dotnet/api/system.drawing.text.privatefontcollection). The failure's precise runtime stage was not present in the original CI assertions; failed preview assertions now retain their bounded result code.
+
+The follow-up native renderer file passed **10/10 locally**, `private-font-renderer.log`. A new matching CI run is required to confirm that this correction resolves the clean-runner failure; do not treat the earlier red run as green.

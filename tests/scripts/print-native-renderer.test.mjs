@@ -279,7 +279,7 @@ test("empty helper stdin never selects print", { skip: !windows }, async () => {
 
 test("label preview is 304x200, quiet, integer, and decodes BRV-SAMPLE-001", { skip: !windows }, async () => {
   const preview = await previewNativeJob(labelDispatch("بنطال تويل"), { helperPath });
-  assert.equal(preview.ok, true);
+  assert.equal(preview.ok, true, preview.ok ? undefined : JSON.stringify(preview));
   if (!preview.ok) return;
   assert.equal(preview.printInvoked, false);
   assert.equal(preview.pageWidthDots, 304);
@@ -354,7 +354,7 @@ function assertReceiptInkInContentBand(pixels, width, height) {
 
 test("receipt preview centers short Arabic title, branch, and thanks ink", { skip: !windows }, async () => {
   const preview = await previewNativeJob(receiptDispatch(1), { helperPath });
-  assert.equal(preview.ok, true);
+  assert.equal(preview.ok, true, preview.ok ? undefined : JSON.stringify(preview));
   if (!preview.ok) return;
   assert.equal(preview.printInvoked, false);
   const page = preview.pages[0];
@@ -381,7 +381,7 @@ test("product-level receipt preview omits empty website options without printing
   dispatch.document.receiptView.lines[0].colorName = "";
   assert.equal(prepareNativeJob(dispatch).ok, true);
   const preview = await previewNativeJob(dispatch, { helperPath });
-  assert.equal(preview.ok, true);
+  assert.equal(preview.ok, true, preview.ok ? undefined : JSON.stringify(preview));
   if (!preview.ok) return;
   assert.equal(preview.printInvoked, false);
   assert.equal(preview.lines.some((line) => line.role === "item-variant"), false);
@@ -394,7 +394,7 @@ test("product-level receipt preview omits empty website options without printing
 
 test("receipt preview keeps fields, logo ink, and page bounds", { skip: !windows }, async () => {
   const preview = await previewNativeJob(receiptDispatch(40), { helperPath });
-  assert.equal(preview.ok, true);
+  assert.equal(preview.ok, true, preview.ok ? undefined : JSON.stringify(preview));
   if (!preview.ok) return;
   assert.equal(preview.printInvoked, false);
   assert.ok(preview.pages.length >= 2);
