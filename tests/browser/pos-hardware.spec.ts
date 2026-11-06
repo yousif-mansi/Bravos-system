@@ -1,6 +1,5 @@
 import { openPosOptionalDetails } from "./support/pos-checkout";
 import { expect, test, type Page } from "@playwright/test";
-import { openLookupLists } from "./support/open-lookup-lists";
 
 const internal = "http://127.0.0.1:5174";
 const contactPhone = "01017412287";
@@ -41,7 +40,7 @@ async function login(page: Page) {
   await expect(page.getByTestId("active-branch")).toContainText("أبشواي");
 }
 
-async function seed(page: Page, { operationalStock = false } = {}) {
+async function seed(page: Page) {
   await login(page);
   const tag = crypto.randomUUID().slice(0, 8);
   const category = await api(page, "POST", "/api/internal/catalog/categories", { nameAr: `قمصان الإيصال ${tag}` });
@@ -59,26 +58,24 @@ async function seed(page: Page, { operationalStock = false } = {}) {
     variants: [{ sizeId: size.id, colorId: color.id, sellingPricePiastersOverride: null }],
   });
   const workspace = await api(page, "GET", "/api/internal/workspace");
-  const variant = product.variants[0];
+  const variant = { id: product.operationalVariantId };
   await api(page, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
-    branchId: operationalStock ? warehouseBranchId : workspace.activeBranch.id,
+    branchId: warehouseBranchId,
     receiptDate: "2026-10-05",
     lines: [{
-      ...(operationalStock ? { productId: product.id } : { variantId: variant.id }),
+      productId: product.id,
       quantity: 2,
       unitCostPiasters: 5000,
     }],
   });
-  if (operationalStock) {
-    await api(page, "POST", "/api/internal/inventory/transfers", {
-      operationId: crypto.randomUUID(),
-      sourceBranchId: warehouseBranchId,
-      destinationBranchId: workspace.activeBranch.id,
-      productId: product.id,
-      quantity: 2,
-    });
-  }
+  await api(page, "POST", "/api/internal/inventory/transfers", {
+    operationId: crypto.randomUUID(),
+    sourceBranchId: warehouseBranchId,
+    destinationBranchId: workspace.activeBranch.id,
+    productId: product.id,
+    quantity: 2,
+  });
   return { tag, product, size, color, variant, nameAr };
 }
 
@@ -94,7 +91,8 @@ async function salesForVariant(page: Page, variantId: string): Promise<Sale[]> {
 
 async function available(page: Page, code: string, variantId: string) {
   const found = await api(page, "GET", `/api/internal/catalog/lookup?code=${code}`);
-  return found.variants.find((variant: { id: string }) => variant.id === variantId).availableQuantity as number;
+  expect(found.operationalVariantId).toBe(variantId);
+  return found.availableQuantity as number;
 }
 
 async function lookupCode(page: Page, code: string) {
@@ -123,8 +121,8 @@ test("lowercase product-code Enter finds the cached product online and offline w
   await lookupCode(page, data.product.code.toLowerCase());
   await expect(page.getByRole("form", { name: "البحث برمز المنتج" }).getByLabel("رمز المنتج")).toHaveValue("");
   await expect(page.getByTestId("lookup-result")).toContainText(data.nameAr);
-  await expect(page.locator("#lookupSize")).toHaveValue("");
-  await expect(page.locator("#lookupColor")).toHaveValue("");
+  await expect(page.locator("#lookupSize")).toHaveCount(0);
+  await expect(page.locator("#lookupColor")).toHaveCount(0);
   await expect(page.getByRole("form", { name: "إتمام البيع" })).not.toContainText(data.nameAr);
   expect(await salesForVariant(page, data.variant.id)).toHaveLength(before.length);
 
@@ -132,8 +130,8 @@ test("lowercase product-code Enter finds the cached product online and offline w
   await lookupCode(page, data.product.code.toLowerCase());
   await expect(page.getByRole("form", { name: "البحث برمز المنتج" }).getByLabel("رمز المنتج")).toHaveValue("");
   await expect(page.getByTestId("lookup-result")).toContainText(data.nameAr);
-  await expect(page.locator("#lookupSize")).toHaveValue("");
-  await expect(page.locator("#lookupColor")).toHaveValue("");
+  await expect(page.locator("#lookupSize")).toHaveCount(0);
+  await expect(page.locator("#lookupColor")).toHaveCount(0);
 
   await lookupCode(page, `missing-${data.tag}`);
   const alert = page.getByRole("alert");
@@ -147,7 +145,7 @@ test("lowercase product-code Enter finds the cached product online and offline w
 
 test("complete without printing persists one sale and leaves reprint available", async ({ page }) => {
   await page.addInitScript(installPrintHarness, { throwInstead: false });
-  const data = await seed(page, { operationalStock: true });
+  const data = await seed(page);
   await openLookup(page);
   const beforeSales = await salesForVariant(page, data.product.operationalVariantId);
   const branchStock = async () => (await api(page, "GET", `/api/internal/catalog/lookup?code=${data.product.code}`)).availableQuantity;
@@ -177,10 +175,7 @@ test("receipt preview renders the completed sale at 58mm and 80mm", async ({ pag
   const customerPhone = "01099887766";
   await openLookup(page);
   await lookupCode(page, data.product.code);
-  await openLookupLists(page);
-  await page.locator("#lookupSize").selectOption(data.size.id);
-  await page.locator("#lookupColor").selectOption(data.color.id);
-  await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
+  await page.getByTestId("add-operational").click();
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await openPosOptionalDetails(checkout);
   await checkout.getByLabel("اسم الزبون (اختياري)").fill(customerName);
@@ -322,10 +317,7 @@ test("stubbed offline receipt print runs once per request and does not sell agai
   const beforeStock = await available(page, data.product.code, data.variant.id);
 
   await lookupCode(page, data.product.code);
-  await openLookupLists(page);
-  await page.locator("#lookupSize").selectOption(data.size.id);
-  await page.locator("#lookupColor").selectOption(data.color.id);
-  await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
+  await page.getByTestId("add-operational").click();
   await expect(page.getByTestId("pos-product-tile").filter({ hasText: data.product.code })).toBeVisible();
   await page.screenshot({ path: `${shots}/pos-completion-options.png`, fullPage: true });
   if (process.env.BRAVOS_HW_PRODUCTION === "1") {
@@ -371,7 +363,7 @@ test("stubbed offline receipt print runs once per request and does not sell agai
 
 test("complete and print shows a local save error and does not sell when sales storage rejects", async ({ page }) => {
   await page.addInitScript(installPrintHarness, { throwInstead: false });
-  const data = await seed(page, { operationalStock: true });
+  const data = await seed(page);
   await openLookup(page);
   const beforeSales = await salesForVariant(page, data.product.operationalVariantId);
   const branchStock = async () => (await api(page, "GET", `/api/internal/catalog/lookup?code=${data.product.code}`)).availableQuantity;
@@ -454,10 +446,7 @@ test("reprint cancelled by the same staff account during font preparation does n
   const beforeStock = await available(page, data.product.code, data.variant.id);
 
   await lookupCode(page, data.product.code);
-  await openLookupLists(page);
-  await page.locator("#lookupSize").selectOption(data.size.id);
-  await page.locator("#lookupColor").selectOption(data.color.id);
-  await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
+  await page.getByTestId("add-operational").click();
   await page.getByTestId("complete-sale").click();
   await expect(page.getByTestId("sale-details")).toBeVisible();
   await expect.poll(async () => (await salesForVariant(page, data.variant.id)).length).toBe(beforeSales.length + 1);

@@ -1,7 +1,6 @@
 import { stageUnpaidPosQuote } from "./support/pos-checkout";
 import { createHash, randomUUID } from "node:crypto";
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
-import { openLookupLists } from "./support/open-lookup-lists";
 
 const BASE_URL = "http://127.0.0.1:5174";
 const ARCHIVE_TYPE = "application/vnd.bravos.backup";
@@ -25,6 +24,8 @@ test("a paid offline sale crosses restore generations through durable custody an
     await cashier.getByRole("link", { name: "البحث عن منتج" }).click();
     await addAndPrice(cashier, seed);
     await cashier.route("**/api/internal/sales/pos-snapshots", (route) => route.abort("failed"));
+    // This till must be disconnected before the restore pause begins.
+    await cashierContext.setOffline(true);
 
     await manager.goto(`${BASE_URL}/restore`);
     const upload = manager.getByRole("form", { name: "إنشاء معاينة استعادة" });
@@ -51,13 +52,8 @@ test("a paid offline sale crosses restore generations through durable custody an
     await expect(upload.getByLabel("كلمة حماية النسخة المرفوعة")).toHaveCount(0);
 
     const managerTill = await managerContext.newPage();
-    const cashierTill = await cashierContext.newPage();
-    await Promise.all([
-      managerTill.goto(`${BASE_URL}/workspace`),
-      cashierTill.goto(`${BASE_URL}/workspace`),
-    ]);
+    await managerTill.goto(`${BASE_URL}/workspace`);
     await acknowledgePausedTill(managerTill);
-    await acknowledgePausedTill(cashierTill);
 
     await manager.getByRole("button", { name: "تحديث الحالة" }).click();
     await expect(manager.getByText("أُقر التوقف:").first()).toBeVisible({ timeout: 30_000 });
@@ -69,7 +65,6 @@ test("a paid offline sale crosses restore generations through durable custody an
     await expect(acknowledgeCheckpoint).toBeEnabled();
     await acknowledgeCheckpoint.click();
 
-    await cashierContext.setOffline(true);
     const checkout = cashier.getByRole("form", { name: "إتمام البيع" });
     const completePaidSale = checkout.getByRole("button", { name: "إتمام البيع" });
     await expect(completePaidSale).toBeEnabled();
@@ -81,6 +76,8 @@ test("a paid offline sale crosses restore generations through durable custody an
     expect(offline.effects).toHaveLength(1);
 
     await cashierContext.setOffline(false);
+    const cashierTill = await cashierContext.newPage();
+    await cashierTill.goto(`${BASE_URL}/workspace`);
     await expect(cashierTill.getByTestId("unsynced-count")).toContainText("مبيعات غير مزامنة: 1", { timeout: 30_000 });
     await expect.poll(async () => (await readQueueState(cashierTill)).stockCache.restoreGeneration).toBe(0);
     await acknowledgePausedTill(cashierTill);
@@ -135,7 +132,7 @@ test("a paid offline sale crosses restore generations through durable custody an
       "GET",
       `/api/internal/catalog/lookup?code=${encodeURIComponent(seed.code)}`,
     );
-    expect(availability.body.variants[0].availableQuantity).toBe(1);
+    expect(availability.body.availableQuantity).toBe(1);
   } finally {
     await cashierContext.setOffline(false).catch(() => undefined);
     await cancelActiveRestore(managerContext).catch(() => undefined);
@@ -283,7 +280,7 @@ async function seedSingleProduct(page: Page, options: { quantity: number; price:
     imageRefs: [],
     variants: [{ sizeId: size.body.id, colorId: color.body.id, sellingPricePiastersOverride: null }],
   });
-  const variantId = product.body.variants[0].id as string;
+  const variantId = product.body.operationalVariantId as string;
   const workspace = await staffApi(page, "GET", "/api/internal/workspace");
   const receipt = await staffApi(page, "POST", "/api/internal/receiving/receipts", {
     operationId: randomUUID(),
@@ -303,10 +300,7 @@ async function addAndPrice(
   await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill(seed.code);
   await lookup.locator('button[type="submit"]').click();
   await expect(page.getByTestId("lookup-result")).toContainText(seed.nameAr);
-  await openLookupLists(page);
-  await page.getByLabel("المقاس").selectOption({ label: seed.sizeName });
-  await page.getByLabel("اللون").selectOption({ label: seed.colorName });
-  await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
+  await page.getByTestId("lookup-result").getByRole("button", { name: "إضافة إلى السلة" }).click();
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await stageUnpaidPosQuote(checkout);
   await expect(page.getByTestId("accepted-prices")).toBeVisible();

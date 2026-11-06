@@ -1,5 +1,4 @@
 import { expect, test, type Page } from "@playwright/test";
-import { openLookupLists } from "./support/open-lookup-lists";
 
 test("manager maintains a product and cashier looks it up by code", async ({ page }) => {
   await page.goto("http://127.0.0.1:5174/login");
@@ -368,11 +367,16 @@ test("bulk size and color visibility preserves sparse inventory pairs and POS av
   const workspace = await staffApi(page, "GET", "/api/internal/workspace");
   const received = await staffApi(page, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
-    branchId: workspace.body.activeBranch.id,
+    branchId: "33333333-3333-4333-8333-333333333333",
     receiptDate: "2026-09-15",
-    lines: created.body.variants.map((variant: { id: string }) => ({ variantId: variant.id, quantity: 2, unitCostPiasters: 10000 })),
+    lines: [{ productId: created.body.id, quantity: 2, unitCostPiasters: 10000 }],
   });
   expect(received.status).toBe(201);
+  const transferred = await staffApi(page, "POST", "/api/internal/inventory/transfers", {
+    operationId: crypto.randomUUID(), sourceBranchId: "33333333-3333-4333-8333-333333333333",
+    destinationBranchId: workspace.body.activeBranch.id, productId: created.body.id, quantity: 2,
+  });
+  expect(transferred.status).toBe(201);
 
   await page.getByRole("link", { name: "المنتجات" }).click();
   await page.getByRole("button", { name: "منتج التركيبات المتفرقة", exact: true }).click();
@@ -418,10 +422,9 @@ test("bulk size and color visibility preserves sparse inventory pairs and POS av
   const lookupForm = page.getByRole("form", { name: "البحث برمز المنتج" });
   await lookupForm.getByRole("textbox", { name: "رمز المنتج" }).fill("SPARSE-E2E");
   await lookupForm.getByRole("button", { name: "بحث" }).click();
-  await openLookupLists(page);
-  await page.getByLabel("المقاس", { exact: true }).selectOption({ label: "متوسط متفرق" });
-  await page.getByLabel("اللون", { exact: true }).selectOption({ label: "أحمر متفرق" });
-  await expect(page.getByTestId("available-quantity")).toHaveText("الكمية المتاحة: 2");
+  expect(lookup.body.availableQuantity).toBe(2);
+  await expect(page.getByTestId("available-quantity")).toHaveText("الكمية المتاحة في الفرع: 2");
+  await expect(page.getByTestId("add-operational")).toBeEnabled();
 });
 
 // selectActiveBranch returns WorkspaceDto. activeBranch is { id, code, nameAr } once the session branch is stored.

@@ -1,6 +1,5 @@
 import { openPosOptionalDetails, stageUnpaidPosQuote } from "./support/pos-checkout";
 import { expect, test, type Page, type Route } from "@playwright/test";
-import { openLookupLists } from "./support/open-lookup-lists";
 
 test("delayed web crypto still saves a local sale and acks two operations in one transaction", async ({ page }) => {
   const seed = await seedSingleProduct(page, { quantity: 2, price: 16500, code: "SYNC-HASH" });
@@ -175,7 +174,7 @@ test("a new local sale during an outstanding ack rebases newer stock first witho
   const listed = await staffApi(page, "GET", "/api/internal/sales");
   expect(salesForCode(listed.body, seed.code)).toHaveLength(2);
   const lookup = await staffApi(page, "GET", `/api/internal/catalog/lookup?code=${encodeURIComponent(seed.code)}`);
-  expect(lookup.body.variants[0].availableQuantity).toBe(0);
+  expect(lookup.body.availableQuantity).toBe(0);
   void workspace;
 });
 
@@ -328,7 +327,7 @@ test("rebase storage failure leaves the sale unacknowledged and not shown as syn
   const listed = await staffApi(page, "GET", "/api/internal/sales");
   expect(listed.body.filter((sale: { id: string }) => sale.id === before.sales[0]?.id)).toHaveLength(1);
   const lookup = await staffApi(page, "GET", `/api/internal/catalog/lookup?code=${encodeURIComponent(seed.code)}`);
-  expect(lookup.body.variants[0].availableQuantity).toBe(1);
+  expect(lookup.body.availableQuantity).toBe(1);
 });
 
 test("two tabs serialize synchronization of the same operation and deduct once", async ({ context }) => {
@@ -367,7 +366,7 @@ test("two tabs serialize synchronization of the same operation and deduct once",
   const listed = await staffApi(page, "GET", "/api/internal/sales");
   expect(listed.body.filter((sale: { id: string }) => sale.id === local?.id)).toHaveLength(1);
   const lookup = await staffApi(page, "GET", `/api/internal/catalog/lookup?code=${encodeURIComponent(seed.code)}`);
-  expect(lookup.body.variants[0].availableQuantity).toBe(1);
+  expect(lookup.body.availableQuantity).toBe(1);
   expect((await readPrivacyState(page)).stockCache.availability?.[seed.variantId]).toBe(1);
   expect((await readPrivacyState(page2)).stockCache.availability?.[seed.variantId]).toBe(1);
 });
@@ -449,7 +448,7 @@ test("lost acknowledgement is reconciled from an opaque later snapshot without l
   await expect(page.getByTestId("foreign-queue")).toHaveCount(0);
   await expect(page.locator("body")).not.toContainText("01099887766");
   const lookup = await staffApi(page, "GET", `/api/internal/catalog/lookup?code=${encodeURIComponent(seed.code)}`);
-  expect(lookup.body.variants[0].availableQuantity).toBe(1);
+  expect(lookup.body.availableQuantity).toBe(1);
   await page.getByRole("button", { name: "تسجيل الخروج" }).click();
   await signInAsCashier(page);
   const returned = (await readPrivacyState(page)).sales.find((sale) => sale.id === original?.id);
@@ -738,13 +737,7 @@ async function attemptAcceptPrices(page: Page, seed: { code: string; nameAr?: st
   await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill(seed.code);
   await lookup.getByRole("button", { name: "بحث" }).click();
   await expect(page.getByTestId("lookup-result")).toContainText(seed.nameAr ?? seed.code);
-  const color = page.getByLabel("اللون");
-  await expect(color).toBeDisabled();
-  await openLookupLists(page);
-  await page.getByLabel("المقاس").selectOption({ label: seed.sizeName });
-  await expect(color).toBeEnabled();
-  await color.selectOption({ label: seed.colorName });
-  await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
+  await page.getByTestId("add-operational").click();
   await stageUnpaidPosQuote(page.getByRole("form", { name: "إتمام البيع" }));
 }
 
@@ -769,15 +762,7 @@ async function addAndPrice(
     await expect(searchButton).toBeEnabled();
   }
   await expect(page.getByTestId("lookup-result")).toContainText(seed.nameAr ?? seed.code);
-  const color = page.getByLabel("اللون");
-  await openLookupLists(page);
-  await page.getByLabel("المقاس").selectOption({ index: 0 });
-  await expect(color).toBeDisabled();
-  await openLookupLists(page);
-  await page.getByLabel("المقاس").selectOption({ label: seed.sizeName });
-  await expect(color).toBeEnabled();
-  await color.selectOption({ label: seed.colorName });
-  await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
+  await page.getByTestId("add-operational").click();
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await openPosOptionalDetails(checkout);
   if (details?.customerName) {
@@ -823,12 +808,8 @@ async function seedSingleProduct(page: Page, options: { quantity: number; price:
     imageRefs: [],
     variants: [{ sizeId: size.body.id, colorId: color.body.id, sellingPricePiastersOverride: null }],
   });
-  const variantId = product.body.variants[0].id as string;
-  await staffApi(page, "POST", "/api/internal/receiving/receipts", {
-    operationId: crypto.randomUUID(),
-    receiptDate: "2026-09-11",
-    lines: [{ variantId, quantity: options.quantity, unitCostPiasters: 4000 }],
-  });
+  const variantId = product.body.operationalVariantId as string;
+  await stockAtBranch(page, product.body.id, options.quantity, 4000);
   return { code: options.code, nameAr, sizeName, colorName, variantId };
 }
 
@@ -1115,6 +1096,21 @@ function salesForCode(
   code: string,
 ) {
   return body.filter((sale) => sale.lines?.some((line) => line.variant?.product?.code === code));
+}
+
+async function stockAtBranch(page: import("@playwright/test").Page, productId: string, quantity: number, unitCostPiasters: number) {
+  const warehouse = "33333333-3333-4333-8333-333333333333";
+  const workspace = await staffApi(page, "GET", "/api/internal/workspace");
+  const receipt = await staffApi(page, "POST", "/api/internal/receiving/receipts", {
+    operationId: crypto.randomUUID(), branchId: warehouse, receiptDate: "2026-09-11",
+    lines: [{ productId, quantity, unitCostPiasters }],
+  });
+  expect(receipt.status, JSON.stringify(receipt.body)).toBe(201);
+  const transfer = await staffApi(page, "POST", "/api/internal/inventory/transfers", {
+    operationId: crypto.randomUUID(), sourceBranchId: warehouse,
+    destinationBranchId: workspace.body.activeBranch.id, productId, quantity,
+  });
+  expect(transfer.status, JSON.stringify(transfer.body)).toBe(201);
 }
 
 async function staffApi(page: Page, method: "GET" | "POST", url: string, payload?: unknown) {

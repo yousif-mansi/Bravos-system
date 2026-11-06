@@ -6,7 +6,6 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { expect, test } from "@playwright/test";
 import { pinnedProcessEnv, workspaceRoot } from "../../scripts/pinned-env.ts";
-import { openLookupLists } from "./support/open-lookup-lists";
 
 const PREVIEW_PORT = 5176;
 const PREVIEW_ORIGIN = `http://127.0.0.1:${PREVIEW_PORT}`;
@@ -66,11 +65,7 @@ test("production precache serves first offline POS navigation and survives a sam
       imageRefs: [],
       variants: [{ sizeId: size.body.id, colorId: color.body.id, sellingPricePiastersOverride: null }],
     });
-    await staffApi(page, "POST", "/api/internal/receiving/receipts", {
-      operationId: crypto.randomUUID(),
-      receiptDate: "2026-09-11",
-      lines: [{ variantId: product.body.variants[0].id, quantity: 3, unitCostPiasters: 5000 }],
-    });
+    await stockAtBranch(page, product.body.id, 3, 5000);
     await page.getByRole("button", { name: "تسجيل الخروج" }).click();
     await page.getByLabel("اسم الدخول").fill("cashier");
     await page.getByLabel("كلمة المرور").fill("e2e-cashier-pass");
@@ -85,10 +80,8 @@ test("production precache serves first offline POS navigation and survives a sam
     await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill("OFF-PROD");
     await lookup.getByRole("button", { name: "بحث" }).click();
     await expect(page.getByTestId("lookup-result")).toContainText("قميص الإنتاج");
-    await openLookupLists(page);
-    await page.getByLabel("المقاس").selectOption({ label: "مقاس إنتاج" });
-    await page.getByLabel("اللون").selectOption({ label: "لون إنتاج" });
-    await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
+
+    await page.getByTestId("add-operational").click();
     const checkout = page.getByRole("form", { name: "إتمام البيع" });
     await openPosOptionalDetails(checkout);
     await checkout.getByLabel("خصم الموظف بالجنيه").fill("10");
@@ -153,10 +146,8 @@ test("production precache serves first offline POS navigation and survives a sam
     const lookupAgain = again.getByRole("form", { name: "البحث برمز المنتج" });
     await lookupAgain.getByRole("textbox", { name: "رمز المنتج" }).fill("OFF-PROD");
     await lookupAgain.getByRole("button", { name: "بحث" }).click();
-    await openLookupLists(again);
-    await again.getByLabel("المقاس").selectOption({ label: "مقاس إنتاج" });
-    await again.getByLabel("اللون").selectOption({ label: "لون إنتاج" });
-    await expect(again.getByTestId("available-quantity")).toHaveText("الكمية المتاحة: 2");
+
+    await expect(again.getByTestId("available-quantity")).toHaveText("الكمية المتاحة في الفرع: 2");
   } finally {
     if (context) {
       await context.close().catch(() => undefined);
@@ -204,11 +195,7 @@ test("production offline queue survives restart then automatically syncs after r
       imageRefs: [],
       variants: [{ sizeId: size.body.id, colorId: color.body.id, sellingPricePiastersOverride: null }],
     });
-    await staffApi(page, "POST", "/api/internal/receiving/receipts", {
-      operationId: crypto.randomUUID(),
-      receiptDate: "2026-09-11",
-      lines: [{ variantId: product.body.variants[0].id, quantity: 2, unitCostPiasters: 4000 }],
-    });
+    await stockAtBranch(page, product.body.id, 2, 4000);
     await page.getByRole("button", { name: "تسجيل الخروج" }).click();
     await page.getByLabel("اسم الدخول").fill("cashier");
     await page.getByLabel("كلمة المرور").fill("e2e-cashier-pass");
@@ -228,10 +215,8 @@ test("production offline queue survives restart then automatically syncs after r
     const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
     await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill("OFF-ACK");
     await lookup.getByRole("button", { name: "بحث" }).click();
-    await openLookupLists(page);
-    await page.getByLabel("المقاس").selectOption({ label: "مقاس مزامنة" });
-    await page.getByLabel("اللون").selectOption({ label: "لون مزامنة" });
-    await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
+
+    await page.getByTestId("add-operational").click();
     const checkout = page.getByRole("form", { name: "إتمام البيع" });
     await checkout.getByRole("button", { name: "إتمام البيع" }).click();
     await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
@@ -283,7 +268,7 @@ test("production offline queue survives restart then automatically syncs after r
     expect(listed.body.some((sale: { id: string }) => sale.id === originalId)).toBe(true);
     expect(listed.body.find((sale: { id: string; receiptReference?: string }) => sale.id === originalId)?.receiptReference).toBe(receiptReference);
     const lookupAfter = await staffApi(again, "GET", `/api/internal/catalog/lookup?code=${encodeURIComponent("OFF-ACK")}`);
-    expect(lookupAfter.body.variants[0].availableQuantity).toBe(1);
+    expect(lookupAfter.body.availableQuantity).toBe(1);
   } finally {
     if (context) {
       await context.close().catch(() => undefined);
@@ -341,11 +326,7 @@ test("waiting service worker with an unknown schema defers activation", async ({
     imageRefs: [],
     variants: [{ sizeId: size.body.id, colorId: color.body.id, sellingPricePiastersOverride: null }],
   });
-  await staffApi(page, "POST", "/api/internal/receiving/receipts", {
-    operationId: crypto.randomUUID(),
-    receiptDate: "2026-09-11",
-    lines: [{ variantId: product.body.variants[0].id, quantity: 2, unitCostPiasters: 5000 }],
-  });
+  await stockAtBranch(page, product.body.id, 2, 5000);
   await page.getByRole("button", { name: "تسجيل الخروج" }).click();
   await page.getByLabel("اسم الدخول").fill("cashier");
   await page.getByLabel("كلمة المرور").fill("e2e-cashier-pass");
@@ -359,10 +340,8 @@ test("waiting service worker with an unknown schema defers activation", async ({
   const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
   await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill("OFF-WAIT");
   await lookup.getByRole("button", { name: "بحث" }).click();
-  await openLookupLists(page);
-  await page.getByLabel("المقاس").selectOption({ label: "مقاس تحديث" });
-  await page.getByLabel("اللون").selectOption({ label: "لون تحديث" });
-  await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
+
+  await page.getByTestId("add-operational").click();
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
@@ -549,11 +528,7 @@ test("schema 2 individual paid units and signed-in session survive upgrade and o
       imageRefs: [],
       variants: [{ sizeId: size.body.id, colorId: color.body.id, sellingPricePiastersOverride: null }],
     });
-    await staffApi(page, "POST", "/api/internal/receiving/receipts", {
-      operationId: crypto.randomUUID(),
-      receiptDate: "2026-09-11",
-      lines: [{ variantId: product.body.variants[0].id, quantity: 2, unitCostPiasters: 4000 }],
-    });
+    await stockAtBranch(page, product.body.id, 2, 4000);
     await page.getByRole("button", { name: "تسجيل الخروج" }).click();
     await page.getByLabel("اسم الدخول").fill("cashier");
     await page.getByLabel("كلمة المرور").fill("e2e-cashier-pass");
@@ -567,10 +542,8 @@ test("schema 2 individual paid units and signed-in session survive upgrade and o
     const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
     await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill("OFF-UP");
     await lookup.getByRole("button", { name: "بحث" }).click();
-    await openLookupLists(page);
-    await page.getByLabel("المقاس").selectOption({ label: "مقاس ترقية" });
-    await page.getByLabel("اللون").selectOption({ label: "لون ترقية" });
-    await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
+
+    await page.getByTestId("add-operational").click();
     const checkout = page.getByRole("form", { name: "إتمام البيع" });
     await openPosOptionalDetails(checkout);
     await checkout.getByLabel("خصم الموظف بالجنيه").fill("1");
@@ -750,11 +723,7 @@ test("schema 2 completed sales missing paid-unit allocations defer upgrade and k
       imageRefs: [],
       variants: [{ sizeId: size.body.id, colorId: color.body.id, sellingPricePiastersOverride: null }],
     });
-    await staffApi(page, "POST", "/api/internal/receiving/receipts", {
-      operationId: crypto.randomUUID(),
-      receiptDate: "2026-09-11",
-      lines: [{ variantId: product.body.variants[0].id, quantity: 2, unitCostPiasters: 4000 }],
-    });
+    await stockAtBranch(page, product.body.id, 2, 4000);
     await page.getByRole("button", { name: "تسجيل الخروج" }).click();
     await page.getByLabel("اسم الدخول").fill("cashier");
     await page.getByLabel("كلمة المرور").fill("e2e-cashier-pass");
@@ -768,10 +737,8 @@ test("schema 2 completed sales missing paid-unit allocations defer upgrade and k
     const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
     await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill("OFF-INCOMPLETE");
     await lookup.getByRole("button", { name: "بحث" }).click();
-    await openLookupLists(page);
-    await page.getByLabel("المقاس").selectOption({ label: "مقاس ناقص" });
-    await page.getByLabel("اللون").selectOption({ label: "لون ناقص" });
-    await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
+
+    await page.getByTestId("add-operational").click();
     const checkout = page.getByRole("form", { name: "إتمام البيع" });
     await checkout.getByRole("button", { name: "إتمام البيع" }).click();
     await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
@@ -954,11 +921,7 @@ test("explicit logout from catalog, staff and receiving pages blocks offline res
     imageRefs: [],
     variants: [{ sizeId: size.body.id, colorId: color.body.id, sellingPricePiastersOverride: null }],
   });
-  await staffApi(page, "POST", "/api/internal/receiving/receipts", {
-    operationId: crypto.randomUUID(),
-    receiptDate: "2026-09-11",
-    lines: [{ variantId: product.body.variants[0].id, quantity: 1, unitCostPiasters: 4000 }],
-  });
+  await stockAtBranch(page, product.body.id, 1, 4000);
   await page.getByRole("button", { name: "تسجيل الخروج" }).click();
   await page.getByLabel("اسم الدخول").fill("cashier");
   await page.getByLabel("كلمة المرور").fill("e2e-cashier-pass");
@@ -972,10 +935,8 @@ test("explicit logout from catalog, staff and receiving pages blocks offline res
   const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
   await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill("OFF-LOGOUT-M");
   await lookup.getByRole("button", { name: "بحث" }).click();
-  await openLookupLists(page);
-  await page.getByLabel("المقاس").selectOption({ label: "مقاس خروج" });
-  await page.getByLabel("اللون").selectOption({ label: "لون خروج" });
-  await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
+
+  await page.getByTestId("add-operational").click();
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
@@ -1059,11 +1020,7 @@ test("a fresh cashier login keeps an old cached session from becoming current af
     imageRefs: [],
     variants: [{ sizeId: size.body.id, colorId: color.body.id, sellingPricePiastersOverride: null }],
   });
-  await staffApi(page, "POST", "/api/internal/receiving/receipts", {
-    operationId: crypto.randomUUID(),
-    receiptDate: "2026-09-11",
-    lines: [{ variantId: product.body.variants[0].id, quantity: 1, unitCostPiasters: 4000 }],
-  });
+  await stockAtBranch(page, product.body.id, 1, 4000);
   await page.getByRole("button", { name: "تسجيل الخروج" }).click();
   await page.getByLabel("اسم الدخول").fill("cashier");
   await page.getByLabel("كلمة المرور").fill("e2e-cashier-pass");
@@ -1077,10 +1034,8 @@ test("a fresh cashier login keeps an old cached session from becoming current af
   const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
   await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill("OFF-SESS-P");
   await lookup.getByRole("button", { name: "بحث" }).click();
-  await openLookupLists(page);
-  await page.getByLabel("المقاس").selectOption({ label: "مقاس جلسة" });
-  await page.getByLabel("اللون").selectOption({ label: "لون جلسة" });
-  await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
+
+  await page.getByTestId("add-operational").click();
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByRole("button", { name: "إتمام البيع" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
@@ -1490,6 +1445,21 @@ async function readPosSales(page: import("@playwright/test").Page) {
     db.close();
     return rows;
   });
+}
+
+async function stockAtBranch(page: import("@playwright/test").Page, productId: string, quantity: number, unitCostPiasters: number) {
+  const warehouse = "33333333-3333-4333-8333-333333333333";
+  const workspace = await staffApi(page, "GET", "/api/internal/workspace");
+  const receipt = await staffApi(page, "POST", "/api/internal/receiving/receipts", {
+    operationId: crypto.randomUUID(), branchId: warehouse, receiptDate: "2026-09-11",
+    lines: [{ productId, quantity, unitCostPiasters }],
+  });
+  expect(receipt.status, JSON.stringify(receipt.body)).toBe(201);
+  const transfer = await staffApi(page, "POST", "/api/internal/inventory/transfers", {
+    operationId: crypto.randomUUID(), sourceBranchId: warehouse,
+    destinationBranchId: workspace.body.activeBranch.id, productId, quantity,
+  });
+  expect(transfer.status, JSON.stringify(transfer.body)).toBe(201);
 }
 
 async function staffApi(page: import("@playwright/test").Page, method: "GET" | "POST", url: string, payload?: unknown) {

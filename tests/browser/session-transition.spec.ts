@@ -2,7 +2,6 @@ import { openPosOptionalDetails } from "./support/pos-checkout";
 import { expect, test, type Page } from "@playwright/test";
 import type { WorkspaceDto } from "@bravos/contracts";
 import type { OfflinePosServices } from "@bravos/sales/browser";
-import { openLookupLists } from "./support/open-lookup-lists";
 
 type LogoutRace = {
   started: boolean;
@@ -209,6 +208,7 @@ async function restoreLogoutRace(page: Page) {
 async function queueOwnerSale(page: Page) {
   await page.goto("http://127.0.0.1:5174/login");
   await signIn(page, "owner", "e2e-owner-pass");
+  const workspace = await staffApi(page, "GET", "/api/internal/workspace");
   const code = `LOGOUT-${crypto.randomUUID().slice(0, 8)}`;
   const category = await staffApi(page, "POST", "/api/internal/catalog/categories", { nameAr: `تصنيف ${code}` });
   const size = await staffApi(page, "POST", "/api/internal/catalog/sizes", { nameAr: `مقاس ${code}` });
@@ -219,12 +219,7 @@ async function queueOwnerSale(page: Page) {
     variants: [{ sizeId: size.body.id, colorId: color.body.id, sellingPricePiastersOverride: null }],
   });
   expect(product.status).toBe(201);
-  const workspace = await staffApi(page, "GET", "/api/internal/workspace");
-  const received = await staffApi(page, "POST", "/api/internal/receiving/receipts", {
-    branchId: workspace.body.activeBranch.id, operationId: crypto.randomUUID(), receiptDate: "2026-09-11",
-    lines: [{ variantId: product.body.variants[0].id, quantity: 2, unitCostPiasters: 4000 }],
-  });
-  expect(received.status).toBe(201);
+  await stockAtBranch(page, product.body.id, 2, 4000);
   // Re-enter workspace to issue a snapshot containing the newly received variant.
   await page.reload();
   await expect(page.getByTestId("offline-ready")).toBeVisible({ timeout: 30_000 });
@@ -236,10 +231,7 @@ async function queueOwnerSale(page: Page) {
   await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill(code);
   await lookup.getByRole("button", { name: "بحث" }).click();
   await expect(page.getByTestId("lookup-result")).toContainText(code);
-  await openLookupLists(page);
-  await page.getByLabel("المقاس").selectOption({ label: `مقاس ${code}` });
-  await page.getByLabel("اللون").selectOption({ label: `لون ${code}` });
-  await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
+  await page.getByTestId("add-operational").click();
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await openPosOptionalDetails(checkout);
   await checkout.getByLabel("اسم الزبون (اختياري)").fill("زبون جلسة محفوظ");
@@ -287,6 +279,21 @@ async function readLocalState(page: Page) {
     db.close();
     return { sessions, sales, snapshots, currentStaffId: meta.find((row) => row.key === "currentStaffId")?.value ?? null };
   });
+}
+
+async function stockAtBranch(page: import("@playwright/test").Page, productId: string, quantity: number, unitCostPiasters: number) {
+  const warehouse = "33333333-3333-4333-8333-333333333333";
+  const workspace = await staffApi(page, "GET", "/api/internal/workspace");
+  const receipt = await staffApi(page, "POST", "/api/internal/receiving/receipts", {
+    operationId: crypto.randomUUID(), branchId: warehouse, receiptDate: "2026-09-11",
+    lines: [{ productId, quantity, unitCostPiasters }],
+  });
+  expect(receipt.status, JSON.stringify(receipt.body)).toBe(201);
+  const transfer = await staffApi(page, "POST", "/api/internal/inventory/transfers", {
+    operationId: crypto.randomUUID(), sourceBranchId: warehouse,
+    destinationBranchId: workspace.body.activeBranch.id, productId, quantity,
+  });
+  expect(transfer.status, JSON.stringify(transfer.body)).toBe(201);
 }
 
 async function staffApi(page: Page, method: "GET" | "POST", url: string, payload?: unknown) {

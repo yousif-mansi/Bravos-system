@@ -1,5 +1,4 @@
 import { expect, test, type Page, type Request } from "@playwright/test";
-import { openLookupLists } from "./support/open-lookup-lists";
 import { finalizePosSale } from "./support/pos-checkout";
 
 const internal = "http://127.0.0.1:5174";
@@ -104,7 +103,7 @@ async function seed(page: Page, quantity: number): Promise<Seeded> {
     productId: product.id,
     quantity,
   });
-  return { code: product.code, sizeId: size.id, colorId: color.id, variantId: product.variants[0].id };
+  return { code: product.code, sizeId: size.id, colorId: color.id, variantId: product.operationalVariantId };
 }
 
 async function openLookup(page: Page) {
@@ -277,7 +276,7 @@ test("connected and cached offline sales keep one receipt through reload, reprin
   await page.goto(`${internal}/sales`);
   await expect(page.getByTestId("sale-list")).toContainText(first!);
   await expect(page.getByTestId("sale-list")).not.toContainText("عملية محلية");
-  await page.getByTestId("sale-list").getByRole("button", { name: new RegExp(first!) }).click();
+  await page.getByTestId("sale-list").getByRole("row").filter({ hasText: first! }).getByRole("button", { name: "فتح التفاصيل" }).click();
   await expect(page.getByTestId("sale-details")).toContainText(`رقم الإيصال: ${first}`);
   await page.getByTestId("reprint-receipt").click();
   await expect.poll(() => page.evaluate(() => (window.top as Window & { __receiptPrintCalls?: number }).__receiptPrintCalls ?? 0)).toBe(1);
@@ -331,7 +330,7 @@ test("connected and cached offline sales keep one receipt through reload, reprin
 
   await page.goto(`${internal}/returns`);
   for (const reference of [second!, syncedSecond!.reference!]) {
-    await page.getByLabel("رقم الطلب").fill(reference);
+    await page.getByLabel("رقم الإيصال أو الطلب أو هاتف العميل").fill(reference);
     await page.getByRole("button", { name: "بحث" }).click();
     await expect(page.getByTestId("return-source-list")).toContainText(`إيصال ${syncedSecond!.reference}`);
     await expect(page.getByTestId("return-source-list")).not.toContainText(syncedSecond!.operationId);
@@ -364,7 +363,7 @@ test("two tabs allocate different counters and a failed sale rolls the counter b
   await page.context().setOffline(false);
   await expect.poll(async () => {
     const found = await api(page, "GET", `/api/internal/catalog/lookup?code=${seeded.code}`);
-    return found.variants.find((variant: { id: string }) => variant.id === seeded.variantId).availableQuantity;
+    return found.availableQuantity;
   }).toBe(1);
 
   await openLookup(page);
@@ -394,10 +393,7 @@ test("two tabs allocate different counters and a failed sale rolls the counter b
   const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
   await lookup.getByLabel("رمز المنتج").fill(seeded.code);
   await lookup.getByLabel("رمز المنتج").press("Enter");
-  await openLookupLists(page);
-  await page.locator("#lookupSize").selectOption(seeded.sizeId);
-  await page.locator("#lookupColor").selectOption(seeded.colorId);
-  await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
+  await page.getByTestId("add-operational").click();
   await page.getByTestId("complete-sale").click();
   await expect(page.getByRole("alert")).toContainText("تعذر حفظ البيع");
   const afterFailure = await readPosDb(page);
@@ -561,7 +557,7 @@ test("sales list, detail, and deep link reprint keep the local number when the s
   await login(page);
   const seeded = await seed(page, 1);
   const beforeStock = await api(page, "GET", `/api/internal/catalog/lookup?code=${seeded.code}`);
-  const beforeAvailable = beforeStock.variants.find((variant: { id: string }) => variant.id === seeded.variantId).availableQuantity as number;
+  const beforeAvailable = beforeStock.availableQuantity as number;
   await openLookup(page);
   await waitForPrefix(page);
   await sellOne(page, seeded, "complete-sale");
@@ -594,19 +590,19 @@ test("sales list, detail, and deep link reprint keep the local number when the s
   });
   await page.goto(`${internal}/sales?saleId=${saleId}`);
   expect(saved?.reference).toMatch(POS_TEXT);
-  const row = page.getByTestId("sale-list").getByRole("button", { name: new RegExp(saved!.reference!) });
+  const row = page.getByTestId("sale-list").getByRole("row").filter({ hasText: saved!.reference! });
   await expect(row).toBeVisible();
   await expect(row).not.toContainText("BRV-9-999999");
   await expect(page.getByTestId("sale-details")).toContainText(`رقم الإيصال: ${printed}`);
   expect(targetDetailFulfillments).toContainEqual({ id: saleId, receiptReference: "BRV-9-999999" });
   await expect(page.getByTestId("receipt-number-conflict")).toBeVisible();
-  await row.click();
+  await row.getByRole("button", { name: "فتح التفاصيل" }).click();
   await expect(page.getByTestId("sale-details")).toContainText(`رقم الإيصال: ${printed}`);
   await expect(page.getByTestId("sale-details")).not.toContainText("BRV-9-999999");
   await page.getByTestId("reprint-receipt").click();
   await expect.poll(() => page.evaluate(() => (window.top as Window & { __receiptPrintCalls?: number }).__receiptPrintCalls ?? 0)).toBe(1);
   await expect(page.getByTestId("sale-details")).toContainText(`رقم الإيصال: ${printed}`);
   const afterStock = await api(page, "GET", `/api/internal/catalog/lookup?code=${seeded.code}`);
-  expect(afterStock.variants.find((variant: { id: string }) => variant.id === seeded.variantId).availableQuantity).toBe(beforeAvailable - 1);
+  expect(afterStock.availableQuantity).toBe(beforeAvailable - 1);
   expect((await readPosDb(page)).sales.find((sale) => sale.id === saved?.id)?.receiptReference).toBe(printed);
 });

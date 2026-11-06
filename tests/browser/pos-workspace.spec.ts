@@ -1,8 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
-import { openLookupLists } from "./support/open-lookup-lists";
 import { finalizePosSale, openPosOptionalDetails, stageUnpaidPosQuote } from "./support/pos-checkout";
 
 const internal = "http://127.0.0.1:5174";
+const warehouseBranchId = "33333333-3333-4333-8333-333333333333";
 
 async function api(page: Page, method: "GET" | "POST", path: string, data?: unknown) {
   const response = await page.request.fetch(`${internal}${path}`, {
@@ -43,7 +43,7 @@ async function seed(page: Page) {
   const product = await api(page, "POST", "/api/internal/catalog/products", {
     code: `WORKSPACE-${tag}`, nameAr: `قميص اختبار البيع ${tag}`, descriptionAr: "", categoryId: category.id,
     defaultSellingPricePiasters: 12000, publication: "hidden", imageRefs: [],
-    variants: sizes.map((size, index) => ({ sizeId: size.id, colorId: colors[index].id, sellingPricePiastersOverride: index === 1 ? 18000 : null })),
+    variants: sizes.map((size, index) => ({ sizeId: size.id, colorId: colors[index].id, sellingPricePiastersOverride: null })),
   });
   const other = await api(page, "POST", "/api/internal/catalog/products", {
     code: `WORKSPACE-JACKET-${tag}`, nameAr: `جاكيت اختبار البيع ${tag}`, descriptionAr: "", categoryId: otherCategory.id,
@@ -52,23 +52,27 @@ async function seed(page: Page) {
   });
   const workspace = await api(page, "GET", "/api/internal/workspace");
   const firstBranchId = workspace.activeBranch.id;
-  const m = product.variants.find((variant: { size: { id: string } }) => variant.size.id === sizes[0].id);
-  const l = product.variants.find((variant: { size: { id: string } }) => variant.size.id === sizes[1].id);
+  const m = { id: product.operationalVariantId };
   await api(page, "POST", "/api/internal/receiving/receipts", {
-    operationId: crypto.randomUUID(), branchId: firstBranchId, receiptDate: "2026-10-05",
+    operationId: crypto.randomUUID(), branchId: warehouseBranchId, receiptDate: "2026-10-05",
     lines: [
-      { variantId: m.id, quantity: 2, unitCostPiasters: 5000 },
-      { variantId: l.id, quantity: 1, unitCostPiasters: 6000 },
-      { variantId: other.variants[0].id, quantity: 3, unitCostPiasters: 4000 },
+      { productId: product.id, quantity: 9, unitCostPiasters: 5000 },
+      { productId: other.id, quantity: 3, unitCostPiasters: 4000 },
     ],
   });
+  for (const [productId, quantity] of [[product.id, 2], [other.id, 3]] as const) {
+    await api(page, "POST", "/api/internal/inventory/transfers", {
+      operationId: crypto.randomUUID(), sourceBranchId: warehouseBranchId,
+      destinationBranchId: firstBranchId, productId, quantity,
+    });
+  }
   await page.getByRole("link", { name: "تغيير الفرع" }).click();
   await page.getByRole("button", { name: "الفيوم", exact: true }).click();
   await expect(page.getByTestId("active-branch")).toContainText("الفيوم");
   const secondWorkspace = await api(page, "GET", "/api/internal/workspace");
-  await api(page, "POST", "/api/internal/receiving/receipts", {
-    operationId: crypto.randomUUID(), branchId: secondWorkspace.activeBranch.id, receiptDate: "2026-10-05",
-    lines: [{ variantId: m.id, quantity: 7, unitCostPiasters: 5000 }],
+  await api(page, "POST", "/api/internal/inventory/transfers", {
+    operationId: crypto.randomUUID(), sourceBranchId: warehouseBranchId,
+    destinationBranchId: secondWorkspace.activeBranch.id, productId: product.id, quantity: 7,
   });
   await page.getByRole("link", { name: "تغيير الفرع" }).click();
   await page.getByRole("button", { name: "أبشواي", exact: true }).click();
@@ -77,18 +81,15 @@ async function seed(page: Page) {
 }
 
 async function openPos(page: Page) {
-  await page.getByRole("link", { name: "البحث عن منتج" }).click();
+  await page.getByRole("navigation", { name: "التنقل الداخلي" }).getByRole("link", { name: "نقطة البيع", exact: true }).click();
   await expect(page.getByTestId("pos-product-browser")).toBeVisible();
 }
 
 async function chooseM(page: Page, data: Awaited<ReturnType<typeof seed>>) {
   await page.getByTestId("pos-product-tile").filter({ hasText: data.product.code }).click();
-  await openLookupLists(page);
-  await page.getByLabel("المقاس", { exact: true }).selectOption(data.sizes[0].id);
-  await page.getByLabel("اللون", { exact: true }).selectOption(data.colors[0].id);
 }
 
-test("cashier browses real staff categories and actual variant prices without knowing a SKU", async ({ page }) => {
+test("cashier browses real staff categories and product prices without knowing a SKU", async ({ page }) => {
   const data = await seed(page);
   await logoutBeforeLogin(page);
   await login(page, "cashier");
@@ -99,26 +100,16 @@ test("cashier browses real staff categories and actual variant prices without kn
   await categories.getByRole("button", { name: data.categoryName, exact: true }).click();
   const tile = page.getByTestId("pos-product-tile").filter({ hasText: data.product.code });
   await expect(tile).toContainText("120 ج.م.");
-  await expect(tile).toContainText("180 ج.م.");
-  await expect(tile).toContainText("متاح بالفرع: 3");
+  await expect(tile).toContainText("متاح بالفرع: 2");
   await expect(page.getByTestId("pos-product-tile").filter({ hasText: data.other.code })).toHaveCount(0);
-  await page.getByLabel("ابحث بالاسم أو الكود").fill(data.product.nameAr);
+  await page.getByLabel("رمز المنتج أو اسم الصنف").fill(data.product.nameAr);
   await tile.focus();
   await page.keyboard.press("Enter");
-  await expect(page.getByRole("group", { name: "اختيارات الصنف المتاحة" }).getByRole("button").first()).toBeFocused();
-  await openLookupLists(page);
-  await page.getByLabel("المقاس", { exact: true }).selectOption(data.sizes[0].id);
-  await expect(page.getByLabel("اللون", { exact: true }).locator("option")).toHaveCount(2);
-  await page.getByLabel("اللون", { exact: true }).selectOption(data.colors[0].id);
+  await expect(page.getByTestId("add-operational")).toBeFocused();
+  await expect(page.getByLabel("المقاس", { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel("اللون", { exact: true })).toHaveCount(0);
   await expect(page.getByTestId("selected-variant")).toContainText("سعر البيع: 120 ج.م.");
-  await expect(page.getByTestId("available-quantity")).toHaveText("الكمية المتاحة: 2");
-  const pairs = page.getByRole("group", { name: "اختيارات الصنف المتاحة" });
-  await expect(pairs.getByRole("button")).toHaveCount(3);
-  await pairs.getByRole("button", { name: `${data.sizes[1].nameAr} / ${data.colors[1].nameAr}`, exact: true }).click();
-  await expect(page.getByTestId("selected-variant")).toContainText("سعر البيع: 180 ج.م.");
-  await pairs.getByRole("button", { name: `${data.sizes[2].nameAr} / ${data.colors[2].nameAr} — غير متوفر`, exact: true }).click();
-  await expect(page.getByTestId("available-quantity")).toHaveText("الكمية المتاحة: 0");
-  await expect(page.getByRole("button", { name: "إضافة إلى السلة" })).toHaveCount(0);
+  await expect(page.getByTestId("available-quantity")).toHaveText("الكمية المتاحة في الفرع: 2");
   expect(reads.some((path) => path.startsWith("/api/public/") || path.startsWith("/api/internal/media") || path === "/api/internal/catalog/products")).toBe(false);
   await expect(page.getByTestId("lookup-result").getByText(/تكلفة|ربح|شراء/)).toHaveCount(0);
 });
@@ -136,7 +127,7 @@ test("browsing and exact code lookup preserve quoted amounts while cart changes 
   await expect(accepted).toBeVisible();
   const acceptedText = await accepted.innerText();
   await page.getByRole("group", { name: "تصنيفات الأصناف" }).getByRole("button", { name: data.otherCategoryName, exact: true }).click();
-  await page.getByLabel("ابحث بالاسم أو الكود").fill(data.other.nameAr);
+  await page.getByLabel("رمز المنتج أو اسم الصنف").fill(data.other.nameAr);
   await page.getByTestId("pos-product-tile").filter({ hasText: data.other.code }).click();
   await expect(accepted).toHaveText(acceptedText, { useInnerText: true });
   const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
@@ -160,8 +151,8 @@ test("offline browse refreshes after completion, rejects known overselling and k
   await openPos(page);
   await chooseM(page, data);
   await context.setOffline(true);
-  await page.getByLabel("ابحث بالاسم أو الكود").fill(data.product.nameAr);
-  await expect(page.getByTestId("pos-product-tile").filter({ hasText: data.product.code })).toContainText("متاح بالفرع: 3");
+  await page.getByLabel("رمز المنتج أو اسم الصنف").fill(data.product.nameAr);
+  await expect(page.getByTestId("pos-product-tile").filter({ hasText: data.product.code })).toContainText("متاح بالفرع: 2");
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByLabel("الكمية", { exact: true }).fill("3");
@@ -172,18 +163,18 @@ test("offline browse refreshes after completion, rejects known overselling and k
   await expect(checkout.getByRole("button", { name: "إعادة المحاولة", exact: true })).toHaveCount(0);
   await checkout.getByLabel("الكمية", { exact: true }).fill("1");
   await finalizePosSale(checkout, page);
-  await expect(page.getByTestId("available-quantity")).toHaveText("الكمية المتاحة: 1");
-  await expect(page.getByTestId("pos-product-tile").filter({ hasText: data.product.code })).toContainText("متاح بالفرع: 2");
+  await expect(page.getByTestId("available-quantity")).toHaveText("الكمية المتاحة في الفرع: 1");
+  await expect(page.getByTestId("pos-product-tile").filter({ hasText: data.product.code })).toContainText("متاح بالفرع: 1");
   await context.setOffline(false);
   await expect.poll(async () => {
     const found = await api(page, "GET", `/api/internal/catalog/lookup?code=${data.product.code}`);
-    return found.variants.find((variant: { id: string }) => variant.id === data.m.id).availableQuantity;
+    return found.availableQuantity;
   }).toBe(1);
   await page.getByRole("link", { name: "تغيير الفرع" }).click();
   await page.getByRole("button", { name: "الفيوم", exact: true }).click();
   await openPos(page);
   await chooseM(page, data);
-  await expect(page.getByTestId("available-quantity")).toHaveText("الكمية المتاحة: 7");
+  await expect(page.getByTestId("available-quantity")).toHaveText("الكمية المتاحة في الفرع: 7");
   await expect(page.getByTestId("pos-product-tile").filter({ hasText: data.product.code })).toContainText("متاح بالفرع: 7");
 });
 
@@ -194,14 +185,11 @@ test("POS uses two lanes on desktop and tablet, stacks on phones and keeps check
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await expect(checkout.getByLabel("اسم الزبون (اختياري)")).toHaveCount(0);
   await expect(checkout.getByTestId("complete-sale")).toBeDisabled();
-  await page.getByLabel("ابحث بالاسم أو الكود").fill(data.product.nameAr);
+  await page.getByLabel("رمز المنتج أو اسم الصنف").fill(data.product.nameAr);
   const tile = page.getByTestId("pos-product-tile").filter({ hasText: data.product.code });
   await tile.focus();
   await page.keyboard.press("Enter");
-  await expect(page.getByRole("group", { name: "اختيارات الصنف المتاحة" }).getByRole("button").first()).toBeFocused();
-  await openLookupLists(page);
-  await page.getByLabel("المقاس", { exact: true }).selectOption(data.sizes[0].id);
-  await page.getByLabel("اللون", { exact: true }).selectOption(data.colors[0].id);
+  await expect(page.getByTestId("add-operational")).toBeFocused();
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
   await openPosOptionalDetails(checkout);
   await checkout.getByLabel("خصم الموظف بالجنيه").fill("5");
@@ -248,8 +236,8 @@ test("another tab's completed offline sale refreshes known availability without 
   const secondCheckout = second.getByRole("form", { name: "إتمام البيع" });
   await finalizePosSale(secondCheckout, second);
   await expect(second.getByRole("status").filter({ hasText: "تم حفظ البيع" })).toBeVisible();
-  await expect(page.getByTestId("available-quantity")).toHaveText("الكمية المتاحة: 1");
-  await expect(page.getByTestId("pos-product-tile").filter({ hasText: data.product.code })).toContainText("متاح بالفرع: 2");
+  await expect(page.getByTestId("available-quantity")).toHaveText("الكمية المتاحة في الفرع: 1");
+  await expect(page.getByTestId("pos-product-tile").filter({ hasText: data.product.code })).toContainText("متاح بالفرع: 1");
   await expect(page.getByTestId("accepted-prices")).toHaveText(acceptedText, { useInnerText: true });
   await expect(page.getByRole("button", { name: "إضافة إلى السلة" })).toBeDisabled();
   await context.setOffline(false);
@@ -326,7 +314,7 @@ test("a remote same-cashier branch reselection keeps automatic sync running afte
   const sales = await api(page, "GET", "/api/internal/sales");
   expect(sales.filter((sale: { operationId: string }) => sale.operationId === original.operationId)).toHaveLength(1);
   const product = await api(page, "GET", `/api/internal/catalog/lookup?code=${data.product.code}`);
-  expect(product.variants.find((variant: { id: string }) => variant.id === data.m.id).availableQuantity).toBe(1);
-  await expect(page.getByTestId("available-quantity")).toHaveText("الكمية المتاحة: 1");
+  expect(product.availableQuantity).toBe(1);
+  await expect(page.getByTestId("available-quantity")).toHaveText("الكمية المتاحة في الفرع: 1");
   await expect(page).toHaveURL(`${internal}/lookup`);
 });

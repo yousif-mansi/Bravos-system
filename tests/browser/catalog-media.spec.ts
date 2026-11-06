@@ -77,7 +77,8 @@ test("manager publishes product media and customers see only selectable stocked 
   await expect.poll(() => uploadRequests).toBe(2);
   await expect(form.getByRole("img", { name: "صورة المنتج 1" })).toBeVisible();
 
-  await form.getByLabel("سعر مختلف للمتغير (اختياري)").nth(1).fill("340");
+  await page.getByRole("tab", { name: "البيانات الأساسية" }).click();
+  await form.getByLabel("سعر البيع بالجنيه").fill("340");
   await form.getByRole("button", { name: "حفظ التعديل" }).click();
   await expect(page.getByRole("status")).toContainText("تم تحديث المنتج");
 
@@ -85,8 +86,7 @@ test("manager publishes product media and customers see only selectable stocked 
   const product = (products.body as ManagerProductDto[]).find((item) => item.code === "MEDIA-E2E-17");
   expect(product).toBeTruthy();
   if (!product) throw new Error("Expected the media test product.");
-  const stocked = product.variants.find((variant) => variant.color.nameAr === "أخضر 17");
-  if (!stocked) throw new Error("Expected the stocked media test variant.");
+  expect(product.defaultSellingPricePiasters).toBe(34000);
 
   await page.goto("http://127.0.0.1:3001");
   await expect(async () => {
@@ -106,18 +106,29 @@ test("manager publishes product media and customers see only selectable stocked 
   await expect(unavailablePairs).toContainText("XL17");
   await expect(unavailablePairs).toContainText("أخضر 17");
   await expect(unavailablePairs).toContainText("رملي 17");
-  await expect(unavailablePairs).toContainText(/EGP\s*320/);
-  await expect(unavailablePairs).toContainText(/EGP\s*340/);
+  for (const pair of await unavailablePairs.getByRole("listitem").all()) {
+    await expect(pair).toContainText(/EGP\s*340/);
+  }
   await expect(unavailablePairs).toContainText("Unavailable");
   await expect(page.getByRole("button", { name: "Add to bag" })).toHaveCount(0);
 
+  const warehouseId = "33333333-3333-4333-8333-333333333333";
+  const branchId = (await staffApi(page, "GET", "/api/internal/workspace")).body.activeBranch.id;
   const receipt = await staffApi(page, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
-    branchId: (await staffApi(page, "GET", "/api/internal/workspace")).body.activeBranch.id,
+    branchId: warehouseId,
     receiptDate: "2026-09-14",
-    lines: [{ variantId: stocked.id, quantity: 2, unitCostPiasters: 18000 }],
+    lines: [{ productId: product.id, quantity: 2, unitCostPiasters: 18000 }],
   });
   expect(receipt.status).toBe(201);
+  const transfer = await staffApi(page, "POST", "/api/internal/inventory/transfers", {
+    operationId: crypto.randomUUID(),
+    sourceBranchId: warehouseId,
+    destinationBranchId: branchId,
+    productId: product.id,
+    quantity: 2,
+  });
+  expect(transfer.status).toBe(201);
 
   await page.goto("http://127.0.0.1:3001");
   await expect(async () => {
@@ -151,8 +162,10 @@ test("manager publishes product media and customers see only selectable stocked 
   const emptyChoice = colorGroup.getByRole("radio", { name: /رملي 17/ });
   await expect(stockedChoice).toBeEnabled();
   await expect(stockedChoice).toBeChecked();
-  await expect(emptyChoice).toBeDisabled();
-  await expect(emptyChoice.locator("xpath=ancestor::label[1]")).toContainText("Unavailable");
+  await expect(emptyChoice).toBeEnabled();
+  await emptyChoice.check();
+  await expect(emptyChoice).toBeChecked();
+  await expect(page.locator("p", { hasText: "Selected price" }).locator("strong")).toContainText(/EGP\s*340/);
   await expect(sizeGroup.getByRole("radio", { name: /XL17/ })).toBeEnabled();
   await expect(sizeGroup.getByRole("radio")).toHaveCount(1);
   await expect(page.getByRole("list", { name: "Unavailable size and color pairs" })).toHaveCount(0);
@@ -190,10 +203,11 @@ test("manager publishes product media and customers see only selectable stocked 
   await expect(previewPairs).toContainText("XL17");
   await expect(previewPairs).toContainText("أخضر 17");
   await expect(previewPairs).toContainText("رملي 17");
-  await expect(previewPairs).toContainText(/EGP\s*320/);
-  await expect(previewPairs).toContainText(/EGP\s*340/);
+  for (const pair of await previewPairs.getByRole("listitem").all()) {
+    await expect(pair).toContainText(/EGP\s*340/);
+  }
   await expect(previewPairs).toContainText("Unavailable");
-  await expect(page.getByText("Each size and color keeps its own price. None can be ordered.")).toBeVisible();
+  await expect(page.getByText("Size and color share one price and one available quantity. None can be ordered.")).toBeVisible();
   await expect(page.getByRole("button", { name: "Add to bag" })).toHaveCount(0);
 
   const hidden = await staffApi(page, "PATCH", `/api/internal/catalog/products/${product.id}`, productWrite(comingSoon.body as ManagerProductDto, "hidden"));

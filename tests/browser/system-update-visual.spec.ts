@@ -135,7 +135,9 @@ test("staff intake is product-level and storefront options share one quantity", 
   const editor = page.getByRole("form", { name: "تعديل منتج" });
   await expect(editor.getByLabel("سعر البيع بالجنيه")).toHaveValue("1000");
   await expect(editor.getByLabel("الحد الأدنى للبيع بالجنيه (اختياري)")).toHaveValue("900");
-  await expect(editor).toContainText("كل الخيارات تستخدم نفس السعر ونفس الكمية");
+  await page.getByRole("tab", { name: "المقاسات والألوان" }).click();
+  await expect(editor.getByRole("checkbox", { name: "عرض هذه التركيبة" })).toHaveCount(2);
+  await expect(editor.getByLabel("سعر مختلف للمتغير (اختياري)")).toHaveCount(0);
   await page.screenshot({ path: path.join(visualDir, "catalog-product.png"), fullPage: true });
 
   await page.goto(`http://127.0.0.1:3001/products/${product.body.id}`);

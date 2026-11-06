@@ -2,7 +2,6 @@ import { openPosOptionalDetails, stageUnpaidPosQuote } from "./support/pos-check
 import { expect, test, type Page, type Route } from "@playwright/test";
 import type { SaleDto, SalePaymentDto } from "@bravos/contracts";
 import type { OfflineCompletedSale } from "@bravos/sales/browser";
-import { openLookupLists } from "./support/open-lookup-lists";
 
 test("receiving, split sale and authorized sales view form one connected workflow", async ({ page }) => {
   await page.goto("http://127.0.0.1:5174/login");
@@ -37,15 +36,21 @@ test("receiving, split sale and authorized sales view form one connected workflo
   await receive.getByRole("button", { name: "إضافة منتج موجود" }).click();
   await receive.getByLabel("المنتج", { exact: true }).selectOption({ label: "POS-E2E — قميص نقطة البيع" });
   await receive.getByLabel("الكمية").fill("10");
-  await receive.getByLabel("تكلفة الشراء للجنيه").fill("100");
+  await receive.getByLabel("تكلفة الشراء بالجنيه").fill("100");
+  const receiptSaved = page.waitForResponse((response) => response.request().method() === "POST"
+    && new URL(response.url()).pathname === "/api/internal/receiving/receipts" && response.status() === 201);
   await receive.getByRole("button", { name: "حفظ الاستلام" }).click();
+  await receiptSaved;
   await expect(page.getByRole("status")).toContainText("تم حفظ إذن الاستلام.");
   await receive.getByRole("button", { name: "إضافة منتج موجود" }).click();
   await receive.getByLabel("تاريخ الاستلام").fill("2026-09-11");
   await receive.getByLabel("المنتج", { exact: true }).selectOption({ label: "POS-E2E — قميص نقطة البيع" });
   await receive.getByLabel("الكمية").fill("10");
-  await receive.getByLabel("تكلفة الشراء للجنيه").fill("140");
+  await receive.getByLabel("تكلفة الشراء بالجنيه").fill("140");
+  const secondReceiptSaved = page.waitForResponse((response) => response.request().method() === "POST"
+    && new URL(response.url()).pathname === "/api/internal/receiving/receipts" && response.status() === 201);
   await receive.getByRole("button", { name: "حفظ الاستلام" }).click();
+  await secondReceiptSaved;
   await expect(page.getByRole("status")).toContainText("تم حفظ إذن الاستلام.");
 
   const workspace = await staffApi(page, "GET", "/api/internal/workspace");
@@ -175,9 +180,13 @@ test("receiving, split sale and authorized sales view form one connected workflo
     lines: [expect.objectContaining({ variantId, quantity: 3, paidPiasters: 85000 })],
   });
 
+  const savedSplitSale = splitSales.body.find((sale: SaleDto) => sale.id === originalCompletion.saleId) as SaleDto;
+  expect(savedSplitSale.reference).toMatch(/^POS-[0-9]+$/);
   await page.getByRole("link", { name: "المبيعات" }).click();
   await expect(page.getByRole("heading", { name: "المبيعات", exact: true })).toBeVisible();
   await expect(page.getByTestId("sale-list")).toContainText("كاشير تجريبي");
+  await page.getByTestId("sale-list").getByRole("row").filter({ hasText: savedSplitSale.reference! }).getByRole("button", { name: "فتح التفاصيل" }).click();
+  await expect(page.getByTestId("sale-details")).toContainText("أبشواي");
   await expect(page.getByTestId("sale-costs")).toHaveCount(0);
 
   await page.getByRole("button", { name: "تسجيل الخروج" }).click();
@@ -187,6 +196,7 @@ test("receiving, split sale and authorized sales view form one connected workflo
   await page.getByRole("button", { name: "أبشواي" }).click();
   await page.getByRole("link", { name: "المبيعات" }).click();
   await expect(page.getByTestId("sale-list")).toContainText("كاشير تجريبي");
+  await page.getByTestId("sale-list").getByRole("row").filter({ hasText: savedSplitSale.reference! }).getByRole("button", { name: "فتح التفاصيل" }).click();
   await expect(page.getByTestId("sale-details")).toContainText("أبشواي");
   await expect(page.getByTestId("sale-costs")).toContainText("تكلفة الدفعات");
 
@@ -227,11 +237,7 @@ test("lost complete response retries the same sale without charging the customer
     variants: [{ sizeId: size.body.id, colorId: color.body.id, sellingPricePiastersOverride: null }],
   });
   expect(product.status).toBe(201);
-  const receiving = await staffApi(page, "POST", "/api/internal/receiving/receipts", {
-    operationId: crypto.randomUUID(),
-    receiptDate: "2026-09-11",
-    lines: [{ variantId: product.body.variants[0].id, quantity: 4, unitCostPiasters: 8000 }],
-  });
+  const receiving = await stockProduct(page, product.body.id, 4, 8000);
   expect(receiving.status, JSON.stringify(receiving.body)).toBe(201);
 
   await page.getByRole("button", { name: "تسجيل الخروج" }).click();
@@ -243,10 +249,7 @@ test("lost complete response retries the same sale without charging the customer
   const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
   await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill("LOST-E2E");
   await lookup.getByRole("button", { name: "بحث" }).click();
-  await openLookupLists(page);
-  await page.getByLabel("المقاس").selectOption({ label: "مقاس مفقود" });
-  await page.getByLabel("اللون").selectOption({ label: "لون مفقود" });
-  await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
+  await page.getByTestId("add-operational").click();
 
   const saleIds: string[] = [];
   const operationIds: string[] = [];
@@ -323,7 +326,7 @@ test("lost complete response retries the same sale without charging the customer
   expect(lostSales[0].payment).toEqual({ method: "online", cashPiasters: 0, onlinePiasters: 20000 });
   const lookupAfter = await staffApi(page, "GET", `/api/internal/catalog/lookup?code=${encodeURIComponent("LOST-E2E")}`);
   expect(lookupAfter.status).toBe(200);
-  expect(lookupAfter.body.variants[0].availableQuantity).toBe(3);
+  expect(lookupAfter.body.availableQuantity).toBe(3);
 });
 
 test("an unpaid price quote can be abandoned without recording a sale", async ({ page }) => {
@@ -346,11 +349,7 @@ test("an unpaid price quote can be abandoned without recording a sale", async ({
     imageRefs: [],
     variants: [{ sizeId: size.body.id, colorId: color.body.id, sellingPricePiastersOverride: null }],
   });
-  await staffApi(page, "POST", "/api/internal/receiving/receipts", {
-    operationId: crypto.randomUUID(),
-    receiptDate: "2026-09-11",
-    lines: [{ variantId: product.body.variants[0].id, quantity: 5, unitCostPiasters: 4000 }],
-  });
+  await stockProduct(page, product.body.id, 5, 4000);
   await page.getByRole("button", { name: "تسجيل الخروج" }).click();
   await page.getByLabel("اسم الدخول").fill("cashier");
   await page.getByLabel("كلمة المرور").fill("e2e-cashier-pass");
@@ -360,10 +359,7 @@ test("an unpaid price quote can be abandoned without recording a sale", async ({
   const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
   await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill("ABANDON-E2E");
   await lookup.getByRole("button", { name: "بحث" }).click();
-  await openLookupLists(page);
-  await page.getByLabel("المقاس").selectOption({ label: "مقاس إلغاء" });
-  await page.getByLabel("اللون").selectOption({ label: "لون إلغاء" });
-  await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
+  await page.getByTestId("add-operational").click();
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await stageUnpaidPosQuote(checkout);
   await checkout.getByLabel("الكمية").fill("2");
@@ -405,12 +401,8 @@ test("lost complete before send recovers the prepared sale after stock is taken"
     imageRefs: [],
     variants: [{ sizeId: size.body.id, colorId: color.body.id, sellingPricePiastersOverride: null }],
   });
-  const variantId = product.body.variants[0].id;
-  await staffApi(page, "POST", "/api/internal/receiving/receipts", {
-    operationId: crypto.randomUUID(),
-    receiptDate: "2026-09-11",
-    lines: [{ variantId, quantity: 1, unitCostPiasters: 7000 }],
-  });
+  const variantId = product.body.operationalVariantId;
+  await stockProduct(page, product.body.id, 1, 7000);
   await page.getByRole("button", { name: "تسجيل الخروج" }).click();
   await page.getByLabel("اسم الدخول").fill("cashier");
   await page.getByLabel("كلمة المرور").fill("e2e-cashier-pass");
@@ -420,10 +412,7 @@ test("lost complete before send recovers the prepared sale after stock is taken"
   const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
   await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill("BEFORE-E2E");
   await lookup.getByRole("button", { name: "بحث" }).click();
-  await openLookupLists(page);
-  await page.getByLabel("المقاس").selectOption({ label: "مقاس قبل الإرسال" });
-  await page.getByLabel("اللون").selectOption({ label: "لون قبل الإرسال" });
-  await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
+  await page.getByTestId("add-operational").click();
   let releaseUpload = false;
   const blockedUploads: Array<{ saleId: string; operationId: string }> = [];
   const releasedUploads: Array<{ saleId: string; operationId: string; status: number }> = [];
@@ -562,7 +551,7 @@ test("lost complete before send recovers the prepared sale after stock is taken"
       .reduce((sum: number, batch: { remainingQuantity: number }) => sum + batch.remainingQuantity, 0);
     expect(remaining).toBe(0);
     const lookupAfter = await staffApi(page, "GET", `/api/internal/catalog/lookup?code=${encodeURIComponent("BEFORE-E2E")}`);
-    expect(lookupAfter.body.variants[0].availableQuantity).toBe(0);
+    expect(lookupAfter.body.availableQuantity).toBe(0);
     await page.getByRole("button", { name: "تسجيل الخروج" }).click();
     await page.getByLabel("اسم الدخول").fill("cashier");
     await page.getByLabel("كلمة المرور").fill("e2e-cashier-pass");
@@ -599,12 +588,8 @@ test("completion recovers a physically paid preparation with its original identi
     imageRefs: [],
     variants: [{ sizeId: size.body.id, colorId: color.body.id, sellingPricePiastersOverride: null }],
   });
-  const variantId = product.body.variants[0].id;
-  await staffApi(page, "POST", "/api/internal/receiving/receipts", {
-    operationId: crypto.randomUUID(),
-    receiptDate: "2026-09-11",
-    lines: [{ variantId, quantity: 3, unitCostPiasters: 5000 }],
-  });
+  const variantId = product.body.operationalVariantId;
+  await stockProduct(page, product.body.id, 3, 5000);
   await page.getByRole("button", { name: "تسجيل الخروج" }).click();
   await page.getByLabel("اسم الدخول").fill("cashier");
   await page.getByLabel("كلمة المرور").fill("e2e-cashier-pass");
@@ -614,10 +599,7 @@ test("completion recovers a physically paid preparation with its original identi
   const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
   await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill("CHECK-E2E");
   await lookup.getByRole("button", { name: "بحث" }).click();
-  await openLookupLists(page);
-  await page.getByLabel("المقاس").selectOption({ label: "مقاس تحقق" });
-  await page.getByLabel("اللون").selectOption({ label: "لون تحقق" });
-  await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
+  await page.getByTestId("add-operational").click();
   await page.route("**/api/internal/sales", async (route) => {
     const url = new URL(route.request().url());
     if (route.request().method() === "POST" && url.pathname === "/api/internal/sales") {
@@ -646,7 +628,7 @@ test("completion recovers a physically paid preparation with its original identi
   );
   expect(saved[0].physicallyCompleted).toBe(true);
   const lookupAfter = await staffApi(page, "GET", `/api/internal/catalog/lookup?code=${encodeURIComponent("CHECK-E2E")}`);
-  expect(lookupAfter.body.variants[0].availableQuantity).toBe(2);
+  expect(lookupAfter.body.availableQuantity).toBe(2);
   await page.reload();
   await expect(page.getByTestId("sale-details")).toHaveCount(0);
   await expect(page.getByTestId("unsynced-count")).toContainText("مبيعات غير مزامنة: 0");
@@ -677,11 +659,7 @@ test("invalid employee discount stays editable then completes after correction",
     imageRefs: [],
     variants: [{ sizeId: size.body.id, colorId: color.body.id, sellingPricePiastersOverride: null }],
   });
-  const receiving = await staffApi(page, "POST", "/api/internal/receiving/receipts", {
-    operationId: crypto.randomUUID(),
-    receiptDate: "2026-09-11",
-    lines: [{ variantId: product.body.variants[0].id, quantity: 4, unitCostPiasters: 6000 }],
-  });
+  const receiving = await stockProduct(page, product.body.id, 4, 6000);
   expect(receiving.status, JSON.stringify(receiving.body)).toBe(201);
   await page.getByRole("button", { name: "تسجيل الخروج" }).click();
   await page.getByLabel("اسم الدخول").fill("cashier");
@@ -692,10 +670,7 @@ test("invalid employee discount stays editable then completes after correction",
   const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
   await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill("DISCOUNT-E2E");
   await lookup.getByRole("button", { name: "بحث" }).click();
-  await openLookupLists(page);
-  await page.getByLabel("المقاس").selectOption({ label: "مقاس خصم" });
-  await page.getByLabel("اللون").selectOption({ label: "لون خصم" });
-  await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
+  await page.getByTestId("add-operational").click();
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await openPosOptionalDetails(checkout);
   await checkout.getByLabel("خصم الموظف بالجنيه").fill("abc");
@@ -740,12 +715,8 @@ test("two open tabs keep a physically completed marker and save that sale once",
     imageRefs: [],
     variants: [{ sizeId: size.body.id, colorId: color.body.id, sellingPricePiastersOverride: null }],
   });
-  const variantId = product.body.variants[0].id;
-  await staffApi(page, "POST", "/api/internal/receiving/receipts", {
-    operationId: crypto.randomUUID(),
-    receiptDate: "2026-09-11",
-    lines: [{ variantId, quantity: 5, unitCostPiasters: 4500 }],
-  });
+  const variantId = product.body.operationalVariantId;
+  await stockProduct(page, product.body.id, 5, 4500);
   await page.getByRole("button", { name: "تسجيل الخروج" }).click();
   await page.getByLabel("اسم الدخول").fill("cashier");
   await page.getByLabel("كلمة المرور").fill("e2e-cashier-pass");
@@ -755,17 +726,14 @@ test("two open tabs keep a physically completed marker and save that sale once",
   await page.getByRole("link", { name: "البحث عن منتج" }).click();
   await page2.goto("http://127.0.0.1:5174/lookup");
   await expect(page2.getByRole("heading", { name: "البحث عن منتج" })).toBeVisible();
-  async function searchAndAdd(target: Page, sizeLabel: string, colorLabel: string) {
+  async function searchAndAdd(target: Page) {
     const lookup = target.getByRole("form", { name: "البحث برمز المنتج" });
     await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill("TWOTAB-E2E");
     await lookup.getByRole("button", { name: "بحث" }).click();
-    await openLookupLists(target);
-    await target.getByLabel("المقاس").selectOption({ label: sizeLabel });
-    await target.getByLabel("اللون").selectOption({ label: colorLabel });
-    await target.getByRole("button", { name: "إضافة إلى السلة" }).click();
+    await target.getByTestId("add-operational").click();
   }
-  await searchAndAdd(page2, "مقاس تبويب", "لون تبويب");
-  await searchAndAdd(page, "مقاس تبويب", "لون تبويب");
+  await searchAndAdd(page2);
+  await searchAndAdd(page);
   const completedIds: string[] = [];
   const retryIds: string[] = [];
   const retryStatuses: number[] = [];
@@ -902,7 +870,7 @@ test("two open tabs keep a physically completed marker and save that sale once",
       unallocatedQuantity: 0,
     });
     const lookupAfter = await staffApi(page, "GET", `/api/internal/catalog/lookup?code=${encodeURIComponent("TWOTAB-E2E")}`);
-    expect(lookupAfter.body.variants[0].availableQuantity).toBe(4);
+    expect(lookupAfter.body.availableQuantity).toBe(4);
     await page2.close();
   } finally {
     await context.unroute("**/api/internal/sales", observeCompletion);
@@ -928,12 +896,8 @@ test("rapid cart edit invalidates the old quote before completion", async ({ pag
     imageRefs: [],
     variants: [{ sizeId: size.body.id, colorId: color.body.id, sellingPricePiastersOverride: null }],
   });
-  const variantId = product.body.variants[0].id;
-  await staffApi(page, "POST", "/api/internal/receiving/receipts", {
-    operationId: crypto.randomUUID(),
-    receiptDate: "2026-09-11",
-    lines: [{ variantId, quantity: 6, unitCostPiasters: 3500 }],
-  });
+  const variantId = product.body.operationalVariantId;
+  await stockProduct(page, product.body.id, 6, 3500);
   await page.getByRole("button", { name: "تسجيل الخروج" }).click();
   await page.getByLabel("اسم الدخول").fill("cashier");
   await page.getByLabel("كلمة المرور").fill("e2e-cashier-pass");
@@ -943,10 +907,7 @@ test("rapid cart edit invalidates the old quote before completion", async ({ pag
   const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
   await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill("RAPID-E2E");
   await lookup.getByRole("button", { name: "بحث" }).click();
-  await openLookupLists(page);
-  await page.getByLabel("المقاس").selectOption({ label: "مقاس سريع" });
-  await page.getByLabel("اللون").selectOption({ label: "لون سريع" });
-  await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
+  await page.getByTestId("add-operational").click();
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   const preparations: Array<{ saleId: string; operationId: string; lines: Array<{ variantId: string; quantity: number }> }> = [];
   await context.route("**/api/internal/sales/prepare", async (route) => {
@@ -1056,7 +1017,7 @@ test("rapid cart edit invalidates the old quote before completion", async ({ pag
   expect(saved[0]).toMatchObject({ id: newQuote.saleId, operationId: newQuote.operationId, finalTotalPiasters: 28000 });
   expect(saved[0].lines[0].quantity).toBe(2);
   const lookupAfter = await staffApi(page, "GET", `/api/internal/catalog/lookup?code=${encodeURIComponent("RAPID-E2E")}`);
-  expect(lookupAfter.body.variants[0].availableQuantity).toBe(4);
+  expect(lookupAfter.body.availableQuantity).toBe(4);
 });
 
 test("cart edits during delayed prepare cannot complete a stale quote", async ({ page, context }) => {
@@ -1078,12 +1039,8 @@ test("cart edits during delayed prepare cannot complete a stale quote", async ({
     imageRefs: [],
     variants: [{ sizeId: size.body.id, colorId: color.body.id, sellingPricePiastersOverride: null }],
   });
-  const variantId = product.body.variants[0].id;
-  await staffApi(page, "POST", "/api/internal/receiving/receipts", {
-    operationId: crypto.randomUUID(),
-    receiptDate: "2026-09-11",
-    lines: [{ variantId, quantity: 6, unitCostPiasters: 3500 }],
-  });
+  const variantId = product.body.operationalVariantId;
+  await stockProduct(page, product.body.id, 6, 3500);
   await page.getByRole("button", { name: "تسجيل الخروج" }).click();
   await page.getByLabel("اسم الدخول").fill("cashier");
   await page.getByLabel("كلمة المرور").fill("e2e-cashier-pass");
@@ -1095,10 +1052,7 @@ test("cart edits during delayed prepare cannot complete a stale quote", async ({
   const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
   await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill("DURING-E2E");
   await lookup.getByRole("button", { name: "بحث" }).click();
-  await openLookupLists(page);
-  await page.getByLabel("المقاس").selectOption({ label: "مقاس أثناء" });
-  await page.getByLabel("اللون").selectOption({ label: "لون أثناء" });
-  await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
+  await page.getByTestId("add-operational").click();
   const locker = await context.newPage();
   await locker.goto("http://127.0.0.1:5174/workspace");
   await locker.evaluate(async (id) => {
@@ -1190,7 +1144,7 @@ test("cart edits during delayed prepare cannot complete a stale quote", async ({
   expect(saved[0].physicallyCompleted).toBe(true);
   expect(saved[0].discrepancy).toBeNull();
   const lookupAfter = await staffApi(page, "GET", `/api/internal/catalog/lookup?code=${encodeURIComponent("DURING-E2E")}`);
-  expect(lookupAfter.body.variants[0].availableQuantity).toBe(5);
+  expect(lookupAfter.body.availableQuantity).toBe(5);
 });
 
 test("blocked tab recovers the other tab's sale then continues its own cart", async ({ page, context }) => {
@@ -1212,12 +1166,8 @@ test("blocked tab recovers the other tab's sale then continues its own cart", as
     imageRefs: [],
     variants: [{ sizeId: size.body.id, colorId: color.body.id, sellingPricePiastersOverride: null }],
   });
-  const variantId = product.body.variants[0].id;
-  await staffApi(page, "POST", "/api/internal/receiving/receipts", {
-    operationId: crypto.randomUUID(),
-    receiptDate: "2026-09-11",
-    lines: [{ variantId, quantity: 5, unitCostPiasters: 4000 }],
-  });
+  const variantId = product.body.operationalVariantId;
+  await stockProduct(page, product.body.id, 5, 4000);
   await page.getByRole("button", { name: "تسجيل الخروج" }).click();
   await page.getByLabel("اسم الدخول").fill("cashier");
   await page.getByLabel("كلمة المرور").fill("e2e-cashier-pass");
@@ -1231,10 +1181,7 @@ test("blocked tab recovers the other tab's sale then continues its own cart", as
     const lookup = target.getByRole("form", { name: "البحث برمز المنتج" });
     await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill("FOREIGN-E2E");
     await lookup.getByRole("button", { name: "بحث" }).click();
-    await openLookupLists(target);
-    await target.getByLabel("المقاس").selectOption({ label: "مقاس أجنبي" });
-    await target.getByLabel("اللون").selectOption({ label: "لون أجنبي" });
-    await target.getByRole("button", { name: "إضافة إلى السلة" }).click();
+    await target.getByTestId("add-operational").click();
   }
   await searchAndAdd(page2);
   await page2.getByRole("form", { name: "إتمام البيع" }).getByLabel("الكمية").fill("2");
@@ -1471,7 +1418,7 @@ test("blocked tab recovers the other tab's sale then continues its own cart", as
     contentType: "application/json",
   });
   const lookupAfter = await staffApi(page2, "GET", `/api/internal/catalog/lookup?code=${encodeURIComponent("FOREIGN-E2E")}`);
-  expect(lookupAfter.body.variants[0].availableQuantity).toBe(2);
+  expect(lookupAfter.body.availableQuantity).toBe(2);
   await page2.close();
 });
 
@@ -1494,11 +1441,7 @@ test("synchronous double complete keeps a single sale identity", async ({ page }
     imageRefs: [],
     variants: [{ sizeId: size.body.id, colorId: color.body.id, sellingPricePiastersOverride: null }],
   });
-  await staffApi(page, "POST", "/api/internal/receiving/receipts", {
-    operationId: crypto.randomUUID(),
-    receiptDate: "2026-09-11",
-    lines: [{ variantId: product.body.variants[0].id, quantity: 3, unitCostPiasters: 3000 }],
-  });
+  await stockProduct(page, product.body.id, 3, 3000);
   await page.getByRole("button", { name: "تسجيل الخروج" }).click();
   await page.getByLabel("اسم الدخول").fill("cashier");
   await page.getByLabel("كلمة المرور").fill("e2e-cashier-pass");
@@ -1508,14 +1451,11 @@ test("synchronous double complete keeps a single sale identity", async ({ page }
   const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
   await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill("DOUBLE-E2E");
   await lookup.getByRole("button", { name: "بحث" }).click();
-  await openLookupLists(page);
-  await page.getByLabel("المقاس").selectOption({ label: "مقاس مزدوج" });
-  await page.getByLabel("اللون").selectOption({ label: "لون مزدوج" });
-  await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
+  await page.getByTestId("add-operational").click();
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await stageUnpaidPosQuote(checkout);
   const lookupBefore = await staffApi(page, "GET", `/api/internal/catalog/lookup?code=${encodeURIComponent("DOUBLE-E2E")}`);
-  expect(lookupBefore.body.variants[0].availableQuantity).toBe(3);
+  expect(lookupBefore.body.availableQuantity).toBe(3);
   const saleIds: string[] = [];
   await page.route("**/api/internal/sales", async (route) => {
     const url = new URL(route.request().url());
@@ -1550,8 +1490,30 @@ test("synchronous double complete keeps a single sale identity", async ({ page }
   expect(doubles[0].finalTotalPiasters).toBe(12000);
   expect(doubles[0].lines[0].quantity).toBe(1);
   const lookupAfter = await staffApi(page, "GET", `/api/internal/catalog/lookup?code=${encodeURIComponent("DOUBLE-E2E")}`);
-  expect(lookupAfter.body.variants[0].availableQuantity).toBe(2);
+  expect(lookupAfter.body.availableQuantity).toBe(2);
 });
+
+async function stockProduct(page: Page, productId: string, quantity: number, unitCostPiasters: number) {
+  const warehouseId = "33333333-3333-4333-8333-333333333333";
+  const workspace = await staffApi(page, "GET", "/api/internal/workspace");
+  expect(workspace.status).toBe(200);
+  const receipt = await staffApi(page, "POST", "/api/internal/receiving/receipts", {
+    operationId: crypto.randomUUID(),
+    branchId: warehouseId,
+    receiptDate: "2026-09-11",
+    lines: [{ productId, quantity, unitCostPiasters }],
+  });
+  expect(receipt.status, JSON.stringify(receipt.body)).toBe(201);
+  const transfer = await staffApi(page, "POST", "/api/internal/inventory/transfers", {
+    operationId: crypto.randomUUID(),
+    sourceBranchId: warehouseId,
+    destinationBranchId: workspace.body.activeBranch.id,
+    productId,
+    quantity,
+  });
+  expect(transfer.status, JSON.stringify(transfer.body)).toBe(201);
+  return receipt;
+}
 
 async function staffApi(page: Page, method: "GET" | "POST", url: string, payload?: unknown) {
   if (method === "POST" && url === "/api/internal/receiving/receipts" && payload && typeof payload === "object" && !("branchId" in payload)) {

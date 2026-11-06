@@ -1,9 +1,9 @@
 import { BitArray, Code128Reader } from "@zxing/library";
 import { expect, test, type Locator, type Page } from "@playwright/test";
-import { openLookupLists } from "./support/open-lookup-lists";
 
 // This origin belongs to the disposable browser-test API (3011), never the preview API (3012).
 const internal = "http://127.0.0.1:5174";
+const warehouseBranchId = "33333333-3333-4333-8333-333333333333";
 const shots = ".scratch/pos-hardware-20261027/screenshots";
 type HardwarePrint = {
   kind: "labels" | "receipt";
@@ -53,11 +53,16 @@ async function seed(page: Page) {
     variants: [{ sizeId: size.id, colorId: color.id, sellingPricePiastersOverride: null }],
   });
   const workspace = await api(page, "GET", "/api/internal/workspace");
-  const variant = product.variants[0];
+  const variant = { id: product.operationalVariantId };
   await api(page, "POST", "/api/internal/receiving/receipts", {
-    operationId: crypto.randomUUID(), branchId: workspace.activeBranch.id, receiptDate: "2026-10-05",
-    lines: [{ variantId: variant.id, quantity: 2, unitCostPiasters: 5000 }],
+    operationId: crypto.randomUUID(), branchId: warehouseBranchId, receiptDate: "2026-10-05",
+    lines: [{ productId: product.id, quantity: 2, unitCostPiasters: 5000 }],
   });
+  await api(page, "POST", "/api/internal/inventory/transfers", {
+    operationId: crypto.randomUUID(), sourceBranchId: warehouseBranchId, destinationBranchId: workspace.activeBranch.id,
+    productId: product.id, quantity: 2,
+  });
+
   return { product, variant, size, color };
 }
 
@@ -68,7 +73,8 @@ async function sales(page: Page, variantId: string): Promise<Sale[]> {
 
 async function stock(page: Page, code: string, variantId: string): Promise<number> {
   const product = await api(page, "GET", `/api/internal/catalog/lookup?code=${encodeURIComponent(code)}`);
-  return product.variants.find((variant: { id: string }) => variant.id === variantId).availableQuantity;
+  expect(product.operationalVariantId).toBe(variantId);
+  return product.availableQuantity;
 }
 
 // Serialized by Playwright into every window, including subsequently created print iframes.
@@ -264,16 +270,13 @@ test("offline label printer to scanner to receipt flow synchronizes one sale and
     expect(await stock(page, data.product.code, data.variant.id)).toBe(2);
     await dialog.getByRole("button", { name: "إلغاء", exact: true }).click();
 
-    // A scanner types the decoded product code and Enter; variant choice remains manual.
+    // A scanner types the decoded product code and Enter; adding the product remains manual.
     await lookup(page, scannedCode);
-    await expect(page.locator("#lookupSize")).toHaveValue("");
-    await expect(page.locator("#lookupColor")).toHaveValue("");
+    await expect(page.locator("#lookupSize")).toHaveCount(0);
+    await expect(page.locator("#lookupColor")).toHaveCount(0);
     const checkout = page.getByRole("form", { name: "إتمام البيع" });
     await expect(checkout).not.toContainText(data.product.nameAr);
-    await openLookupLists(page);
-    await page.locator("#lookupSize").selectOption(data.size.id);
-    await page.locator("#lookupColor").selectOption(data.color.id);
-    await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
+    await page.getByTestId("add-operational").click();
     await page.getByTestId("complete-sale-print").click();
     await expect(page.getByTestId("sale-details")).toBeVisible();
     await expect(page.getByRole("status").filter({ hasText: "تم حفظ البيع" })).toBeVisible();

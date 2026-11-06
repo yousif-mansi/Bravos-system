@@ -49,6 +49,33 @@ test("labels and receipts keep names and prices and use only their allowlisted p
   assert.equal(fetched.text.includes("قميص"), false);
 });
 
+test("product-level receipts omit website options while keeping text validation and receipt routing", async (t) => {
+  const calls = [];
+  const { connector, token } = await pairedConnector(t, injectedPort(async (dispatch) => {
+    calls.push(dispatch);
+    return { outcome: "submitted" };
+  }));
+  const body = receiptJob(jobId(900));
+  body.receiptView.lines[0].sizeName = "";
+  body.receiptView.lines[0].colorName = "";
+  assert.ok(parsePrintJob(body));
+  for (const field of ["sizeName", "colorName"]) {
+    for (const invalid of [null, 42, "x\u0000", "x\u202e", "x".repeat(81)]) {
+      const malformed = structuredClone(body);
+      malformed.receiptView.lines[0][field] = invalid;
+      assert.equal(parsePrintJob(malformed), null);
+    }
+  }
+  const response = await request(connector, { method: "POST", path: "/jobs", token, body });
+  assert.equal(response.status, 202);
+  await connector.waitUntilIdle();
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].printerName, RECEIPT_PRINTER_NAME);
+  assert.equal(calls[0].document.receiptView.lines[0].sizeName, "");
+  assert.equal(calls[0].document.receiptView.lines[0].colorName, "");
+  assert.equal(calls[0].document.receiptView.finalTotal, "800");
+});
+
 test("the same job id and payload returns the same state and a different payload conflicts", async (t) => {
   const calls = [];
   const { connector, token } = await pairedConnector(t, injectedPort(async (dispatch) => {

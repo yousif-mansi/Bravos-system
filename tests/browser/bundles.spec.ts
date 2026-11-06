@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { openLookupLists } from "./support/open-lookup-lists";
+import { stageUnpaidPosQuote } from "./support/pos-checkout";
 
 test("manager maintains fixed bundles and Buy-X-Get-Y rules in the Arabic offer editor", async ({ page }) => {
   await signIn(page, "owner", "e2e-owner-pass");
@@ -7,27 +7,20 @@ test("manager maintains fixed bundles and Buy-X-Get-Y rules in the Arabic offer 
   const size = await staffApi(page, "POST", "/api/internal/catalog/sizes", { nameAr: "مقاس حزم" });
   const firstColor = await staffApi(page, "POST", "/api/internal/catalog/colors", { nameAr: "لون حزمة أول" });
   const secondColor = await staffApi(page, "POST", "/api/internal/catalog/colors", { nameAr: "لون حزمة ثان" });
-  const product = await staffApi(page, "POST", "/api/internal/catalog/products", {
-    code: "BUNDLE-E2E",
-    nameAr: "منتج حزم المتصفح",
-    descriptionAr: "اختبار محرر الحزم والمكافآت",
-    categoryId: category.body.id,
-    defaultSellingPricePiasters: 20_000,
-    publication: "hidden",
-    imageRefs: [],
-    sizeGuideAr: null,
-    variants: [
-      { sizeId: size.body.id, colorId: firstColor.body.id, sellingPricePiastersOverride: 10_000 },
-      { sizeId: size.body.id, colorId: secondColor.body.id, sellingPricePiastersOverride: 20_000 },
-    ],
-  });
-  expect(product.status).toBe(201);
-  const cheapVariant = product.body.variants.find((variant: { sellingPricePiasters: number }) =>
-    variant.sellingPricePiasters === 10_000);
-  const expensiveVariant = product.body.variants.find((variant: { sellingPricePiasters: number }) =>
-    variant.sellingPricePiasters === 20_000);
-  expect(cheapVariant).toBeTruthy();
-  expect(expensiveVariant).toBeTruthy();
+  async function createProduct(code: string, nameAr: string, price: number, colorId: string) {
+    const product = await staffApi(page, "POST", "/api/internal/catalog/products", {
+      code, nameAr, descriptionAr: "اختبار محرر الحزم والمكافآت",
+      categoryId: category.body.id, defaultSellingPricePiasters: price,
+      publication: "hidden", imageRefs: [], sizeGuideAr: null,
+      variants: [{ sizeId: size.body.id, colorId, sellingPricePiastersOverride: null }],
+    });
+    expect(product.status).toBe(201);
+    return product.body;
+  }
+  const cheap = await createProduct("BUNDLE-E2E-LOW", "منتج حزم رخيص", 10_000, firstColor.body.id);
+  const expensive = await createProduct("BUNDLE-E2E-HIGH", "منتج حزم غالي", 20_000, secondColor.body.id);
+  const cheapVariant = cheap.variants[0];
+  const expensiveVariant = expensive.variants[0];
 
   await page.getByRole("link", { name: "العروض" }).click();
   const form = page.getByRole("form", { name: "إنشاء عرض تلقائي" });
@@ -35,11 +28,16 @@ test("manager maintains fixed bundles and Buy-X-Get-Y rules in the Arabic offer 
   await form.getByLabel("نوع الخصم").selectOption("fixed_bundle");
   await form.getByLabel("سعر الحزمة بالجنيه").fill("250");
   let rows = form.getByTestId("bundle-item-row");
-  await rows.nth(0).getByLabel("المتغير").selectOption(cheapVariant.id);
+  const firstSelect = rows.nth(0).getByLabel("المتغير");
+  await expect(firstSelect.locator(`optgroup[label="بيع الفروع"] option[value="${cheap.operationalVariantId}"]`)).toContainText("BUNDLE-E2E-LOW");
+  await expect(firstSelect.locator(`optgroup[label="بيع الفروع"] option[value="${expensive.operationalVariantId}"]`)).toContainText("BUNDLE-E2E-HIGH");
+  await expect(firstSelect.locator(`optgroup[label="خيارات المتجر الإلكتروني"] option[value="${cheapVariant.id}"]`)).toHaveCount(1);
+  await expect(firstSelect.locator(`optgroup[label="خيارات المتجر الإلكتروني"] option[value="${expensiveVariant.id}"]`)).toHaveCount(1);
+  await firstSelect.selectOption(cheap.operationalVariantId);
   await rows.nth(0).getByLabel("الكمية").fill("2");
   await form.getByRole("button", { name: "إضافة متغير للحزمة" }).click();
   rows = form.getByTestId("bundle-item-row");
-  await rows.nth(1).getByLabel("المتغير").selectOption(expensiveVariant.id);
+  await rows.nth(1).getByLabel("المتغير").selectOption(expensive.operationalVariantId);
   await rows.nth(1).getByLabel("الكمية").fill("1");
   await form.getByRole("checkbox", { name: "مفعل", exact: true }).check();
   await form.getByRole("button", { name: "حفظ العرض" }).click();
@@ -49,9 +47,16 @@ test("manager maintains fixed bundles and Buy-X-Get-Y rules in the Arabic offer 
   await savedBundle.getByRole("button", { name: "تعديل" }).click();
   const editForm = page.getByRole("form", { name: "تعديل العرض التلقائي" });
   await expect(editForm.getByLabel("نوع الخصم")).toHaveValue("fixed_bundle");
+  // Website option identities remain selectable and survive editing existing offers.
+  await editForm.getByTestId("bundle-item-row").nth(0).getByLabel("المتغير").selectOption(cheapVariant.id);
+  await editForm.getByRole("button", { name: "حفظ العرض" }).click();
+  await expect(page.getByRole("status")).toContainText("تم تحديث العرض.");
+  await page.getByTestId("offer-row").filter({ hasText: "حزمة المتصفح" }).getByRole("button", { name: "تعديل" }).click();
+  await expect(editForm.getByTestId("bundle-item-row").nth(0).getByLabel("المتغير")).toHaveValue(cheapVariant.id);
+  await editForm.getByTestId("bundle-item-row").nth(0).getByLabel("المتغير").selectOption(cheap.operationalVariantId);
   await editForm.getByLabel("سعر الحزمة بالجنيه").fill("260");
   const cheapBundleRow = editForm.getByTestId("bundle-item-row").filter({
-    has: page.locator(`option[value="${cheapVariant.id}"]:checked`),
+    has: page.locator(`option[value="${cheap.operationalVariantId}"]:checked`),
   });
   await expect(cheapBundleRow).toHaveCount(1);
   await cheapBundleRow.getByLabel("الكمية").fill("3");
@@ -65,44 +70,46 @@ test("manager maintains fixed bundles and Buy-X-Get-Y rules in the Arabic offer 
   await freshForm.getByLabel("عدد وحدات الشراء").fill("2");
   await freshForm.getByLabel("عدد وحدات المكافأة").fill("1");
   await freshForm.getByLabel("نسبة خصم المكافأة").fill("50");
-  await freshForm.getByRole("group", { name: "منتجات الشراء" }).getByRole("checkbox", { name: /BUNDLE-E2E/ }).check();
-  await freshForm.getByRole("group", { name: "منتجات المكافأة" }).getByRole("checkbox", { name: /BUNDLE-E2E/ }).check();
+  for (const code of ["BUNDLE-E2E-LOW", "BUNDLE-E2E-HIGH"]) {
+    await freshForm.getByRole("group", { name: "منتجات الشراء" }).getByRole("checkbox", { name: code }).check();
+    await freshForm.getByRole("group", { name: "منتجات المكافأة" }).getByRole("checkbox", { name: code }).check();
+  }
   await freshForm.getByRole("checkbox", { name: "مفعل", exact: true }).check();
   await freshForm.getByRole("button", { name: "حفظ العرض" }).click();
   await expect(page.getByTestId("offer-row").filter({ hasText: "مكافأة المتصفح" })).toContainText("اشترِ 2 وخذ 1 بخصم 50٪");
 
+  const workspace = await (await page.request.get("http://127.0.0.1:5174/api/internal/workspace")).json();
+  const warehouseId = "33333333-3333-4333-8333-333333333333";
   const received = await staffApi(page, "POST", "/api/internal/receiving/receipts", {
-    operationId: crypto.randomUUID(),
-    branchId: (await (await page.request.get("http://127.0.0.1:5174/api/internal/workspace")).json()).activeBranch.id,
-    receiptDate: "2026-09-15",
-    lines: product.body.variants.map((variant: { id: string }) => ({
-      variantId: variant.id,
-      quantity: 5,
-      unitCostPiasters: 5000,
-    })),
+    operationId: crypto.randomUUID(), branchId: warehouseId, receiptDate: "2026-09-15",
+    lines: [cheap, expensive].map((product) => ({ productId: product.id, quantity: 5, unitCostPiasters: 5000 })),
   });
-  expect(received.status).toBe(201);
+  expect(received.status, JSON.stringify(received.body)).toBe(201);
+  for (const product of [cheap, expensive]) {
+    const transfer = await staffApi(page, "POST", "/api/internal/inventory/transfers", {
+      operationId: crypto.randomUUID(), sourceBranchId: warehouseId,
+      destinationBranchId: workspace.activeBranch.id, productId: product.id, quantity: 5,
+    });
+    expect(transfer.status, JSON.stringify(transfer.body)).toBe(201);
+  }
 
   await page.getByRole("link", { name: "مساحة العمل" }).click();
   await page.getByRole("link", { name: "البحث عن منتج" }).click();
   const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
-  await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill("BUNDLE-E2E");
-  await lookup.getByRole("button", { name: "بحث" }).click();
-  await openLookupLists(page);
-  await page.getByLabel("المقاس").selectOption(cheapVariant.size.id);
-  await page.getByLabel("اللون").selectOption(cheapVariant.color.id);
-  await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
-  await page.getByLabel("اللون").selectOption(expensiveVariant.color.id);
-  await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
+  for (const code of ["BUNDLE-E2E-LOW", "BUNDLE-E2E-HIGH"]) {
+    await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill(code);
+    await lookup.getByRole("button", { name: "بحث" }).click();
+    await page.getByTestId("add-operational").click();
+  }
 
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByLabel("الكمية").nth(0).fill("3");
-  await checkout.getByTestId("complete-sale").click();
+  await stageUnpaidPosQuote(checkout);
   await expect(page.getByTestId("accepted-prices")).toContainText("العرض التلقائي: حزمة المتصفح");
   await expect(page.getByTestId("accepted-prices")).toContainText("الإجمالي: 260 ج.م.");
 
   await checkout.getByLabel("الكمية").nth(0).fill("2");
-  await checkout.getByTestId("complete-sale").click();
+  await stageUnpaidPosQuote(checkout);
   await expect(page.getByTestId("accepted-prices")).toContainText("العرض التلقائي: مكافأة المتصفح");
   await expect(page.getByTestId("accepted-prices")).toContainText("الإجمالي: 350 ج.م.");
 });

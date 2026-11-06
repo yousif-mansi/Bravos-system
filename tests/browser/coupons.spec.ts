@@ -1,6 +1,5 @@
 import { openPosOptionalDetails, stageUnpaidPosQuote } from "./support/pos-checkout";
 import { expect, test, type Browser, type Page } from "@playwright/test";
-import { openLookupLists } from "./support/open-lookup-lists";
 
 const ACTIVE_START = "2020-01-01";
 const ACTIVE_END = "2099-12-31";
@@ -27,7 +26,7 @@ test("manager creates a coupon and cashier can apply, remove, reapply, and compl
   await page.goto("http://127.0.0.1:5174/offers");
   await expect(page).toHaveURL(/\/workspace$/);
   await expect(page.getByRole("link", { name: "العروض" })).toHaveCount(0);
-  await addProduct(page, catalog.code, catalog.sizeName, catalog.colorName);
+  await addProduct(page, catalog.code);
 
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await openPosOptionalDetails(checkout);
@@ -122,7 +121,7 @@ test("cached offer and coupon prices survive offline completion while usage stay
   await completeCachedCouponSale(secondTab, catalog, "OFFLINE-CACHED-50");
   expect((await readLocalCouponSale(secondTab, catalog.code))).toMatchObject({ couponDiscountPiasters: 5_000 });
 
-  await addProduct(page, catalog.code, catalog.sizeName, catalog.colorName);
+  await addProduct(page, catalog.code);
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await openPosOptionalDetails(checkout);
   await checkout.getByLabel("كود الكوبون", { exact: true }).fill("OFFLINE-CACHED-50");
@@ -154,7 +153,7 @@ test("a Cairo-midnight handover keeps its accepted cached offer while a fresh of
   await page.clock.setFixedTime(new Date("2026-09-15T20:59:59.000Z"));
   await context.setOffline(true);
 
-  await addProduct(page, catalog.code, catalog.sizeName, catalog.colorName);
+  await addProduct(page, catalog.code);
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByTestId("complete-sale").click();
   await expect(page.getByTestId("automatic-offer-breakdown")).toContainText("30 ج.م.");
@@ -182,7 +181,7 @@ test("a Cairo-midnight handover keeps its accepted cached offer while a fresh of
   });
 
   await context.setOffline(true);
-  await addProduct(page, catalog.code, catalog.sizeName, catalog.colorName);
+  await addProduct(page, catalog.code);
   await stageUnpaidPosQuote(checkout);
   await expect(page.getByTestId("automatic-offer-breakdown")).toHaveCount(0);
   await expect(page.getByTestId("accepted-prices")).toContainText("الإجمالي: 300 ج.م.");
@@ -207,7 +206,7 @@ test("a last-use race preserves the paid prepared sale and exposes the coupon di
   expect(coupon.status).toBe(201);
   await page.getByRole("button", { name: "تسجيل الخروج" }).click();
   await signIn(page, "cashier", "e2e-cashier-pass", false);
-  await addProduct(page, catalog.code, catalog.sizeName, catalog.colorName);
+  await addProduct(page, catalog.code);
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await openPosOptionalDetails(checkout);
   await page.getByLabel("كود الكوبون", { exact: true }).fill("ONLY-ONE-E2E");
@@ -300,17 +299,21 @@ async function seedProduct(page: Page, code: string, label: string, price: numbe
     variants: [{ sizeId: size.body.id, colorId: color.body.id, sellingPricePiastersOverride: null }],
   });
   expect(product.status).toBe(201);
-  const variantId = product.body.variants[0].id as string;
+  const variantId = product.body.operationalVariantId as string;
+  const branchId = (await staffApi(page, "GET", "/api/internal/workspace")).body.activeBranch.id;
+  const warehouseId = "33333333-3333-4333-8333-333333333333";
   expect((await staffApi(page, "POST", "/api/internal/receiving/receipts", {
-    operationId: crypto.randomUUID(),
-    branchId: (await staffApi(page, "GET", "/api/internal/workspace")).body.activeBranch.id,
-    receiptDate: cairoDate(),
-    lines: [{ variantId, quantity, unitCostPiasters: 5_000 }],
+    operationId: crypto.randomUUID(), branchId: warehouseId, receiptDate: cairoDate(),
+    lines: [{ productId: product.body.id, quantity, unitCostPiasters: 5_000 }],
+  })).status).toBe(201);
+  expect((await staffApi(page, "POST", "/api/internal/inventory/transfers", {
+    operationId: crypto.randomUUID(), sourceBranchId: warehouseId, destinationBranchId: branchId,
+    productId: product.body.id, quantity,
   })).status).toBe(201);
   return { code, productId: product.body.id as string, variantId, sizeName, colorName };
 }
 
-async function addProduct(page: Page, code: string, sizeName: string, colorName: string) {
+async function addProduct(page: Page, code: string) {
   if (new URL(page.url()).pathname !== "/lookup") {
     await page.getByRole("link", { name: "البحث عن منتج" }).click();
   }
@@ -322,11 +325,7 @@ async function addProduct(page: Page, code: string, sizeName: string, colorName:
     await lookup.getByRole("button", { name: "بحث" }).click();
     await expect(matchingResult).toBeVisible();
   }
-  await openLookupLists(page);
-  await page.getByLabel("المقاس").selectOption({ label: sizeName });
-  await expect(page.getByLabel("اللون")).toBeEnabled();
-  await page.getByLabel("اللون").selectOption({ label: colorName });
-  await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
+  await page.getByTestId("lookup-result").getByTestId("add-operational").click();
 }
 
 async function completeCachedCouponSale(
@@ -334,7 +333,7 @@ async function completeCachedCouponSale(
   catalog: { code: string; sizeName: string; colorName: string },
   couponCode: string,
 ) {
-  await addProduct(page, catalog.code, catalog.sizeName, catalog.colorName);
+  await addProduct(page, catalog.code);
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await openPosOptionalDetails(checkout);
   await checkout.getByLabel("كود الكوبون", { exact: true }).fill(couponCode);

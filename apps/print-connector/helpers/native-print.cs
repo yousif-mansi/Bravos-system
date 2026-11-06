@@ -310,8 +310,8 @@ namespace Bravos.NativePrint
           {
             if (!sheet.AddPair(measure, "item-code", "الرمز", line.Code, fonts.Body, false, drawn)) return drawn;
           }
-          string variant = line.Size + " · " + line.Color;
-          if (!sheet.AddCentered(measure, "item-variant", variant, fonts.Body, HasArabic(variant), drawn)) return drawn;
+          string variant = line.Size.Length == 0 ? line.Color : line.Color.Length == 0 ? line.Size : line.Size + " · " + line.Color;
+          if (variant.Length > 0 && !sheet.AddCentered(measure, "item-variant", variant, fonts.Body, HasArabic(variant), drawn)) return drawn;
           if (line.Paid != null)
           {
             if (!sheet.AddLeft(measure, "item-qty", line.Qty, fonts.Body, drawn)) return drawn;
@@ -970,7 +970,7 @@ namespace Bravos.NativePrint
         string size = row["sizeName"] as string;
         string color = row["colorName"] as string;
         string qty = row["quantityAndUnitPrice"] as string;
-        if (!IsDisplay(name, 80) || !IsDisplay(size, 80) || !IsDisplay(color, 80)) return null;
+        if (!IsDisplay(name, 80) || (size != "" && !IsDisplay(size, 80)) || (color != "" && !IsDisplay(color, 80))) return null;
         if (code == null || (code.Length != 0 && !IsCode(code))) return null;
         if (!Quantity.IsMatch(qty) || !IsMoney(row["lineOriginal"])) return null;
         string paid;

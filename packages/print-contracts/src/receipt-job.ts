@@ -105,7 +105,9 @@ function parseLine(value: unknown): ReceiptItemLineDto | null {
   if (linePaid === undefined || !isDisplayText(productName, PRODUCT_NAME_MAX)) return null;
   const productCode = record.productCode === "" ? "" : record.productCode;
   if (typeof productCode !== "string" || (productCode !== "" && !isProductCode(productCode))) return null;
-  if (!isDisplayText(sizeName, TAXONOMY_NAME_MAX) || !isDisplayText(colorName, TAXONOMY_NAME_MAX)) return null;
+  // Product-level POS lines deliberately omit website-only size/color labels.
+  if ((sizeName !== "" && !isDisplayText(sizeName, TAXONOMY_NAME_MAX))
+    || (colorName !== "" && !isDisplayText(colorName, TAXONOMY_NAME_MAX))) return null;
   if (!isQuantityAndUnitPrice(quantityAndUnitPrice) || !isMoney(lineOriginal)) return null;
   return {
     productName,

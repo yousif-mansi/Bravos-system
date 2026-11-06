@@ -252,13 +252,13 @@ test("public contract text with punctuation and an Arabic phone maps once", () =
 });
 
 test("PowerShell plan accepts C:\\WINDOWS and a helper path that contains spaces", () => {
-  assert.equal(helperPath.includes(" "), true);
-  const plan = planNativeHelperSpawn({ systemRoot: "C:\\WINDOWS", helperPath });
+  const spacedHelperPath = "C:\\Bravos Test Workspace\\apps\\print-connector\\helpers\\native-print.ps1";
+  const plan = planNativeHelperSpawn({ systemRoot: "C:\\WINDOWS", helperPath: spacedHelperPath });
   assert.equal(plan.shell, false);
   assert.equal(plan.windowsHide, true);
   assert.equal(Object.hasOwn(plan, "windowsVerbatimArguments"), false);
   assert.equal(plan.file, "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
-  assert.deepEqual(plan.args, ["-NoProfile", "-NonInteractive", "-File", helperPath]);
+  assert.deepEqual(plan.args, ["-NoProfile", "-NonInteractive", "-File", spacedHelperPath]);
   assert.equal(plan.args.includes("-Command"), false);
 });
 
@@ -373,6 +373,23 @@ test("receipt preview centers short Arabic title, branch, and thanks ink", { ski
   assertCenteredArabicLine(image, thanks);
   assertReceiptInkInContentBand(image.pixels, image.width, image.height);
   assert.ok(page.ink.minX >= 0 && page.ink.maxX < RECEIPT_CONTENT_WIDTH_DOTS);
+});
+
+test("product-level receipt preview omits empty website options without printing", { skip: !windows }, async () => {
+  const dispatch = receiptDispatch(1);
+  dispatch.document.receiptView.lines[0].sizeName = "";
+  dispatch.document.receiptView.lines[0].colorName = "";
+  assert.equal(prepareNativeJob(dispatch).ok, true);
+  const preview = await previewNativeJob(dispatch, { helperPath });
+  assert.equal(preview.ok, true);
+  if (!preview.ok) return;
+  assert.equal(preview.printInvoked, false);
+  assert.equal(preview.lines.some((line) => line.role === "item-variant"), false);
+  assert.equal(preview.lines.some((line) => line.role === "item-name" && line.text.includes("بنطال تويل")), true);
+  assert.equal(preview.lines.some((line) => line.role === "total" && line.text.includes("800.00")), true);
+  for (const page of preview.pages) {
+    assert.ok(page.ink.minX >= 0 && page.ink.maxX < RECEIPT_CONTENT_WIDTH_DOTS);
+  }
 });
 
 test("receipt preview keeps fields, logo ink, and page bounds", { skip: !windows }, async () => {

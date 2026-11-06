@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
-import { openLookupLists } from "./support/open-lookup-lists";
 
 const internal = "http://127.0.0.1:5174";
+const warehouseBranchId = "33333333-3333-4333-8333-333333333333";
 const TOKEN = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ";
 const LABEL_PRINTER = "Xprinter XP-236B";
 const RECEIPT_PRINTER = "Bravos Receipts - Xprinter XP-80TS";
@@ -107,6 +107,7 @@ test("pairing is once per browser, keeps the generic label size, and routes docu
   await login(page);
   await page.goto(`${internal}/workspace`);
   const panel = page.getByTestId("printer-connection");
+  await panel.locator("summary").click();
   await expect(panel.getByTestId("printer-pair-code")).toBeVisible();
   await panel.getByTestId("printer-pair-code").fill(" abcd2345efgh6789 ");
   await panel.getByTestId("printer-pair").click();
@@ -124,6 +125,7 @@ test("pairing is once per browser, keeps the generic label size, and routes docu
   expect(JSON.parse(saved.device ?? "null")).toEqual({ widthMm: 90, heightMm: 50, dpi: 300 });
 
   await page.getByRole("button", { name: "تسجيل الخروج" }).click();
+  await expect(page.getByLabel("اسم الدخول")).toBeVisible();
   await expect.poll(() => page.evaluate(() => localStorage.getItem("bravos.print-connector.token"))).toBe(TOKEN);
 
   await login(page);
@@ -145,12 +147,17 @@ test("pairing is once per browser, keeps the generic label size, and routes docu
     variants: [{ sizeId: size.id, colorId: color.id, sellingPricePiastersOverride: null }],
   });
   const workspace = await api(page, "GET", "/api/internal/workspace");
-  const variant = product.variants[0];
+  const variant = { id: product.operationalVariantId };
   await api(page, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
-    branchId: workspace.activeBranch.id,
+    branchId: warehouseBranchId,
     receiptDate: "2026-10-05",
-    lines: [{ variantId: variant.id, quantity: 2, unitCostPiasters: 5000 }],
+    lines: [{ productId: product.id, quantity: 2, unitCostPiasters: 5000 }],
+  });
+
+  await api(page, "POST", "/api/internal/inventory/transfers", {
+    operationId: crypto.randomUUID(), sourceBranchId: warehouseBranchId, destinationBranchId: workspace.activeBranch.id,
+    productId: product.id, quantity: 2,
   });
 
   await page.goto(`${internal}/catalog`);
@@ -173,7 +180,8 @@ test("pairing is once per browser, keeps the generic label size, and routes docu
   };
   const available = async () => {
     const looked = await api(page, "GET", `/api/internal/catalog/lookup?code=${encodeURIComponent(product.code)}`);
-    return looked.variants.find((item: { id: string }) => item.id === variant.id).availableQuantity as number;
+    expect(looked.operationalVariantId).toBe(variant.id);
+    return looked.availableQuantity as number;
   };
   expect(await matchingSales()).toHaveLength(0);
   expect(await available()).toBe(2);
@@ -183,10 +191,7 @@ test("pairing is once per browser, keeps the generic label size, and routes docu
   await form.getByLabel("رمز المنتج").fill(product.code);
   await form.getByLabel("رمز المنتج").press("Enter");
   await expect(page.getByTestId("lookup-result")).toContainText(product.code);
-  await openLookupLists(page);
-  await page.locator("#lookupSize").selectOption(size.id);
-  await page.locator("#lookupColor").selectOption(color.id);
-  await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
+  await page.getByTestId("add-operational").click();
   await context.setOffline(true);
   let printed = "";
   try {

@@ -1,6 +1,5 @@
 import { openPosOptionalDetails } from "./support/pos-checkout";
 import { expect, test, type Page } from "@playwright/test";
-import { openLookupLists } from "./support/open-lookup-lists";
 
 test("manager creates an offer and the connected cashier keeps its accepted value through completion", async ({
   browser,
@@ -24,13 +23,18 @@ test("manager creates an offer and the connected cashier keeps its accepted valu
     variants: [{ sizeId: size.body.id, colorId: color.body.id, sellingPricePiastersOverride: null }],
   });
   expect(product.status).toBe(201);
+  const branchId = (await staffApi(page, "GET", "/api/internal/workspace")).body.activeBranch.id;
+  const warehouseId = "33333333-3333-4333-8333-333333333333";
   const receiving = await staffApi(page, "POST", "/api/internal/receiving/receipts", {
-    operationId: crypto.randomUUID(),
-    branchId: (await staffApi(page, "GET", "/api/internal/workspace")).body.activeBranch.id,
-    receiptDate: cairoDate(),
-    lines: [{ variantId: product.body.variants[0].id, quantity: 5, unitCostPiasters: 12000 }],
+    operationId: crypto.randomUUID(), branchId: warehouseId, receiptDate: cairoDate(),
+    lines: [{ productId: product.body.id, quantity: 5, unitCostPiasters: 12000 }],
   });
   expect(receiving.status).toBe(201);
+  const transfer = await staffApi(page, "POST", "/api/internal/inventory/transfers", {
+    operationId: crypto.randomUUID(), sourceBranchId: warehouseId, destinationBranchId: branchId,
+    productId: product.body.id, quantity: 5,
+  });
+  expect(transfer.status).toBe(201);
 
   await page.getByRole("link", { name: "العروض" }).click();
   await expect(page.getByRole("heading", { name: "العروض التلقائية" })).toBeVisible();
@@ -57,10 +61,7 @@ test("manager creates an offer and the connected cashier keeps its accepted valu
   const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
   await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill("OFFER-E2E");
   await lookup.getByRole("button", { name: "بحث" }).click();
-  await openLookupLists(page);
-  await page.getByLabel("المقاس").selectOption({ label: "مقاس عرض متصفح" });
-  await page.getByLabel("اللون").selectOption({ label: "لون عرض متصفح" });
-  await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
+  await page.getByTestId("lookup-result").getByTestId("add-operational").click();
 
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByLabel("الكمية").fill("2");
