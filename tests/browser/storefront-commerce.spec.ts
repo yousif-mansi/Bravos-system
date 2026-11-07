@@ -47,8 +47,9 @@ test("product commerce keeps one variant and add state across the mobile bar and
   });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`http://127.0.0.1:3001/products/${product.body.id}`);
-  const panel = page.locator(".purchase-panel");
-  const bar = page.locator('[aria-label="Add product to bag"]');
+  const main = page.getByRole("main");
+  const panel = main.locator(".purchase-panel");
+  const bar = main.getByLabel("Add product to bag", { exact: true });
   const barAdd = bar.getByRole("button", { name: "Add to bag" });
   const selectedPrice = panel.getByText("Selected price").locator("..");
   await expect(bar).toBeInViewport();
