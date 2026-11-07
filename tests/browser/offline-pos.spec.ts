@@ -219,7 +219,23 @@ test("aborted IndexedDB writes roll back and retry the same completed sale ident
 });
 
 test("sign-out preserves queued sales and another cashier cannot read or submit them", async ({ page, context }) => {
-  const seed = await seedSingleProduct(page, { quantity: 2, price: 22000, code: "OFF-PRIV" });
+  const seed = await seedSingleProduct(page, { quantity: 3, price: 22000, code: "OFF-PRIV" });
+  // Create a separate server sale by the same cashier without adding it to this device's queue.
+  const historyContext = await context.browser()!.newContext();
+  try {
+    const historyPage = await historyContext.newPage();
+    await historyPage.goto("http://127.0.0.1:5174/login");
+    await signInAsCashier(historyPage);
+    await expect(historyPage.getByTestId("offline-ready")).toBeVisible({ timeout: 30_000 });
+    await historyPage.getByRole("link", { name: "البحث عن منتج" }).click();
+    await (await searchProduct(historyPage, seed.code)).getByRole("button", { name: "إضافة إلى السلة" }).click();
+    await historyPage.getByTestId("complete-sale").click();
+    await expect(historyPage.getByRole("status")).toContainText("تم حفظ البيع.");
+    await expect(historyPage.getByTestId("sale-details")).toContainText("220");
+    await expect.poll(async () => (await readPosState(historyPage)).sales[0]?.syncStatus, { timeout: 30_000 }).toBe("acknowledged");
+  } finally {
+    await historyContext.close();
+  }
   await page.getByRole("button", { name: "تسجيل الخروج" }).click();
   await signInAsCashier(page);
   await expect(page.getByTestId("offline-ready")).toBeVisible({ timeout: 30_000 });
@@ -232,10 +248,14 @@ test("sign-out preserves queued sales and another cashier cannot read or submit 
   await lookup.getByRole("button", { name: "بحث" }).click();
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
+  const customerName = `Privacy ${crypto.randomUUID()}`;
+  await openPosOptionalDetails(checkout);
+  await checkout.getByLabel("اسم الزبون (اختياري)").fill(customerName);
   await checkout.getByTestId("complete-sale").click();
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   const original = (await readPosState(page)).sales[0];
   expect(original?.soldByDisplayName).toBe("كاشير تجريبي");
+  expect(original?.customerName).toBe(customerName);
   const lookupForm = page.getByRole("form", { name: "البحث برمز المنتج" });
   await lookupForm.getByRole("textbox", { name: "رمز المنتج" }).fill(seed.code);
   let releaseLookup: () => void = () => undefined;
@@ -317,7 +337,8 @@ test("sign-out preserves queued sales and another cashier cannot read or submit 
   await expect(pageB.getByTestId("unsynced-count")).toContainText("مبيعات غير مزامنة: 1");
   await pageB.getByRole("link", { name: "المبيعات" }).click();
   await expect(pageB.getByTestId("sale-list")).toContainText("كاشير تجريبي");
-  await pageB.getByTestId("sale-list").getByRole("row").filter({ hasText: "كاشير تجريبي" }).getByRole("button", { name: "فتح التفاصيل" }).click();
+  await expect.poll(() => pageB.getByTestId("sale-list").getByRole("row").filter({ hasText: "كاشير تجريبي" }).count()).toBeGreaterThan(1);
+  await pageB.getByTestId("sale-list").getByRole("row").filter({ has: pageB.getByRole("cell", { name: customerName, exact: true }) }).getByRole("button", { name: "فتح التفاصيل" }).click();
   await expect(pageB.getByTestId("sale-details")).toContainText("220");
   const recovered = (await readPosState(pageB)).sales.find((sale) => sale.id === original?.id);
   expect(recovered?.operationId).toBe(original?.operationId);
@@ -1434,6 +1455,8 @@ async function readPosState(page: Page) {
       operationId: string;
       staffId: string;
       soldByDisplayName: string;
+      customerName: string | null;
+      syncStatus?: string;
       originalTotalPiasters: number;
       finalTotalPiasters: number;
       receiptReference?: string;

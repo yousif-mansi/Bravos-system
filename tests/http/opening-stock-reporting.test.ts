@@ -9,6 +9,7 @@ import { afterAll, beforeAll, beforeEach, expect, test } from "vitest";
 import { buildApp, type BuiltApp } from "../../apps/api/src/app.ts";
 import { ensureOwner } from "../../apps/api/src/bootstrap.ts";
 import { startPostgresCluster, type PostgresCluster } from "@bravos/testkit";
+import { renderManagementReportPdf } from "@bravos/report-export/node";
 
 const ORIGIN = "http://127.0.0.1:5173";
 const ACCEPTANCE = new Date("2026-10-10T12:00:00.000Z");
@@ -392,6 +393,19 @@ test("accepted CSV opening stock is reported apart from purchases without changi
     expect(block.includes(abshwayOpening.id)).toBe(false);
     expect(block.includes(fayoumOpening.id)).toBe(false);
   }
+
+  // Numeric-only leading UUID groups must remain in their original order in the RTL PDF.
+  const numericLeadingId = "46591414-2163-413a-a438-2edb0572959d";
+  const fixtureReport = structuredClone(pageOne.body);
+  fixtureReport.purchases.receipts[0].receiptId = numericLeadingId;
+  fixtureReport.purchases.receipts[0].effectiveCostPiasters = 5_000;
+  const fixturePdf = await renderManagementReportPdf(fixtureReport);
+  const fixturePages = await readPdfPages(Buffer.from(fixturePdf.bytes));
+  const fixturePurchases = sectionPages(fixturePages, PDF_PURCHASE_HEADINGS, PDF_PURCHASE_NEXT_HEADINGS);
+  expect(
+    receiptBlocks(fixturePurchases, numericLeadingId, [numericLeadingId]).some((block) => hasAmount(block, "50.00")),
+    `Expected ${numericLeadingId} and its amount in the purchase section: ${JSON.stringify(fixturePurchases)}`,
+  ).toBe(true);
   expect(await durableSnapshot()).toEqual(beforeReads);
 }, 120_000);
 

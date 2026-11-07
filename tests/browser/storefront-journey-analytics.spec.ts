@@ -53,7 +53,8 @@ test("full shopping journey preserves aggregate analytics across desktop and mob
   const acceptedEvents = new Map<string, PublicAnalyticsEventRequest>();
   await page.route("**/api/public/analytics/events", async (route) => {
     const payload = route.request().postDataJSON() as PublicAnalyticsEventRequest;
-    const response = await route.fetch();
+    // Retry one ECONNRESET with the same immutable operation, never an HTTP failure.
+    const response = await route.fetch({ maxRetries: 1 });
     expect(response.ok(), `accept ${payload.eventType}`).toBe(true);
     const receipt = await response.json();
     expect(receipt).toMatchObject({ operationId: payload.operationId, eventType: payload.eventType });

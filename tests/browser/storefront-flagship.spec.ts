@@ -235,6 +235,37 @@ test("flagship home keeps its image hero and ticker while category rows include 
   await expectFullBleed(page, 320);
 });
 
+test("delayed preceding category reads keep the focused row in place", async ({ page }) => {
+  test.setTimeout(240_000);
+  const seeded = await seedCategoryPieces(page, 6, 8);
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let held = 0;
+  await page.route("**/api/public/storefront/catalog?categoryId=*", async (route) => {
+    if (new URL(route.request().url()).searchParams.get("categoryId") !== seeded.categoryId) {
+      held += 1;
+      await gate;
+    }
+    await route.continue();
+  });
+  try {
+    await page.setViewportSize({ width: 320, height: 900 });
+    await page.goto(STORE + "/");
+    const row = categoryRow(page, seeded.categoryName);
+    await revealAllCards(row, seeded.ids.length);
+    const rail = row.locator("ul[role='list']");
+    await focusCategoryEntry(page, rail, "start");
+    expect(held).toBeGreaterThanOrEqual(5);
+    const before = await row.evaluate((element) => ({ top: element.getBoundingClientRect().top, y: scrollY, height: document.documentElement.scrollHeight }));
+    expect(before.y).toBeLessThan(before.height - 900 - 1);
+    release();
+    await expect.poll(() => page.locator("section[data-category-rail][aria-busy='true']").count()).toBe(0);
+    await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    const after = await row.evaluate((element) => ({ top: element.getBoundingClientRect().top, y: scrollY, height: document.documentElement.scrollHeight }));
+    expect(Math.abs(after.top - before.top), JSON.stringify({ held, before, after })).toBeLessThanOrEqual(1);
+  } finally { release(); }
+});
+
 test("category rows keep native keyboard focus clear after horizontal scrolling", async ({ page, browser }, testInfo) => {
   test.setTimeout(240_000);
   const seeded = await seedCategoryPieces(page, 6);
@@ -729,7 +760,7 @@ async function expectRenderedGlyphs(page: Page, title: Locator, familyName: stri
   }
 }
 
-async function seedCategoryPieces(page: Page, count: number) {
+async function seedCategoryPieces(page: Page, count: number, precedingCategories = 0) {
   await signInManager(page);
   const suffix = crypto.randomUUID().slice(0, 8);
   const categoryName = "Category rail " + suffix;
@@ -742,6 +773,17 @@ async function seedCategoryPieces(page: Page, count: number) {
     fileName: "rail.png", contentType: "image/png", base64: PNG_BASE64,
   });
   expect(uploaded.status).toBe(201);
+  for (let index = 0; index < precedingCategories; index += 1) {
+    const prior = await createCategory(page, `A prior ${String(index).padStart(2, "0")} ${suffix}`);
+    await createProduct(page, prior.body.id, size.body.id, color.body.id, {
+      code: `PRIOR-${index}-${suffix}`, name: `Prior piece ${index} ${suffix}`,
+      price: 1000, publication: "available", imageRefs: [uploaded.body.ref as string],
+    });
+    await createProduct(page, prior.body.id, size.body.id, color.body.id, {
+      code: `PRIOR-SECOND-${index}-${suffix}`, name: `Prior second ${index} ${suffix}`,
+      price: 1000, publication: "available", imageRefs: [uploaded.body.ref as string],
+    });
+  }
   const ids: string[] = [];
   const variantIds: string[] = [];
   for (let index = 0; index < count; index += 1) {

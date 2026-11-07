@@ -171,3 +171,23 @@ Final focused storefront verification: `browser-storefront-scoped.log` passed **
 The current handover guide was checked against the implemented product-level POS, minimum-price validation, permanent receipt numbering, warehouse transfers, restricted local printer connector and archive compatibility. Obsolete size/color POS steps, temporary-number wording, direct retail-intake instructions and schema-035 compatibility wording were corrected. This is documentation only; it does not change policies, runtime configuration or data. The guide explicitly retains the current connector's local HTTP-origin restriction rather than implying support for a hosted HTTPS staff origin.
 
 Application/test checkpoint `4f89c853af5d146f30dc6ff09bb7bf81d249c0b0` was published non-force to `main`; the initial transport timeout was followed by a successful push and independent remote-ref confirmation. This handover documentation follows that checkpoint. Fresh matching Windows CI remains required.
+
+### PDF identifier defect exposed by clean Windows CI
+
+Run `42325374773` on `20f9f6a8` passed static/build gates but the HTTP job recorded **276 passed / 1 failed** across 36 files. The failure was receipt-specific PDF attribution in `opening-stock-reporting.test.ts`; all earlier totals, stock, dates, permissions and Excel checks passed. The restricted runner also prevented Vitest from writing GitHub's optional step summary (`EPERM`); that does not explain or erase the actual assertion failure.
+
+The initial pagination hypothesis was not used as a fix. Bounded local reproductions retained three passing capture runs followed by a failure for another receipt. Inspecting the exported PDF and extracted coordinates showed the real defect: `46591414-2163-413a-a438-2edb0572959d` was rendered as `413a-a438-2edb0572959d-2163-46591414` in an Arabic line. The amount was correctly present on the same page. This is an identifier directionality defect, not missing inventory value.
+
+UUID strings now receive left-to-right marks only during PDF presentation, including filter subtitles. Stored identifiers, report arithmetic, Excel output and business behavior are unchanged. A fixed numeric-leading UUID regression failed against the original renderer (`pdf-uuid-deterministic-red.log`) and passed with the fix in the complete affected HTTP case (`pdf-uuid-fixed.log`, **1/1**). Existing receipt/amount association and exclusion assertions remain unchanged. Affected typecheck and architecture passed (`pdf-uuid-typecheck.log`, `pdf-uuid-architecture.log`); a Cairo/React-PDF preview was rendered and inspected with the exact original identifier visible. Temporary capture code was removed; evidence stays in ignored scratch storage. A matching post-fix CI run is still required.
+
+### Windows browser follow-up
+
+Run `42325374773` finished with **211 passed / 6 failed** across 217 browser cases. Four sale-detail selectors matched older sales by the same cashier. The repaired cases select the customer recorded on each exact fixture sale. The privacy case also creates an independent, acknowledged sale by the same cashier to exercise the duplicate-row condition. The analytics test retries a single `ECONNRESET` with the same event identity and retains its response, count and replay assertions. The cause of that reset remains unknown.
+
+The separate category failure showed an absolute scroll change after a touch and keyboard sequence. A controlled reproduction delayed earlier category reads and measured a **104.5 px** displacement of the focused row in the viewport (`category-focus-red.log`). Rows above it shrank when their loading status and button disappeared. The row now reserves a footer for loading, retry and pagination controls. Its skeleton caption matches the product card's responsive sizing. The final regression uses preceding categories with horizontally overflowing product rows and checks that delayed reads move the focused row by at most 1 px.
+
+- `browser-six-followups.log` passed **5/5** cases in the isolated verification checkout, covering cashier privacy, offline precache and same-profile restart, both legacy schema cases and analytics.
+- `category-focus-affected.log` passed **3/3** cases covering delayed layout, the original touch and keyboard assertions, and progressive loading, retry and sorting.
+- `category-focus-typecheck.log` passed the storefront typecheck. The PDF regression and its static checks are recorded separately above.
+
+The final Windows CI run must include the complete updated candidate. These local checks cover the affected flows in separate runs.

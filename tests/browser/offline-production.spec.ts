@@ -84,6 +84,8 @@ test("production precache serves first offline POS navigation and survives a sam
     await page.getByTestId("add-operational").click();
     const checkout = page.getByRole("form", { name: "إتمام البيع" });
     await openPosOptionalDetails(checkout);
+    const customerName = `Precache ${crypto.randomUUID()}`;
+    await checkout.getByLabel("اسم الزبون (اختياري)").fill(customerName);
     await checkout.getByLabel("خصم الموظف بالجنيه").fill("10");
     await checkout.getByRole("button", { name: "إتمام البيع" }).click();
     await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
@@ -92,6 +94,7 @@ test("production precache serves first offline POS navigation and survives a sam
     expect(original).toHaveLength(1);
     expect(original[0]?.branch.code).toBe("abshway");
     expect(original[0]?.soldByDisplayName).toBe("كاشير تجريبي");
+    expect(original[0]?.customerName).toBe(customerName);
     expect(original[0]?.originalTotalPiasters).toBe(16000);
     expect(original[0]?.employeeDiscountPiasters).toBe(1000);
     expect(original[0]?.finalTotalPiasters).toBe(15000);
@@ -128,7 +131,7 @@ test("production precache serves first offline POS navigation and survives a sam
     await again.getByRole("link", { name: "المبيعات" }).click();
     await expect(again.getByTestId("sale-list")).toContainText("كاشير تجريبي");
     await expect(again.getByTestId("sale-list")).toContainText("غير مزامن");
-    await again.getByTestId("sale-list").getByRole("row").filter({ hasText: "كاشير تجريبي" }).getByRole("button", { name: "فتح التفاصيل" }).click();
+    await again.getByTestId("sale-list").getByRole("row").filter({ has: again.getByRole("cell", { name: customerName, exact: true }) }).getByRole("button", { name: "فتح التفاصيل" }).click();
     await expect(again.getByTestId("sale-details")).toContainText("أبشواي");
     await expect(again.getByTestId("sale-details")).toContainText("150");
     const restored = await readPosSales(again);
@@ -547,6 +550,8 @@ test("schema 2 individual paid units and signed-in session survive upgrade and o
     await page.getByTestId("add-operational").click();
     const checkout = page.getByRole("form", { name: "إتمام البيع" });
     await openPosOptionalDetails(checkout);
+    const customerName = `Upgrade ${crypto.randomUUID()}`;
+    await checkout.getByLabel("اسم الزبون (اختياري)").fill(customerName);
     await checkout.getByLabel("خصم الموظف بالجنيه").fill("1");
     await checkout.getByRole("button", { name: "إتمام البيع" }).click();
     await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
@@ -593,6 +598,7 @@ test("schema 2 individual paid units and signed-in session survive upgrade and o
       };
     });
     expect((snapshot.sales as Array<{ id: string }>).length).toBe(1);
+    expect((snapshot.sales as Array<{ customerName: string }>)[0]?.customerName).toBe(customerName);
     const signedInBeforeSeed = (snapshot.sessions as Array<{ signedOut: boolean }>).filter((row) => !row.signedOut);
     expect(signedInBeforeSeed).toHaveLength(1);
     const seeded = await seedLegacyOnIsolatedPage(context, page, snapshot, {
@@ -622,7 +628,7 @@ test("schema 2 individual paid units and signed-in session survive upgrade and o
     await expect(again.getByTestId("active-branch")).toContainText("أبشواي");
     await again.getByRole("link", { name: "المبيعات" }).click();
     await expect(again.getByTestId("sale-list")).toContainText("كاشير تجريبي");
-    await again.getByTestId("sale-list").getByRole("row").filter({ hasText: "كاشير تجريبي" }).getByRole("button", { name: "فتح التفاصيل" }).click();
+    await again.getByTestId("sale-list").getByRole("row").filter({ has: again.getByRole("cell", { name: customerName, exact: true }) }).getByRole("button", { name: "فتح التفاصيل" }).click();
     await expect(again.getByTestId("sale-details")).toContainText("أبشواي");
     await expect(again.getByTestId("sale-details")).toContainText("199");
     const restored = await again.evaluate(async () => {
@@ -679,7 +685,7 @@ test("schema 2 individual paid units and signed-in session survive upgrade and o
     ]);
     expect(restored.effects[0]?.quantity).toBe(1);
     await again.reload();
-    await again.getByTestId("sale-list").getByRole("row").filter({ hasText: "كاشير تجريبي" }).getByRole("button", { name: "فتح التفاصيل" }).click();
+    await again.getByTestId("sale-list").getByRole("row").filter({ has: again.getByRole("cell", { name: customerName, exact: true }) }).getByRole("button", { name: "فتح التفاصيل" }).click();
     await expect(again.getByTestId("sale-details")).toContainText("كاشير تجريبي");
     await expect(again.getByTestId("sale-details")).toContainText("199");
     await expect(again.getByTestId("sale-list")).toContainText("غير مزامن");
@@ -743,10 +749,14 @@ test("schema 2 completed sales missing paid-unit allocations defer upgrade and k
 
     await page.getByTestId("add-operational").click();
     const checkout = page.getByRole("form", { name: "إتمام البيع" });
+    const customerName = `Deferred ${crypto.randomUUID()}`;
+    await openPosOptionalDetails(checkout);
+    await checkout.getByLabel("اسم الزبون (اختياري)").fill(customerName);
     await checkout.getByRole("button", { name: "إتمام البيع" }).click();
     await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
     const original = await readPosSales(page);
     expect(original).toHaveLength(1);
+    expect(original[0]?.customerName).toBe(customerName);
     const snapshot = await page.evaluate(async () => {
       const db = await new Promise<IDBDatabase>((resolve, reject) => {
         const request = indexedDB.open("bravos-pos");
@@ -806,7 +816,7 @@ test("schema 2 completed sales missing paid-unit allocations defer upgrade and k
     await expect(again.getByTestId("unsynced-count")).toContainText("مبيعات غير مزامنة: 1");
     await again.getByRole("link", { name: "المبيعات" }).click();
     await expect(again.getByTestId("sale-list")).toContainText("كاشير تجريبي");
-    await again.getByTestId("sale-list").getByRole("row").filter({ hasText: "كاشير تجريبي" }).getByRole("button", { name: "فتح التفاصيل" }).click();
+    await again.getByTestId("sale-list").getByRole("row").filter({ has: again.getByRole("cell", { name: customerName, exact: true }) }).getByRole("button", { name: "فتح التفاصيل" }).click();
     await expect(again.getByTestId("sale-details")).toContainText("180");
     const restored = await again.evaluate(async () => {
       const db = await new Promise<IDBDatabase>((resolve, reject) => {
@@ -866,7 +876,7 @@ test("schema 2 completed sales missing paid-unit allocations defer upgrade and k
     await again.reload();
     await expect(again.getByTestId("update-deferred")).toBeVisible();
     await again.getByRole("link", { name: "المبيعات" }).click();
-    await again.getByTestId("sale-list").getByRole("row").filter({ hasText: "كاشير تجريبي" }).getByRole("button", { name: "فتح التفاصيل" }).click();
+    await again.getByTestId("sale-list").getByRole("row").filter({ has: again.getByRole("cell", { name: customerName, exact: true }) }).getByRole("button", { name: "فتح التفاصيل" }).click();
     await expect(again.getByTestId("sale-details")).toContainText("180");
     let blockedUploadAttempts = 0;
     await restarted.route(/\/api\/internal\/sales(?:\/accepted|\/recover)?$/, async (route) => {
@@ -1428,6 +1438,7 @@ async function readPosSales(page: import("@playwright/test").Page) {
         operationId: string;
         occurredAt: string;
         soldByDisplayName: string;
+        customerName: string | null;
         originalTotalPiasters: number;
         employeeDiscountPiasters: number;
         finalTotalPiasters: number;

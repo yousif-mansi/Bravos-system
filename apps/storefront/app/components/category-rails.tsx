@@ -362,24 +362,26 @@ function CategoryRail({ category, sort }: { category: CategoryRailModel; sort: C
           </li>
         ) : null}
       </ul>
-      {phase === "loading" ? <p className={styles.status} role="status">Loading products</p> : null}
-      {phase === "error" ? (
-        <div className={styles.alert} role="alert">
-          <p>Products could not be loaded.</p>
-          <button type="button" className={styles.loadButton} aria-controls={railId} onClick={() => void ensureLoaded(visibleRef.current === 0 ? "prefetch" : "advance")}>Retry</button>
-        </div>
-      ) : null}
-      {phase === "ready" && fetched && products.length === 0 ? <p className={styles.empty}>No products in this category.</p> : null}
-      {showLoader ? (
-        <button
-          type="button"
-          className={styles.loadButton}
-          aria-controls={railId}
-          onClick={() => void ensureLoaded(visibleCount === 0 ? "prefetch" : "advance")}
-        >
-          {visibleCount === 0 ? "Load products" : "Load more"}
-        </button>
-      ) : null}
+      <div className={styles.footer}>
+        {phase === "loading" ? <p className={styles.status} role="status">Loading products</p> : null}
+        {phase === "error" ? (
+          <div className={styles.alert} role="alert">
+            <p>Products could not be loaded.</p>
+            <button type="button" className={styles.loadButton} aria-controls={railId} onClick={() => void ensureLoaded(visibleRef.current === 0 ? "prefetch" : "advance")}>Retry</button>
+          </div>
+        ) : null}
+        {phase === "ready" && fetched && products.length === 0 ? <p className={styles.empty}>No products in this category.</p> : null}
+        {showLoader ? (
+          <button
+            type="button"
+            className={styles.loadButton}
+            aria-controls={railId}
+            onClick={() => void ensureLoaded(visibleCount === 0 ? "prefetch" : "advance")}
+          >
+            {visibleCount === 0 ? "Load products" : "Load more"}
+          </button>
+        ) : null}
+      </div>
     </section>
   );
 }

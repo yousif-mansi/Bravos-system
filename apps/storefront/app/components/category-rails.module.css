@@ -138,8 +138,18 @@ button.navButton[aria-disabled='true'] {
 
 .skeletonCaption {
   display: block;
-  height: calc(12px + (2 * 1.35em) + 8px + 1.3em);
+  height: calc(12px + (2 * 1.35 * clamp(15px, 1.4vw, 20px)) + 8px + (1.3 * var(--text-price, 16px)));
 }
+
+.footer {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  min-height: 44px;
+}
+
+.footer > .loadButton { flex: 1 1 auto; }
 
 .status,
 .empty,
@@ -167,6 +177,15 @@ button.navButton[aria-disabled='true'] {
 
 @media (max-width: 699px) {
   .track { gap: 12px; padding-inline: 8px; }
+}
+
+/* Match the card caption's compact spacing and price line at these widths. */
+@media (max-width: 580px) {
+  .skeletonCaption { height: calc(10px + (2 * 1.35 * 15px) + 6px + (1.3 * var(--text-price-narrow, 12px))); }
+}
+
+@media (max-width: 389px) {
+  .skeletonCaption { height: calc(10px + (2 * 1.35 * 15px) + 6px + (1.3 * 14px)); }
 }
 
 @media (prefers-reduced-motion: reduce) {

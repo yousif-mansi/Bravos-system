@@ -45,7 +45,7 @@ export async function renderManagementReportPdf(
       React.createElement(
         renderer.Text,
         { style: styles.subtitle },
-        `الفترة: ${presentation.periodAr} (${report.period.fromCairoDate} إلى ${report.period.toCairoDateInclusive}) | القناة: ${presentation.channelAr} | الفرع: ${presentation.branchAr} | الموظف: ${presentation.employeeAr}`,
+        `الفترة: ${presentation.periodAr} (${report.period.fromCairoDate} إلى ${report.period.toCairoDateInclusive}) | القناة: ${presentation.channelAr} | الفرع: ${pdfCell(presentation.branchAr)} | الموظف: ${pdfCell(presentation.employeeAr)}`,
       ),
       ...managementReportSheets(report).map((sheet, sheetIndex) =>
         React.createElement(
@@ -107,7 +107,11 @@ function defaultArabicFontPath(): string {
 function pdfCell(value: ReportCell, label?: string): string {
   if (value === null) return displayNullCell(label);
   if (typeof value === "number") return isPoundLabel(label) ? value.toFixed(2) : `${value}`;
-  return value.replace(/[\u0000-\u001F]/g, " ");
+  // Keep UUID segments in their original order within Arabic right-to-left text.
+  return value.replace(/[\u0000-\u001F]/g, " ").replace(
+    /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi,
+    (id) => `\u200e${id}\u200e`,
+  );
 }
 
 function pairRows(rows: ReportCell[][]): ReportCell[][][] {
