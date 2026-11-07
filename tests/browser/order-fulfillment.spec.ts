@@ -63,6 +63,7 @@ test("staff fulfill orders in Arabic and a manager closes a partially inspected 
   expect(shippingPayloads).toHaveLength(2);
   expect(shippingPayloads[1]).toEqual(shippingPayloads[0]);
 
+  await openOrderManagement(page);
   const deliveredForm = page.getByRole("form", { name: "تسجيل استلام العميل" });
   await page.waitForTimeout(1_100);
   await deliveredForm.getByLabel("وقت استلام العميل").fill(await currentCairoDateTime(page));
@@ -71,6 +72,7 @@ test("staff fulfill orders in Arabic and a manager closes a partially inspected 
   await expect(page.getByTestId("order-status")).toContainText("تم التسليم");
 
   await openOrder(page, cancelledOrder.orderId);
+  await page.getByRole("button", { name: "مراجعة إلغاء الطلب" }).click();
   const cancelForm = page.getByRole("form", { name: "إلغاء طلب مؤكد قبل الشحن" });
   await cancelForm.getByLabel("سبب الإلغاء قبل الشحن").fill("طلب العميل الإلغاء قبل تسليم الشحنة");
   await cancelForm.getByLabel("استلمت جميع الأصناف وفحصتها وهي صالحة للبيع").check();
@@ -140,6 +142,7 @@ test("staff fulfill orders in Arabic and a manager closes a partially inspected 
 async function openOrder(page: Page, orderId: string) {
   await page.goto(`http://127.0.0.1:5174/online-orders/${orderId}`);
   await expect(page.getByRole("heading", { name: /^BRV-/ })).toBeVisible();
+  await openOrderManagement(page);
 }
 
 async function currentCairoDateTime(page: Page) {
@@ -279,4 +282,9 @@ function cairoDate() {
     month: "2-digit",
     day: "2-digit",
   }).format(new Date());
+}
+
+async function openOrderManagement(page: Page) {
+  const disclosure = page.locator("details").filter({ has: page.getByText("إدارة الطلب والسجل", { exact: true }) });
+  if (await disclosure.getAttribute("open") === null) await disclosure.locator(":scope > summary").click();
 }

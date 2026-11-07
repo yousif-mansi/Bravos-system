@@ -1,7 +1,7 @@
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterAll, beforeAll, beforeEach, expect, test } from "vitest";
+import { afterAll, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { buildApp, type BuiltApp } from "../../apps/api/src/app.ts";
 import { ensureOwner } from "../../apps/api/src/bootstrap.ts";
 import { applyMigrations } from "@bravos/persistence";
@@ -32,6 +32,30 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await startApp();
+});
+
+test("issued product stock uses the locked balance when intake follows the catalog read", async () => {
+  const manager = await signIn("owner", "owner-pass-1");
+  await api(manager, "POST", "/api/internal/active-branch", { branchId: abshwayId });
+  await seedShirt(manager, { price: 30000 });
+  const lookup = await api(manager, "GET", "/api/internal/catalog/lookup?code=TS-001");
+  expect(lookup.status).toBe(200);
+  const operationalVariantId = lookup.body.operationalVariantId as string;
+  const original = built.catalog.listCashierCatalog.bind(built.catalog);
+  const catalogRead = vi.spyOn(built.catalog, "listCashierCatalog").mockImplementationOnce(async (auth) => {
+    const products = await original(auth);
+    expect(products.find((product) => product.operationalVariantId === operationalVariantId)?.availableQuantity).toBe(0);
+    await receive(manager, operationalVariantId, 2, 10000);
+    return products;
+  });
+  try {
+    const snapshot = await api(manager, "POST", "/api/internal/sales/pos-snapshots", { deviceId: crypto.randomUUID() });
+    expect(snapshot.status, JSON.stringify(snapshot.body)).toBe(201);
+    expect(snapshot.body.products.find((product: { operationalVariantId: string }) =>
+      product.operationalVariantId === operationalVariantId)?.availableQuantity).toBe(2);
+  } finally {
+    catalogRead.mockRestore();
+  }
 });
 
 test("accepted sale returns a coherent acknowledgement covering both variants and does not repeat stock", async () => {

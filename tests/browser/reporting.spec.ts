@@ -56,34 +56,36 @@ test("manager filters a connected report and follows its real sale and Return pr
   const secondColor = await staffApi<ColorDto>(page, "POST", "/api/internal/catalog/colors", { nameAr: `ثان ${suffix}` });
   expect([category.status, size.status, firstColor.status, secondColor.status]).toEqual([201, 201, 201, 201]);
 
-  const product = await staffApi<ManagerProductDto>(page, "POST", "/api/internal/catalog/products", {
-    code: productCode,
-    nameAr: productName,
-    descriptionAr: "ربط تقرير الإدارة بسجل حقيقي",
-    categoryId: category.body.id,
-    defaultSellingPricePiasters: 30_000,
-    publication: "hidden",
-    imageRefs: [],
-    variants: [
-      { sizeId: size.body.id, colorId: firstColor.body.id, sellingPricePiastersOverride: 30_000 },
-      { sizeId: size.body.id, colorId: secondColor.body.id, sellingPricePiastersOverride: 20_000 },
-    ],
-  });
-  expect(product.status).toBe(201);
-  const expensiveVariant = product.body.variants.find((variant) => variant.sellingPricePiasters === 30_000);
-  const cheaperVariant = product.body.variants.find((variant) => variant.sellingPricePiasters === 20_000);
-  if (!expensiveVariant || !cheaperVariant) throw new Error("Expected both seeded report variants.");
-
+  async function createReportProduct(code: string, nameAr: string, price: number, colorId: string) {
+    const product = await staffApi<ManagerProductDto>(page, "POST", "/api/internal/catalog/products", {
+      code, nameAr, descriptionAr: "ربط تقرير الإدارة بسجل حقيقي",
+      categoryId: category.body.id, defaultSellingPricePiasters: price,
+      publication: "hidden", imageRefs: [],
+      variants: [{ sizeId: size.body.id, colorId, sellingPricePiastersOverride: null }],
+    });
+    expect(product.status).toBe(201);
+    return product.body;
+  }
+  const expensive = await createReportProduct(productCode, productName, 30_000, firstColor.body.id);
+  const cheaper = await createReportProduct(`${productCode}-LOW`, `${productName} أقل`, 20_000, secondColor.body.id);
+  const expensiveVariant = { id: expensive.operationalVariantId };
+  const cheaperVariant = { id: cheaper.operationalVariantId };
+  const warehouseId = "33333333-3333-4333-8333-333333333333";
   const receipt = await staffApi<ReceiptDto>(page, "POST", "/api/internal/receiving/receipts", {
-    operationId: crypto.randomUUID(),
-    branchId: workspace.body.activeBranch.id,
-    receiptDate: today,
+    operationId: crypto.randomUUID(), branchId: warehouseId, receiptDate: today,
     lines: [
-      { variantId: expensiveVariant.id, quantity: 2, unitCostPiasters: 15_000 },
-      { variantId: cheaperVariant.id, quantity: 2, unitCostPiasters: 9_000 },
+      { productId: expensive.id, quantity: 2, unitCostPiasters: 15_000 },
+      { productId: cheaper.id, quantity: 2, unitCostPiasters: 9_000 },
     ],
   });
   expect(receipt.status).toBe(201);
+  for (const product of [expensive, cheaper]) {
+    const transfer = await staffApi(page, "POST", "/api/internal/inventory/transfers", {
+      operationId: crypto.randomUUID(), sourceBranchId: warehouseId,
+      destinationBranchId: branchId, productId: product.id, quantity: 2,
+    });
+    expect(transfer.status).toBe(201);
+  }
 
   const expenseCategory = await staffApi<ExpenseCategoryDto>(page, "POST", "/api/internal/expense-categories", {
     nameAr: `مصروفات تقارير ${suffix}`,
@@ -224,7 +226,8 @@ test("manager filters a connected report and follows its real sale and Return pr
     expect.objectContaining({ expenseId: expense.body.id, effectiveStatus: "active", amountPiasters: 2_000 }),
   ]));
   expect(report.bestSellers).toEqual(expect.arrayContaining([
-    expect.objectContaining({ productCode, grossEffectiveSoldQuantity: 2, returnedQuantity: 1 }),
+    expect.objectContaining({ productCode, grossEffectiveSoldQuantity: 1, returnedQuantity: 1 }),
+    expect.objectContaining({ productCode: `${productCode}-LOW`, grossEffectiveSoldQuantity: 1, returnedQuantity: 0 }),
   ]));
 
   const summary = page.getByTestId("report-summary");
@@ -279,8 +282,8 @@ test("manager filters a connected report and follows its real sale and Return pr
   await expect(expenses).toContainText(expenseDescription);
   await expect(expenses).toContainText("20 ج.م.");
   await expect(expenses).toContainText(correctionReason);
-  const bestSeller = page.getByTestId("best-sellers").getByRole("listitem").filter({ hasText: productCode });
-  await expect(bestSeller).toContainText("وحدات البيع بعد الإلغاء وقبل المرتجعات: 2");
+  const bestSeller = page.getByTestId("best-sellers").getByRole("listitem").filter({ hasText: productCode }).filter({ hasNotText: `${productCode}-LOW` });
+  await expect(bestSeller).toContainText("وحدات البيع بعد الإلغاء وقبل المرتجعات: 1");
   await expect(bestSeller).toContainText("مرتجع: 1");
   await expect(page.getByTestId("inventory-valuation")).toContainText("لقطة إجمالية للمخزون الحالي");
 

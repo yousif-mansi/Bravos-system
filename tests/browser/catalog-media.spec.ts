@@ -207,7 +207,7 @@ test("manager publishes product media and customers see only selectable stocked 
     await expect(pair).toContainText(/EGP\s*340/);
   }
   await expect(previewPairs).toContainText("Unavailable");
-  await expect(page.getByText("Size and color share one price and one available quantity. None can be ordered.")).toBeVisible();
+  await expect(page.locator(".purchase-panel").getByText("Size and color share one price and one available quantity. None can be ordered.")).toBeVisible();
   await expect(page.getByRole("button", { name: "Add to bag" })).toHaveCount(0);
 
   const hidden = await staffApi(page, "PATCH", `/api/internal/catalog/products/${product.id}`, productWrite(comingSoon.body as ManagerProductDto, "hidden"));

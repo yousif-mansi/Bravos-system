@@ -116,21 +116,20 @@ test("cart keeps variant details and edited quantities through reload and a late
   const first = product.variants[0];
   const secondColor = await staffApi(page, "POST", "/api/internal/catalog/colors", { nameAr: "رملي للسلة" });
   expect(secondColor.status).toBe(201);
-  const secondProduct = await staffApi(page, "PATCH", `/api/internal/catalog/products/${product.id}`, {
-    code: product.code,
+  const secondProduct = await staffApi(page, "POST", "/api/internal/catalog/products", {
+    code: `${product.code}-SAND`,
     nameAr: product.nameAr,
     descriptionAr: product.descriptionAr,
     categoryId: taxonomy.categoryId,
-    defaultSellingPricePiasters: 25_000,
+    defaultSellingPricePiasters: 30_000,
     publication: "available",
     imageRefs: [],
     sizeGuideAr: null,
     variants: [
-      { sizeId: taxonomy.sizeId, colorId: taxonomy.colorId, sellingPricePiastersOverride: null },
-      { sizeId: taxonomy.sizeId, colorId: secondColor.body.id, sellingPricePiastersOverride: 30_000 },
+      { sizeId: taxonomy.sizeId, colorId: secondColor.body.id, sellingPricePiastersOverride: null },
     ],
   });
-  expect(secondProduct.status).toBe(200);
+  expect(secondProduct.status, JSON.stringify(secondProduct.body)).toBe(201);
   const second = secondProduct.body.variants.find((variant: { color: { id: string } }) => variant.color.id === secondColor.body.id);
   expect(second).toBeTruthy();
   const received = await staffApi(page, "POST", "/api/internal/receiving/receipts", {
@@ -145,16 +144,16 @@ test("cart keeps variant details and edited quantities through reload and a late
   expect(received.status).toBe(201);
 
   await page.goto("http://127.0.0.1:3001");
-  await page.evaluate(({ productId, firstId, secondId }) => {
+  await page.evaluate(({ productId, secondProductId, firstId, secondId }) => {
     localStorage.setItem("bravos-guest-cart-v1", JSON.stringify({
       version: 1,
       revision: `presentation-${Date.now()}`,
       items: [
         { productId, variantId: firstId, productNameAr: "قميص اختبار السلة", sizeNameAr: "M للسلة", colorNameAr: "أسود للسلة", unitPricePiasters: 25_000, imageRef: null, quantity: 2, knownAvailableQuantity: 3, orderable: true },
-        { productId, variantId: secondId, productNameAr: "قميص اختبار السلة", sizeNameAr: "M للسلة", colorNameAr: "رملي للسلة", unitPricePiasters: 30_000, imageRef: null, quantity: 1, knownAvailableQuantity: 1, orderable: true },
+        { productId: secondProductId, variantId: secondId, productNameAr: "قميص اختبار السلة", sizeNameAr: "M للسلة", colorNameAr: "رملي للسلة", unitPricePiasters: 30_000, imageRef: null, quantity: 1, knownAvailableQuantity: 1, orderable: true },
       ],
     }));
-  }, { productId: product.id, firstId: first.id, secondId: second.id });
+  }, { productId: product.id, secondProductId: secondProduct.body.id, firstId: first.id, secondId: second.id });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("http://127.0.0.1:3001/cart");
   const lines = page.locator(".cart-line");

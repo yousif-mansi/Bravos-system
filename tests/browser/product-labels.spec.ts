@@ -181,7 +181,7 @@ test("saved catalog identity prints three labels with fractional dimensions and 
   const data = await seed(page);
   await page.goto(`${internal}/catalog`);
   const item = page.locator("article.staff-item").filter({ hasText: data.product.code });
-  await item.getByRole("button", { name: "تعديل", exact: true }).click();
+  await item.getByRole("button", { name: data.product.nameAr, exact: true }).click();
   await page.getByLabel("اسم المنتج", { exact: true }).fill("UNSAVED editor name");
   const dialog = await openLabel(page, data.product.code);
   await expect(preview(page).locator(".name")).toHaveText(data.product.nameAr);

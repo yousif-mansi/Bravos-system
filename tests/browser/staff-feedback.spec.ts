@@ -30,13 +30,13 @@ test("same-account refresh during initial sales loading starts a fresh read and 
   holdStale = false;
   await page.evaluate((staffId) => window.dispatchEvent(new CustomEvent("bravos-account", { detail: { eventId: crypto.randomUUID(), generation: 0, staffId } })), workspace.staff.id);
   const list = page.getByTestId("sale-list");
-  await expect(list.getByRole("button", { name: /POS-FEEDBACK-NEW/ })).toBeVisible();
+  await expect(list.getByRole("row").filter({ hasText: "POS-FEEDBACK-NEW" }).getByRole("button", { name: "فتح التفاصيل" })).toBeVisible();
   await expect(loading).toHaveCount(0);
   const staleResponse = page.waitForResponse((value) => value.url().endsWith("/api/internal/sales"));
   for (const release of releaseStale) release();
   await staleResponse;
-  await expect(list.getByRole("button", { name: /POS-FEEDBACK-OLD/ })).toHaveCount(0);
-  await list.getByRole("button", { name: /POS-FEEDBACK-NEW/ }).click();
+  await expect(list.getByRole("row").filter({ hasText: "POS-FEEDBACK-OLD" })).toHaveCount(0);
+  await list.getByRole("row").filter({ hasText: "POS-FEEDBACK-NEW" }).getByRole("button", { name: "فتح التفاصيل" }).click();
   await expect(page.getByTestId("sale-detail-region").getByRole("heading", { name: "بيع POS-FEEDBACK-NEW", exact: true })).toBeFocused();
 });
 
@@ -57,10 +57,10 @@ test("sale details show progress, ignore stale responses and retry with a visibl
   });
   await page.getByRole("link", { name: "المبيعات", exact: true }).click();
   const list = page.getByTestId("sale-list");
-  await list.getByRole("button", { name: /POS-FEEDBACK-A/ }).click();
-  await expect(list.getByRole("button", { name: /POS-FEEDBACK-A/ })).toHaveAttribute("aria-busy", "true");
+  await list.getByRole("row").filter({ hasText: "POS-FEEDBACK-A" }).getByRole("button", { name: "فتح التفاصيل" }).click();
+  await expect(list.getByRole("row").filter({ hasText: "POS-FEEDBACK-A" }).getByRole("button", { name: "فتح التفاصيل" })).toHaveAttribute("aria-busy", "true");
   await expect(page.getByRole("status").filter({ hasText: "جارٍ فتح تفاصيل البيع" })).toBeVisible();
-  await list.getByRole("button", { name: /POS-FEEDBACK-B/ }).click();
+  await list.getByRole("row").filter({ hasText: "POS-FEEDBACK-B" }).getByRole("button", { name: "فتح التفاصيل" }).click();
   const region = page.getByTestId("sale-detail-region");
   await expect(region.getByRole("heading", { name: "بيع POS-FEEDBACK-B", exact: true })).toBeFocused();
   await expect(region).toHaveClass(/is-highlighted/);
@@ -68,8 +68,8 @@ test("sale details show progress, ignore stale responses and retry with a visibl
   releaseFirst();
   await response;
   await expect(region).toContainText("POS-FEEDBACK-B");
-  await expect(list.getByRole("button", { name: /POS-FEEDBACK-B/ })).toHaveAttribute("aria-pressed", "true");
-  await list.getByRole("button", { name: /POS-FEEDBACK-C/ }).click();
+  await expect(list.getByRole("row").filter({ hasText: "POS-FEEDBACK-B" }).getByRole("button", { name: "فتح التفاصيل" })).toHaveAttribute("aria-pressed", "true");
+  await list.getByRole("row").filter({ hasText: "POS-FEEDBACK-C" }).getByRole("button", { name: "فتح التفاصيل" }).click();
   await expect(page.getByRole("alert")).toBeVisible();
   await expect(page.getByRole("status").filter({ hasText: "نعرض التفاصيل المحفوظة" })).toBeVisible();
   await expect(region).toContainText("POS-FEEDBACK-C");
@@ -78,7 +78,7 @@ test("sale details show progress, ignore stale responses and retry with a visibl
   await expect(region.getByRole("heading", { name: "بيع POS-FEEDBACK-C", exact: true })).toBeFocused();
   await region.screenshot({ path: testInfo.outputPath("sale-revealed.png") });
   firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
-  await list.getByRole("button", { name: /POS-FEEDBACK-A/ }).click();
+  await list.getByRole("row").filter({ hasText: "POS-FEEDBACK-A" }).getByRole("button", { name: "فتح التفاصيل" }).click();
   await page.getByRole("link", { name: "الموظفون", exact: true }).click();
   const lateResponse = page.waitForResponse((value) => value.url().endsWith(`/${rows[0]!.id}`));
   releaseFirst();

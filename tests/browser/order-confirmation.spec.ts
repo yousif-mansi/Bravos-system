@@ -7,6 +7,7 @@ test("a representative reviews a WhatsApp replacement and safely retries confirm
 
   await page.getByRole("link", { name: "الطلبات الأونلاين" }).click();
   await expect(page.getByRole("heading", { name: "الطلبات الأونلاين" })).toBeVisible();
+  await page.locator("summary").filter({ hasText: "إعدادات تعذر الوصول" }).click();
   const settings = page.getByRole("form", { name: "إعدادات تعذر الوصول" });
   await expect(settings.getByLabel("مهلة تعذر الوصول بالساعات")).toHaveValue("48");
   await expect(settings.getByLabel("الحد الأدنى لمحاولات التواصل")).toHaveValue("2");
@@ -78,12 +79,13 @@ test("a representative reviews a WhatsApp replacement and safely retries confirm
     dispatchEvent(new PopStateEvent("popstate"));
   }, `/online-orders/${navigationOrder.orderId}`);
   await expect(page).toHaveURL(new RegExp(`/online-orders/${navigationOrder.orderId}$`));
-  await expect(page.getByRole("region", { name: "الطلب الأصلي" })).toContainText("عميل التنقل الآمن");
+  await openOrderManagement(page);
+  await expect(page.getByRole("region", { name: "ملخص الطلب" })).toContainText("عميل التنقل الآمن");
   releaseOldDetails?.();
   await expect.poll(() => oldDetailsFinished).toBe(true);
   await page.unroute(oldDetailsPattern);
-  await expect(page.getByRole("region", { name: "الطلب الأصلي" })).toContainText("عميل التنقل الآمن");
-  await expect(page.getByRole("region", { name: "الطلب الأصلي" })).not.toContainText("عميل واتساب");
+  await expect(page.getByRole("region", { name: "ملخص الطلب" })).toContainText("عميل التنقل الآمن");
+  await expect(page.getByRole("region", { name: "ملخص الطلب" })).not.toContainText("عميل واتساب");
 
   const heldLockName = `bravos.online-order.lock.${representative.body.id}.${navigationOrder.orderId}`;
   await page.evaluate((lockName) => {
@@ -112,17 +114,20 @@ test("a representative reviews a WhatsApp replacement and safely retries confirm
   await signIn(page, representativeLogin, "e2e-orders-rep-pass");
   await page.getByRole("link", { name: "الطلبات الأونلاين" }).click();
   await page.getByTestId("online-order-row").filter({ hasText: navigationOrder.reference }).getByRole("link", { name: "فتح التفاصيل" }).click();
+  await openOrderManagement(page);
   await expect(page.getByTestId("contact-attempts")).toContainText("لم تُسجل محاولة تواصل بعد");
   await page.getByRole("button", { name: "العودة إلى الطلبات" }).click();
   await page.getByTestId("online-order-row").filter({ hasText: order.reference }).getByRole("link", { name: "فتح التفاصيل" }).click();
 
+  await openOrderManagement(page);
   const original = page.getByRole("region", { name: "الطلب الأصلي" });
-  await expect(original).toContainText("عميل واتساب");
-  await expect(original).toContainText("01012345678");
-  await expect(original).toContainText("01123456789");
-  await expect(original).toContainText("شارع الجمهورية، منزل ٢٠");
-  await expect(original).toContainText("بجوار المكتبة");
-  await expect(original).toContainText("الاتصال بعد العصر");
+  const customer = page.getByRole("region", { name: "ملخص الطلب" });
+  await expect(customer).toContainText("عميل واتساب");
+  await expect(customer).toContainText("01012345678");
+  await expect(customer).toContainText("01123456789");
+  await expect(customer).toContainText("شارع الجمهورية، منزل ٢٠");
+  await expect(customer).toContainText("بجوار المكتبة");
+  await expect(customer).toContainText("الاتصال بعد العصر");
   await expect(original).toContainText("قميص الطلب الأصلي");
   await expect(original).toContainText("الكمية المطلوبة: 1");
   await expect(original).toContainText("350 ج.م.");
@@ -182,6 +187,7 @@ test("a representative reviews a WhatsApp replacement and safely retries confirm
     await route.continue();
   });
 
+  await page.getByRole("button", { name: "مراجعة تأكيد الطلب" }).click();
   const confirmation = page.getByRole("form", { name: "تأكيد تجهيز الطلب" });
   await confirmation.getByLabel("فرع تجهيز الطلب").selectOption(branchId);
   await confirmation.getByLabel("وجدت الأصناف الفعلية وفصلتها لهذا الطلب").check();
@@ -309,4 +315,9 @@ function cairoDate() {
     month: "2-digit",
     day: "2-digit",
   }).format(new Date());
+}
+
+async function openOrderManagement(page: Page) {
+  const disclosure = page.locator("details").filter({ has: page.getByText("إدارة الطلب والسجل", { exact: true }) });
+  if (await disclosure.getAttribute("open") === null) await disclosure.locator(":scope > summary").click();
 }

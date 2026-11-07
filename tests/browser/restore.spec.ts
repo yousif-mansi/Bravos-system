@@ -43,7 +43,7 @@ test("a paid offline sale crosses restore generations through durable custody an
     ));
     await upload.getByRole("button", { name: "فك النسخة وإنشاء المعاينة" }).click();
     const previewResponse = await previewCreated;
-    expect(previewResponse.ok(), `${previewResponse.status()} ${await previewResponse.text()}`).toBe(true);
+    expect(previewResponse.ok(), `Preview response status: ${previewResponse.status()}`).toBe(true);
     await expect(manager.getByTestId("restore-differences")).toBeVisible();
     await expect(manager.getByTestId("restore-validation-summary")).toContainText("تحقق الروابط وأعداد السجلات");
     // The differences panel is rendered while the preview is still staged. Acknowledgement
@@ -109,7 +109,7 @@ test("a paid offline sale crosses restore generations through durable custody an
     );
     await recover.click();
     const recoveryResponse = await recovery;
-    expect(recoveryResponse.ok(), `${recoveryResponse.status()} ${await recoveryResponse.text()}`).toBe(true);
+    expect(recoveryResponse.ok(), `Recovery response status: ${recoveryResponse.status()}`).toBe(true);
     await expect(manager.getByRole("status")).toContainText("تمت استعادة البيع المتأخر مرة واحدة");
     await expect(manager.getByRole("button", { name: "استعادة البيع مرة واحدة" })).toHaveCount(0);
 
@@ -229,7 +229,7 @@ async function acknowledgePausedTill(page: Page) {
   let responseInfo = "no successful acknowledgement POST";
   try {
     const response = await responsePromise;
-    responseInfo = `${response.status()} ${await response.text()}`;
+    responseInfo = `Acknowledgement response status: ${response.status()}`;
   } catch (error) {
     const alerts = (await page.getByRole("alert").allInnerTexts()).join(" | ");
     const enabled = await acknowledge.isEnabled().catch(() => false);

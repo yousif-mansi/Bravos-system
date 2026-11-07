@@ -133,3 +133,35 @@ The mobile production walkthrough demonstrated that a successful checkout could 
 The affected integration file passed **4/4 browser cases** in `browser-checkout-focus.log`, including explicit mobile focus/viewport assertions and saved-result reload. A separate storefront production build passed in `rehearsal-focus-build.log`. The rebuilt disposable rehearsal repeated the customer-to-operations smoke successfully (`production-business-smoke-after-focus.log`); both acknowledgment variants received focus and were in the viewport. The earlier screenshot showing the problem remains as `checkout-received-before-focus.png` beside the corrected capture. No full performance rerun was needed for an acknowledgment-only focus effect; the original timing matrix remains labeled with its exact pre-focus candidate.
 
 The category row's real loading, simulated 503 error with Retry, and successful recovery were also captured against the production artifact, `production-row-states-fixed.log`. The earlier capture script mistakenly used a Next step that only scrolled already loaded cards; its failed loading expectation is retained separately and is not described as an application fault.
+
+## Windows acceptance follow-up — 7 November 2026
+
+Published checkpoint `80ae72e7` completed Windows CI `42211729605`: static checks/builds succeeded and **36 HTTP files / 276 tests passed**, while browser acceptance recorded **181 passed / 35 failed**. The preceding run `42206919197` was cancelled by the normal workflow concurrency policy after the new publication; its partial browser results are not a complete run.
+
+### Confirmed defects repaired
+
+- **Snapshot stock/version race:** a deterministic PostgreSQL-backed regression captures a zero-quantity catalog response, receives two units through the feature API before the stock-lock read, and observes the issued product quantity. It failed **0 vs 2** before the fix (`snapshot-race-red.log`). The snapshot now takes product-level quantity from the same locked stock map as its stock version, instead of retaining the earlier catalog value. No stock movement, allocation, price or permission rule changes.
+- **Recovery of an old cached balance:** an authoritative same-version snapshot can now refresh that branch's cached base. Local pending effects remain separate, and only matching completion proofs acknowledge sales/remove effects. The new browser regression repairs a zero base to three, preserves the pending sale/effect, and verifies **two available** with no server sale created. The complete synchronization file's ten cases subsequently passed within the affected-file run, covering acknowledgments, failed local writes, concurrent tabs, privacy and account recovery.
+- **Keyboard category visibility:** the production-layout test reproduced a focused category link partly outside the viewport. Category focus now reveals vertical clipping as well as horizontal clipping, using an immediate centered scroll and accounting for the sticky header. Sorting, URLs and category data are unchanged.
+
+The other changes align browser fixtures and actions with the already approved interface: explicit sales/online tabs, table-row details, Returns invoice selection, order-management disclosures/review dialogs, warehouse intake/transfers and the single product price/shared stock model. Differently priced financial scenarios use distinct products and retain their exact arithmetic. Publicly hidden options are tested as absent; visible options of a stocked product share its stock. Disabled purchase/quantity behavior, unavailable products and Coming Soon remain covered. Product labels and receipts retain their existing test hooks and no physical print was sent.
+
+### Verification ledger
+
+All logs below are separate runs under `.scratch/release-closure-20261106/`; do not add them together as one fresh suite.
+
+| Evidence | Result / scope |
+| --- | --- |
+| `browser-ci-repairs.log` | **19 passed / 3 failed**; the remaining failures were a payment-status selector and order fields/disclosure selectors. |
+| `browser-production-repairs.log` | **3/3 passed**, including offline restart and schema-2 upgrade/deferred-upgrade facts. Built in the separate checkout, preserving the ordinary preview's staff artifact. |
+| `browser-staff-overflow.log` | **1/1 passed** at desktop/narrow widths; retained failure-only route/element diagnostics for the earlier CI overflow. No blanket overflow hiding added. |
+| `browser-final-followups.log` | **8 passed / 8 failed**; further setup failures included product-ID receiving directed to a retail branch, obsolete optional-stock assumptions, and customer data moved into the order summary. |
+| `browser-final-corrections.log` | **17 passed / 4 failed**; full synchronization, order confirmation, layout/contrast, analytics and reduced-motion checks passed. Three keyboard failures were a helper expecting a nonexistent hidden control; the storefront case expected old stock-warning wording. |
+| `browser-keyboard-final.log` | **3 passed / 1 failed**; all three keyboard journeys passed at 320/390/768 px. The remaining failure was a raw DOM selector also matching a hidden streamed hero; the visible accessible region is now selected. |
+| `snapshot-race-fixed.log` | **17/17 API synchronization tests passed**, including the forced race regression. |
+| `typecheck-final-followup.log`, `architecture-final-followup.log` | All workspace typechecks passed; dependency boundaries passed (544 modules / 1359 dependencies, 464 private-import files). |
+| `build-final-followup.log` | All three production builds and bundle-separation check passed in the isolated checkout (47 internal / 111 storefront files, three static entry files). |
+
+No redesign, schema/migration, dependency upgrade, ordinary business-data edit, printer/driver operation, issue closure or deployment is part of this follow-up. The protected review file remains hash-identical. Final matching remote CI is still required; the older red or partial runs must never be relabeled green.
+
+Final focused storefront verification: `browser-storefront-scoped.log` passed **1/1**. The preceding `browser-storefront-final.log` failed because a broad alert locator also selected Next.js's route announcer; the assertion now targets the cart line's actual warning and retains its exact one-unit limit. All three keyboard journeys remain separately recorded as passed in `browser-keyboard-final.log`. These reruns are not presented as one fresh full browser suite.

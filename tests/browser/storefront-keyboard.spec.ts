@@ -19,10 +19,10 @@ test(`keyboard at ${width}px reaches gallery, cart recovery actions and checkout
     await page.evaluate(() => document.fonts.ready.then(() => undefined));
     await expect(page.locator("html")).toHaveAttribute("lang", "en");
     await expect(page.locator("html")).toHaveAttribute("dir", "ltr");
-    const homeTitle = page.locator("#home-title");
+    const hero = page.getByRole("region", { name: "Bravos Menswear", exact: true });
+    const homeTitle = hero.locator("#home-title");
     await expect(homeTitle).toHaveText("Bravos Menswear");
     await expect(homeTitle).toHaveClass(/sr-only/);
-    const hero = page.locator("section").filter({ has: homeTitle });
     const cover = hero.locator("img");
     await expect(cover).toHaveAttribute("alt", "");
     await expect.poll(() => cover.evaluate((img: HTMLImageElement) => [img.naturalWidth, img.naturalHeight])).toEqual([2048, 774]);
@@ -83,15 +83,14 @@ test(`keyboard at ${width}px reaches gallery, cart recovery actions and checkout
   const first = sizes.getByRole("radio", { name: new RegExp(fixture.firstSize) });
   const unavailable = sizes.getByRole("radio", { name: new RegExp(fixture.unavailableSize) });
   const last = sizes.getByRole("radio", { name: new RegExp(fixture.lastSize) });
-  await expect(unavailable).toBeDisabled();
-  await expect(unavailable.locator("..")).toContainText("Unavailable");
-  await tabTo(page, first, unavailable);
+  await expect(unavailable).toHaveCount(0);
+  await tabTo(page, first);
   await expect(first).toBeChecked();
   await page.keyboard.press("ArrowDown");
   await expectKeyboardFocus(last);
   await expect(last).toBeChecked();
   await expect(first).not.toBeChecked();
-  await expect(unavailable).not.toBeChecked();
+  await expect(unavailable).toHaveCount(0);
 
   const bar = page.getByLabel("Add product to bag", { exact: true });
   await expect(bar).toContainText(fixture.lastSize);
@@ -117,7 +116,7 @@ test(`keyboard at ${width}px reaches gallery, cart recovery actions and checkout
   await expect(bar.getByRole("button", { name: "Available quantity is in your bag" })).toBeDisabled();
 
   const cartLink = bar.getByRole("link", { name: "Added · View bag" });
-  await tabTo(page, cartLink, unavailable);
+  await tabTo(page, cartLink);
   await expect(bar).toBeInViewport();
   await page.screenshot({ path: testInfo.outputPath("phone-keyboard-cart-focus.png") });
   await page.keyboard.press("Enter");
@@ -145,15 +144,11 @@ test(`keyboard at ${width}px reaches gallery, cart recovery actions and checkout
     const workspace = await page.request.get(`${INTERNAL}/api/internal/workspace`);
     expect(workspace.status()).toBe(200);
     const branchId = (await workspace.json()).activeBranch.id as string;
-    const firstVariantId = fixture.product.variants.find((variant) => variant.size.nameAr === fixture.firstSize)!.id;
     const lastVariantId = fixture.product.variants.find((variant) => variant.size.nameAr === fixture.lastSize)!.id;
     await create(page, "/api/internal/receiving/receipts", {
       operationId: crypto.randomUUID(), branchId,
       receiptDate: new Intl.DateTimeFormat("en-CA", { timeZone: "Africa/Cairo", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date()),
-      lines: [
-        { variantId: lastVariantId, quantity: 1, unitCostPiasters: 10_000 },
-        { variantId: firstVariantId, quantity: 1, unitCostPiasters: 10_000 },
-      ],
+      lines: [{ variantId: lastVariantId, quantity: 2, unitCostPiasters: 10_000 }],
     });
     await tabTo(page, refresh);
     await page.keyboard.press("Enter");
@@ -503,17 +498,21 @@ async function seedProduct(page: Page) {
     descriptionAr: "قطعة تجريبية للتحقق من الوصول بلوحة المفاتيح.", categoryId: category.id,
     defaultSellingPricePiasters: 25_000, publication: "available", imageRefs,
     sizeGuideAr: "اختر المقاس المناسب قبل الإضافة إلى السلة.",
-    variants: sizes.map((size) => ({ sizeId: size.id, colorId: color.id, sellingPricePiastersOverride: null })),
+    variants: sizes.map((size, index) => ({ sizeId: size.id, colorId: color.id, onlineVisible: index !== 1, sellingPricePiastersOverride: null })),
   });
   const workspace = await page.request.get(`${INTERNAL}/api/internal/workspace`);
   expect(workspace.status()).toBe(200);
+  const branchId = (await workspace.json()).activeBranch.id;
+  const warehouseId = "33333333-3333-4333-8333-333333333333";
   await create(page, "/api/internal/receiving/receipts", {
-    operationId: crypto.randomUUID(), branchId: (await workspace.json()).activeBranch.id,
+    operationId: crypto.randomUUID(), branchId: warehouseId,
     receiptDate: new Intl.DateTimeFormat("en-CA", {
       timeZone: "Africa/Cairo", year: "numeric", month: "2-digit", day: "2-digit",
     }).format(new Date()),
-    lines: product.variants.filter((variant) => variant.size.nameAr !== unavailableSize)
-      .map((variant) => ({ variantId: variant.id, quantity: 1, unitCostPiasters: 10_000 })),
+    lines: [{ productId: product.id, quantity: 1, unitCostPiasters: 10_000 }],
+  });
+  await create(page, "/api/internal/inventory/transfers", {
+    operationId: crypto.randomUUID(), sourceBranchId: warehouseId, destinationBranchId: branchId, productId: product.id, quantity: 1,
   });
   const area = await create<{ id: string }>(page, "/api/internal/delivery-areas", {
     nameAr: `منطقة لوحة المفاتيح ${suffix}`, feePiasters: 2500, active: true,

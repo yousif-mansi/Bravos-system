@@ -297,8 +297,15 @@ test("storefront route presentation remains reachable across supported widths an
   await recordContrast(page.getByText(sizeName).first(), "selected-variant", "text");
   const colors = page.getByRole("group", { name: "Color" });
   const unavailableVariant = colors.getByRole("radio", { name: new RegExp(unavailableColorName) });
-  await expect(unavailableVariant).toBeDisabled();
-  await recordContrast(unavailableVariant.locator("xpath=ancestor::label[1]"), "disabled-variant", "text");
+  // Every visible option shares the product's stock; an unreceived color is
+  // therefore selectable too. Quantity overflow still disables purchase.
+  await expect(unavailableVariant).toBeEnabled();
+  await recordContrast(unavailableVariant.locator("xpath=ancestor::label[1]"), "shared-stock-variant", "text");
+  await page.locator("#product-quantity").fill("4");
+  const unavailableAdd = page.locator(".purchase-panel").getByRole("button", { name: "Add to bag", exact: true });
+  await expect(unavailableAdd).toBeDisabled();
+  await recordContrast(unavailableAdd, "disabled-purchase", "text");
+  await page.locator("#product-quantity").fill("1");
   await recordContrast(page.locator("#product-quantity"), "quantity-boundary", "boundary");
   const checkedVariant = colors.getByRole("radio", { name: new RegExp(colorName) });
   await tabTo(page, checkedVariant);

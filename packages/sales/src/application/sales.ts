@@ -972,6 +972,7 @@ export function createSalesServices(ports: {
           const categoryId = categoryByProductId.get(product.id) ?? product.categoryId;
           return {
             ...product,
+            availableQuantity: stock.quantities.get(product.operationalVariantId) ?? 0,
             ...(categoryId ? { categoryId } : {}),
             variants: product.variants.map((variant) => ({
               ...variant,

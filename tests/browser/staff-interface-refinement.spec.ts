@@ -384,7 +384,21 @@ async function inViewport(control: Locator, width: number, height: number) {
 
 async function capture(page: Page, name: string) {
   await mkdir(visual, { recursive: true });
-  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
+  try {
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), {
+      message: `No document overflow on ${name} (${page.url()})`,
+    }).toBe(true);
+  } catch (error) {
+    console.error("staff-overflow", await page.evaluate(() => ({
+      width: innerWidth,
+      documentWidth: document.documentElement.scrollWidth,
+      elements: [...document.querySelectorAll("main *")].map((element) => {
+        const box = element.getBoundingClientRect();
+        return { tag: element.tagName, className: element.className, left: box.left, right: box.right, width: box.width };
+      }).filter((box) => box.left < -1 || box.right > innerWidth + 1).slice(0, 15),
+    })));
+    throw error;
+  }
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.screenshot({ path: path.join(visual, `${name}-top.png`) });
   const height = await page.evaluate(() => document.documentElement.scrollHeight);

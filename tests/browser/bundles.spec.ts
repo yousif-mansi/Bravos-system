@@ -48,12 +48,19 @@ test("manager maintains fixed bundles and Buy-X-Get-Y rules in the Arabic offer 
   const editForm = page.getByRole("form", { name: "تعديل العرض التلقائي" });
   await expect(editForm.getByLabel("نوع الخصم")).toHaveValue("fixed_bundle");
   // Website option identities remain selectable and survive editing existing offers.
-  await editForm.getByTestId("bundle-item-row").nth(0).getByLabel("المتغير").selectOption(cheapVariant.id);
+  const operationalBundleRow = editForm.getByTestId("bundle-item-row").filter({
+    has: page.locator(`option[value="${cheap.operationalVariantId}"]:checked`),
+  });
+  await expect(operationalBundleRow).toHaveCount(1);
+  await operationalBundleRow.getByLabel("المتغير").selectOption(cheapVariant.id);
   await editForm.getByRole("button", { name: "حفظ العرض" }).click();
   await expect(page.getByRole("status")).toContainText("تم تحديث العرض.");
   await page.getByTestId("offer-row").filter({ hasText: "حزمة المتصفح" }).getByRole("button", { name: "تعديل" }).click();
-  await expect(editForm.getByTestId("bundle-item-row").nth(0).getByLabel("المتغير")).toHaveValue(cheapVariant.id);
-  await editForm.getByTestId("bundle-item-row").nth(0).getByLabel("المتغير").selectOption(cheap.operationalVariantId);
+  const websiteBundleRow = editForm.getByTestId("bundle-item-row").filter({
+    has: page.locator(`option[value="${cheapVariant.id}"]:checked`),
+  });
+  await expect(websiteBundleRow).toHaveCount(1);
+  await websiteBundleRow.getByLabel("المتغير").selectOption(cheap.operationalVariantId);
   await editForm.getByLabel("سعر الحزمة بالجنيه").fill("260");
   const cheapBundleRow = editForm.getByTestId("bundle-item-row").filter({
     has: page.locator(`option[value="${cheap.operationalVariantId}"]:checked`),

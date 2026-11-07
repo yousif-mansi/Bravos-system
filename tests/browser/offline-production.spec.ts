@@ -128,6 +128,7 @@ test("production precache serves first offline POS navigation and survives a sam
     await again.getByRole("link", { name: "المبيعات" }).click();
     await expect(again.getByTestId("sale-list")).toContainText("كاشير تجريبي");
     await expect(again.getByTestId("sale-list")).toContainText("غير مزامن");
+    await again.getByTestId("sale-list").getByRole("row").filter({ hasText: "كاشير تجريبي" }).getByRole("button", { name: "فتح التفاصيل" }).click();
     await expect(again.getByTestId("sale-details")).toContainText("أبشواي");
     await expect(again.getByTestId("sale-details")).toContainText("150");
     const restored = await readPosSales(again);
@@ -621,6 +622,7 @@ test("schema 2 individual paid units and signed-in session survive upgrade and o
     await expect(again.getByTestId("active-branch")).toContainText("أبشواي");
     await again.getByRole("link", { name: "المبيعات" }).click();
     await expect(again.getByTestId("sale-list")).toContainText("كاشير تجريبي");
+    await again.getByTestId("sale-list").getByRole("row").filter({ hasText: "كاشير تجريبي" }).getByRole("button", { name: "فتح التفاصيل" }).click();
     await expect(again.getByTestId("sale-details")).toContainText("أبشواي");
     await expect(again.getByTestId("sale-details")).toContainText("199");
     const restored = await again.evaluate(async () => {
@@ -677,6 +679,7 @@ test("schema 2 individual paid units and signed-in session survive upgrade and o
     ]);
     expect(restored.effects[0]?.quantity).toBe(1);
     await again.reload();
+    await again.getByTestId("sale-list").getByRole("row").filter({ hasText: "كاشير تجريبي" }).getByRole("button", { name: "فتح التفاصيل" }).click();
     await expect(again.getByTestId("sale-details")).toContainText("كاشير تجريبي");
     await expect(again.getByTestId("sale-details")).toContainText("199");
     await expect(again.getByTestId("sale-list")).toContainText("غير مزامن");
@@ -803,6 +806,7 @@ test("schema 2 completed sales missing paid-unit allocations defer upgrade and k
     await expect(again.getByTestId("unsynced-count")).toContainText("مبيعات غير مزامنة: 1");
     await again.getByRole("link", { name: "المبيعات" }).click();
     await expect(again.getByTestId("sale-list")).toContainText("كاشير تجريبي");
+    await again.getByTestId("sale-list").getByRole("row").filter({ hasText: "كاشير تجريبي" }).getByRole("button", { name: "فتح التفاصيل" }).click();
     await expect(again.getByTestId("sale-details")).toContainText("180");
     const restored = await again.evaluate(async () => {
       const db = await new Promise<IDBDatabase>((resolve, reject) => {
@@ -862,6 +866,7 @@ test("schema 2 completed sales missing paid-unit allocations defer upgrade and k
     await again.reload();
     await expect(again.getByTestId("update-deferred")).toBeVisible();
     await again.getByRole("link", { name: "المبيعات" }).click();
+    await again.getByTestId("sale-list").getByRole("row").filter({ hasText: "كاشير تجريبي" }).getByRole("button", { name: "فتح التفاصيل" }).click();
     await expect(again.getByTestId("sale-details")).toContainText("180");
     let blockedUploadAttempts = 0;
     await restarted.route(/\/api\/internal\/sales(?:\/accepted|\/recover)?$/, async (route) => {

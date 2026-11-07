@@ -101,7 +101,7 @@ test("staff intake is product-level and storefront options share one quantity", 
   await expect(page.getByRole("form", { name: "بحث عن زبون" }).getByLabel("الاسم أو الهاتف")).toBeVisible();
   await expect(page.getByTestId("customer-list").or(page.getByText("لا يوجد زبائن مسجلون."))).toBeVisible();
   await expect(customers).toContainText("منتجات مدفوعة");
-  await expect(customers).not.toContainText("استرداد");
+  await expect(page.getByRole("region", { name: "مشتريات الزبون" })).not.toContainText("استرداد");
   await expect(customers).not.toContainText("صافي");
   await page.screenshot({ path: path.join(visualDir, "customers.png"), fullPage: true });
 

@@ -70,8 +70,9 @@ test("manager corrects a posted Return in Arabic and the Returns payment uses th
   await expect(page.getByTestId("correction-details")).toContainText("القيمة المعتمدة الصحيحة ثمانون جنيهاً");
 
   await page.getByRole("link", { name: "مساحة العمل" }).click();
-  await page.getByRole("link", { name: "المرتجعات" }).click();
-  await page.locator(".return-history").getByRole("button", { name: new RegExp(draft.body.reference) }).click();
+  await page.getByRole("navigation", { name: "التنقل الداخلي" }).getByRole("link", { name: "المرتجعات", exact: true }).click();
+  await page.getByText("سجل المرتجعات والمسودات", { exact: true }).click();
+  await page.locator(".return-history-section").getByRole("row").filter({ hasText: draft.body.reference }).getByRole("button", { name: "التفاصيل" }).click();
   const details = page.getByTestId("return-details");
   await expect(details).toContainText("المعتمد حالياً: 80 ج.م.");
   await expect(details).toContainText("المعتمد الأصلي المحفوظ: 100 ج.م.");

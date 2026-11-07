@@ -250,24 +250,28 @@ test("confirmed online orders hide the empty message until a successful load", a
   });
   try {
     await page.goto(`${BASE}/sales`);
+    await page.getByRole("tab", { name: "الطلبات الإلكترونية" }).click();
     const section = page.getByTestId("confirmed-online-sales");
     await expect(section.getByRole("status")).toHaveText("جارٍ تحميل الطلبات المؤكدة…");
     await expect(section.getByText("لا توجد طلبات تم تأكيدها بعد.")).toHaveCount(0);
     expect(traffic.gets).toBeGreaterThan(0);
     traffic.phase = "send";
     gate.resolve();
-    await expect(section.getByRole("alert")).toHaveText("تعذر تحميل الطلبات المؤكدة. أعد محاولة التحميل.");
+    await expect(section.getByRole("alert")).toHaveText("تعذر تحميل الطلبات المؤكدة.");
     await expect(section.getByText("لا توجد طلبات تم تأكيدها بعد.")).toHaveCount(0);
     traffic.status = 200;
     traffic.body = orders;
     await section.getByRole("button", { name: "إعادة تحميل الطلبات المؤكدة" }).click();
-    const confirmed = section.getByRole("link", { name: /ON-CONFIRMED/ });
+    const confirmed = section.getByRole("row").filter({ hasText: "ON-CONFIRMED" });
+    await expect(confirmed.getByRole("link", { name: "فتح التفاصيل" })).toHaveAttribute("href", /ON-CONFIRMED/);
     await expect(confirmed).toContainText("أبشواي");
     await expect(confirmed).toContainText("185.50 ج.م.");
     await expect(confirmed).toContainText("مؤكد");
     await expect(section.getByText("999 ج.م.")).toHaveCount(0);
     await expect(section.getByText("ON-PENDING")).toHaveCount(0);
-    await expect(section.getByRole("link", { name: /ON-CANCELLED/ })).toContainText("ملغي لعدم الرد");
+    const cancelled = section.getByRole("row").filter({ hasText: "ON-CANCELLED" });
+    await expect(cancelled).toContainText("ملغي لعدم الرد");
+    await expect(cancelled.getByRole("link", { name: "فتح التفاصيل" })).toHaveAttribute("href", /ON-CANCELLED/);
     traffic.phase = "hold";
     traffic.body = [];
     await page.unroute("**/api/internal/online-orders**");
@@ -281,6 +285,7 @@ test("confirmed online orders hide the empty message until a successful load", a
       await route.fulfill({ status: 200, json: traffic.body });
     });
     await page.goto(`${BASE}/sales`);
+    await page.getByRole("tab", { name: "الطلبات الإلكترونية" }).click();
     await expect(section.getByRole("status")).toHaveText("جارٍ تحميل الطلبات المؤكدة…");
     await expect(section.getByText("لا توجد طلبات تم تأكيدها بعد.")).toHaveCount(0);
     traffic.phase = "send";
@@ -302,7 +307,9 @@ test("cashier sales view does not request the manager order list", async ({ page
   const salesLoaded = page.waitForResponse((response) => pathname(response.url()) === "/api/internal/sales" && response.request().method() === "GET");
   await page.goto(`${BASE}/sales`);
   await salesLoaded;
-  await expect(page.getByRole("heading", { name: "مبيعات الفروع" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "المبيعات", exact: true })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "مبيعات الفروع" })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "الطلبات الإلكترونية" })).toHaveCount(0);
   await expect(page.getByTestId("confirmed-online-sales")).toHaveCount(0);
   expect(orderGets).toBe(0);
 });
@@ -393,7 +400,7 @@ test("workspace ready status stays hidden until readiness data is cached", async
     await expect(ready).toBeVisible({ timeout: 30_000 });
     await expect(ready).toHaveText("جاهز للعمل دون اتصال");
     await expect(ready).toHaveAttribute("role", "status");
-    await expect(ready).toHaveClass(/quiet-status/);
+    await expect(ready).toHaveClass(/dashboard-status-item/);
     await expect(ready).not.toHaveClass(/theme-hook/);
     await expect(page.getByTestId("offline-not-ready")).toHaveCount(0);
     const box = await ready.evaluate((element) => {
@@ -821,6 +828,7 @@ function listedOrder(reference: string, status: string, confirmedAt: string | nu
     id: reference,
     reference,
     customerName: "عميل التجربة",
+    primaryPhone: "01000000000",
     fulfillmentBranchId: branchId,
     status,
     confirmedAt,

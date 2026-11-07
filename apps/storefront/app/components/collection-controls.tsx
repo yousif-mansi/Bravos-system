@@ -49,8 +49,9 @@ export function CollectionControls({ categoryId, categories, sort }: Props) {
               const link = event.currentTarget;
               const rail = link.parentElement?.getBoundingClientRect();
               const box = link.getBoundingClientRect();
-              if (!rail || box.left < rail.left || box.right > rail.right) {
-                link.scrollIntoView({ block: "nearest", inline: "center" });
+              const headerBottom = document.querySelector(".store-header")?.getBoundingClientRect().bottom ?? 0;
+              if (!rail || box.left < rail.left || box.right > rail.right || box.top < headerBottom || box.bottom > window.innerHeight) {
+                link.scrollIntoView({ behavior: "instant", block: "center", inline: "center" });
               }
             }}
           >

@@ -33,7 +33,7 @@ test("cashier completes an offline cash sale from an issued snapshot and keeps 2
   await expect(page.getByTestId("unsynced-count")).toContainText("مبيعات غير مزامنة: 1");
 });
 
-test("local stock effects reject selling three of two remaining units across repeated rows", async ({ page }) => {
+test("local stock effects reject selling three of two remaining units after repeated additions", async ({ page }) => {
   const seed = await seedSingleProduct(page, { quantity: 2, price: 12000, code: "OFF-QTY" });
   await page.getByRole("button", { name: "تسجيل الخروج" }).click();
   await signInAsCashier(page);
@@ -50,13 +50,15 @@ test("local stock effects reject selling three of two remaining units across rep
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
   await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
-  await checkout.getByLabel("الكمية").first().fill("3");
+  await expect(checkout.getByLabel("الكمية")).toHaveCount(1);
+  await expect(checkout.getByLabel("الكمية")).toHaveValue("2");
+  await checkout.getByLabel("الكمية").fill("3");
   await checkout.getByTestId("complete-sale").click();
   await expect(page.getByRole("alert")).toContainText("الكمية المتاحة غير كافية.");
   await expect(page.getByTestId("accepted-prices")).toHaveCount(0);
   await expect(checkout.getByLabel("استلم الزبون البضاعة وتم استلام المبلغ بالطريقة المحددة")).toHaveCount(0);
-  await expect(checkout.getByRole("button", { name: "إتمام البيع", exact: true })).toBeDisabled();
-  await expect(page.getByRole("status")).toHaveCount(0);
+  await expect(checkout.getByRole("button", { name: "إتمام البيع", exact: true })).toBeEnabled();
+  await expect(page.getByRole("status").filter({ hasText: "تم حفظ البيع." })).toHaveCount(0);
   const state = await readPosState(page);
   expect(state.sales).toEqual([]);
   expect(state.effects).toEqual([]);
@@ -315,6 +317,7 @@ test("sign-out preserves queued sales and another cashier cannot read or submit 
   await expect(pageB.getByTestId("unsynced-count")).toContainText("مبيعات غير مزامنة: 1");
   await pageB.getByRole("link", { name: "المبيعات" }).click();
   await expect(pageB.getByTestId("sale-list")).toContainText("كاشير تجريبي");
+  await pageB.getByTestId("sale-list").getByRole("row").filter({ hasText: "كاشير تجريبي" }).getByRole("button", { name: "فتح التفاصيل" }).click();
   await expect(pageB.getByTestId("sale-details")).toContainText("220");
   const recovered = (await readPosState(pageB)).sales.find((sale) => sale.id === original?.id);
   expect(recovered?.operationId).toBe(original?.operationId);
@@ -344,11 +347,12 @@ test("a delayed manager sales response cannot overwrite a cashier after another 
     imageRefs: [],
     variants: [{ sizeId: size.body.id, colorId: color.body.id, sellingPricePiastersOverride: null }],
   });
-  await staffApi(page, "POST", "/api/internal/receiving/receipts", {
+  const receipt = await staffApi(page, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(),
     receiptDate: "2026-09-11",
-    lines: [{ variantId: product.body.variants[0].id, quantity: 2, unitCostPiasters: 7000 }],
+    lines: [{ variantId: product.body.operationalVariantId, quantity: 2, unitCostPiasters: 7000 }],
   });
+  expect(receipt.status, JSON.stringify(receipt.body)).toBe(201);
   await page.getByRole("link", { name: "البحث عن منتج" }).click();
   const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
   await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill("OFF-DELAY-COST");
@@ -667,14 +671,14 @@ test("cached availability stays distinct from local effects so 5 then 1 then 4 s
   await sell(1);
   const afterFirst = await searchProduct(page, seed.code);
   await expect(afterFirst).toContainText(seed.nameAr);
-  await expect(page.getByTestId("available-quantity")).toHaveText("الكمية المتاحة: 4");
+  await expect(page.getByTestId("available-quantity")).toHaveText("الكمية المتاحة في الفرع: 4");
   await sell(4);
   const state = await readPosState(page);
   expect(state.sales).toHaveLength(2);
   expect(state.effects.reduce((sum, effect) => sum + effect.quantity, 0)).toBe(5);
   const afterAll = await searchProduct(page, seed.code);
   await expect(afterAll).toContainText(seed.nameAr);
-  await expect(page.getByTestId("available-quantity")).toHaveText("الكمية المتاحة: 0");
+  await expect(page.getByTestId("available-quantity")).toHaveText("الكمية المتاحة في الفرع: 0");
 });
 
 test("retrying a committed last-unit sale recovers the original fact", async ({ page }) => {
@@ -1035,7 +1039,7 @@ test("reconnect retries the original accepted sale once without repricing", asyn
   expect(synced.originalTotalPiasters).toBe(21000);
   expect(synced.finalTotalPiasters).toBe(21000);
   const lookupAfter = await staffApi(page, "GET", `/api/internal/catalog/lookup?code=${encodeURIComponent(seed.code)}`);
-  expect(lookupAfter.body.variants[0].availableQuantity).toBe(2);
+  expect(lookupAfter.body.availableQuantity).toBe(2);
 });
 
 test("offline stock cache keeps each branch balance separate for the same variant", async ({ page }) => {
@@ -1046,7 +1050,7 @@ test("offline stock cache keeps each branch balance separate for the same varian
   const fayoumId = branches.find((branch) => branch.code === "fayoum")?.id;
   expect(abshwayId && fayoumId).toBeTruthy();
   const product = await staffApi(page, "GET", `/api/internal/catalog/lookup?code=${seed.code}`);
-  const variantId = product.body.variants[0].id as string;
+  const variantId = product.body.operationalVariantId as string;
   const fayoumReceipt = await staffApi(page, "POST", "/api/internal/receiving/receipts", {
     operationId: crypto.randomUUID(), branchId: fayoumId, receiptDate: "2026-09-11",
     lines: [{ variantId, quantity: 1, unitCostPiasters: 4000 }],
@@ -1075,7 +1079,7 @@ test("offline stock cache keeps each branch balance separate for the same varian
   const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
   await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill(seed.code);
   await lookup.getByRole("button", { name: "بحث" }).click();
-  await expect(page.getByTestId("available-quantity")).toHaveText("الكمية المتاحة: 3");
+  await expect(page.getByTestId("available-quantity")).toHaveText("الكمية المتاحة في الفرع: 3");
 
   await page.getByRole("link", { name: "العودة لمساحة العمل" }).click();
   await page.getByRole("link", { name: "تغيير الفرع" }).click();
@@ -1084,7 +1088,7 @@ test("offline stock cache keeps each branch balance separate for the same varian
   await page.getByRole("link", { name: "البحث عن منتج" }).click();
   await lookup.getByRole("textbox", { name: "رمز المنتج" }).fill(seed.code);
   await lookup.getByRole("button", { name: "بحث" }).click();
-  await expect(page.getByTestId("available-quantity")).toHaveText("الكمية المتاحة: 1");
+  await expect(page.getByTestId("available-quantity")).toHaveText("الكمية المتاحة في الفرع: 1");
   const availability = await page.evaluate(async () => {
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
       const request = indexedDB.open("bravos-pos");

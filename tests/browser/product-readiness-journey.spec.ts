@@ -10,11 +10,11 @@ const STORE = "http://127.0.0.1:3001";
 // All fixtures and assertions use HTTP, with no database reads or mocked commerce.
 test("customer purchase journey leaves pending stock intact and confirms one branch exactly once", async ({ page }) => {
   const fixture = await seedJourney(page);
-  const { product, regular, premium, empty, a, b, areaId } = fixture;
+  const { product, premiumProduct, emptyProduct, regular, premium, empty, a, b, areaId } = fixture;
   const beforeReport = await onlineReport(page, a);
-  await expectBranchStock(page, product.id, a, regular.id, premium.id, [4, 3]);
-  await expectBranchStock(page, product.id, b, regular.id, premium.id, [1, 2]);
-  await expectPublicStock(page, product.id, regular.id, premium.id, empty.id, [4, 3]);
+  await expectBranchStock(page, product.id, premiumProduct.id, a, [4, 3]);
+  await expectBranchStock(page, product.id, premiumProduct.id, b, [1, 2]);
+  await expectPublicStock(page, product.id, premiumProduct.id, regular.id, premium.id, empty.id, [4, 3]);
 
   await page.goto(STORE);
   await page.getByRole("navigation", { name: "Filter by category" })
@@ -25,10 +25,8 @@ test("customer purchase journey leaves pending stock intact and confirms one bra
   const panel = page.locator(".purchase-panel");
   const sizes = panel.getByRole("group", { name: "Size" });
   await expect(panel.getByRole("group", { name: "Color" }).getByRole("radio")).toHaveCount(1);
-  await expect(sizes.locator("input[type='radio']")).toHaveCount(3);
-  await expect(sizes.locator(`input[value="${empty.id}"]`)).toBeDisabled();
-  await expect(sizes.locator(`input[value="${empty.id}"]`).locator("xpath=ancestor::label[1]")).toContainText("Unavailable");
-  await expect(sizes.locator(`input[value="${premium.id}"]`).locator("xpath=ancestor::label[1]")).toContainText(/EGP\s*300/);
+  await expect(sizes.locator("input[type='radio']")).toHaveCount(2);
+  await expect(sizes.locator(`input[value="${empty.id}"]`)).toBeEnabled();
   await expect(sizes.locator(`input[value="${regular.id}"]`).locator("xpath=ancestor::label[1]")).toContainText(/EGP\s*250/);
   await sizes.locator(`input[value="${regular.id}"]`).check();
   await expect(panel.getByLabel("Quantity")).toHaveAttribute("max", "4");
@@ -40,12 +38,17 @@ test("customer purchase journey leaves pending stock intact and confirms one bra
   expect(excessive.error.code).toBe("INSUFFICIENT_STOCK");
   await panel.getByLabel("Quantity").fill("1");
   await addSelected(page);
+  await page.goto(`${STORE}/products/${premiumProduct.id}`);
+  await expect(sizes.locator(`input[value="${premium.id}"]`).locator("xpath=ancestor::label[1]")).toContainText(/EGP\s*300/);
   await sizes.locator(`input[value="${premium.id}"]`).check();
   await addSelected(page);
-  await panel.getByRole("link", { name: "View bag", exact: true }).click();
+  await page.goto(`${STORE}/products/${emptyProduct.id}`);
+  await expect(panel.getByRole("list", { name: "Unavailable size and color pairs" })).toContainText("Unavailable");
+  await expect(panel.getByRole("button", { name: "Add to bag", exact: true })).toHaveCount(0);
+  await page.goto(`${STORE}/cart`);
 
   const regularLine = page.locator(".cart-line").filter({ hasText: regular.size.nameAr });
-  const premiumLine = page.locator(".cart-line").filter({ hasText: premium.size.nameAr });
+  const premiumLine = page.locator(".cart-line").filter({ hasText: premiumProduct.nameAr });
   const summary = page.getByRole("complementary", { name: "Bag summary" });
   await expect(page.locator(".cart-line")).toHaveCount(2);
   await expect(summary).toContainText(`Estimated total${money(55_000)}`);
@@ -60,7 +63,7 @@ test("customer purchase journey leaves pending stock intact and confirms one bra
   await premiumLine.getByRole("button", { name: "Remove", exact: true }).click();
   await expect(page.locator(".cart-line")).toHaveCount(1);
   await expect(summary).toContainText(`Estimated total${money(50_000)}`);
-  await regularLine.getByRole("link", { name: product.nameAr }).click();
+  await page.goto(`${STORE}/products/${premiumProduct.id}`);
   await sizes.locator(`input[value="${premium.id}"]`).check();
   await addSelected(page);
   await panel.getByRole("link", { name: "View bag", exact: true }).click();
@@ -128,9 +131,9 @@ test("customer purchase journey leaves pending stock intact and confirms one bra
   expect(savedCart.items).toEqual([]);
   expect(savedCart.completedCheckoutOperationIds).toEqual([acceptedCommand.operationId]);
 
-  await expectBranchStock(page, product.id, a, regular.id, premium.id, [4, 3]);
-  await expectBranchStock(page, product.id, b, regular.id, premium.id, [1, 2]);
-  await expectPublicStock(page, product.id, regular.id, premium.id, empty.id, [4, 3]);
+  await expectBranchStock(page, product.id, premiumProduct.id, a, [4, 3]);
+  await expectBranchStock(page, product.id, premiumProduct.id, b, [1, 2]);
+  await expectPublicStock(page, product.id, premiumProduct.id, regular.id, premium.id, empty.id, [4, 3]);
   expect((await onlineReport(page, a)).summary).toEqual(beforeReport.summary);
   const pending = await api<OnlineOrderDto>(page, STAFF, "GET", `/api/internal/online-orders/${accepted.orderId}`, undefined, 200);
   expect(pending).toMatchObject({ status: "pending", fulfillmentBranchId: null, requestedFinalTotalPiasters: 82_500 });
@@ -152,9 +155,9 @@ test("customer purchase journey leaves pending stock intact and confirms one bra
   };
   const confirmed = await api<OnlineOrderDto>(page, STAFF, "POST", `/api/internal/online-orders/${accepted.orderId}/confirm`, confirmation, 201);
   expect(confirmed).toMatchObject({ status: "confirmed", fulfillmentBranchId: a, confirmedQuote: { finalTotalPiasters: 82_500 } });
-  await expectBranchStock(page, product.id, a, regular.id, premium.id, [2, 2]);
-  await expectBranchStock(page, product.id, b, regular.id, premium.id, [1, 2]);
-  await expectPublicStock(page, product.id, regular.id, premium.id, empty.id, [2, 2]);
+  await expectBranchStock(page, product.id, premiumProduct.id, a, [2, 2]);
+  await expectBranchStock(page, product.id, premiumProduct.id, b, [1, 2]);
+  await expectPublicStock(page, product.id, premiumProduct.id, regular.id, premium.id, empty.id, [2, 2]);
   const recognized = await onlineReport(page, a);
   expect(recognized.summary.completedCount).toBe(beforeReport.summary.completedCount + 1);
   expect(recognized.summary.grossMerchandiseSalesPiasters).toBe(beforeReport.summary.grossMerchandiseSalesPiasters + 80_000);
@@ -168,8 +171,8 @@ test("customer purchase journey leaves pending stock intact and confirms one bra
   const publicReplay = await api<PublicOrderSubmissionDto>(page, STORE, "POST", "/api/public/checkout/orders", acceptedCommand, 200);
   expect(publicReplay).toEqual(accepted);
   expectPublicSafe(publicReplay);
-  await expectBranchStock(page, product.id, a, regular.id, premium.id, [2, 2]);
-  await expectBranchStock(page, product.id, b, regular.id, premium.id, [1, 2]);
+  await expectBranchStock(page, product.id, premiumProduct.id, a, [2, 2]);
+  await expectBranchStock(page, product.id, premiumProduct.id, b, [1, 2]);
   expect((await onlineReport(page, a)).summary).toEqual(recognized.summary);
 });
 
@@ -193,21 +196,39 @@ async function seedJourney(page: Page) {
   const product = await api<ManagerProductDto>(page, STAFF, "POST", "/api/internal/catalog/products", {
     code: `PURCHASE-${suffix}`, nameAr: `قميص رحلة المخزون ${suffix}`, descriptionAr: "منتج رحلة شراء معزولة",
     categoryId: category.id, defaultSellingPricePiasters: 25_000, publication: "available", imageRefs: [], sizeGuideAr: null,
-    variants: sizes.map((size, index) => ({ sizeId: size.id, colorId: color.id, onlineVisible: true, sellingPricePiastersOverride: index === 1 ? 30_000 : null })),
+    variants: [sizes[0]!, sizes[2]!].map((size) => ({ sizeId: size.id, colorId: color.id, onlineVisible: true, sellingPricePiastersOverride: null })),
   }, 201);
   const regular = product.variants.find((variant) => variant.size.id === sizes[0]!.id)!;
-  const premium = product.variants.find((variant) => variant.size.id === sizes[1]!.id)!;
+  const premiumProduct = await api<ManagerProductDto>(page, STAFF, "POST", "/api/internal/catalog/products", {
+    code: `PURCHASE-PREMIUM-${suffix}`, nameAr: `قميص رحلة ممتاز ${suffix}`, descriptionAr: "منتج رحلة شراء معزولة",
+    categoryId: category.id, defaultSellingPricePiasters: 30_000, publication: "available", imageRefs: [], sizeGuideAr: null,
+    variants: [{ sizeId: sizes[1]!.id, colorId: color.id, onlineVisible: true, sellingPricePiastersOverride: null }],
+  }, 201);
+  const premium = premiumProduct.variants[0]!;
+  const emptyProduct = await api<ManagerProductDto>(page, STAFF, "POST", "/api/internal/catalog/products", {
+    code: `PURCHASE-EMPTY-${suffix}`, nameAr: `قميص رحلة غير متوفر ${suffix}`, descriptionAr: "منتج بلا مخزون",
+    categoryId: category.id, defaultSellingPricePiasters: 25_000, publication: "available", imageRefs: [], sizeGuideAr: null,
+    variants: [{ sizeId: sizes[2]!.id, colorId: color.id, onlineVisible: true, sellingPricePiastersOverride: null }],
+  }, 201);
+  const emptyDetail = await api<PublicProductDto>(page, STORE, "GET", `/api/public/catalog/products/${emptyProduct.id}`, undefined, 200);
+  expect(emptyDetail.variants[0]).toMatchObject({ availableQuantity: 0, orderable: false });
   const empty = product.variants.find((variant) => variant.size.id === sizes[2]!.id)!;
+  const warehouseId = "33333333-3333-4333-8333-333333333333";
+  await api(page, STAFF, "POST", "/api/internal/receiving/receipts", {
+    operationId: crypto.randomUUID(), branchId: warehouseId, receiptDate: cairoDate(),
+    lines: [{ productId: product.id, quantity: 5, unitCostPiasters: 10_000 }, { productId: premiumProduct.id, quantity: 5, unitCostPiasters: 12_000 }],
+  }, 201);
   for (const [branchId, quantities] of [[a, [4, 3]], [b, [1, 2]]] as const) {
-    await api(page, STAFF, "POST", "/api/internal/receiving/receipts", {
-      operationId: crypto.randomUUID(), branchId, receiptDate: cairoDate(),
-      lines: [{ variantId: regular.id, quantity: quantities[0], unitCostPiasters: 10_000 }, { variantId: premium.id, quantity: quantities[1], unitCostPiasters: 12_000 }],
-    }, 201);
+    for (const [productId, quantity] of [[product.id, quantities[0]], [premiumProduct.id, quantities[1]]] as const) {
+      await api(page, STAFF, "POST", "/api/internal/inventory/transfers", {
+        operationId: crypto.randomUUID(), sourceBranchId: warehouseId, destinationBranchId: branchId, productId, quantity,
+      }, 201);
+    }
   }
   // This isolated area's fee is intentionally independent of live configuration.
   const areaName = `منطقة رحلة المخزون ${suffix}`;
   const area = await api<{ id: string }>(page, STAFF, "POST", "/api/internal/delivery-areas", { nameAr: areaName, feePiasters: 2_500, active: true }, 201);
-  return { product, regular, premium, empty, a, b, areaId: area.id, areaName, suffix };
+  return { product, premiumProduct, emptyProduct, regular, premium, empty, a, b, areaId: area.id, areaName, suffix };
 }
 
 async function addSelected(page: Page) {
@@ -216,21 +237,21 @@ async function addSelected(page: Page) {
   await expect(panel.getByRole("status")).toContainText("Added to your bag.");
 }
 
-async function expectBranchStock(page: Page, productId: string, branchId: string, regularId: string, premiumId: string, quantities: [number, number]) {
+async function expectBranchStock(page: Page, productId: string, premiumProductId: string, branchId: string, quantities: [number, number]) {
   await api(page, STAFF, "POST", "/api/internal/active-branch", { branchId }, 200);
-  const snapshot = await api<Array<{ id: string; variants: Array<{ id: string; availableQuantity: number }> }>>(page, STAFF, "GET", "/api/internal/catalog/pos-snapshot", undefined, 200);
-  const product = snapshot.find((item) => item.id === productId);
-  expect(product).toBeTruthy();
-  expect(product!.variants.find((variant) => variant.id === regularId)?.availableQuantity).toBe(quantities[0]);
-  expect(product!.variants.find((variant) => variant.id === premiumId)?.availableQuantity).toBe(quantities[1]);
+  const snapshot = await api<Array<{ id: string; availableQuantity: number }>>(page, STAFF, "GET", "/api/internal/catalog/pos-snapshot", undefined, 200);
+  expect(snapshot.find((item) => item.id === productId)?.availableQuantity).toBe(quantities[0]);
+  expect(snapshot.find((item) => item.id === premiumProductId)?.availableQuantity).toBe(quantities[1]);
 }
 
-async function expectPublicStock(page: Page, productId: string, regularId: string, premiumId: string, emptyId: string, quantities: [number, number]) {
+async function expectPublicStock(page: Page, productId: string, premiumProductId: string, regularId: string, premiumId: string, emptyId: string, quantities: [number, number]) {
   const product = await api<PublicProductDto>(page, STORE, "GET", `/api/public/catalog/products/${productId}`, undefined, 200);
+  const premiumProduct = await api<PublicProductDto>(page, STORE, "GET", `/api/public/catalog/products/${premiumProductId}`, undefined, 200);
   expectPublicSafe(product);
+  expectPublicSafe(premiumProduct);
   expect(product.variants.find((variant) => variant.id === regularId)).toMatchObject({ availableQuantity: quantities[0], orderable: true });
-  expect(product.variants.find((variant) => variant.id === premiumId)).toMatchObject({ availableQuantity: quantities[1], orderable: true });
-  expect(product.variants.find((variant) => variant.id === emptyId)).toMatchObject({ availableQuantity: 0, orderable: false });
+  expect(product.variants.find((variant) => variant.id === emptyId)).toMatchObject({ availableQuantity: quantities[0], orderable: true });
+  expect(premiumProduct.variants.find((variant) => variant.id === premiumId)).toMatchObject({ availableQuantity: quantities[1], orderable: true });
 }
 
 async function onlineReport(page: Page, branchId: string) {

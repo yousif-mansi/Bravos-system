@@ -26,7 +26,7 @@ test("full shopping journey preserves aggregate analytics across desktop and mob
     imageRefs: [], sizeGuideAr: null,
     variants: [
       { sizeId: medium.id, colorId: black.id, sellingPricePiastersOverride: null },
-      { sizeId: large.id, colorId: sand.id, sellingPricePiastersOverride: 30_000 },
+      { sizeId: large.id, colorId: sand.id, sellingPricePiastersOverride: null },
     ],
   });
   const selected = product.variants.find((variant) => variant.size.id === large.id && variant.color.id === sand.id)!;
@@ -35,8 +35,12 @@ test("full shopping journey preserves aggregate analytics across desktop and mob
   expect(workspaceResponse.status()).toBe(200);
   const workspace = await workspaceResponse.json();
   await create(page, "/api/internal/receiving/receipts", {
-    operationId: crypto.randomUUID(), branchId: workspace.activeBranch.id, receiptDate: cairoDate(),
-    lines: product.variants.map((variant) => ({ variantId: variant.id, quantity: 4, unitCostPiasters: 10_000 })),
+    operationId: crypto.randomUUID(), branchId: "33333333-3333-4333-8333-333333333333", receiptDate: cairoDate(),
+    lines: [{ productId: product.id, quantity: 4, unitCostPiasters: 10_000 }],
+  });
+  await create(page, "/api/internal/inventory/transfers", {
+    operationId: crypto.randomUUID(), sourceBranchId: "33333333-3333-4333-8333-333333333333",
+    destinationBranchId: workspace.activeBranch.id, productId: product.id, quantity: 4,
   });
   const area = await create<{ id: string }>(page, "/api/internal/delivery-areas", {
     nameAr: `منطقة رحلة ${suffix}`, feePiasters: 2_500, active: true,
@@ -159,7 +163,7 @@ test("full shopping journey preserves aggregate analytics across desktop and mob
   const quoteResponse = await quoteResponsePromise;
   expect(quoteResponse.ok()).toBe(true);
   const quote = await quoteResponse.json() as CheckoutQuoteDto;
-  expect(quote.lines).toMatchObject([{ variantId: selected.id, quantity: 2, listedUnitPricePiasters: 30_000 }]);
+  expect(quote.lines).toMatchObject([{ variantId: selected.id, quantity: 2, listedUnitPricePiasters: product.defaultSellingPricePiasters }]);
   expect(quote.deliveryFeePiasters).toBe(2_500);
   await expect(page.getByRole("region", { name: "Price details" })).toContainText("Delivery fee");
   await expectCounts({ ...browsing, successfulCartAdditions: 2 });

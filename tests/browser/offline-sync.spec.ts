@@ -1,6 +1,57 @@
 import { openPosOptionalDetails, stageUnpaidPosQuote } from "./support/pos-checkout";
 import { expect, test, type Page, type Route } from "@playwright/test";
 
+test("a same-version issued snapshot repairs cached stock without dropping a queued sale effect", async ({ page }) => {
+  const seed = await seedSingleProduct(page, { quantity: 3, price: 16500, code: "SYNC-SAME-VERSION" });
+  await page.getByRole("button", { name: "تسجيل الخروج" }).click();
+  await signInAsCashier(page);
+  await expect(page.getByTestId("offline-ready")).toBeVisible();
+  await page.route("**/api/internal/sales/accepted", route => route.abort("failed"));
+  await page.route("**/api/internal/sales/prepare", route => route.abort("failed"));
+  await page.route("**/api/internal/sales", route => route.abort("failed"));
+  await page.getByRole("link", { name: "البحث عن منتج" }).click();
+  await addAndPrice(page, seed);
+  await page.getByTestId("complete-sale").click();
+  await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
+  const queued = await readPrivacyState(page);
+  expect(queued.sales).toHaveLength(1);
+  expect(queued.effects).toHaveLength(1);
+  const version = queued.stockCache.version;
+  await page.evaluate(async variantId => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open("bravos-pos");
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const tx = db.transaction("meta", "readwrite");
+    const store = tx.objectStore("meta");
+    const record = await new Promise<{ key: string; value: string }>((resolve, reject) => {
+      const request = store.get("stockCache");
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const cache = JSON.parse(record.value);
+    for (const key of Object.keys(cache.availability)) {
+      if (key.endsWith(`:${variantId}`)) cache.availability[key] = 0;
+    }
+    store.put({ ...record, value: JSON.stringify(cache) });
+    await new Promise<void>((resolve, reject) => { tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error); });
+    db.close();
+  }, seed.variantId);
+  await page.getByRole("link", { name: "العودة لمساحة العمل" }).click();
+  await expect.poll(async () => (await readPrivacyState(page)).stockCache.availability?.[seed.variantId]).toBe(3);
+  const repaired = await readPrivacyState(page);
+  expect(repaired.stockCache.version).toBe(version);
+  expect(repaired.sales).toHaveLength(1);
+  expect(repaired.sales[0]?.syncStatus).toBe("pending");
+  expect(repaired.effects).toHaveLength(1);
+  await page.getByRole("link", { name: "البحث عن منتج" }).click();
+  await page.getByRole("textbox", { name: "رمز المنتج" }).fill(seed.code);
+  await page.getByRole("form", { name: "البحث برمز المنتج" }).getByRole("button", { name: "بحث" }).click();
+  await expect(page.getByTestId("available-quantity")).toHaveText("الكمية المتاحة في الفرع: 2");
+  expect(salesForCode((await staffApi(page, "GET", "/api/internal/sales")).body, seed.code)).toHaveLength(0);
+});
+
 test("delayed web crypto still saves a local sale and acks two operations in one transaction", async ({ page }) => {
   const seed = await seedSingleProduct(page, { quantity: 2, price: 16500, code: "SYNC-HASH" });
   await page.getByRole("button", { name: "تسجيل الخروج" }).click();

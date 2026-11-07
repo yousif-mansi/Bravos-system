@@ -1184,7 +1184,10 @@ export function createDexiePosStore(options?: { databaseName?: string }): Offlin
             await overlayAllSnapshots(db, next);
           } else if (incomingGeneration < cache.restoreGeneration) {
             return;
-          } else if (incomingVersion > branchVersion) {
+          } else if (incomingVersion >= branchVersion) {
+            // An issued snapshot is authoritative even at the same stock clock.
+            // Refresh its base; pending local effects remain separate and are
+            // removed only by the matching completion proofs below.
             const availability = { ...cache.availability };
             writeSnapshotAvailability(availability, snapshot);
             const acked = await acknowledgeMatchingOperations(db, incomingProofs, undefined, prepared);
@@ -1197,14 +1200,6 @@ export function createDexiePosStore(options?: { databaseName?: string }): Offlin
             };
             await writeStockCacheRecord(db, next);
             await overlayAllSnapshots(db, next);
-          } else if (incomingVersion === branchVersion && incomingProofs.length > 0) {
-            const acked = await acknowledgeMatchingOperations(db, incomingProofs, undefined, prepared);
-            next = {
-              ...cache,
-              restoreGeneration: incomingGeneration,
-              includedOperationIds: [...new Set([...cache.includedOperationIds, ...acked])],
-            };
-            await writeStockCacheRecord(db, next);
           } else if (incomingVersion < branchVersion && incomingProofs.length > 0) {
             const acked = await acknowledgeMatchingOperations(db, incomingProofs, undefined, prepared);
             next = {

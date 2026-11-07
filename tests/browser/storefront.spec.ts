@@ -26,7 +26,7 @@ test("English storefront browses, persists an aggregated guest cart and handles 
     sizeGuideAr: "M18 — عرض الصدر 50 سم\nL18 — عرض الصدر 54 سم",
     variants: [
       { sizeId: size.body.id, colorId: black.body.id, sellingPricePiastersOverride: null },
-      { sizeId: large.body.id, colorId: sand.body.id, sellingPricePiastersOverride: 45000 },
+      { sizeId: large.body.id, colorId: sand.body.id, sellingPricePiastersOverride: null },
     ],
   });
   const comingSoon = await staffApi(page, "POST", "/api/internal/catalog/products", {
@@ -41,6 +41,7 @@ test("English storefront browses, persists an aggregated guest cart and handles 
     imageRefs: [], sizeGuideAr: null,
     variants: [{ sizeId: size.body.id, colorId: sand.body.id, sellingPricePiastersOverride: null }],
   });
+  expect(shirt.status, JSON.stringify(shirt.body)).toBe(201);
   const stockedVariant = shirt.body.variants.find((variant: { size: { nameAr: string } }) => variant.size.nameAr === "M18");
   const emptyVariant = shirt.body.variants.find((variant: { size: { nameAr: string } }) => variant.size.nameAr === "L18");
   if (!stockedVariant || !emptyVariant) throw new Error("Expected storefront variants.");
@@ -54,10 +55,10 @@ test("English storefront browses, persists an aggregated guest cart and handles 
   await page.goto("http://127.0.0.1:3001");
   await expect(page.locator("html")).toHaveAttribute("lang", "en");
   await expect(page.locator("html")).toHaveAttribute("dir", "ltr");
-  const homeTitle = page.locator("#home-title");
+  const hero = page.getByRole("region", { name: "Bravos Menswear", exact: true });
+  const homeTitle = hero.locator("#home-title");
   await expect(homeTitle).toHaveText("Bravos Menswear");
   await expect(homeTitle).toHaveClass(/sr-only/);
-  const hero = page.locator("section").filter({ has: homeTitle });
   const cover = hero.locator("img");
   await expect(cover).toHaveCount(1);
   await expect(cover).toHaveAttribute("alt", "");
@@ -95,11 +96,15 @@ test("English storefront browses, persists an aggregated guest cart and handles 
   await expect(page.getByText("M18 — عرض الصدر 50 سم")).toBeVisible();
   const colors = page.getByRole("group", { name: "Color" });
   const sizes = page.getByRole("group", { name: "Size" });
+  await colors.getByRole("radio", { name: "أسود متجر 18" }).check();
   await expect(sizes.getByRole("radio", { name: /M18/ })).toBeEnabled();
   await expect(sizes.getByRole("radio", { name: /L18/ })).toHaveCount(0);
   const sandColor = colors.getByRole("radio", { name: "رملي متجر 18" });
-  await expect(sandColor).toBeDisabled();
-  await expect(sandColor.locator("xpath=ancestor::label[1]")).toContainText("Unavailable");
+  await expect(sandColor).toBeEnabled();
+  await sandColor.check();
+  await expect(sizes.getByRole("radio", { name: /L18/ })).toBeEnabled();
+  await expect(page.locator(".purchase-panel").getByLabel("Quantity")).toHaveAttribute("max", "2");
+  await colors.getByRole("radio", { name: "أسود متجر 18" }).check();
 
   await page.getByLabel("Quantity").fill("3");
   await expect(page.getByRole("button", { name: "Add to bag" })).toBeDisabled();
@@ -125,7 +130,7 @@ test("English storefront browses, persists an aggregated guest cart and handles 
   });
   expect(sale.status).toBe(201);
   await page.getByRole("button", { name: "Refresh product details" }).click();
-  await expect(page.getByText("Only 1 available now.", { exact: true })).toBeVisible();
+  await expect(page.locator(".cart-line").getByRole("alert")).toHaveText("Only 1 of this item can stay in the bag with the other options.");
   await page.getByRole("button", { name: "Fit to available" }).click();
   await expect(page.locator(".cart-line output")).toHaveText("1");
 
@@ -145,7 +150,7 @@ test("English storefront browses, persists an aggregated guest cart and handles 
   await expect(unavailablePairs).toContainText("أسود متجر 18");
   await expect(unavailablePairs).toContainText(/EGP\s*700/);
   await expect(unavailablePairs).toContainText("Unavailable");
-  await expect(page.getByText("Each size and color keeps its own price. None can be ordered.")).toBeVisible();
+  await expect(page.locator(".purchase-panel").getByText("Size and color share one price and one available quantity. None can be ordered.")).toBeVisible();
   await expect(page.getByRole("button", { name: "Add to bag" })).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });

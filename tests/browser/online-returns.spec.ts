@@ -18,31 +18,31 @@ test("manager selects a delivered online purchase and reviews refund components 
   const delivered = await submitConfirmAndDeliver(page, area.body.id, returned.variantId, 2);
   const deliveredForRefund = await submitConfirmAndDeliver(page, area.body.id, refundOnly.variantId, 1);
 
-  await page.getByRole("link", { name: "المرتجعات" }).click();
+  await page.getByRole("navigation", { name: "التنقل الداخلي" }).getByRole("link", { name: "المرتجعات", exact: true }).click();
   await expect(page.getByRole("heading", { name: "المرتجعات", exact: true })).toBeVisible();
   const search = page.getByRole("form", { name: /البحث عن المعاملة الأصلية/ });
   await expect(search).toBeVisible();
-  await search.getByLabel("رقم الطلب").fill(delivered.reference);
+  await search.getByLabel("رقم الإيصال أو الطلب أو هاتف العميل").fill(delivered.reference);
   await search.getByRole("button", { name: "بحث" }).click();
 
-  const source = page.getByTestId("return-source-list").getByRole("button").filter({ hasText: delivered.reference });
+  const source = page.getByTestId("return-source-list").getByRole("row").filter({ hasText: delivered.reference });
   await expect(source).toHaveCount(1);
   await expect(source).toContainText(`طلب ${delivered.reference}`);
   await expect(source).toContainText("760 ج.م.");
-  await expect(source).toContainText("أونلاين · فرع التجهيز: أبشواي");
-  await source.click();
-  await expect(page.getByText(/العميل: عميل مرتجع أونلاين/)).toBeVisible();
+  await expect(source).toContainText("أبشواي");
+  await source.getByRole("button", { name: "اختيار" }).click();
+  await expect(page.locator(".return-invoice-summary")).toContainText("عميل مرتجع أونلاين");
 
   const draft = page.getByRole("form", { name: "إنشاء مسودة إرجاع" });
   await draft.getByLabel("الكمية المستلمة").fill("1");
-  await draft.getByLabel("منها قابلة للبيع بعد الفحص").fill("1");
+  await draft.getByLabel("قابلة للبيع بعد الفحص").fill("1");
   const suggestion = page.getByTestId("refund-suggestion");
   await expect(suggestion).toContainText("قيمة البضاعة: 360 ج.م.");
   await expect(suggestion).toContainText("رسوم التوصيل: 0 ج.م.");
   await expect(suggestion).toContainText("الإجمالي: 360 ج.م.");
 
   await draft.getByLabel("الكمية المستلمة").fill("2");
-  await draft.getByLabel("منها قابلة للبيع بعد الفحص").fill("2");
+  await draft.getByLabel("قابلة للبيع بعد الفحص").fill("2");
   await expect(suggestion).toContainText("قيمة البضاعة: 720 ج.م.");
   await expect(suggestion).toContainText("رسوم التوصيل: 40 ج.م.");
   await expect(suggestion).toContainText("الإجمالي: 760 ج.م.");
@@ -51,22 +51,23 @@ test("manager selects a delivered online purchase and reviews refund components 
   await draft.getByLabel("سبب المرتجع (اختياري)").fill("العميل رجع الطلب");
   await draft.getByLabel("استرداد البضاعة المعتمد بالجنيه").fill("700");
   await draft.getByLabel("استرداد رسوم التوصيل المعتمد بالجنيه").fill("30");
-  await draft.getByRole("button", { name: "حفظ المسودة" }).click();
+  await draft.getByText("خيارات المسودة").click();
+  await draft.getByRole("button", { name: "حفظ كمسودة" }).click();
   await expect(page.getByRole("status")).toContainText("حُفظت المسودة");
 
   const details = page.getByTestId("return-details");
-  await expect(details).toContainText(`الطلب: ${delivered.reference}`);
+  await expect(details).toContainText(`طلب ${delivered.reference}`);
   await expect(details).toContainText("فرع التجهيز: أبشواي · فرع استلام المرتجع: أبشواي");
   await expect(details).toContainText("سبب الإرجاع: العميل رجع الطلب");
-  const history = page.locator(".return-history").getByRole("button").filter({ hasText: delivered.reference });
-  await expect(history).toContainText("مرتجع طلب أونلاين");
-  await expect(history).toContainText("العميل رجع الطلب");
+  await expect(page.locator(".return-history-section").getByRole("row").filter({ hasText: delivered.reference })).toHaveCount(1);
+  await expect(details).toContainText("مرتجع طلب أونلاين");
   await expect(details).toContainText("البضاعة 700 ج.م.");
   await expect(details).toContainText("رسوم التوصيل 30 ج.م.");
   await expect(details).toContainText("الإجمالي 730 ج.م.");
   await details.getByRole("button", { name: "تأكيد استلام وفحص المرتجع" }).click();
   await expect(page.getByRole("status")).toContainText("تم تأكيد المرتجع وإعادة القطع الصالحة للبيع إلى المخزون");
 
+  await details.getByText("إجراءات الاستبدال").click();
   const exchange = page.getByRole("form", { name: "إتمام استبدال" });
   await exchange.getByLabel("صنف الاستبدال").selectOption(replacement.variantId);
   await exchange.getByRole("button", { name: "إضافة إلى سلة الاستبدال" }).click();
@@ -82,13 +83,14 @@ test("manager selects a delivered online purchase and reviews refund components 
   await page.goto("http://127.0.0.1:5174/returns");
   const refundSearch = page.getByRole("form", { name: /البحث عن المعاملة الأصلية/ });
   await expect(refundSearch).toBeVisible();
-  await refundSearch.getByLabel("رقم الطلب").fill(deliveredForRefund.reference);
+  await refundSearch.getByLabel("رقم الإيصال أو الطلب أو هاتف العميل").fill(deliveredForRefund.reference);
   await refundSearch.getByRole("button", { name: "بحث" }).click();
-  await page.getByTestId("return-source-list").getByRole("button").filter({ hasText: deliveredForRefund.reference }).click();
+  await page.getByTestId("return-source-list").getByRole("row").filter({ hasText: deliveredForRefund.reference }).getByRole("button", { name: "اختيار" }).click();
   const refundDraft = page.getByRole("form", { name: "إنشاء مسودة إرجاع" });
   await refundDraft.getByLabel("الكمية المستلمة").fill("1");
   await expect(page.getByTestId("refund-suggestion")).toContainText("الإجمالي: 290 ج.م.");
-  await refundDraft.getByRole("button", { name: "حفظ المسودة" }).click();
+  await refundDraft.getByText("خيارات المسودة").click();
+  await refundDraft.getByRole("button", { name: "حفظ كمسودة" }).click();
   await page.getByTestId("return-details").getByRole("button", { name: "تأكيد استلام وفحص المرتجع" }).click();
   await expect(page.getByTestId("return-details")).toContainText("الاسترداد النقدي مستحق");
   const paymentResponse = page.waitForResponse((response) => (
