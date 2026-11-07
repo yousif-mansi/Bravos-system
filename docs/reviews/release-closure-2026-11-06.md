@@ -165,3 +165,9 @@ All logs below are separate runs under `.scratch/release-closure-20261106/`; do 
 No redesign, schema/migration, dependency upgrade, ordinary business-data edit, printer/driver operation, issue closure or deployment is part of this follow-up. The protected review file remains hash-identical. Final matching remote CI is still required; the older red or partial runs must never be relabeled green.
 
 Final focused storefront verification: `browser-storefront-scoped.log` passed **1/1**. The preceding `browser-storefront-final.log` failed because a broad alert locator also selected Next.js's route announcer; the assertion now targets the cart line's actual warning and retains its exact one-unit limit. All three keyboard journeys remain separately recorded as passed in `browser-keyboard-final.log`. These reruns are not presented as one fresh full browser suite.
+
+### Operator handover correction — 7 November 2026
+
+The current handover guide was checked against the implemented product-level POS, minimum-price validation, permanent receipt numbering, warehouse transfers, restricted local printer connector and archive compatibility. Obsolete size/color POS steps, temporary-number wording, direct retail-intake instructions and schema-035 compatibility wording were corrected. This is documentation only; it does not change policies, runtime configuration or data. The guide explicitly retains the current connector's local HTTP-origin restriction rather than implying support for a hosted HTTPS staff origin.
+
+Application/test checkpoint `4f89c853af5d146f30dc6ff09bb7bf81d249c0b0` was published non-force to `main`; the initial transport timeout was followed by a successful push and independent remote-ref confirmation. This handover documentation follows that checkpoint. Fresh matching Windows CI remains required.
