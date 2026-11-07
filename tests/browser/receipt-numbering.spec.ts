@@ -33,7 +33,7 @@ type PosDb = {
   numberingRaw: string | null;
   numbering: Numbering | string | null;
   sales: LocalSale[];
-  effects: unknown[];
+  effects: Array<{ id: string; operationId: string }>;
 };
 
 type Seeded = {
@@ -141,7 +141,7 @@ async function readPosDb(page: Page): Promise<PosDb> {
     });
     const meta = await all<{ key: string; value: string }>("meta");
     const sales = await all<LocalSale>("sales");
-    const effects = await all<unknown>("effects");
+    const effects = await all<{ id: string; operationId: string }>("effects");
     db.close();
     const numberingRaw = meta.find((row) => row.key === "receiptNumbering")?.value ?? null;
     let numbering: Numbering | string | null = null;
@@ -359,12 +359,21 @@ test("two tabs allocate different counters and a failed sale rolls the counter b
   expect(new Set(sequences).size).toBe(2);
   expect(readyNumbering(state).nextSequence).not.toBe(sequences[0]);
   expect(state.effects).toHaveLength(2);
+  expect(state.effects.map((effect) => effect.operationId).sort()).toEqual(state.sales.map((sale) => sale.operationId).sort());
   expect(state.sales.every((sale) => sale.finalTotalPiasters === 12000)).toBe(true);
   await page.context().setOffline(false);
   await expect.poll(async () => {
     const found = await api(page, "GET", `/api/internal/catalog/lookup?code=${seeded.code}`);
     return found.availableQuantity;
   }).toBe(1);
+
+  const completedIds = state.sales.map((sale) => sale.id);
+  const completedOperations = state.sales.map((sale) => sale.operationId);
+  await expect.poll(async () => {
+    const current = await readPosDb(page);
+    return completedIds.every((id) => current.sales.some((sale) => sale.id === id && sale.syncStatus === "acknowledged"))
+      && current.effects.every((effect) => !completedOperations.includes(effect.operationId));
+  }).toBe(true);
 
   await openLookup(page);
   await expect.poll(() => {
@@ -399,6 +408,15 @@ test("two tabs allocate different counters and a failed sale rolls the counter b
   const afterFailure = await readPosDb(page);
   expect(afterFailure.sales).toHaveLength(beforeFailure.sales.length);
   expect(afterFailure.effects).toHaveLength(beforeFailure.effects.length);
+  const paidFacts = (sales: LocalSale[]) => sales.map((sale) => ({
+    id: sale.id,
+    operationId: sale.operationId,
+    receiptReference: sale.receiptReference,
+    receiptClaim: sale.receiptClaim,
+    finalTotalPiasters: sale.finalTotalPiasters,
+  })).sort((a, b) => a.id.localeCompare(b.id));
+  expect(paidFacts(afterFailure.sales)).toEqual(paidFacts(beforeFailure.sales));
+  expect(afterFailure.effects.map((effect) => effect.id).sort()).toEqual(beforeFailure.effects.map((effect) => effect.id).sort());
   expect(afterFailure.numberingRaw).toBe(beforeFailure.numberingRaw);
 });
 

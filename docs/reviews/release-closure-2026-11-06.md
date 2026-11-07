@@ -191,3 +191,13 @@ The separate category failure showed an absolute scroll change after a touch and
 - `category-focus-typecheck.log` passed the storefront typecheck. The PDF regression and its static checks are recorded separately above.
 
 The final Windows CI run must include the complete updated candidate. These local checks cover the affected flows in separate runs.
+
+### Browser sequencing follow-up
+
+On `c13b06d8`, Windows run `42383736088` passed the static/build job and **277/277 PostgreSQL and HTTP tests** across 36 files. Its full Chromium run recorded **214 passed / 4 failed**. The previously failing category gesture case and the new delayed-read regression passed.
+
+The workspace case now observes the first tab's account publication before the second branch choice. The lost-acknowledgment case drives an explicit retry, verifies the accepted response for the exact sale, and holds the response loss through sign-out. The receipt rollback case waits for the two prior sales' local acknowledgments before capturing the baseline, then compares their identities, amounts, receipt claims, effects, and counter after the injected failure.
+
+The analytics journey received the correct sort response in CI, where the development server took 16.3 seconds to finish streaming it. This one assertion now allows 30 seconds and requires the exact category and sort parameters. The CI stream latency source remains unconfirmed. In the focused local run, the corresponding request completed in 42 ms.
+
+The combined affected run passed **4/4** (`browser-four-ci-followups.log`). This follow-up changes test sequencing and the release ledger. The next complete Windows run is required for the full acceptance result.

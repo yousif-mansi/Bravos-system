@@ -509,28 +509,49 @@ test("a delayed explicit workspace persist cannot adopt a newer login revision",
   await expect(pageB.getByTestId("active-branch")).toContainText("أبشواي");
   await page.getByRole("link", { name: "تغيير الفرع" }).click();
   await expect(page.getByRole("heading", { name: "اختيار الفرع النشط" })).toBeVisible();
+  const staffId = (await staffApi(pageB, "GET", "/api/internal/workspace")).body.staff.id as string;
+  await pageB.evaluate((expectedStaffId) => {
+    const current = JSON.parse(localStorage.getItem("bravos.account") ?? "null") as { eventId?: string } | null;
+    window.__bravosObservedBranchPublication = false;
+    const observe = (event: StorageEvent) => {
+      if (event.key !== "bravos.account" || !event.newValue) return;
+      const next = JSON.parse(event.newValue) as { eventId?: string; staffId?: string };
+      if (next.staffId === expectedStaffId && next.eventId !== current?.eventId) {
+        window.__bravosObservedBranchPublication = true;
+        window.removeEventListener("storage", observe);
+      }
+    };
+    window.addEventListener("storage", observe);
+    window.__bravosRemoveBranchPublicationListener = () => window.removeEventListener("storage", observe);
+  }, staffId);
   await holdSessionRevisionReads(page);
-  await page.getByRole("button", { name: "الفيوم" }).click();
-  await expect.poll(() => page.evaluate(() => window.__bravosSessionRevisionReadStarted === true)).toBe(true);
-  await pageB.getByRole("link", { name: "تغيير الفرع" }).click();
-  await pageB.getByRole("button", { name: "أبشواي" }).click();
-  await expect(pageB.getByTestId("active-branch")).toContainText("أبشواي");
-  await waitForPosWriteQueue(pageB);
-  const afterB = await readCurrentWorkspace(pageB);
-  expect(afterB.branchName).toBe("أبشواي");
-  expect(afterB.branchCode).toBe("abshway");
-  await releaseSessionRevisionReads(page);
-  await waitForPosWriteQueue(page);
-  await waitForPosWriteQueue(pageB);
-  await expect(pageB.getByTestId("active-branch")).toContainText("أبشواي");
-  await expect(pageB.getByTestId("active-branch")).not.toContainText("الفيوم");
-  const stored = await readCurrentWorkspace(pageB);
-  expect(stored.branchName).toBe("أبشواي");
-  expect(stored.branchCode).toBe("abshway");
-  const storedOnA = await readCurrentWorkspace(page);
-  expect(storedOnA.currentId).toBe(stored.currentId);
-  expect(storedOnA.branchCode).toBe("abshway");
-  expect(storedOnA.branchName).toBe("أبشواي");
+  try {
+    await page.getByRole("button", { name: "الفيوم" }).click();
+    await expect.poll(() => pageB.evaluate(() => window.__bravosObservedBranchPublication === true)).toBe(true);
+    await expect.poll(() => page.evaluate(() => window.__bravosSessionRevisionReadStarted === true)).toBe(true);
+    await pageB.getByRole("link", { name: "تغيير الفرع" }).click();
+    await pageB.getByRole("button", { name: "أبشواي" }).click();
+    await expect(pageB.getByTestId("active-branch")).toContainText("أبشواي");
+    await waitForPosWriteQueue(pageB);
+    const afterB = await readCurrentWorkspace(pageB);
+    expect(afterB.branchName).toBe("أبشواي");
+    expect(afterB.branchCode).toBe("abshway");
+    await releaseSessionRevisionReads(page);
+    await waitForPosWriteQueue(page);
+    await waitForPosWriteQueue(pageB);
+    await expect(pageB.getByTestId("active-branch")).toContainText("أبشواي");
+    await expect(pageB.getByTestId("active-branch")).not.toContainText("الفيوم");
+    const stored = await readCurrentWorkspace(pageB);
+    expect(stored.branchName).toBe("أبشواي");
+    expect(stored.branchCode).toBe("abshway");
+    const storedOnA = await readCurrentWorkspace(page);
+    expect(storedOnA.currentId).toBe(stored.currentId);
+    expect(storedOnA.branchCode).toBe("abshway");
+    expect(storedOnA.branchName).toBe("أبشواي");
+  } finally {
+    await releaseSessionRevisionReads(page);
+    await pageB.evaluate(() => window.__bravosRemoveBranchPublicationListener?.());
+  }
   await pageB.close();
 });
 
@@ -1297,6 +1318,8 @@ async function addTwoPricedProducts(
 
 declare global {
   interface Window {
+    __bravosObservedBranchPublication?: boolean;
+    __bravosRemoveBranchPublicationListener?: () => void;
     __bravosSessionRevisionReadStarted?: boolean;
     __bravosReleaseSessionRevisionReads?: () => void;
     __bravosRestoreSessionRevisionReads?: () => void;

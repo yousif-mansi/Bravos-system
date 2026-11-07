@@ -432,7 +432,28 @@ test("lost acknowledgement is reconciled from an opaque later snapshot without l
   await page.getByRole("link", { name: "البحث عن منتج" }).click();
   await page.route("**/api/internal/sales/prepare", (route) => route.abort("failed"));
   await page.route("**/api/internal/sales", (route) => route.abort("failed"));
-  await page.route("**/api/internal/sales/accepted", (route) => route.abort("failed"));
+  let phase: "blocked" | "armed" | "intercepted" = "blocked";
+  let blockedAttemptCompleted = false;
+  let intercepted: { saleId?: string; operationId?: string; status: number } | undefined;
+  let lostAcknowledgementCompleted = false;
+  await page.route("**/api/internal/sales/accepted", async (route) => {
+    if (phase === "armed") {
+      phase = "intercepted";
+      const payload = route.request().postDataJSON() as { saleId?: string; operationId?: string };
+      const response = await route.fetch();
+      intercepted = { saleId: payload.saleId, operationId: payload.operationId, status: response.status() };
+      try {
+        expect(intercepted).toEqual({ saleId: original?.id, operationId: original?.operationId, status: 201 });
+        expect((await response.json()).id).toBe(original?.id);
+      } finally {
+        await route.abort("failed");
+        lostAcknowledgementCompleted = true;
+      }
+    } else {
+      await route.abort("failed");
+      if (phase === "blocked") blockedAttemptCompleted = true;
+    }
+  });
   await addAndPrice(page, seed, {
     customerName: "زبون الخصوصية",
     customerPhone: "01099887766",
@@ -442,23 +463,24 @@ test("lost acknowledgement is reconciled from an opaque later snapshot without l
   await expect(page.getByRole("status")).toContainText("تم حفظ البيع.");
   const original = (await readPrivacyState(page)).sales[0];
   expect(original?.customerPhone).toBe("01099887766");
-  await page.unroute("**/api/internal/sales/accepted");
-  let lostAcknowledgementCompleted = false;
-  await page.route("**/api/internal/sales/accepted", async (route) => {
-    await route.fetch();
-    await route.abort("failed");
-    lostAcknowledgementCompleted = true;
-  });
+  await expect.poll(() => blockedAttemptCompleted).toBe(true);
   await page.route("**/api/internal/sales/pos-snapshots", (route) => route.abort("failed"));
   await page.getByRole("link", { name: "العودة لمساحة العمل" }).click();
+  await expect(page.getByTestId("unsynced-count")).toContainText("مبيعات غير مزامنة: 1");
+  const retry = page.getByTestId("retry-sync");
+  await expect(retry).toBeEnabled();
+  phase = "armed";
+  await retry.click();
+  await expect.poll(() => lostAcknowledgementCompleted, { timeout: 15_000 }).toBe(true);
+  expect(intercepted).toEqual({ saleId: original?.id, operationId: original?.operationId, status: 201 });
   await expect.poll(async () =>
     (await staffApi(page, "GET", "/api/internal/sales")).body.some((sale: { id: string }) => sale.id === original?.id),
   ).toBe(true);
   await expect(page.getByTestId("unsynced-count")).toContainText("مبيعات غير مزامنة: 1");
-  await expect.poll(() => lostAcknowledgementCompleted, { timeout: 15_000 }).toBe(true);
+  await page.getByRole("button", { name: "تسجيل الخروج" }).click();
+  await expect(page.getByRole("heading", { name: "تسجيل الدخول" })).toBeVisible();
   await page.unroute("**/api/internal/sales/accepted");
   await page.unroute("**/api/internal/sales/pos-snapshots");
-  await page.getByRole("button", { name: "تسجيل الخروج" }).click();
   await page.getByLabel("اسم الدخول").fill("cashier-b");
   await page.getByLabel("كلمة المرور").fill("e2e-cashier-b-pass");
   await page.getByRole("button", { name: "دخول" }).click();
