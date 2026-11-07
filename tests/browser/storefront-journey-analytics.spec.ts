@@ -85,8 +85,7 @@ test("full shopping journey preserves aggregate analytics across desktop and mob
   await expect(page.getByLabel("Filter by category").getByRole("link", { name: category.nameAr, exact: true })).toHaveAttribute("aria-current", "page");
   await expect(page.getByLabel("Sort")).toBeEnabled();
   await page.getByLabel("Sort").selectOption("price-asc");
-  // CI's streamed sort transition took 16.3 seconds to complete.
-  await expect(page).toHaveURL((url) => url.searchParams.get("category") === category.id && url.searchParams.get("sort") === "price-asc", { timeout: 30_000 });
+  await expect(page).toHaveURL((url) => url.searchParams.get("category") === category.id && url.searchParams.get("sort") === "price-asc");
   await page.locator("a.product-card").filter({ hasText: product.nameAr }).click();
   await expect(page.getByRole("heading", { name: product.nameAr })).toBeVisible();
   await expect.poll(() => eventCount("product_view")).toBe(1);

@@ -201,3 +201,11 @@ The workspace case now observes the first tab's account publication before the s
 The analytics journey received the correct sort response in CI, where the development server took 16.3 seconds to finish streaming it. This one assertion now allows 30 seconds and requires the exact category and sort parameters. The CI stream latency source remains unconfirmed. In the focused local run, the corresponding request completed in 42 ms.
 
 The combined affected run passed **4/4** (`browser-four-ci-followups.log`). This follow-up changes test sequencing and the release ledger. The next complete Windows run is required for the full acceptance result.
+
+### Built-storefront acceptance follow-up — 8 November 2026
+
+Windows run `42387879829` on `15031b68` passed static/build checks and **277/277 HTTP tests**. The full Chromium run recorded **215 passed / 3 failed**. Two storefront transitions reached the expected HTTP 200 after 19.6 and 19.9 seconds in Next's development server, beyond the 15-second URL assertions. The lost-sale-response case did not observe its automatic replay within the assertion window.
+
+Windows CI now builds the storefront once in the isolated `.next-e2e` directory and serves it with `next start`. The browser suite retains its 15-second expectation budget, including the exact category and sort check. Local development keeps its existing dev command. The sale replay test keeps one interception through the committed response loss and retry, drives the workspace retry when needed, and verifies the exact sale and operation identifiers, single payment, and single stock deduction.
+
+The focused Windows run with `CI=true` built and served the storefront and passed **5/5** (`browser-built-storefront-followups.log`). It covered the sale replay, delayed category loads, touch and keyboard scrolling, category loading and sorting, and the full analytics and checkout journey. The full CI result remains the acceptance gate for the published candidate.

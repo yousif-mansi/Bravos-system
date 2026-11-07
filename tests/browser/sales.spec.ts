@@ -253,7 +253,13 @@ test("lost complete response retries the same sale without charging the customer
 
   const saleIds: string[] = [];
   const operationIds: string[] = [];
+  const retryIds: string[] = [];
+  const retryOps: string[] = [];
+  const retryStatuses: number[] = [];
   let lostResponseCompleted = false;
+  let firstRequest = true;
+  let releaseFirstResponse: () => void = () => undefined;
+  const firstResponseFinished = new Promise<void>((resolve) => { releaseFirstResponse = resolve; });
   await page.route("**/api/internal/sales", async (route) => {
     const url = new URL(route.request().url());
     if (route.request().method() !== "POST" || url.pathname !== "/api/internal/sales") {
@@ -261,14 +267,28 @@ test("lost complete response retries the same sale without charging the customer
       return;
     }
     const payload = route.request().postDataJSON() as { saleId: string; operationId: string };
-    saleIds.push(payload.saleId);
-    operationIds.push(payload.operationId);
+    if (firstRequest) {
+      firstRequest = false;
+      saleIds.push(payload.saleId);
+      operationIds.push(payload.operationId);
+      try {
+        const response = await route.fetch();
+        expect(response.status()).toBe(201);
+        await route.abort("connectionreset");
+        lostResponseCompleted = true;
+      } finally {
+        releaseFirstResponse();
+      }
+      return;
+    }
+    // A background retry may start before the lost-response handler finishes.
+    await firstResponseFinished;
+    retryIds.push(payload.saleId);
+    retryOps.push(payload.operationId);
     const response = await route.fetch();
-    expect(response.status()).toBe(201);
-    await route.abort("connectionreset");
-    lostResponseCompleted = true;
+    retryStatuses.push(response.status());
+    await route.fulfill({ response });
   });
-
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await checkout.getByRole("radio", { name: /إلكترونياً بالكامل/ }).check();
   await expect(page.getByTestId("payment-remaining")).toContainText("0");
@@ -291,30 +311,19 @@ test("lost complete response retries the same sale without charging the customer
   })) as { id: string; operationId: string };
   expect(local.id).toBeTruthy();
   await expect.poll(() => lostResponseCompleted, { timeout: 15_000 }).toBe(true);
-  await page.unroute("**/api/internal/sales");
-  const retryIds: string[] = [];
-  const retryOps: string[] = [];
-  const retryStatuses: number[] = [];
-  await page.route("**/api/internal/sales", async (route) => {
-    const url = new URL(route.request().url());
-    if (route.request().method() === "POST" && url.pathname === "/api/internal/sales") {
-      const payload = route.request().postDataJSON() as { saleId: string; operationId: string };
-      retryIds.push(payload.saleId);
-      retryOps.push(payload.operationId);
-      const response = await route.fetch();
-      retryStatuses.push(response.status());
-      await route.fulfill({ response });
-      return;
-    }
-    await route.continue();
-  });
   await page.getByRole("link", { name: "العودة لمساحة العمل" }).click();
   await expect(page.getByTestId("unsynced-count")).toBeVisible();
+  const retry = page.getByTestId("retry-sync");
+  await expect(retry).toBeEnabled();
+  if (retryStatuses.length === 0) {
+    await retry.click();
+  }
   await expect.poll(() => retryStatuses.at(-1) ?? 0).toBe(200);
   await expect(page.getByTestId("unsynced-count")).toContainText("مبيعات غير مزامنة: 0");
   expect(retryIds).toContain(local.id);
   expect(retryOps).toContain(local.operationId);
   expect(new Set([...saleIds, ...retryIds])).toEqual(new Set([local.id]));
+  expect(new Set([...operationIds, ...retryOps])).toEqual(new Set([local.operationId]));
   expect(retryStatuses.every((status) => status === 200)).toBe(true);
   const listed = await staffApi(page, "GET", "/api/internal/sales");
   expect(listed.status).toBe(200);

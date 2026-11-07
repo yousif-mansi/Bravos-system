@@ -6,6 +6,10 @@ import { pinnedProcessEnv } from "./scripts/pinned-env.ts";
 const controlFile = path.resolve(".local", `e2e-control-${process.pid}-${randomBytes(12).toString("hex")}.json`);
 process.env.BRAVOS_E2E_CONTROL_FILE = controlFile;
 const env = pinnedProcessEnv({ BRAVOS_E2E_CONTROL_FILE: controlFile });
+// Run acceptance against built storefront assets on the Windows CI runner.
+const storefrontCommand = process.env.CI === "true"
+  ? "pnpm --filter @bravos/storefront build && pnpm --filter @bravos/storefront exec next start --hostname 127.0.0.1 --port 3001"
+  : "pnpm --filter @bravos/storefront exec next dev --hostname 127.0.0.1 --port 3001";
 
 export default defineConfig({
   testDir: "tests/browser",
@@ -39,7 +43,7 @@ export default defineConfig({
       env: pinnedProcessEnv({ BRAVOS_API_ORIGIN: "http://127.0.0.1:3011" }),
     },
     {
-      command: "pnpm --filter @bravos/storefront exec next dev --hostname 127.0.0.1 --port 3001",
+      command: storefrontCommand,
       url: "http://127.0.0.1:3001",
       reuseExistingServer: false,
       timeout: 180_000,
