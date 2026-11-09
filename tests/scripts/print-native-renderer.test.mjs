@@ -328,21 +328,6 @@ function lineInk(pixels, width, height, line) {
 
 const RECEIPT_CONTENT_WIDTH_DOTS = 575;
 
-function assertCenteredArabicLine(image, line) {
-  const ink = lineInk(image.pixels, image.width, image.height, line);
-  assert.ok(ink.maxX >= ink.minX, `${line.role} has ink`);
-  const mid = (ink.minX + ink.maxX) / 2;
-  const contentMid = RECEIPT_CONTENT_WIDTH_DOTS / 2;
-  assert.ok(Math.abs(mid - contentMid) <= 16, `${line.role} ink center ${mid} vs content ${contentMid}`);
-  assert.ok(ink.minX >= 0 && ink.maxX < RECEIPT_CONTENT_WIDTH_DOTS);
-  for (let y = ink.y0; y <= ink.y1; y += 1) {
-    const left = (y * image.width + 0) * 4;
-    const right = (y * image.width + (image.width - 1)) * 4;
-    assert.ok(image.pixels[left] >= 250 && image.pixels[left + 1] >= 250 && image.pixels[left + 2] >= 250);
-    assert.ok(image.pixels[right] >= 250 && image.pixels[right + 1] >= 250 && image.pixels[right + 2] >= 250);
-  }
-}
-
 function assertReceiptInkInContentBand(pixels, width, height) {
   for (let y = 0; y < height; y += 1) {
     for (let x = RECEIPT_CONTENT_WIDTH_DOTS; x < width; x += 1) {
@@ -352,25 +337,48 @@ function assertReceiptInkInContentBand(pixels, width, height) {
   }
 }
 
-test("receipt preview centers short Arabic title, branch, and thanks ink", { skip: !windows }, async () => {
-  const preview = await previewNativeJob(receiptDispatch(1), { helperPath });
+test("compact receipt aligns regular prices and shows one combined discount", { skip: !windows }, async () => {
+  const dispatch = receiptDispatch(1);
+  dispatch.document.receiptView.lines[0].quantityAndUnitPrice = "2 × 425.00";
+  dispatch.document.receiptView.adjustments.splice(1, 1,
+    { label: "خصم الكوبون", amount: "20.25" },
+    { label: "خصم الموظف", amount: "29.75" },
+  );
+  const preview = await previewNativeJob(dispatch, { helperPath });
   assert.equal(preview.ok, true, preview.ok ? undefined : JSON.stringify(preview));
   if (!preview.ok) return;
   assert.equal(preview.printInvoked, false);
+  assert.equal(preview.pages.length, 1);
   const page = preview.pages[0];
-  assert.ok(page);
-  const png = Buffer.from(page.pngBase64, "base64");
-  const image = decodePng(png);
-  assert.equal(image.width, page.widthDots);
-  const title = preview.lines.find((line) => line.role === "title" && line.page === 0);
-  const branch = preview.lines.find((line) => line.role === "branch" && line.page === 0);
-  const thanks = preview.lines.find((line) => line.role === "thanks" && line.page === 0);
-  assert.equal(title?.text, "إيصال بيع");
-  assert.equal(branch?.text, "فرع الفيوم");
-  assert.equal(thanks?.text, "شكرًا لتسوقكم");
-  assertCenteredArabicLine(image, title);
-  assertCenteredArabicLine(image, branch);
-  assertCenteredArabicLine(image, thanks);
+  assert.ok(page.heightDots < 1050);
+  const line = (role, text) => preview.lines.find((entry) => entry.role === role && entry.text === text);
+  const branch = line("branch", "فرع الفيوم");
+  const reference = line("reference", "BRV-001/000042");
+  const heading = line("items-heading", "الصنف");
+  const name = preview.lines.find((entry) => entry.role === "item-name");
+  const qty = line("item-quantity", "2");
+  assert.deepEqual(preview.lines.filter((entry) => entry.role === "items-heading").map((entry) => entry.text), ["الصنف", "عدد", "السعر"]);
+  assert.ok(preview.lines.every((entry) => !["425.00", "BRV-SAMPLE-001", "L", "أسود"].includes(entry.text)));
+  const amount = line("item-total", "850.00");
+  const subtotal = line("subtotal", "850.00");
+  const discount = line("discount", "50");
+  const total = line("total", "800.00");
+  const allocation = line("allocation", "800.00");
+  assert.ok(branch && reference && heading && name && qty && amount && subtotal && discount && total && allocation);
+  assert.ok(branch.y < reference.y && reference.y < heading.y && heading.y < qty.y);
+  assert.equal(qty.y, name.y);
+  assert.equal(qty.y, amount.y);
+  assert.ok(amount.x + amount.w < qty.x && qty.x + qty.w < name.x);
+  assert.ok(amount.y < subtotal.y && subtotal.y < discount.y && discount.y < total.y && total.y < allocation.y);
+  assert.deepEqual(preview.lines.filter((entry) => entry.role === "discount").map((entry) => entry.text), ["الخصم", "50"]);
+  assert.ok(preview.lines.every((entry) => !entry.text.includes("→") && !entry.text.includes("خصم الكوبون") && !entry.text.includes("خصم الموظف")));
+  const image = decodePng(Buffer.from(page.pngBase64, "base64"));
+  const inkAt = (x, y) => image.pixels[(y * image.width + x) * 4] < 128;
+  const midGap = Math.floor((amount.x + amount.w + qty.x) / 2);
+  assert.equal(inkAt(midGap, amount.y + Math.floor(amount.h / 2)), false);
+  const separator = Array.from({ length: amount.y - heading.y }, (_, i) => heading.y + i)
+    .some((y) => inkAt(midGap, y) && inkAt(midGap + 30, y));
+  assert.equal(separator, true);
   assertReceiptInkInContentBand(image.pixels, image.width, image.height);
   assert.ok(page.ink.minX >= 0 && page.ink.maxX < RECEIPT_CONTENT_WIDTH_DOTS);
 });
@@ -379,14 +387,19 @@ test("product-level receipt preview omits empty website options without printing
   const dispatch = receiptDispatch(1);
   dispatch.document.receiptView.lines[0].sizeName = "";
   dispatch.document.receiptView.lines[0].colorName = "";
+  dispatch.document.receiptView.lines[0].linePaid = null;
+  dispatch.document.receiptView.adjustments = [];
+  dispatch.document.receiptView.finalTotal = "850.00";
+  dispatch.document.receiptView.paymentAllocations[0].amount = "850.00";
   assert.equal(prepareNativeJob(dispatch).ok, true);
   const preview = await previewNativeJob(dispatch, { helperPath });
   assert.equal(preview.ok, true, preview.ok ? undefined : JSON.stringify(preview));
   if (!preview.ok) return;
   assert.equal(preview.printInvoked, false);
-  assert.equal(preview.lines.some((line) => line.role === "item-variant"), false);
+  assert.ok(preview.lines.every((line) => line.role !== "item-meta" && line.text !== "BRV-SAMPLE-001"));
   assert.equal(preview.lines.some((line) => line.role === "item-name" && line.text.includes("بنطال تويل")), true);
-  assert.equal(preview.lines.some((line) => line.role === "total" && line.text.includes("800.00")), true);
+  assert.deepEqual(preview.lines.filter((line) => line.role === "total").map((line) => line.text), ["الإجمالي", "850.00"]);
+  assert.ok(preview.lines.every((line) => line.role !== "subtotal" && line.role !== "discount"));
   for (const page of preview.pages) {
     assert.ok(page.ink.minX >= 0 && page.ink.maxX < RECEIPT_CONTENT_WIDTH_DOTS);
   }
@@ -401,14 +414,14 @@ test("receipt preview keeps fields, logo ink, and page bounds", { skip: !windows
   assert.ok(preview.pages.length <= 6);
   assert.equal(typeof preview.maxPageHeightDots, "number");
   const roles = new Set(preview.lines.map((line) => line.role));
-  for (const role of ["branch", "contact", "detail", "item-name", "total", "payment", "thanks"]) {
+  for (const role of ["branch", "reference", "detail", "item-name", "item-total", "total", "allocation"]) {
     assert.equal(roles.has(role), true);
   }
   const texts = preview.lines.map((line) => line.text).join("\n");
   assert.equal(texts.includes("010-1741.2287 تحويلة"), true);
   assert.equal(texts.includes("٠١٠١٢٣٤٥٦٧٨"), true);
   assert.equal(texts.includes("800.00"), true);
-  assert.equal(texts.includes("بنطال تويل — Twill & Co."), true);
+  assert.equal(preview.lines.filter((line) => line.role === "item-name").map((line) => line.text).join(" ").includes(oneLine().productName), true);
   for (const page of preview.pages) {
     assert.ok(page.heightDots <= (preview.maxPageHeightDots ?? 0));
     assert.ok(page.ink.minX >= 0 && page.ink.minY >= 0);

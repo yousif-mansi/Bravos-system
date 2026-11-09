@@ -210,12 +210,12 @@ test("receipt preview renders the completed sale at 58mm and 80mm", async ({ pag
     await expect(logo).toHaveAttribute("viewBox", "0 0 923 389");
     await expect(logo).toHaveAttribute("aria-hidden", "true");
     await expect(frame.getByRole("heading", { name: "BRAVOS" })).toHaveCount(1);
-    await expect(frame.getByText("إيصال بيع", { exact: true })).toBeVisible();
+    expect(await frame.locator("html").evaluate((element) => element.ownerDocument.title)).toBe("إيصال بيع");
     await expect(frame.getByText(data.nameAr, { exact: false })).toBeVisible();
     await expect(frame.locator("body")).toContainText("120");
     await expect(frame.locator("body")).toContainText(contactPhone);
     await expect(frame.locator("body")).toContainText("BRAVOS");
-    await expect(frame.locator("body")).toContainText(data.product.code);
+    await expect(frame.locator("body")).not.toContainText(data.product.code);
     await expect(frame.locator("body")).toContainText(customerName);
     await expect(frame.locator("body")).toContainText(customerPhone);
     await expect(frame.locator("body")).toContainText(sale.soldByDisplayName);
@@ -232,8 +232,7 @@ test("receipt preview renders the completed sale at 58mm and 80mm", async ({ pag
     await expect(frame.locator("body")).not.toContainText("عملية محلية");
     await expect(frame.locator("body")).toContainText("رقم الإيصال");
     await expect(frame.locator("body")).not.toContainText("رقم الطلب");
-    await expect(frame.locator("body")).toContainText("طريقة الدفع");
-    await expect(frame.locator("body")).toContainText("شكرًا لتسوقكم");
+    await expect(frame.locator(".payment")).toContainText("المبلغ النقدي");
     await expect(frame.locator("img, script")).toHaveCount(0);
     await expect(frame.locator('b[data-injected="pos-hardware"]')).toHaveCount(0);
     await expect(frame.getByRole("link", { name: "تغيير الفرع" })).toHaveCount(0);
@@ -243,7 +242,21 @@ test("receipt preview renders the completed sale at 58mm and 80mm", async ({ pag
     await expect(frame.locator("body")).not.toContainText(sale.soldByStaffId);
     await expect(frame.locator("body")).not.toContainText("ج.م.");
     await expect(frame.locator("body")).not.toContainText("EGP");
-    await expect(frame.locator(".qty, .figures").first()).toHaveAttribute("dir", "ltr");
+    await expect(frame.getByRole("table")).toHaveCount(1);
+    await expect(frame.locator(".details .detail").first()).toHaveCSS("border-bottom-style", "none");
+    await expect(frame.locator(".summary .detail").first()).toHaveCSS("border-bottom-style", "none");
+    const items = frame.getByRole("table", { name: "الأصناف" });
+    await expect(items.getByRole("columnheader")).toHaveText(["الصنف", "عدد", "السعر"]);
+    await expect(items.locator("tbody tr").first().getByRole("cell")).toHaveCount(3);
+    const figures = items.locator("tbody .figures");
+    await expect(figures).toHaveText(["1", "120"]);
+    await expect(figures.first()).toHaveAttribute("dir", "ltr");
+    await expect(figures.first()).toHaveCSS("font-weight", "400");
+    await expect(figures.first()).toHaveCSS("font-size", "9.5px");
+    await expect(figures.first()).toHaveCSS("border-inline-start-style", "none");
+    await expect(frame.locator(".total")).toHaveCSS("font-weight", "600");
+    await expect(frame.locator(".total .label")).toHaveText("الإجمالي");
+    await expect(frame.locator("body")).not.toContainText("الخصم");
     await expect(frame.locator("html")).toHaveAttribute("data-receipt-page-width-mm", paperWidthMm === 80 ? "72" : "48");
     const pageHeightMm = Number(await frame.locator("html").getAttribute("data-receipt-page-height-mm"));
     expect(pageHeightMm).toBeGreaterThan(20);
@@ -281,12 +294,14 @@ test("receipt preview renders the completed sale at 58mm and 80mm", async ({ pag
   expect(unsyncedPreview.receiptReference).toBeNull();
   expect(await narrow.locator(".receipt").evaluate((node) => node.scrollWidth <= node.clientWidth + 1)).toBe(true);
   for (const labelText of ["رقم الإيصال", "العميل"]) {
-    const metrics = await narrow.locator(".detail .label").filter({ hasText: labelText }).evaluate((node) => {
-      const lineHeight = Number.parseFloat(getComputedStyle(node).lineHeight);
-      return { height: node.getBoundingClientRect().height, lineHeight };
+    const fitsOneLine = await narrow.locator(".details .label").filter({ hasText: labelText }).evaluate((node) => {
+      const cell = node.getBoundingClientRect();
+      const text = node.ownerDocument.createRange();
+      text.selectNodeContents(node);
+      const rects = Array.from(text.getClientRects());
+      return rects.length === 1 && rects[0]!.left >= cell.left && rects[0]!.right <= cell.right;
     });
-    expect(metrics.lineHeight, labelText).toBeGreaterThan(0);
-    expect(metrics.height, labelText).toBeLessThanOrEqual(metrics.lineHeight + 1);
+    expect(fitsOneLine, labelText).toBe(true);
   }
 
   const preparedPreview = { ...sale, reference: "POS-000123", receiptReference: null };

@@ -1,9 +1,10 @@
+import { egpInputToPiasters, piastersToEgpInput } from "../money.ts";
 import officialHorizontalLogoSvg from "../../../../logo svg/02_Logo_Horizontal_Black.svg?raw";
 import { receiptPageSizeCss, receiptPageSizeMm, type ReceiptView } from "./receipt-model.ts";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const XLINK_NS = "http://www.w3.org/1999/xlink";
-const LOGO_WIDTH_MM = 34;
+const LOGO_WIDTH_MM = 22;
 
 /** Same subset ranges as apps/internal/src/styles/fonts.css so the faces combine. */
 const CAIRO_RANGES = {
@@ -28,7 +29,7 @@ export const receiptFontSources: readonly { readonly file: string; readonly unic
 
 export function receiptFontStyles(fontBaseUrl: string): string {
   const base = fontBaseUrl.replace(/\/$/, "");
-  return [400, 700]
+  return [400, 600]
     .flatMap((weight) =>
       FONT_FILES.map(
         ([file, range]) =>
@@ -45,7 +46,9 @@ html, body { margin: 0; padding: 0; background: #fff; color: #000; width: ${cont
 body {
   font-family: Cairo, sans-serif;
   font-size: 12px;
+  font-weight: 400;
   line-height: 1.35;
+  font-variant-numeric: tabular-nums;
   width: ${contentWidthMm}mm;
 }
 .receipt {
@@ -74,7 +77,7 @@ body {
   -webkit-print-color-adjust: exact;
   print-color-adjust: exact;
 }
-.brand { margin: 0; text-align: center; font-size: 18px; font-weight: 700; letter-spacing: 0.08em; }
+.brand { margin: 0; text-align: center; font-size: 18px; font-weight: 600; letter-spacing: 0.08em; }
 .visually-hidden {
   position: absolute;
   width: 1px;
@@ -90,30 +93,30 @@ body {
 @media print {
   .visually-hidden { display: none; }
 }
-.center { text-align: center; }
-.title { margin: 0 0 1mm; font-size: 13px; font-weight: 700; }
-.muted { margin: 1mm 0; }
-.rule { border: 0; border-top: 1px solid #000; margin: 2mm 0; }
-.line { break-inside: avoid; page-break-inside: avoid; margin: 0 0 2mm; }
-.name, .meta, .refs, .value { unicode-bidi: isolate; overflow-wrap: anywhere; word-break: break-word; }
-.qty { unicode-bidi: isolate; direction: ltr; text-align: start; margin: 0.4mm 0; }
-.detail {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 2mm;
-  margin: 0.5mm 0;
-  break-inside: avoid;
-  page-break-inside: avoid;
-}
-.detail .label { flex: 0 0 auto; overflow-wrap: normal; word-break: normal; }
-.detail .value { flex: 1 1 auto; min-width: 0; text-align: start; }
-.row { display: flex; justify-content: space-between; gap: 2mm; break-inside: avoid; page-break-inside: avoid; }
-.row span { unicode-bidi: isolate; min-width: 0; overflow-wrap: anywhere; }
-.figures { unicode-bidi: isolate; direction: ltr; white-space: nowrap; flex: 0 0 auto; }
-.total { font-size: 16px; font-weight: 700; margin-top: 1mm; }
-.footer { text-align: center; margin-top: 3mm; }
 h1, p { margin: 0; }
+.header { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 1mm; }
+.header .logo-wrap { margin: 0; }
+.details, .summary { margin-top: 1.2mm; }
+.details .detail + .detail { margin-top: 0.5mm; }
+.detail { display: flex; justify-content: space-between; align-items: baseline; gap: 1mm; break-inside: avoid; }
+.detail .label { flex: 0 0 auto; }
+.detail .value { min-width: 0; text-align: left; }
+.total { margin-top: 0.5mm; font-size: 14px; font-weight: 600; }
+.items { width: 100%; table-layout: fixed; border-collapse: collapse; text-align: right; margin-top: 1mm; }
+.items th, .items td { padding: 0.45mm 0.4mm; vertical-align: top; border-bottom: 0.5px solid #555; }
+.items tr { break-inside: avoid; page-break-inside: avoid; }
+.items col.product { width: 56%; }
+.items col.quantity { width: 16%; }
+.items col.money { width: 28%; }
+.items th { font-size: 11px; font-weight: 600; vertical-align: bottom; }
+.items .figures { text-align: right; }
+.name { text-align: right; }
+@media screen {
+  [data-receipt-preview] body { font-size: 9.5px; }
+  [data-receipt-preview] .items th { font-size: 9px; }
+  [data-receipt-preview] .total { font-size: 11.5px; }
+}
+
 `;
 }
 
@@ -123,40 +126,15 @@ function create(doc: Document, tag: string, className?: string): HTMLElement {
   return element;
 }
 
-function row(
-  doc: Document,
-  parent: ParentNode,
-  label: string,
-  value: string,
-  className = "row",
-  labelDir: "auto" | "ltr" = "auto",
-): void {
-  const line = create(doc, "div", className);
-  const labelNode = create(doc, "span", labelDir === "ltr" ? "qty" : undefined);
-  labelNode.textContent = label;
-  labelNode.dir = labelDir;
-  const valueNode = create(doc, "span", "figures");
-  valueNode.textContent = value;
-  valueNode.dir = "ltr";
-  line.append(labelNode, valueNode);
-  parent.appendChild(line);
-}
-
-function quantityLine(doc: Document, parent: ParentNode, text: string): void {
-  const line = create(doc, "p", "qty");
-  line.dir = "ltr";
-  line.textContent = text;
-  parent.appendChild(line);
-}
-
 function detail(
   doc: Document,
   parent: ParentNode,
   label: string,
   value: string,
   valueDir: "auto" | "ltr" = "auto",
+  className?: string,
 ): void {
-  const line = create(doc, "p", "detail");
+  const line = create(doc, "div", className ? "detail " + className : "detail");
   const labelNode = create(doc, "span", "label");
   labelNode.textContent = label;
   const valueNode = create(doc, "span", "value");
@@ -238,84 +216,87 @@ export function renderReceiptDocument(doc: Document, view: ReceiptView, fontBase
   doc.documentElement.setAttribute("data-receipt-page-height-mm", "80");
 
   const receipt = create(doc, "main", "receipt");
-  const logoMounted = appendOfficialLogo(doc, receipt);
+  const header = create(doc, "header", "header");
+  const identity = create(doc, "div");
+  const branch = create(doc, "p", "branch");
+  branch.textContent = view.branchName;
+  identity.appendChild(branch);
+  if (view.contactPhone) {
+    const phone = create(doc, "bdi");
+    phone.textContent = view.contactPhone;
+    identity.appendChild(phone);
+  }
+  header.appendChild(identity);
+  const logoMounted = appendOfficialLogo(doc, header);
   const brand = create(doc, "h1", logoMounted ? "brand visually-hidden" : "brand");
   brand.textContent = view.brand;
-  receipt.appendChild(brand);
-  const heading = create(doc, "p", "center title");
-  heading.textContent = "إيصال بيع";
-  receipt.appendChild(heading);
+  header.appendChild(brand);
+  receipt.appendChild(header);
 
-  const branch = create(doc, "p", "center name");
-  branch.textContent = view.branchName;
-  branch.dir = "auto";
-  receipt.appendChild(branch);
+  const details = create(doc, "div", "details");
+  receipt.appendChild(details);
+  detail(doc, details, "رقم الإيصال", view.printedReference, "auto", "receipt-reference");
+  detail(doc, details, "التاريخ", view.occurredAtLabel, "ltr");
+  if (view.cashierDisplayName !== "غير مسجل") detail(doc, details, "الكاشير", view.cashierDisplayName);
+  if (view.customerName !== "غير مسجل") detail(doc, details, "العميل", view.customerName);
+  if (view.customerPhone) detail(doc, details, "الهاتف", view.customerPhone, "ltr");
 
-  if (view.contactPhone) {
-    const phone = create(doc, "p", "center");
-    phone.textContent = view.contactPhone;
-    phone.dir = "ltr";
-    receipt.appendChild(phone);
+  const table = create(doc, "table", "items");
+  table.setAttribute("aria-label", "الأصناف");
+  const columns = create(doc, "colgroup");
+  for (const kind of ["product", "quantity", "money"]) columns.appendChild(create(doc, "col", kind));
+  table.appendChild(columns);
+  const headerRow = create(doc, "tr");
+  for (const label of ["الصنف", "عدد", "السعر"]) {
+    const cell = create(doc, "th");
+    cell.setAttribute("scope", "col");
+    cell.textContent = label;
+    headerRow.appendChild(cell);
   }
-
-  const rule = () => {
-    receipt.appendChild(create(doc, "hr", "rule"));
-  };
-  rule();
-
-  detail(doc, receipt, "رقم الإيصال", view.printedReference);
-  detail(doc, receipt, "التاريخ", view.occurredAtLabel);
-  detail(doc, receipt, "الكاشير", view.cashierDisplayName);
-  detail(doc, receipt, "العميل", view.customerName);
-  if (view.customerPhone) {
-    detail(doc, receipt, "الهاتف", view.customerPhone, "ltr");
-  }
-  rule();
-
+  const tableHead = create(doc, "thead");
+  tableHead.appendChild(headerRow);
+  table.appendChild(tableHead);
+  const tableBody = create(doc, "tbody");
   for (const line of view.lines) {
-    const block = create(doc, "section", "line");
+    const itemRow = create(doc, "tr");
+    const product = create(doc, "td");
     const name = create(doc, "p", "name");
-    name.textContent = line.productName;
     name.dir = "auto";
-    block.appendChild(name);
-    if (line.productCode) {
-      detail(doc, block, "الرمز", line.productCode, "ltr");
+    name.textContent = line.productName;
+    product.appendChild(name);
+    itemRow.appendChild(product);
+    const [quantity = ""] = line.quantityAndUnitPrice.split(" × ", 1);
+    for (const value of [quantity, line.lineOriginal]) {
+      const cell = create(doc, "td", "figures");
+      cell.dir = "ltr";
+      cell.textContent = value;
+      itemRow.appendChild(cell);
     }
-    if (line.sizeName.trim() || line.colorName.trim()) {
-      const variant = create(doc, "p", "meta");
-      variant.textContent = `${line.sizeName} · ${line.colorName}`;
-      variant.dir = "auto";
-      block.appendChild(variant);
-    }
-    if (line.linePaid) {
-      quantityLine(doc, block, line.quantityAndUnitPrice);
-      row(doc, block, "الأصلي", line.lineOriginal);
-      row(doc, block, "المدفوع", line.linePaid);
-    } else {
-      row(doc, block, line.quantityAndUnitPrice, line.lineOriginal, "row", "ltr");
-    }
-    receipt.appendChild(block);
+    tableBody.appendChild(itemRow);
   }
+  table.appendChild(tableBody);
+  receipt.appendChild(table);
 
-  rule();
-  for (const adjustment of view.adjustments) {
-    row(doc, receipt, adjustment.label, adjustment.amount);
+  const summary = create(doc, "div", "summary");
+  const subtotal = view.adjustments.find((line) => line.label === "الإجمالي قبل الخصم");
+  const discount = view.adjustments.reduce((sum, line) =>
+    line.label === "الإجمالي قبل الخصم" ? sum : sum + (egpInputToPiasters(line.amount) ?? 0), 0);
+  if (discount > 0) {
+    const beforeDiscount = subtotal?.amount ?? piastersToEgpInput(view.lines.reduce(
+      (sum, line) => sum + (egpInputToPiasters(line.lineOriginal) ?? 0), 0,
+    ));
+    detail(doc, summary, "الإجمالي قبل الخصم", beforeDiscount, "ltr");
+    detail(doc, summary, "الخصم", piastersToEgpInput(discount), "ltr");
   }
-  row(doc, receipt, "الإجمالي", view.finalTotal, "row total");
-  if (view.exchangeCredit) {
-    row(doc, receipt, "رصيد استبدال", view.exchangeCredit);
-  }
-  if (view.cashCollected) {
-    row(doc, receipt, "النقد المحصّل", view.cashCollected);
-  }
-  detail(doc, receipt, "طريقة الدفع", view.paymentMethodLabel);
-  for (const allocation of view.paymentAllocations) {
-    row(doc, receipt, allocation.label, allocation.amount);
-  }
+  detail(doc, summary, discount > 0 ? "الإجمالي بعد الخصم" : "الإجمالي", view.finalTotal, "ltr", "total");
 
-  const thanks = create(doc, "p", "footer");
-  thanks.textContent = "شكرًا لتسوقكم";
-  receipt.appendChild(thanks);
-
+  const payment = create(doc, "div", "payment");
+  if (view.exchangeCredit) detail(doc, payment, "رصيد استبدال", view.exchangeCredit, "ltr");
+  const single = view.paymentAllocations.length === 1 ? view.paymentAllocations[0] : null;
+  for (const allocation of view.paymentAllocations) detail(doc, payment, allocation.label, allocation.amount, "ltr");
+  const collectedAlreadyShown = single?.label === "المبلغ النقدي" && single.amount === view.cashCollected;
+  if (view.cashCollected !== null && !collectedAlreadyShown) detail(doc, payment, "النقد المحصّل", view.cashCollected, "ltr");
+  if (payment.hasChildNodes()) summary.appendChild(payment);
+  receipt.appendChild(summary);
   doc.body.appendChild(receipt);
 }

@@ -118,8 +118,9 @@ test("cached product lookup matches case, NFC, and trim and misses unknown codes
   assert.equal(findCachedProductByCode(products, "UNKNOWN-CODE"), undefined);
 });
 
-test("receipt keeps original Arabic and English product names", () => {
+test("receipt prefers the Arabic title in bilingual labels and keeps English-only names", () => {
   const sale = saleFixture();
+  sale.lines[0].variant.product.nameAr = "قميص — Linen Shirt";
   const view = buildReceiptView(structuredClone(sale), {
     paperWidthMm: 80,
     contactPhone: "01011112222",
@@ -577,7 +578,11 @@ test("authorized sale keeps a matching local receipt number only", () => {
 
 test("receipt paper names the customer number رقم الإيصال", () => {
   const source = readFileSync(new URL("../../apps/internal/src/receipts/receipt-document.ts", import.meta.url), "utf8");
-  assert.equal(source.includes('detail(doc, receipt, "رقم الإيصال", view.printedReference)'), true);
+  const referenceCall = 'detail(doc, details, "رقم الإيصال", view.printedReference, "auto", "receipt-reference")';
+  assert.ok(source.includes(referenceCall));
+  const itemTable = 'const table = create(doc, "table", "items")';
+  assert.ok(source.indexOf(referenceCall) < source.indexOf(itemTable));
+  assert.ok(source.indexOf(itemTable) < source.indexOf('detail(doc, summary, "الخصم"'));
   assert.equal(source.includes("رقم الطلب"), false);
   assert.equal(source.includes("عملية محلية"), false);
 });

@@ -133,6 +133,17 @@ function storedText(value: string | null | undefined): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+/** Prefer the Arabic name when the catalog label includes an English translation after an em dash. */
+function receiptProductName(name: string): string {
+  const [primary, translation, ...rest] = name.split(" — ");
+  const arabic = /\p{Script=Arabic}/u;
+  const latin = /\p{Script=Latin}/u;
+  if (primary && translation && rest.length === 0 && arabic.test(primary) && latin.test(translation) && !arabic.test(translation)) {
+    return primary.trim();
+  }
+  return name;
+}
+
 function adjustmentsFor(sale: SaleDto): ReceiptMoneyLine[] {
   const rows: ReceiptMoneyLine[] = [];
   const discountShown =
@@ -191,7 +202,7 @@ export function buildReceiptView(sale: SaleDto, options: ReceiptOptions): Receip
     customerName: storedText(sale.customerName) ?? UNREGISTERED_LABEL,
     customerPhone: storedText(sale.customerPhone),
     lines: sale.lines.map((line) => ({
-      productName: line.variant.product.nameAr,
+      productName: receiptProductName(line.variant.product.nameAr),
       productCode: storedText(line.variant.product.code) ?? "",
       sizeName: line.variant.purpose === "operational" ? "" : line.variant.size.nameAr,
       colorName: line.variant.purpose === "operational" ? "" : line.variant.color.nameAr,

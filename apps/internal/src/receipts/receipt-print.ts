@@ -402,6 +402,7 @@ export async function mountReceiptPreview(
   try {
     job = await openFrame("معاينة الإيصال", host, "preview");
     const prepared = fill(job, sale, overrides);
+    prepared.printWindow.document.documentElement.dataset.receiptPreview = "";
     try {
       await waitForFonts(prepared.printWindow.document);
     } catch {
