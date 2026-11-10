@@ -24,12 +24,20 @@ fi
 trap 'rm -f -- "$tmp" "$previous"' EXIT
 cat > "$tmp" <<EOF
 $staff_host {
-    handle /api/* { reverse_proxy bravos-api:3010 }
-    handle { reverse_proxy bravos-staff:8080 }
+    handle /api/* {
+        reverse_proxy bravos-api:3010
+    }
+    handle {
+        reverse_proxy bravos-staff:8080
+    }
 }
 $public_host {
-    handle /api/public/* { reverse_proxy bravos-api:3010 }
-    handle { reverse_proxy bravos-storefront:3000 }
+    handle /api/public/* {
+        reverse_proxy bravos-api:3010
+    }
+    handle {
+        reverse_proxy bravos-storefront:3000
+    }
 }
 EOF
 chmod 644 "$tmp"
