@@ -25,7 +25,8 @@ deploy/scripts/status.sh
 Create the first owner only after the first deployment, using a password file with mode 0600 kept outside the repository. The API image includes the release bootstrap script:
 
 ```bash
-docker compose --env-file .env -f deploy/compose.yml run --rm \
+BRAVOS_IMAGE_TAG="$(git rev-parse --short=12 HEAD)" \
+docker compose --env-file .env -f deploy/compose.yml run --rm --pull never \
   -v /srv/bravos/operator/owner-password:/run/secrets/owner-password api \
   node --import tsx scripts/bootstrap-owner.ts \
   --login OWNER_LOGIN --display-name 'OWNER_NAME' \
