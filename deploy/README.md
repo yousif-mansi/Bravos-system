@@ -22,6 +22,8 @@ deploy/scripts/status.sh
 
 `deploy.sh` builds pinned Node/pnpm artifacts, starts PostgreSQL, checks and applies forward migrations, starts the three app services, and checks API liveness. On later deployments it takes a PostgreSQL dump and media archive before migrations. It leaves the existing stack running if migration inspection fails. The API also checks migrations at startup. Do not deploy new code while shop tills have unsynchronized sales or while a restore is in progress.
 
+On a capacity-constrained VPS, build both image targets on another trusted machine, tag and transfer them with the current 12-character commit ID, then run `BRAVOS_PREBUILT_IMAGES=true deploy/scripts/deploy.sh`. This mode verifies both exact image tags before starting PostgreSQL and skips the on-server build. The operator remains responsible for confirming that the transferred images were built from the reviewed checkout.
+
 Create the first owner only after the first deployment, using a password file with mode 0600 kept outside the repository. The API image includes the release bootstrap script:
 
 ```bash

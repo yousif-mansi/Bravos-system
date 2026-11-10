@@ -7,7 +7,16 @@ if [[ -n "$(git -C "$ROOT_DIR" status --porcelain)" ]]; then
 fi
 export BRAVOS_IMAGE_TAG="$(git -C "$ROOT_DIR" rev-parse --short=12 HEAD)"
 "$DEPLOY_DIR/scripts/prepare.sh"
-compose build api staff
+if [[ "${BRAVOS_PREBUILT_IMAGES:-false}" == true ]]; then
+  for image in "bravos-app:$BRAVOS_IMAGE_TAG" "bravos-staff:$BRAVOS_IMAGE_TAG"; do
+    docker image inspect "$image" >/dev/null || {
+      echo "Missing prebuilt image $image; deployment stopped before changing services." >&2
+      exit 1
+    }
+  done
+else
+  compose build api staff
+fi
 compose up -d db
 if ! migration_table="$(compose exec -T db psql -U bravos -d bravos -Atqc "SELECT to_regclass('public.schema_migrations') IS NOT NULL")"; then
   echo "Could not inspect the migration table; deployment stopped before migration." >&2
