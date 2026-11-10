@@ -17,7 +17,7 @@ if [[ "${BRAVOS_PREBUILT_IMAGES:-false}" == true ]]; then
 else
   compose build api staff
 fi
-compose up -d db
+compose up -d --wait --wait-timeout 120 db
 if ! migration_table="$(compose exec -T db psql -U bravos -d bravos -Atqc "SELECT to_regclass('public.schema_migrations') IS NOT NULL")"; then
   echo "Could not inspect the migration table; deployment stopped before migration." >&2
   exit 1
