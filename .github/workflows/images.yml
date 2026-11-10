@@ -1,0 +1,61 @@
+name: Release images
+
+# Every push to main builds the two release images and publishes them to GHCR, tagged with the commit's
+# 12-character ID: ghcr.io/<owner>/bravos-app:<id> (api and storefront) and bravos-staff:<id>. The VPS
+# deploys them by itself (deploy/autodeploy), because it is too small to build them. Receipt settings
+# baked into the staff app come from the repository variables VITE_POS_RECEIPT_PHONE and
+# VITE_POS_RECEIPT_PAPER_WIDTH (default 80).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: bravos-images-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  images:
+    name: Build and publish the release images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Check out the pushed commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Sign in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build both targets (the second reuses the first's build stage)
+        env:
+          RECEIPT_PHONE: ${{ vars.VITE_POS_RECEIPT_PHONE }}
+          RECEIPT_WIDTH: ${{ vars.VITE_POS_RECEIPT_PAPER_WIDTH || '80' }}
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          tag="${GITHUB_SHA::12}"
+          for target in app staff; do
+            docker build --platform linux/amd64 -f deploy/Dockerfile --target "$target" \
+              --build-arg "VITE_POS_RECEIPT_PHONE=$RECEIPT_PHONE" \
+              --build-arg "VITE_POS_RECEIPT_PAPER_WIDTH=$RECEIPT_WIDTH" \
+              --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+              --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+              -t "ghcr.io/$owner/bravos-$target:$tag" .
+          done
+          echo "OWNER=$owner" >>"$GITHUB_ENV"
+          echo "TAG=$tag" >>"$GITHUB_ENV"
+
+      - name: Publish them
+        run: |
+          for target in app staff; do
+            docker push "ghcr.io/$OWNER/bravos-$target:$TAG"
+          done
+          echo "Published ghcr.io/$OWNER/bravos-app:$TAG and ghcr.io/$OWNER/bravos-staff:$TAG" >>"$GITHUB_STEP_SUMMARY"

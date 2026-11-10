@@ -37,6 +37,21 @@ docker compose --env-file .env -f deploy/compose.yml run --rm --pull never \
 
 Create `/srv/bravos/operator/owner-password` beforehand, owned by UID 1000 with mode 0600; adjust the host path if needed. The bootstrap verifies ownership and applies mode 0600, so this one file mount must be writable. Do not put the password on the command line or in `.env`. The bootstrap refuses if an owner already exists. The manager can then create staff accounts in the app.
 
+## Automatic deploys
+
+Once set up, **a push to `main` reaches the VPS by itself**, and nothing else on the server is touched:
+
+1. `.github/workflows/images.yml` builds both release images on GitHub and publishes them to GHCR as `ghcr.io/<owner>/bravos-app:<commit>` and `bravos-staff:<commit>` (the commit's 12-character ID). Receipt settings come from the repository variables `VITE_POS_RECEIPT_PHONE` and `VITE_POS_RECEIPT_PAPER_WIDTH`.
+2. On the VPS, `bravos-autodeploy.timer` runs `bravos-autodeploy` every 3 minutes as the operator account. When `origin/main` has moved and its images are published, it pulls them, fast-forwards the checkout and runs `deploy.sh` with `BRAVOS_PREBUILT_IMAGES=true` (checkpoint, migrations, services, health check), then removes older Bravos images, keeping the previous release's. It acts only on the `bravos` compose project and its own images, at low CPU and disk priority.
+
+A deploy that fails is not retried for that commit (the next push is), and a checkout with local changes or one `main` doesn't fast-forward is left alone. Logs: `journalctl -u bravos-autodeploy`.
+
+Set it up once:
+
+- On GitHub, after the first run of `images.yml`: make the two packages `bravos-app` and `bravos-staff` **public** (the package's settings, *Change visibility*), as the repository is. The VPS then pulls them without a token.
+- On the VPS, from the checkout: `sudo deploy/autodeploy/install.sh` (it installs `/usr/local/bin/bravos-autodeploy`, the service and the timer for the account that runs sudo, and starts the timer). Run it again after a change to `deploy/autodeploy/`.
+- Stop automatic deploys: `sudo systemctl disable --now bravos-autodeploy.timer`. `deploy/scripts/release.sh` still deploys by hand.
+
 ## Updates and operations
 
 **The usual update is one command, from the operator's machine:** `deploy/scripts/release.sh` releases `origin/main` (or `release.sh REF`, any pushed commit) to the VPS: it builds both images locally with the VPS's receipt settings, loads them over ssh, fast-forwards the VPS checkout and runs `deploy.sh` there with `BRAVOS_PREBUILT_IMAGES=true`, then checks both HTTPS hosts and keeps this release's and the previous release's images. `release.sh --check` checks all of that and changes nothing. `BRAVOS_HOST` (default `teq-tests`) and `BRAVOS_REMOTE_DIR` (default `bravos`, under the operator's home) choose the VPS. The steps below are what it runs.

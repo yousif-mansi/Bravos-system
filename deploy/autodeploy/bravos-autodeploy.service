@@ -1,0 +1,16 @@
+[Unit]
+Description=Deploy Bravos when origin/main moves (deploy/autodeploy)
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# The operator account that owns the checkout; install.sh sets it.
+User=teq
+Group=teq
+Environment=BRAVOS_DIR=/home/teq/bravos
+ExecStart=/usr/local/bin/bravos-autodeploy
+# A deploy yields to the other applications on the server.
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=30min
