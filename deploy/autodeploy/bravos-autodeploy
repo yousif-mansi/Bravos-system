@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# Deploy Bravos on the VPS whenever main moves, with nobody at the keyboard. Run by
+# bravos-autodeploy.timer every few minutes, as the operator account, from an installed copy
+# (/usr/local/bin), so a deploy that updates the checkout never rewrites the running script.
+#
+# Each run: fetch origin/main; if the VPS already runs it, stop. Otherwise wait until GitHub has
+# published its images (.github/workflows/images.yml: ghcr.io/<owner>/bravos-app and bravos-staff,
+# tagged with the commit's 12-character ID), pull them, fast-forward the checkout, and run
+# deploy/scripts/deploy.sh with BRAVOS_PREBUILT_IMAGES=true: a checkpoint before migrations, the
+# migrations, the services, the API health check. It touches only the bravos compose project and its
+# own images: no other container, network, volume or the shared edge.
+#
+# A commit whose deploy failed is not tried again (its ID is kept in the state folder); the next push
+# is. A checkout with local changes, or one main doesn't fast-forward, is left alone and logged.
+# Logs: journalctl -u bravos-autodeploy. Settings, from the unit's environment:
+#   BRAVOS_DIR             the checkout (default ~/bravos)
+#   BRAVOS_IMAGE_PREFIX    where images.yml publishes (default ghcr.io/yousif-mansi)
+#   BRAVOS_AUTODEPLOY_STATE  the state folder (default ~/.local/state/bravos-autodeploy)
+set -euo pipefail
+
+DIR="${BRAVOS_DIR:-$HOME/bravos}"
+PREFIX="${BRAVOS_IMAGE_PREFIX:-ghcr.io/yousif-mansi}"
+STATE="${BRAVOS_AUTODEPLOY_STATE:-$HOME/.local/state/bravos-autodeploy}"
+API_CONTAINER=bravos-api-1
+
+log() { echo "bravos-autodeploy: $*"; }
+
+mkdir -p "$STATE"
+exec 9>"$STATE/lock"
+flock -n 9 || { log "a deploy is already running"; exit 0; }
+
+cd "$DIR"
+if [[ -n "$(git status --porcelain)" ]]; then
+  log "the checkout has local changes; not deploying until it is clean"
+  exit 0
+fi
+git fetch -q origin main
+target="$(git rev-parse origin/main)"
+tag="${target:0:12}"
+head="$(git rev-parse HEAD)"
+running="$(docker inspect -f '{{.Config.Image}}' "$API_CONTAINER" 2>/dev/null || true)"
+running="${running##*:}"
+
+if [[ "$head" == "$target" && "$running" == "$tag" ]]; then
+  exit 0 # up to date: the usual run
+fi
+if [[ "$(cat "$STATE/failed" 2>/dev/null || true)" == "$target" ]]; then
+  exit 0 # this commit failed before; waiting for the next push
+fi
+if ! git merge-base --is-ancestor HEAD "$target"; then
+  log "main ($tag) doesn't fast-forward the checkout (${head:0:12}); not deploying"
+  exit 0
+fi
+for kind in app staff; do
+  if ! docker manifest inspect "$PREFIX/bravos-$kind:$tag" >/dev/null 2>&1; then
+    log "waiting for $PREFIX/bravos-$kind:$tag (images.yml builds it after each push; a private package can't be read)"
+    exit 0
+  fi
+done
+free="$(df --output=avail -BG / | tail -1 | tr -dc 0-9)"
+if (( ${free:-0} < 5 )); then
+  log "only ${free:-?} GB free; a release needs 5. Not deploying"
+  exit 1
+fi
+
+log "deploying $tag (running ${running:-nothing}, checkout ${head:0:12})"
+for kind in app staff; do
+  docker pull -q "$PREFIX/bravos-$kind:$tag" >/dev/null
+  docker tag "$PREFIX/bravos-$kind:$tag" "bravos-$kind:$tag"
+done
+git merge -q --ff-only "$target"
+if ! BRAVOS_PREBUILT_IMAGES=true deploy/scripts/deploy.sh; then
+  echo "$target" >"$STATE/failed"
+  log "deploy.sh failed for $tag (above); it won't be tried again. The next push will be"
+  exit 1
+fi
+rm -f "$STATE/failed"
+log "✓ running $tag"
+
+# This release's images and the previous release's (to go back to) stay; older bravos images go.
+keep=" $tag ${running} "
+docker images --format '{{.Repository}}:{{.Tag}}' | grep -E "^(${PREFIX//./\\.}/)?bravos-(app|staff):" |
+  while read -r image; do
+    [[ "$keep" == *" ${image##*:} "* ]] || docker rmi "$image" >/dev/null 2>&1 || true
+  done
