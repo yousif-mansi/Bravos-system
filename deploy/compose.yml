@@ -73,7 +73,8 @@ services:
 
   storefront:
     image: bravos-app:${BRAVOS_IMAGE_TAG:-local}
-    command: ["node", "apps/storefront/node_modules/next/dist/bin/next", "start", "--port", "3000", "--hostname", "0.0.0.0"]
+    working_dir: /app/apps/storefront
+    command: ["node", "node_modules/next/dist/bin/next", "start", "--port", "3000", "--hostname", "0.0.0.0"]
     restart: unless-stopped
     init: true
     environment:
