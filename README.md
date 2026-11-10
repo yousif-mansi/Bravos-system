@@ -39,6 +39,8 @@ Disposable local credentials are written to `.local/demo-credentials.txt`. Do no
 
 The [portable release rehearsal](docs/development/release-rehearsal.md) covers built artifacts, locked forward migrations, one-owner bootstrap, protected operator recovery, and the internal-before-public ordering gate. It is explicitly not a hosted production launch.
 
+For a shared-Caddy Ubuntu VPS layout and operator scripts, see [deploy/README.md](deploy/README.md).
+
 ## Checks
 
 ```powershell

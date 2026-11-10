@@ -6,10 +6,16 @@ if (process.env.NODE_ENV !== "production" && process.env.BRAVOS_LOAD_LOCAL_ENV !
   await loadLocalEnv();
 }
 const config = loadConfig();
-const built = await buildApp(config);
 const port = Number(process.env.PORT ?? 3010);
-await built.app.listen({ port, host: "127.0.0.1" });
-console.log(`BRAVOS API listening on http://127.0.0.1:${port}`);
+// The container may bind its private bridge interface; the host must still keep
+// this port unpublished so only the reverse proxy can reach it.
+const host = process.env.BRAVOS_LISTEN_HOST ?? "127.0.0.1";
+if (host !== "127.0.0.1" && host !== "0.0.0.0") {
+  throw new Error("BRAVOS_LISTEN_HOST must be 127.0.0.1 or 0.0.0.0.");
+}
+const built = await buildApp(config);
+await built.app.listen({ port, host });
+console.log(`BRAVOS API listening on http://${host}:${port}`);
 
 let closing: Promise<void> | undefined;
 function close(signal: NodeJS.Signals) {

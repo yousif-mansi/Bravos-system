@@ -1,0 +1,103 @@
+name: bravos
+
+services:
+  db:
+    image: postgres:17-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: bravos
+      POSTGRES_USER: bravos
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bravos -d bravos"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks: [private]
+
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: app
+      args:
+        VITE_POS_RECEIPT_PHONE: ${VITE_POS_RECEIPT_PHONE:-}
+        VITE_POS_RECEIPT_PAPER_WIDTH: ${VITE_POS_RECEIPT_PAPER_WIDTH:-80}
+    image: bravos-app:${BRAVOS_IMAGE_TAG:-local}
+    command: ["node", "apps/api/dist/main.js"]
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 45s
+    env_file: ../.env
+    environment:
+      NODE_ENV: production
+      PORT: "3010"
+      BRAVOS_LISTEN_HOST: 0.0.0.0
+      BRAVOS_PRODUCT_MEDIA_DIR: /var/lib/bravos/media
+      BRAVOS_OWNER_RECOVERY_OUTBOX_DIR: /var/lib/bravos/recovery
+    volumes:
+      - ${BRAVOS_DATA_DIR:?Set BRAVOS_DATA_DIR in .env}/media:/var/lib/bravos/media
+      - ${BRAVOS_DATA_DIR:?Set BRAVOS_DATA_DIR in .env}/recovery:/var/lib/bravos/recovery
+    depends_on:
+      db: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3010/api/public/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+    networks:
+      private: {}
+      edge:
+        aliases: [bravos-api]
+
+  staff:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: staff
+      args:
+        VITE_POS_RECEIPT_PHONE: ${VITE_POS_RECEIPT_PHONE:-}
+        VITE_POS_RECEIPT_PAPER_WIDTH: ${VITE_POS_RECEIPT_PAPER_WIDTH:-80}
+    image: bravos-staff:${BRAVOS_IMAGE_TAG:-local}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+    networks:
+      edge:
+        aliases: [bravos-staff]
+
+  storefront:
+    image: bravos-app:${BRAVOS_IMAGE_TAG:-local}
+    command: ["node", "apps/storefront/node_modules/next/dist/bin/next", "start", "--port", "3000", "--hostname", "0.0.0.0"]
+    restart: unless-stopped
+    init: true
+    environment:
+      NODE_ENV: production
+      BRAVOS_API_ORIGIN: http://api:3010
+      BRAVOS_PUBLIC_ORIGIN: ${BRAVOS_PUBLIC_ORIGIN:?Set BRAVOS_PUBLIC_ORIGIN in .env}
+    depends_on:
+      api: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 10s
+      retries: 6
+    networks:
+      private: {}
+      edge:
+        aliases: [bravos-storefront]
+
+networks:
+  private:
+    internal: true
+  edge:
+    external: true
+    name: ${BRAVOS_EDGE_NETWORK:-edge}
+
+volumes:
+  pgdata:

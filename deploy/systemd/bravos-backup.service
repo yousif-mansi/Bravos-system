@@ -1,0 +1,11 @@
+[Unit]
+Description=Bravos database and media checkpoint
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+User=bravos
+Group=docker
+WorkingDirectory=/opt/bravos
+ExecStart=/opt/bravos/deploy/scripts/backup.sh

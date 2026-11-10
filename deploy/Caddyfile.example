@@ -1,0 +1,20 @@
+# Copy the two site blocks to the shared edge Caddy's sites directory, replace
+# the hostnames, validate, then reload that existing Caddy. Do not start a second
+# Caddy on ports 80/443. Both upstreams use unique aliases on the edge network.
+staff.example.com {
+    handle /api/* {
+        reverse_proxy bravos-api:3010
+    }
+    handle {
+        reverse_proxy bravos-staff:8080
+    }
+}
+
+shop.example.com {
+    handle /api/public/* {
+        reverse_proxy bravos-api:3010
+    }
+    handle {
+        reverse_proxy bravos-storefront:3000
+    }
+}
