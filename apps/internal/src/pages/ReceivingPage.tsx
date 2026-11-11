@@ -315,7 +315,6 @@ export default function ReceivingPage({
     const requested = new URLSearchParams(window.location.search).get("tab");
     return tabItems.some((item) => item.id === requested && !("disabled" in item && item.disabled)) ? requested! : "receive";
   });
-  const [transferDirty, setTransferDirty] = useState(false);
   const [stockPage, setStockPage] = useState(1);
   const [lowPage, setLowPage] = useState(1);
   const [lowQuery, setLowQuery] = useState("");
@@ -1006,9 +1005,6 @@ export default function ReceivingPage({
 
   function changeTab(next: string) {
     if (next === tab || (next === "transfers" && !canTransfer)) return;
-    const dirtyReceive = lines.length > 0 || addingNewProduct || Boolean(supplierName.trim() || categoryName.trim() || receiptSupplierId) || receiptDate !== todayCairoDate();
-    const dirty = (tab === "receive" && dirtyReceive) || (tab === "transfers" && transferDirty) || (tab === "history" && editingCorrection);
-    if (dirty && !window.confirm("لديك بيانات غير محفوظة. هل تريد الانتقال؟ ستبقى البيانات في هذه الصفحة.")) return;
     setTab(next);
     if (next === "transfers") void refreshStockRows();
     const url = new URL(window.location.href);
@@ -1242,6 +1238,13 @@ export default function ReceivingPage({
             <h3 ref={intakeFeedback.headingRef} tabIndex={-1}>إضافة منتج إلى المخزون</h3>
             <div className="grid two">
               <div className="field">
+                <label htmlFor="newInventoryCategory">التصنيف</label>
+                <select id="newInventoryCategory" value={newInventoryProduct.categoryId} onChange={(event) => setNewInventoryProduct((current) => ({ ...current, categoryId: event.target.value }))} disabled={Boolean(pending)} required>
+                  <option value="">اختر تصنيفاً</option>
+                  {categories.map((category) => <option key={category.id} value={category.id}>{categoryPath(categories, category.id) || category.nameAr}</option>)}
+                </select>
+              </div>
+              <div className="field">
                 <label htmlFor="newInventoryCode">رمز المنتج / SKU</label>
                 <input id="newInventoryCode" value={newInventoryProduct.code} onChange={(event) => setNewInventoryProduct((current) => ({ ...current, code: event.target.value }))} disabled={Boolean(pending)} required />
               </div>
@@ -1250,11 +1253,8 @@ export default function ReceivingPage({
                 <input id="newInventoryName" value={newInventoryProduct.nameAr} onChange={(event) => setNewInventoryProduct((current) => ({ ...current, nameAr: event.target.value }))} disabled={Boolean(pending)} required />
               </div>
               <div className="field">
-                <label htmlFor="newInventoryCategory">التصنيف</label>
-                <select id="newInventoryCategory" value={newInventoryProduct.categoryId} onChange={(event) => setNewInventoryProduct((current) => ({ ...current, categoryId: event.target.value }))} disabled={Boolean(pending)} required>
-                  <option value="">اختر تصنيفاً</option>
-                  {categories.map((category) => <option key={category.id} value={category.id}>{categoryPath(categories, category.id) || category.nameAr}</option>)}
-                </select>
+                <label htmlFor="newInventoryCost">تكلفة الشراء بالجنيه</label>
+                <input id="newInventoryCost" inputMode="decimal" value={newInventoryProduct.costEgp} onChange={(event) => setNewInventoryProduct((current) => ({ ...current, costEgp: event.target.value }))} disabled={Boolean(pending)} required />
               </div>
               <div className="field">
                 <label htmlFor="newInventoryPrice">سعر البيع الافتراضي بالجنيه</label>
@@ -1267,10 +1267,6 @@ export default function ReceivingPage({
               <div className="field">
                 <label htmlFor="newInventoryQuantity">الكمية</label>
                 <input id="newInventoryQuantity" type="number" min="1" step="1" value={newInventoryProduct.quantity} onChange={(event) => setNewInventoryProduct((current) => ({ ...current, quantity: event.target.value }))} disabled={Boolean(pending)} required />
-              </div>
-              <div className="field">
-                <label htmlFor="newInventoryCost">تكلفة الشراء بالجنيه</label>
-                <input id="newInventoryCost" inputMode="decimal" value={newInventoryProduct.costEgp} onChange={(event) => setNewInventoryProduct((current) => ({ ...current, costEgp: event.target.value }))} disabled={Boolean(pending)} required />
               </div>
             </div>
             <div className="actions">
@@ -1294,7 +1290,7 @@ export default function ReceivingPage({
       </section>
 
       </div>
-      <div role="tabpanel" id="receiving-tabs-panel-transfers" aria-labelledby="receiving-tabs-tab-transfers" hidden={tab !== "transfers"}>{canTransfer ? <TransferPanel workspace={workspace} onDirtyChange={setTransferDirty} active={tab === "transfers"} stockRows={stockRows ?? null} onCompleted={() => { void refresh().catch(() => setError("تم النقل، لكن تعذر تحديث بيانات المخزون. أعد تحميل الصفحة.")); }} /> : null}</div>
+      <div role="tabpanel" id="receiving-tabs-panel-transfers" aria-labelledby="receiving-tabs-tab-transfers" hidden={tab !== "transfers"}>{canTransfer ? <TransferPanel workspace={workspace} active={tab === "transfers"} stockRows={stockRows ?? null} onCompleted={() => { void refresh().catch(() => setError("تم النقل، لكن تعذر تحديث بيانات المخزون. أعد تحميل الصفحة.")); }} /> : null}</div>
       <div role="tabpanel" id="receiving-tabs-panel-low-stock" aria-labelledby="receiving-tabs-tab-low-stock" hidden={tab !== "low-stock"}>
       <section className="card" aria-label="المخزون المنخفض">
           <h2>المخزون المنخفض</h2>
@@ -1360,9 +1356,20 @@ export default function ReceivingPage({
             <DetailPanel title="تفاصيل الإذن" onClose={closeReceiptDetails}>
             <section ref={receiptFeedback.regionRef} className={`reveal-feedback${receiptFeedback.highlighted ? " is-highlighted" : ""}`} data-testid="receipt-details">
               <h3 className="receiving-visually-hidden" ref={receiptFeedback.headingRef} tabIndex={-1}>تفاصيل الإذن</h3>
-              <p>تاريخ الاستلام: {selectedReceipt.receiptDate}</p>
-              <p>المورد: {selectedReceipt.supplierNameAr ?? "بدون مورد"}</p>
-              <p>الفرع: {placeName(selectedReceipt.branchId)}</p>
+              <dl className="receiving-receipt-meta">
+                <div>
+                  <dt>تاريخ الاستلام</dt>
+                  <dd>{selectedReceipt.receiptDate}</dd>
+                </div>
+                <div>
+                  <dt>المورد</dt>
+                  <dd>{selectedReceipt.supplierNameAr ?? "بدون مورد"}</dd>
+                </div>
+                <div>
+                  <dt>الفرع</dt>
+                  <dd>{placeName(selectedReceipt.branchId)}</dd>
+                </div>
+              </dl>
               {selectedReceipt.lines.map((line) => (
                 <div key={line.id} className="staff-item">
                   <p>{merchandiseLabel(line.variant)}</p>

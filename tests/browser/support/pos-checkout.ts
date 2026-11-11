@@ -3,7 +3,10 @@ import { expect, type Locator, type Page } from "@playwright/test";
 /** Reveal the optional customer, discount, and coupon fields without closing an already-open disclosure. */
 export async function openPosOptionalDetails(checkout: Locator): Promise<void> {
   const details = checkout.locator("details.pos-optional-details");
-  await expect(details).toHaveCount(1);
+  if (await details.count() === 0) {
+    await expect(checkout.getByLabel("اسم الزبون (اختياري)")).toBeVisible();
+    return;
+  }
   if (await details.getAttribute("open") === null) {
     await details.locator("summary").click();
   }

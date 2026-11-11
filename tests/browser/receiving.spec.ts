@@ -3,18 +3,106 @@ import { expect, test, type Page } from "@playwright/test";
 const WAREHOUSE_BRANCH_ID = "33333333-3333-4333-8333-333333333333";
 
 async function showHistory(page: Page, code?: string) {
-  const acceptDraftWarning = (dialog: import("@playwright/test").Dialog) => void dialog.accept();
-  page.on("dialog", acceptDraftWarning);
-  try {
-    await page.getByRole("tab", { name: "سجل الاستلام" }).click();
-  } finally {
-    page.off("dialog", acceptDraftWarning);
-  }
+  await page.getByRole("tab", { name: "سجل الاستلام" }).click();
   if (code) {
     await page.getByLabel("بحث بالمورد أو الرمز أو التاريخ").fill(code);
     await page.getByTestId("receipt-list").getByRole("row").filter({ hasText: code }).getByRole("button", { name: "عرض التفاصيل" }).click();
   }
 }
+
+test("receiving keeps draft tabs, ordered intake fields, compact history facts, and correction close protection", async ({ page }) => {
+  await page.goto("http://127.0.0.1:5174/login");
+  await page.getByLabel("اسم الدخول").fill("owner");
+  await page.getByLabel("كلمة المرور").fill("e2e-owner-pass");
+  await page.getByRole("button", { name: "دخول" }).click();
+  await page.getByRole("button", { name: "أبشواي" }).click();
+
+  const suffix = crypto.randomUUID().slice(0, 8);
+  const category = await staffApi(page, "POST", "/api/internal/catalog/categories", { nameAr: `تصنيف ترتيب ${suffix}` });
+  const size = await staffApi(page, "POST", "/api/internal/catalog/sizes", { nameAr: `مقاس ترتيب ${suffix}` });
+  const color = await staffApi(page, "POST", "/api/internal/catalog/colors", { nameAr: `لون ترتيب ${suffix}` });
+  const product = await staffApi(page, "POST", "/api/internal/catalog/products", {
+    code: `ORD-${suffix}`,
+    nameAr: `منتج ترتيب ${suffix}`,
+    descriptionAr: "",
+    categoryId: category.body.id,
+    defaultSellingPricePiasters: 20000,
+    publication: "hidden",
+    imageRefs: [],
+    variants: [{ sizeId: size.body.id, colorId: color.body.id, sellingPricePiastersOverride: null }],
+  });
+  const receipt = await staffApi(page, "POST", "/api/internal/receiving/receipts", {
+    operationId: crypto.randomUUID(),
+    branchId: (await staffApi(page, "GET", "/api/internal/workspace")).body.activeBranch.id,
+    receiptDate: "2026-09-20",
+    lines: [{ variantId: product.body.variants[0].id, quantity: 3, unitCostPiasters: 8000 }],
+  });
+  expect(receipt.status).toBe(201);
+
+  await page.getByRole("link", { name: "استلام المخزون" }).click();
+  const receive = page.getByRole("form", { name: "تسجيل إذن استلام" });
+  await receive.getByRole("button", { name: "إضافة منتج جديد" }).click();
+  const newProduct = page.getByRole("form", { name: "إضافة منتج إلى المخزون" });
+  await expect.poll(async () => newProduct.locator("label").allTextContents()).toEqual([
+    "التصنيف",
+    "رمز المنتج / SKU",
+    "اسم المنتج",
+    "تكلفة الشراء بالجنيه",
+    "سعر البيع الافتراضي بالجنيه",
+    "الحد الأدنى للبيع بالجنيه (اختياري)",
+    "الكمية",
+  ]);
+  await newProduct.locator("#newInventoryCategory").selectOption(category.body.id);
+  await newProduct.locator("#newInventoryCode").fill(`DRAFT-${suffix}`);
+  await newProduct.locator("#newInventoryName").fill("مسودة التبويب");
+  await newProduct.locator("#newInventoryCost").fill("70");
+  await newProduct.locator("#newInventoryPrice").fill("180");
+  await newProduct.locator("#newInventoryMinimum").fill("150");
+  await newProduct.locator("#newInventoryQuantity").fill("6");
+
+  const unexpected: string[] = [];
+  const rejectTabDialog = (dialog: import("@playwright/test").Dialog) => {
+    unexpected.push(dialog.message());
+    void dialog.dismiss();
+  };
+  page.on("dialog", rejectTabDialog);
+  for (const tab of ["أرصدة المخازن", "تحويل مخزون", "المخزون المنخفض", "سجل الاستلام", "استلام بضاعة"]) {
+    await page.getByRole("tab", { name: tab }).click();
+  }
+  page.off("dialog", rejectTabDialog);
+  expect(unexpected).toEqual([]);
+  await expect(newProduct.locator("#newInventoryCode")).toHaveValue(`DRAFT-${suffix}`);
+  await expect(newProduct.locator("#newInventoryName")).toHaveValue("مسودة التبويب");
+  await expect(newProduct.locator("#newInventoryQuantity")).toHaveValue("6");
+  await expect(newProduct.locator("#newInventoryCost")).toHaveValue("70");
+
+  await page.getByRole("tab", { name: "سجل الاستلام" }).click();
+  await page.getByLabel("بحث بالمورد أو الرمز أو التاريخ").fill(`ORD-${suffix}`);
+  await page.getByTestId("receipt-list").getByRole("row").filter({ hasText: `ORD-${suffix}` }).getByRole("button", { name: "عرض التفاصيل" }).click();
+  const details = page.getByTestId("receipt-details");
+  const meta = details.locator("dl.receiving-receipt-meta");
+  await expect(meta.locator("dt")).toHaveText(["تاريخ الاستلام", "المورد", "الفرع"]);
+  await expect(meta.locator("dd").nth(0)).toHaveText("2026-09-20");
+  await expect(meta.locator("dd").nth(2)).toHaveText("أبشواي");
+  await expect(details.getByText("الكمية المستلمة: 3 — تكلفة شراء الوحدة: 80 ج.م.", { exact: true })).toHaveCount(1);
+  await expect(details.getByRole("button", { name: "تصحيح الإذن" })).toBeVisible();
+
+  await details.getByRole("button", { name: "تصحيح الإذن" }).click();
+  const correction = page.getByRole("form", { name: "تصحيح إذن الاستلام" });
+  await correction.getByLabel("سبب التصحيح").fill("لم يُحفظ");
+  page.removeAllListeners("dialog");
+  let closeMessage = "";
+  page.once("dialog", (dialog) => {
+    closeMessage = dialog.message();
+    void dialog.dismiss();
+  });
+  await page.getByRole("button", { name: "إغلاق تفاصيل الإذن" }).click();
+  await expect.poll(() => closeMessage).toContain("تصحيح غير محفوظ");
+  await expect(correction).toBeVisible();
+  page.once("dialog", (dialog) => void dialog.accept());
+  await page.getByRole("button", { name: "إغلاق تفاصيل الإذن" }).click();
+  await expect(details).toHaveCount(0);
+});
 
 test("manager sees concise receipt facts and expands correction audit after a safe retry", async ({ page }) => {
   await page.goto("http://127.0.0.1:5174/login");

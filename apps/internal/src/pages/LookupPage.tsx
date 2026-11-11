@@ -17,7 +17,7 @@ import {
   syncOutcomeMessage,
   subscribePosStockChanges,
 } from "../pos.ts";
-import { mergeVariantQuantities, SalesValidationError } from "@bravos/sales/browser";
+import { mergeVariantQuantities, normalizeCustomerPhone, SalesValidationError } from "@bravos/sales/browser";
 import { accountGeneration, subscribeAccount } from "../account-session.ts";
 import { preservedSummaryReceipt, rememberAcknowledgedReceiptNumber } from "../receipt-number.ts";
 import {
@@ -173,11 +173,19 @@ export default function LookupPage({
 
   const { scanInputRef, onScanKeyDown, focusScanInput } = useProductCodeScanner();
   const [sizeFocusNonce, setSizeFocusNonce] = useState(0);
+  const customerNameRef = useRef(customerName);
+  const customerPhoneRef = useRef(customerPhone);
+  const customerLookupSeqRef = useRef(0);
+  const lookupIdentityRef = useRef<string | null>(null);
+  const autoFilledNameRef = useRef<string | null>(null);
+  const nameEditedRef = useRef(false);
   useEffect(() => {
     scanInputRef.current?.focus({ preventScroll: true });
   }, [scanInputRef]);
   contextRef.current = contextKey;
   cartRef.current = cart;
+  customerNameRef.current = customerName;
+  customerPhoneRef.current = customerPhone;
 
   const refreshBrowse = useCallback(async (connected = false): Promise<void> => {
     if (browseNetworkRef.current) {
@@ -301,6 +309,8 @@ export default function LookupPage({
   useEffect(() => {
     return subscribeAccount((payload) => {
       releaseReceiptPrintResources();
+      customerLookupSeqRef.current += 1;
+      setSavedCustomer(null);
       if (payload.staffId !== workspace.staff.id) {
         browseAuthorizationBlockedRef.current = true;
         setBrowseProducts([]);
@@ -445,6 +455,9 @@ export default function LookupPage({
         frozenPayloadRef.current = stored.payload;
         setCustomerName(stored.payload.customerName ?? "");
         setCustomerPhone(stored.payload.customerPhone ?? "");
+        lookupIdentityRef.current = normalizeCustomerPhone(stored.payload.customerPhone ?? "");
+        autoFilledNameRef.current = stored.payload.customerName ?? null;
+        nameEditedRef.current = Boolean(stored.payload.customerName);
         setCouponCode(stored.payload.couponCode ?? "");
         setDiscountEgp((stored.payload.employeeDiscountPiasters / 100).toString());
         setDiscountReason(stored.payload.discountReason ?? "");
@@ -621,25 +634,6 @@ export default function LookupPage({
     focusScanInput();
   }
 
-  async function findSavedCustomer() {
-    setError("");
-    if (!customerPhone.trim()) {
-      setError("أدخل الهاتف للبحث عن زبون محفوظ.");
-      return;
-    }
-    setPending("customer");
-    try {
-      const result = await lookupCustomer({ phone: customerPhone, ...(customerName.trim() ? { name: customerName } : {}) });
-      setSavedCustomer(result.customer);
-      setNotice(result.customer ? `زبون محفوظ: ${result.customer.displayName}` : "لا يوجد زبون محفوظ بهذا الهاتف. البيع المجهول ما زال متاحاً.");
-    } catch (caught) {
-      setSavedCustomer(null);
-      setError(caught instanceof ApiError ? caught.messageAr : "تعذر البحث عن الزبون.");
-    } finally {
-      setPending("");
-    }
-  }
-
   function updateQuantity(key: string, quantity: number) {
     if (!beginCartRevision()) {
       return;
@@ -702,6 +696,78 @@ export default function LookupPage({
     return true;
   }
 
+  function applyMatchedCustomer(customer: { displayName: string; normalizedPhone: string }) {
+    if (formIsFrozen() || inFlightRef.current) return;
+    setSavedCustomer(customer);
+    if (nameEditedRef.current) return;
+    const currentName = customerNameRef.current;
+    if (currentName === customer.displayName) {
+      autoFilledNameRef.current = customer.displayName;
+      return;
+    }
+    if (!beginCartRevision()) return;
+    autoFilledNameRef.current = customer.displayName;
+    setCustomerName(customer.displayName);
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+    const identity = normalizeCustomerPhone(customerPhone);
+    const capturedContext = contextKey;
+    const epoch = accountGeneration();
+    const seq = ++customerLookupSeqRef.current;
+    if (identity !== lookupIdentityRef.current) {
+      lookupIdentityRef.current = identity;
+      setSavedCustomer(null);
+      const autoFilledUnedited = !nameEditedRef.current
+        && autoFilledNameRef.current !== null
+        && customerNameRef.current === autoFilledNameRef.current;
+      if (autoFilledUnedited) {
+        autoFilledNameRef.current = null;
+        setCustomerName("");
+      }
+      if (autoFilledUnedited || !customerNameRef.current.trim()) {
+        nameEditedRef.current = false;
+        autoFilledNameRef.current = null;
+      }
+    }
+    const stillCurrent = () =>
+      !cancelled
+      && seq === customerLookupSeqRef.current
+      && contextRef.current === capturedContext
+      && accountGeneration() === epoch
+      && normalizeCustomerPhone(customerPhoneRef.current) === identity;
+    if (!identity || formIsFrozen() || inFlightRef.current || (typeof navigator !== "undefined" && !navigator.onLine)) {
+      return () => {
+        cancelled = true;
+        customerLookupSeqRef.current += 1;
+      };
+    }
+    const requestedPhone = customerPhone;
+    const timer = window.setTimeout(() => {
+      if (!stillCurrent()) return;
+      void lookupCustomer({ phone: requestedPhone }).then((result) => {
+        if (!stillCurrent()) return;
+        if (formIsFrozen() || inFlightRef.current) return;
+        const customer = result.customer;
+        if (customer && customer.normalizedPhone === identity) {
+          applyMatchedCustomer(customer);
+          return;
+        }
+        setSavedCustomer(null);
+      }).catch((caught) => {
+        if (!stillCurrent()) return;
+        if (isNetworkFailure(caught)) return;
+        if (caught instanceof ApiError) return;
+      });
+    }, 250);
+    return () => {
+      cancelled = true;
+      customerLookupSeqRef.current += 1;
+      window.clearTimeout(timer);
+    };
+  }, [customerPhone, contextKey]);
+
   async function abandonPreparedQuote(expectedSaleId?: string | null) {
     const current = pendingSaleRef.current;
     const targetId = expectedSaleId ?? current?.saleId ?? null;
@@ -743,6 +809,10 @@ export default function LookupPage({
       setCart([]);
       setCustomerName("");
       setCustomerPhone("");
+      lookupIdentityRef.current = null;
+      autoFilledNameRef.current = null;
+      nameEditedRef.current = false;
+      setSavedCustomer(null);
       setCouponCode("");
       setDiscountEgp("0");
       setDiscountReason("");
@@ -1534,7 +1604,7 @@ export default function LookupPage({
   return (
     <main className="shell pos-workspace">
       <header className="page-hero">
-        <h1>نقطة البيع<span className="sr-only"> البحث عن منتج</span></h1>
+        <h1>الكاشير<span className="sr-only"> البحث عن منتج</span></h1>
         <p className="pos-branch-context">أصناف ومخزون {workspace.activeBranch?.nameAr}</p>
       </header>
       {stockPause ? (
@@ -1547,8 +1617,6 @@ export default function LookupPage({
           العمل متوقف مؤقتاً لمراجعة استعادة نسخة البيانات. لا تبدأ بيعاً جديداً ولا تسلّم بضاعة.
         </div>
       ) : null}
-      <div className="pos-layout">
-      <div className="pos-discovery">
       <form
         className="card pos-scanner"
         aria-label="البحث برمز المنتج"
@@ -1577,105 +1645,98 @@ export default function LookupPage({
         {searchError ? <div className="error" role="alert">{searchError}</div> : null}
         {pending === "search" ? <span className="sr-only" role="status">جارٍ البحث عن المنتج…</span> : null}
       </form>
-      {product ? (
-        <section className="card pos-selection" data-testid="lookup-result">
-          <div className="pos-section-heading">
-            <h2>{product.nameAr}</h2>
-            <ProductLabelAction product={{ id: product.id, code: product.code, nameAr: product.nameAr }} />
-          </div>
-          <p className="muted">رمز المنتج: {product.code}</p>
-          {selected ? (
-            <div className="pos-selected-summary" data-testid="selected-variant">
-              <div>
-              <p>سعر البيع: {formatEgpFromPiasters(selected.sellingPricePiasters)}</p>
-              <p data-testid="available-quantity">الكمية المتاحة في الفرع: {selectedEffective}</p>
-              {product.minimumSellingPricePiasters !== null ? <p>الحد الأدنى للبيع: {formatEgpFromPiasters(product.minimumSellingPricePiasters)}</p> : null}
-              </div>
-              {selectedEffective === 0 ? (
-                <p className="muted">غير متوفر في المخزون حتى يتم الاستلام.</p>
-              ) : (
-                <button type="button" data-testid="add-operational" disabled={formLocked || Boolean(stockPause) || Boolean(restorePause) || selectedCartQuantity >= selectedEffective} onClick={() => addProduct(product)}>إضافة إلى السلة</button>
-              )}
-            </div>
-          ) : (
-            <p className="muted">حدّث قائمة المنتجات قبل البيع.</p>
-          )}
-        </section>
-      ) : null}
-      <ProductBrowser key={contextKey} products={browseProducts} quantities={effectiveByVariant} cartQuantities={cartQuantities} selectedId={product?.id} loading={browseLoading} message={browseMessage} filter={code} disabled={formLocked || Boolean(stockPause) || Boolean(restorePause)} onAdd={addProduct} onRetry={() => void refreshBrowse(true)} onSelect={(item) => {
-        setProduct(item);
-        setSizeFocusNonce((nonce) => nonce + 1);
-      }} />
-      </div>
-
+      <div className="pos-layout">
       <form
         className="card pos-checkout"
         aria-label="إتمام البيع"
         onSubmit={(event) => event.preventDefault()}
       >
         <div className="pos-section-heading pos-checkout-heading"><h2>سلة البيع</h2><span className="muted">{cartUnitCount} قطعة</span></div>
+        <div className="pos-checkout-fields">
+            <div className="field">
+              <label htmlFor="customerName">اسم الزبون (اختياري)</label>
+              <input id="customerName" value={customerName} disabled={formLocked} autoComplete="off" onChange={(event) => {
+                if (!beginCartRevision()) return;
+                nameEditedRef.current = true;
+                setCustomerName(event.target.value);
+              }} />
+            </div>
+            <div className="field">
+              <label htmlFor="customerPhone">هاتف الزبون (اختياري)</label>
+              <input id="customerPhone" value={customerPhone} disabled={formLocked} inputMode="tel" autoComplete="off" onChange={(event) => {
+                if (!beginCartRevision()) return;
+                setCustomerPhone(event.target.value);
+              }} />
+            </div>
+            {savedCustomer && !formLocked ? (
+              <p className="pos-customer-status" role="status" data-testid="saved-customer-status">زبون محفوظ: {savedCustomer.displayName}</p>
+            ) : null}
+            <div className="field">
+              <label htmlFor="discountEgp">خصم الموظف بالجنيه</label>
+              <input id="discountEgp" value={discountEgp} disabled={formLocked} onChange={(event) => { if (beginCartRevision()) setDiscountEgp(event.target.value); }} />
+            </div>
+            <div className="field">
+              <label htmlFor="couponCode">كود الكوبون</label>
+              <input id="couponCode" value={couponCode} disabled={formLocked} onChange={(event) => { if (beginCartRevision()) setCouponCode(event.target.value); }} />
+            </div>
+            <div className="field pos-field-wide">
+              <label htmlFor="discountReason">سبب الخصم (اختياري)</label>
+              <input id="discountReason" value={discountReason} disabled={formLocked} onChange={(event) => { if (beginCartRevision()) setDiscountReason(event.target.value); }} />
+            </div>
+          </div>
         <div className="pos-checkout-body">
         {cart.length === 0 ? (
           <EmptyState title="السلة فاضية" message="اختر صنفاً من القائمة وأضفه بالكمية المتاحة في الفرع." />
         ) : (
-          <ul className="pos-cart" data-testid="sale-cart">
+          <div className="business-table-wrap pos-cart-table-wrap">
+          <table className="business-table pos-cart-table" data-testid="sale-cart">
+            <thead>
+              <tr>
+                <th scope="col" role="columnheader">المنتج</th>
+                <th scope="col" role="columnheader">سعر الوحدة</th>
+                <th scope="col" role="columnheader">الكمية</th>
+                <th scope="col" role="columnheader">الإجمالي</th>
+                <th scope="col" role="columnheader">حذف</th>
+              </tr>
+            </thead>
+            <tbody>
             {cart.map((line) => (
-              <li key={line.key}>
-                <div><p className="pos-cart-name">{line.product.nameAr}</p>
-                <p className="pos-cart-meta">{line.product.code}</p>
-                <p className="pos-cart-meta">سعر الوحدة: {formatEgpFromPiasters(line.variant.sellingPricePiasters)}</p>
-                <p className="pos-cart-meta">الإجمالي: {formatEgpFromPiasters(line.variant.sellingPricePiasters * line.quantity)}</p></div>
-                <div className="field pos-quantity">
-                  <label htmlFor={`qty-${line.key}`}>الكمية</label>
-                  <div className="pos-quantity-controls">
-                  <button type="button" className="secondary" aria-label={`تقليل كمية ${line.product.nameAr}`} disabled={formLocked || line.quantity <= 1} onClick={() => updateQuantity(line.key, line.quantity - 1)}>−</button>
-                  <input
-                    id={`qty-${line.key}`}
-                    type="number"
-                    min={1}
-                    max={Math.max(1, (effectiveByVariant[line.variant.id] ?? line.variant.availableQuantity) - cart.filter((item) => item.product.id === line.product.id && item.key !== line.key).reduce((sum, item) => sum + item.quantity, 0))}
-                    value={line.quantity}
-                    disabled={formLocked}
-                    onChange={(event) => updateQuantity(line.key, Number(event.target.value))}
-                  />
-                  <button type="button" className="secondary" aria-label={`زيادة كمية ${line.product.nameAr}`} disabled={formLocked || line.quantity >= Math.max(1, (effectiveByVariant[line.variant.id] ?? line.variant.availableQuantity) - cart.filter((item) => item.product.id === line.product.id && item.key !== line.key).reduce((sum, item) => sum + item.quantity, 0))} onClick={() => updateQuantity(line.key, line.quantity + 1)}>+</button>
+              <tr key={line.key}>
+                <td>
+                  <p className="pos-cart-name">{line.product.nameAr}</p>
+                  <p className="pos-cart-meta">{line.product.code}</p>
+                </td>
+                <td className="numeric">{formatEgpFromPiasters(line.variant.sellingPricePiasters)}</td>
+                <td>
+                  <div className="field pos-quantity">
+                    <label className="sr-only" htmlFor={`qty-${line.key}`}>الكمية</label>
+                    <div className="pos-quantity-controls">
+                    <button type="button" className="secondary" aria-label={`تقليل كمية ${line.product.nameAr}`} disabled={formLocked || line.quantity <= 1} onClick={() => updateQuantity(line.key, line.quantity - 1)}>−</button>
+                    <input
+                      id={`qty-${line.key}`}
+                      type="number"
+                      min={1}
+                      max={Math.max(1, (effectiveByVariant[line.variant.id] ?? line.variant.availableQuantity) - cart.filter((item) => item.product.id === line.product.id && item.key !== line.key).reduce((sum, item) => sum + item.quantity, 0))}
+                      value={line.quantity}
+                      disabled={formLocked}
+                      onChange={(event) => updateQuantity(line.key, Number(event.target.value))}
+                    />
+                    <button type="button" className="secondary" aria-label={`زيادة كمية ${line.product.nameAr}`} disabled={formLocked || line.quantity >= Math.max(1, (effectiveByVariant[line.variant.id] ?? line.variant.availableQuantity) - cart.filter((item) => item.product.id === line.product.id && item.key !== line.key).reduce((sum, item) => sum + item.quantity, 0))} onClick={() => updateQuantity(line.key, line.quantity + 1)}>+</button>
+                    </div>
                   </div>
-                </div>
-                <button type="button" className="danger" disabled={formLocked} onClick={() => updateQuantity(line.key, 0)}>
-                  حذف
-                </button>
-              </li>
+                </td>
+                <td className="numeric">{formatEgpFromPiasters(line.variant.sellingPricePiasters * line.quantity)}</td>
+                <td>
+                  <button type="button" className="danger" disabled={formLocked} onClick={() => updateQuantity(line.key, 0)}>
+                    حذف
+                  </button>
+                </td>
+              </tr>
             ))}
-          </ul>
+            </tbody>
+          </table>
+          </div>
         )}
-        {checkoutHasDetails ? <details className="pos-optional-details">
-        <summary>العميل والخصم والكوبون <span className="muted">{[customerName || customerPhone ? "بيانات العميل مضافة" : "عميل اختياري", couponCode ? "كوبون مضاف" : "", discountEgp && discountEgp !== "0" ? `خصم ${discountEgp} ج.م` : ""].filter(Boolean).join(" • ")}</span></summary>
-        <div className="pos-checkout-fields">
-        <div className="field">
-          <label htmlFor="customerName">اسم الزبون (اختياري)</label>
-          <input id="customerName" value={customerName} disabled={formLocked} onChange={(event) => { if (beginCartRevision()) setCustomerName(event.target.value); }} />
-        </div>
-        <div className="field">
-          <label htmlFor="customerPhone">هاتف الزبون (اختياري)</label>
-          <input id="customerPhone" value={customerPhone} disabled={formLocked} onChange={(event) => { if (beginCartRevision()) { setSavedCustomer(null); setCustomerPhone(event.target.value); } }} />
-        </div>
-        <div className="form-actions">
-          <button type="button" className="secondary" disabled={formLocked || pending === "customer"} onClick={() => void findSavedCustomer()}>{pending === "customer" ? "جارٍ البحث…" : "بحث عن زبون محفوظ"}</button>
-          {savedCustomer ? <button type="button" disabled={formLocked} onClick={() => { if (beginCartRevision()) setCustomerName(savedCustomer.displayName); }}>استخدام الاسم المحفوظ: {savedCustomer.displayName}</button> : null}
-        </div>
-        <div className="field">
-          <label htmlFor="couponCode">كود الكوبون</label>
-          <input id="couponCode" value={couponCode} disabled={formLocked} onChange={(event) => { if (beginCartRevision()) setCouponCode(event.target.value); }} />
-        </div>
-        <div className="field">
-          <label htmlFor="discountEgp">خصم الموظف بالجنيه</label>
-          <input id="discountEgp" value={discountEgp} disabled={formLocked} onChange={(event) => { if (beginCartRevision()) setDiscountEgp(event.target.value); }} />
-        </div>
-        <div className="field pos-field-wide">
-          <label htmlFor="discountReason">سبب الخصم (اختياري)</label>
-          <input id="discountReason" value={discountReason} disabled={formLocked} onChange={(event) => { if (beginCartRevision()) setDiscountReason(event.target.value); }} />
-        </div>
-        </div></details> : null}
         {quote ? (
           <section className="pos-accepted-prices" data-testid="accepted-prices">
             <h3>المبلغ المستحق</h3>
@@ -1751,6 +1812,37 @@ export default function LookupPage({
         </div>
         </div>
       </form>
+      <div className="pos-discovery">
+      {product ? (
+        <section className="card pos-selection" data-testid="lookup-result">
+          <div className="pos-section-heading">
+            <h2>{product.nameAr}</h2>
+            <ProductLabelAction product={{ id: product.id, code: product.code, nameAr: product.nameAr }} />
+          </div>
+          <p className="muted">رمز المنتج: {product.code}</p>
+          {selected ? (
+            <div className="pos-selected-summary" data-testid="selected-variant">
+              <div>
+              <p>سعر البيع: {formatEgpFromPiasters(selected.sellingPricePiasters)}</p>
+              <p data-testid="available-quantity">الكمية المتاحة في الفرع: {selectedEffective}</p>
+              {product.minimumSellingPricePiasters !== null ? <p>الحد الأدنى للبيع: {formatEgpFromPiasters(product.minimumSellingPricePiasters)}</p> : null}
+              </div>
+              {selectedEffective === 0 ? (
+                <p className="muted">غير متوفر في المخزون حتى يتم الاستلام.</p>
+              ) : (
+                <button type="button" data-testid="add-operational" disabled={formLocked || Boolean(stockPause) || Boolean(restorePause) || selectedCartQuantity >= selectedEffective} onClick={() => addProduct(product)}>إضافة إلى السلة</button>
+              )}
+            </div>
+          ) : (
+            <p className="muted">حدّث قائمة المنتجات قبل البيع.</p>
+          )}
+        </section>
+      ) : null}
+      <ProductBrowser key={contextKey} products={browseProducts} quantities={effectiveByVariant} cartQuantities={cartQuantities} selectedId={product?.id} loading={browseLoading} message={browseMessage} filter={code} disabled={formLocked || Boolean(stockPause) || Boolean(restorePause)} onAdd={addProduct} onRetry={() => void refreshBrowse(true)} onSelect={(item) => {
+        setProduct(item);
+        setSizeFocusNonce((nonce) => nonce + 1);
+      }} />
+      </div>
       </div>
 
       {completed ? <SaleSummary key={completed.id} sale={completed} /> : null}
