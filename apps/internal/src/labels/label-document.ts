@@ -1,5 +1,5 @@
-import { receiptFontStyles } from "../receipts/index.ts";
-import { formatLabelMm, LabelPrintError, NAME_GAP_MM, TEXT_GAP_MM, type LabelLayout } from "./barcode.ts";
+import { receiptFontStyles } from "../receipts/receipt-document.ts";
+import { BRAND_GAP_MM, formatLabelMm, LabelPrintError, NAME_GAP_MM, TEXT_GAP_MM, type LabelLayout } from "./barcode.ts";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const BAR_FLOOR_MM = 10;
@@ -11,7 +11,7 @@ function mm(value: number): string {
 }
 
 export function labelPrintStyles(layout: LabelLayout): string {
-  const { settings, barcodeWidthMm, barHeightMm, pagePaddingMm, codeFontMm, nameFontMm, lineHeight } = layout;
+  const { settings, barcodeWidthMm, barHeightMm, pagePaddingMm, codeFontMm, nameFontMm, brandFontMm, lineHeight } = layout;
   return `
 @page { size: ${settings.widthMm}mm ${settings.heightMm}mm; margin: 0; }
 html, body { margin: 0; padding: 0; background: #fff; color: #000; }
@@ -36,6 +36,15 @@ body { font-family: Cairo, sans-serif; }
   page-break-after: always;
 }
 .label:last-child { break-after: auto; page-break-after: auto; }
+.brand {
+  flex: 0 0 auto;
+  margin: 0 0 ${mm(BRAND_GAP_MM)};
+  font-size: ${mm(brandFontMm)};
+  font-weight: 700;
+  line-height: ${lineHeight};
+  text-align: center;
+  direction: ltr;
+}
 .bars {
   flex: 0 0 auto;
   align-self: center;
@@ -44,25 +53,47 @@ body { font-family: Cairo, sans-serif; }
   background: #fff;
 }
 .bars svg { display: block; width: 100%; height: 100%; shape-rendering: crispEdges; }
-.code, .name {
+.meta {
   flex: 0 0 auto;
   align-self: stretch;
+  display: flex;
+  direction: ltr;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1mm;
+  margin: ${mm(TEXT_GAP_MM)} 0 0;
+}
+.meta.single { justify-content: center; }
+.code, .price, .name {
   margin: 0;
-  text-align: center;
   unicode-bidi: isolate;
   overflow-wrap: anywhere;
   word-break: break-word;
 }
 .code {
-  margin-top: ${mm(TEXT_GAP_MM)};
+  flex: 1 1 auto;
+  min-width: 0;
   font-size: ${mm(codeFontMm)};
   line-height: ${lineHeight};
   direction: ltr;
+  text-align: start;
+}
+.meta.single .code { text-align: center; flex: 0 1 auto; }
+.price {
+  flex: 0 1 auto;
+  font-size: ${mm(codeFontMm)};
+  font-weight: 700;
+  line-height: ${lineHeight};
+  direction: ltr;
+  text-align: end;
 }
 .name {
+  flex: 0 0 auto;
+  align-self: stretch;
   margin-top: ${mm(NAME_GAP_MM)};
   font-size: ${mm(nameFontMm)};
   line-height: ${lineHeight};
+  text-align: center;
 }
 `;
 }
@@ -108,6 +139,12 @@ function appendLabel(doc: Document, layout: LabelLayout): void {
   section.dataset.moduleDots = String(layout.moduleDots);
   section.dataset.labelProfile = layout.profile;
 
+  const brand = doc.createElement("p");
+  brand.className = "brand";
+  brand.dir = "ltr";
+  brand.textContent = "Bravos";
+  section.appendChild(brand);
+
   const bars = doc.createElement("div");
   bars.className = "bars";
   const graphic = drawBars(doc, layout.barcode.modules, layout.barcode.quietZoneModules);
@@ -115,11 +152,21 @@ function appendLabel(doc: Document, layout: LabelLayout): void {
   bars.appendChild(graphic);
   section.appendChild(bars);
 
+  const meta = doc.createElement("div");
+  meta.className = layout.priceText ? "meta" : "meta single";
   const code = doc.createElement("p");
   code.className = "code";
   code.dir = "ltr";
   code.textContent = layout.barcode.value;
-  section.appendChild(code);
+  meta.appendChild(code);
+  if (layout.priceText) {
+    const price = doc.createElement("p");
+    price.className = "price";
+    price.dir = "ltr";
+    price.textContent = layout.priceText;
+    meta.appendChild(price);
+  }
+  section.appendChild(meta);
 
   if (layout.product.nameAr.length > 0) {
     const name = doc.createElement("p");
@@ -154,16 +201,19 @@ function requiredHeightMessage(paddingPx: number, textPx: number): string {
 export function fitAndValidateLabelDocument(doc: Document, layout: LabelLayout): void {
   const view = doc.defaultView;
   const label = doc.querySelector<HTMLElement>(".label");
-  const code = label?.querySelector<HTMLElement>(".code") ?? null;
-  if (!view || !label || !code) {
+  const meta = label?.querySelector<HTMLElement>(".meta") ?? null;
+  if (!view || !label || !meta) {
     throw new LabelPrintError("تعذر قياس الملصق.");
   }
 
   const labelStyle = view.getComputedStyle(label);
   const padTop = pxLength(labelStyle.paddingTop);
   const padBottom = pxLength(labelStyle.paddingBottom);
+  const brand = label.querySelector<HTMLElement>(".brand");
   const name = label.querySelector<HTMLElement>(".name");
-  const textPx = outerBlockPx(code, view) + (name ? outerBlockPx(name, view) : 0);
+  const textPx = (brand ? outerBlockPx(brand, view) : 0)
+    + outerBlockPx(meta, view)
+    + (name ? outerBlockPx(name, view) : 0);
   const innerHeight = label.getBoundingClientRect().height - padTop - padBottom;
   const remainingPx = innerHeight - textPx;
   if (remainingPx / PX_PER_MM + 1e-4 < BAR_FLOOR_MM) {

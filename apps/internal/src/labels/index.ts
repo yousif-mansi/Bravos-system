@@ -3,6 +3,8 @@ export {
   COMPACT_MIN_LABEL_WIDTH_MM,
   encodeProductBarcode,
   formatLabelMm,
+  formatLabelPriceText,
+  formatSavedDefaultPrice,
   GENERIC_LABEL_PROFILE,
   GENERIC_MIN_LABEL_WIDTH_MM,
   LabelPrintError,

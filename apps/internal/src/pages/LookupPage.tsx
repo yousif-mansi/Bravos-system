@@ -1581,7 +1581,14 @@ export default function LookupPage({
         <section className="card pos-selection" data-testid="lookup-result">
           <div className="pos-section-heading">
             <h2>{product.nameAr}</h2>
-            <ProductLabelAction product={{ id: product.id, code: product.code, nameAr: product.nameAr }} />
+            <ProductLabelAction
+              product={{
+                id: product.id,
+                code: product.code,
+                nameAr: product.nameAr,
+                defaultSellingPricePiasters: product.sellingPricePiasters,
+              }}
+            />
           </div>
           <p className="muted">رمز المنتج: {product.code}</p>
           {selected ? (

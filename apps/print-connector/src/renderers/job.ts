@@ -36,6 +36,7 @@ export type NativeLabelJob = {
   code: string;
   name: string;
   modules: string;
+  price: string | null;
 };
 
 export type NativeReceiptLine = {
@@ -169,6 +170,7 @@ export function prepareNativeJob(dispatch: PrintDispatch): PreparedNativeJob {
         code: parsed.product.code,
         name: parsed.product.name,
         modules: encoded.modules,
+        price: parsed.product.price ?? null,
       },
     };
   }

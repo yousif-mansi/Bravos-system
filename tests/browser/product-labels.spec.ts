@@ -185,6 +185,8 @@ test("saved catalog identity prints three labels with fractional dimensions and 
   await page.getByLabel("اسم المنتج", { exact: true }).fill("UNSAVED editor name");
   const dialog = await openLabel(page, data.product.code);
   await expect(preview(page).locator(".name")).toHaveText(data.product.nameAr);
+  await expect(preview(page).locator(".brand")).toHaveText("Bravos");
+  await expect(preview(page).locator(".price")).toHaveText("120 EGP");
   expect(await decodeRenderedBarcode(preview(page).locator(".bars svg"))).toBe(data.product.code);
 
   await dialog.getByLabel("عدد النسخ").fill("3");
@@ -395,16 +397,20 @@ async function measureLabel(label: Locator) {
     const innerBottom = labelBox.bottom - padBottom;
     const innerMid = (innerLeft + innerRight) / 2;
     const bars = node.querySelector(".bars");
+    const brand = node.querySelector(".brand");
     const code = node.querySelector(".code");
+    const price = node.querySelector(".price");
     const name = node.querySelector(".name");
-    if (!bars || !code) throw new Error("Label is missing its barcode or code");
+    if (!bars || !code || !brand) throw new Error("Label is missing its barcode, brand, or code");
     const ink = (element: Element) => {
       const range = node.ownerDocument.createRange();
       range.selectNodeContents(element);
       return range.getBoundingClientRect();
     };
     const barsBox = bars.getBoundingClientRect();
-    const codeBox = ink(code);
+    const brandBox = ink(brand);
+    const codeBox = code.getBoundingClientRect();
+    const priceBox = price ? price.getBoundingClientRect() : null;
     const nameBox = name ? ink(name) : null;
     const first = node.children[0]?.getBoundingClientRect();
     const last = node.children[node.children.length - 1]?.getBoundingClientRect();
@@ -412,7 +418,10 @@ async function measureLabel(label: Locator) {
     return {
       pageDelta: Math.abs((labelBox.left + labelBox.width / 2) - (bodyBox.left + bodyBox.width / 2)),
       barsDelta: Math.abs((barsBox.left + barsBox.width / 2) - innerMid),
+      brandDelta: Math.abs((brandBox.left + brandBox.width / 2) - innerMid),
       codeDelta: Math.abs((codeBox.left + codeBox.width / 2) - innerMid),
+      codeLeft: codeBox.left - innerLeft,
+      priceRight: priceBox ? innerRight - priceBox.right : null,
       nameDelta: nameBox ? Math.abs((nameBox.left + nameBox.width / 2) - innerMid) : 0,
       topGap: first ? first.top - innerTop : 0,
       bottomGap: last ? innerBottom - last.bottom : 0,
@@ -439,7 +448,13 @@ function expectCenteredCompact(measured: Awaited<ReturnType<typeof measureLabel>
   expect(measured.bodyWidth).toBeGreaterThan(measured.labelWidth + 16);
   expect(measured.pageDelta).toBeLessThan(2);
   expect(measured.barsDelta).toBeLessThan(2);
-  expect(measured.codeDelta).toBeLessThan(2);
+  expect(measured.brandDelta).toBeLessThan(2);
+  if (measured.priceRight === null) {
+    expect(measured.codeDelta).toBeLessThan(2);
+  } else {
+    expect(measured.codeLeft).toBeLessThan(8);
+    expect(measured.priceRight).toBeLessThan(8);
+  }
   expect(measured.nameDelta).toBeLessThan(4);
   expect(Math.abs(measured.topGap)).toBeLessThan(3);
   expect(Math.abs(measured.bottomGap)).toBeLessThan(3);
@@ -480,7 +495,9 @@ test("XP-236B 38x25 preview is centered at wide and narrow widths without a stoc
   await expectPreviewFrameHeight(page, 25);
   expectCenteredCompact(await measureLabel(preview(page).locator(".label")), "1");
   expect(await decodeRenderedBarcode(preview(page).locator(".bars svg"))).toBe(data.product.code);
+  await expect(preview(page).locator(".brand")).toHaveText("Bravos");
   await expect(preview(page).locator(".code")).toHaveText(data.product.code);
+  await expect(preview(page).locator(".price")).toHaveText("120 EGP");
   await expect(preview(page).locator(".name")).toHaveText(data.product.nameAr);
 
   await page.setViewportSize({ width: 390, height: 844 });

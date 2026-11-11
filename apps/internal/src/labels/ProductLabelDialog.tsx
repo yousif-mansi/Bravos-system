@@ -30,6 +30,7 @@ type LabelProductFields = {
   id: string;
   code: string;
   nameAr: string;
+  defaultSellingPricePiasters: number | null;
 };
 
 type DevicePrefs = {

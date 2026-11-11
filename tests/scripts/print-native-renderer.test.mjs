@@ -16,6 +16,8 @@ import {
   LABEL_MIN_BAR_DOTS,
   LABEL_WIDTH_DOTS,
   QUIET_ZONE_MODULES,
+  RECEIPT_LAYOUT_WIDTH_DOTS,
+  RECEIPT_PAPER_WIDTH_DOTS,
   dotsFromHundredths,
   hundredthsOfDots,
   nativeModuleEffects,
@@ -31,12 +33,12 @@ function id(n) {
   return `00000000-0000-4000-8000-${n.toString(16).padStart(12, "0")}`;
 }
 
-function labelDocument(name) {
+function labelDocument(name, price) {
   return {
     kind: "label",
     id: id(1),
     copies: 1,
-    product: { code: "BRV-SAMPLE-001", name },
+    product: price === undefined ? { code: "BRV-SAMPLE-001", name } : { code: "BRV-SAMPLE-001", name, price },
     paper: { widthMm: 38, heightMm: 25 },
     dpi: 203,
     profile: "compact",
@@ -193,7 +195,17 @@ function decodeCode128(pixels, width, height) {
 
 function assertIntegerModules(pixels, width, preview) {
   const moduleDots = preview.moduleDots;
-  const y = Math.floor((preview.barHeightDots ?? 0) / 2);
+  let y = -1;
+  for (let row = 0; row < preview.pageHeightDots; row += 1) {
+    let black = 0;
+    for (let x = 0; x < width; x += 1) {
+      if (pixels[(row * width + x) * 4] < 128) black += 1;
+    }
+    if (black > width / 6) {
+      y = row;
+      break;
+    }
+  }
   assert.ok(y > 0 && y < preview.pageHeightDots);
   const black = [];
   for (let x = 0; x < width; x += 1) {
@@ -237,6 +249,10 @@ test("public contract text with punctuation and an Arabic phone maps once", () =
   const prepared = prepareNativeJob(receiptDispatch(1));
   assert.equal(prepared.ok, true);
   if (!prepared.ok) return;
+  const portrait = receiptDispatch(1);
+  portrait.document.receiptView.contentWidthMm = 48;
+  const preparedPortrait = prepareNativeJob(portrait);
+  assert.equal(preparedPortrait.ok, true);
   assert.equal(prepared.job.contactPhone, "010-1741.2287 تحويلة");
   assert.equal(prepared.job.customerPhone, "٠١٠١٢٣٤٥٦٧٨");
   assert.equal(prepared.job.occurredAtLabel, "31/10/2026، 14:05");
@@ -290,8 +306,12 @@ test("label preview is 304x200, quiet, integer, and decodes BRV-SAMPLE-001", { s
   assert.equal(preview.lines.every((line) => line.clipped === false), true);
   const name = preview.lines.find((line) => line.role === "name");
   const code = preview.lines.find((line) => line.role === "code");
+  const brand = preview.lines.find((line) => line.role === "brand");
   assert.equal(name?.text, "بنطال تويل");
   assert.equal(code?.text, "BRV-SAMPLE-001");
+  assert.equal(brand?.text, "Bravos");
+  assert.ok(brand.y < code.y);
+  assert.ok(preview.lines.every((line) => line.role !== "price"));
   const page = preview.pages[0];
   assert.ok(page);
   const png = Buffer.from(page.pngBase64, "base64");
@@ -303,6 +323,33 @@ test("label preview is 304x200, quiet, integer, and decodes BRV-SAMPLE-001", { s
   for (const line of preview.lines) {
     assert.ok(line.x >= 0 && line.y >= 0 && line.x + line.w <= 304 && line.y + line.h <= 200);
   }
+});
+
+test("label preview prints Bravos, saved price, and the product code", { skip: !windows }, async () => {
+  const dispatch = {
+    jobId: id(1),
+    kind: "label",
+    printerName: LABEL_PRINTER_NAME,
+    copies: 1,
+    document: labelDocument("Basic T-shirt", "450"),
+  };
+  const preview = await previewNativeJob(dispatch, { helperPath });
+  assert.equal(preview.ok, true, preview.ok ? undefined : JSON.stringify(preview));
+  if (!preview.ok) return;
+  assert.equal(preview.printInvoked, false);
+  const brand = preview.lines.find((line) => line.role === "brand");
+  const price = preview.lines.find((line) => line.role === "price");
+  const code = preview.lines.find((line) => line.role === "code");
+  const name = preview.lines.find((line) => line.role === "name");
+  assert.equal(brand?.text, "Bravos");
+  assert.equal(price?.text, "450 EGP");
+  assert.equal(code?.text, "BRV-SAMPLE-001");
+  assert.equal(name?.text, "Basic T-shirt");
+  assert.ok(brand.y < code.y);
+  assert.equal(code.y, price.y);
+  const png = Buffer.from(preview.pages[0].pngBase64, "base64");
+  const image = decodePng(png);
+  assert.equal(decodeCode128(image.pixels, image.width, image.height), "BRV-SAMPLE-001");
 });
 
 function lineInk(pixels, width, height, line) {
@@ -326,11 +373,12 @@ function lineInk(pixels, width, height, line) {
   return { minX, maxX, minY, maxY, y0, y1 };
 }
 
-const RECEIPT_CONTENT_WIDTH_DOTS = 575;
+const RECEIPT_LAYOUT_LEFT = Math.floor((RECEIPT_PAPER_WIDTH_DOTS - RECEIPT_LAYOUT_WIDTH_DOTS) / 2);
+const RECEIPT_LAYOUT_RIGHT = RECEIPT_LAYOUT_LEFT + RECEIPT_LAYOUT_WIDTH_DOTS;
 
 function assertReceiptInkInContentBand(pixels, width, height) {
   for (let y = 0; y < height; y += 1) {
-    for (let x = RECEIPT_CONTENT_WIDTH_DOTS; x < width; x += 1) {
+    for (let x = RECEIPT_LAYOUT_RIGHT + 2; x < width; x += 1) {
       const i = (y * width + x) * 4;
       assert.ok(pixels[i] >= 250 && pixels[i + 1] >= 250 && pixels[i + 2] >= 250);
     }
@@ -352,35 +400,64 @@ test("compact receipt aligns regular prices and shows one combined discount", { 
   const page = preview.pages[0];
   assert.ok(page.heightDots < 1050);
   const line = (role, text) => preview.lines.find((entry) => entry.role === role && entry.text === text);
-  const branch = line("branch", "فرع الفيوم");
+  const caption = line("caption", "MEN'S WEAR");
   const reference = line("reference", "BRV-001/000042");
   const heading = line("items-heading", "الصنف");
   const name = preview.lines.find((entry) => entry.role === "item-name");
   const qty = line("item-quantity", "2");
-  assert.deepEqual(preview.lines.filter((entry) => entry.role === "items-heading").map((entry) => entry.text), ["الصنف", "عدد", "السعر"]);
-  assert.ok(preview.lines.every((entry) => !["425.00", "BRV-SAMPLE-001", "L", "أسود"].includes(entry.text)));
+  const unit = line("item-unit", "425.00");
+  assert.deepEqual(preview.lines.filter((entry) => entry.role === "items-heading").map((entry) => entry.text), ["م", "الصنف", "الكمية", "السعر", "الإجمالي"]);
+  assert.ok(preview.lines.every((entry) => !["BRV-SAMPLE-001", "L", "أسود"].includes(entry.text)));
   const amount = line("item-total", "850.00");
   const subtotal = line("subtotal", "850.00");
   const discount = line("discount", "50");
   const total = line("total", "800.00");
-  const allocation = line("allocation", "800.00");
-  assert.ok(branch && reference && heading && name && qty && amount && subtotal && discount && total && allocation);
-  assert.ok(branch.y < reference.y && reference.y < heading.y && heading.y < qty.y);
+  const payment = line("payment", "نقدي");
+  const footer = line("footer", "استايلك على كيفك");
+  assert.ok(caption && reference && heading && name && qty && unit && amount && subtotal && discount && total && payment && footer);
+  assert.ok(caption.y < reference.y && reference.y < heading.y && heading.y < qty.y);
   assert.equal(qty.y, name.y);
   assert.equal(qty.y, amount.y);
-  assert.ok(amount.x + amount.w < qty.x && qty.x + qty.w < name.x);
-  assert.ok(amount.y < subtotal.y && subtotal.y < discount.y && discount.y < total.y && total.y < allocation.y);
-  assert.deepEqual(preview.lines.filter((entry) => entry.role === "discount").map((entry) => entry.text), ["الخصم", "50"]);
+  assert.ok(amount.x + amount.w < unit.x && unit.x + unit.w < qty.x);
+  assert.ok(amount.y < subtotal.y && subtotal.y < payment.y && payment.y < discount.y && discount.y < total.y && total.y < footer.y);
+  assert.deepEqual(preview.lines.filter((entry) => entry.role === "discount").map((entry) => entry.text), ["الخصم:", "50"]);
   assert.ok(preview.lines.every((entry) => !entry.text.includes("→") && !entry.text.includes("خصم الكوبون") && !entry.text.includes("خصم الموظف")));
+  assert.ok(preview.lines.every((entry) => entry.role !== "branch"));
   const image = decodePng(Buffer.from(page.pngBase64, "base64"));
   const inkAt = (x, y) => image.pixels[(y * image.width + x) * 4] < 128;
-  const midGap = Math.floor((amount.x + amount.w + qty.x) / 2);
+  const grayAt = (x, y) => {
+    const i = (y * image.width + x) * 4;
+    const r = image.pixels[i];
+    return r > 160 && r < 245;
+  };
+  const midGap = Math.floor((amount.x + amount.w + unit.x) / 2);
   assert.equal(inkAt(midGap, amount.y + Math.floor(amount.h / 2)), false);
-  const separator = Array.from({ length: amount.y - heading.y }, (_, i) => heading.y + i)
-    .some((y) => inkAt(midGap, y) && inkAt(midGap + 30, y));
-  assert.equal(separator, true);
+  const headerFill = Array.from({ length: heading.h }, (_, i) => heading.y + i)
+    .some((y) => grayAt(heading.x - 4, y) || grayAt(midGap, y));
+  assert.equal(headerFill, true);
+  const share = (box, paint) => {
+    let hit = 0;
+    let count = 0;
+    for (let y = box.y; y < box.y + box.h; y += 1) {
+      for (let x = box.x; x < box.x + box.w; x += 1) {
+        const i = (y * image.width + x) * 4;
+        count += 1;
+        if (paint(image.pixels[i], image.pixels[i + 1], image.pixels[i + 2])) hit += 1;
+      }
+    }
+    return count === 0 ? 1 : hit / count;
+  };
+  const isWhite = (r, g, b) => r > 250 && g > 250 && b > 250;
+  const isGray = (r, g, b) => r > 200 && r < 245 && Math.abs(r - g) < 8 && Math.abs(g - b) < 8;
+  const headingWord = line("items-heading", "الإجمالي");
+  const subtotalWord = line("subtotal", "إجمالي الأصناف");
+  assert.ok(headingWord && subtotalWord);
+  assert.ok(share(headingWord, isWhite) < 0.2);
+  assert.ok(share(subtotalWord, isWhite) < 0.2);
+  assert.ok(share(headingWord, isGray) > 0.05);
+  assert.ok(share(subtotalWord, isGray) > 0.05);
   assertReceiptInkInContentBand(image.pixels, image.width, image.height);
-  assert.ok(page.ink.minX >= 0 && page.ink.maxX < RECEIPT_CONTENT_WIDTH_DOTS);
+  assert.ok(page.ink.minX >= RECEIPT_LAYOUT_LEFT - 2 && page.ink.maxX < RECEIPT_LAYOUT_RIGHT + 2);
 });
 
 test("product-level receipt preview omits empty website options without printing", { skip: !windows }, async () => {
@@ -398,10 +475,11 @@ test("product-level receipt preview omits empty website options without printing
   assert.equal(preview.printInvoked, false);
   assert.ok(preview.lines.every((line) => line.role !== "item-meta" && line.text !== "BRV-SAMPLE-001"));
   assert.equal(preview.lines.some((line) => line.role === "item-name" && line.text.includes("بنطال تويل")), true);
-  assert.deepEqual(preview.lines.filter((line) => line.role === "total").map((line) => line.text), ["الإجمالي", "850.00"]);
-  assert.ok(preview.lines.every((line) => line.role !== "subtotal" && line.role !== "discount"));
+  assert.deepEqual(preview.lines.filter((line) => line.role === "subtotal").map((line) => line.text), ["إجمالي الأصناف", "850.00"]);
+  assert.ok(preview.lines.every((line) => line.role !== "total" && line.role !== "discount"));
+  assert.equal(preview.lines.some((line) => line.role === "footer" && line.text === "استايلك على كيفك"), true);
   for (const page of preview.pages) {
-    assert.ok(page.ink.minX >= 0 && page.ink.maxX < RECEIPT_CONTENT_WIDTH_DOTS);
+    assert.ok(page.ink.minX >= RECEIPT_LAYOUT_LEFT - 2 && page.ink.maxX < RECEIPT_LAYOUT_RIGHT + 2);
   }
 });
 
@@ -414,18 +492,22 @@ test("receipt preview keeps fields, logo ink, and page bounds", { skip: !windows
   assert.ok(preview.pages.length <= 6);
   assert.equal(typeof preview.maxPageHeightDots, "number");
   const roles = new Set(preview.lines.map((line) => line.role));
-  for (const role of ["branch", "reference", "detail", "item-name", "item-total", "total", "allocation"]) {
+  for (const role of ["caption", "reference", "detail", "item-name", "item-total", "subtotal", "total", "footer"]) {
     assert.equal(roles.has(role), true);
   }
+  assert.equal(roles.has("branch"), false);
   const texts = preview.lines.map((line) => line.text).join("\n");
-  assert.equal(texts.includes("010-1741.2287 تحويلة"), true);
+  assert.equal(texts.includes("010-1741.2287 تحويلة"), false);
   assert.equal(texts.includes("٠١٠١٢٣٤٥٦٧٨"), true);
   assert.equal(texts.includes("800.00"), true);
+  assert.equal(texts.includes("استايلك على كيفك"), true);
+  assert.equal(texts.includes("MEN'S WEAR"), true);
   assert.equal(preview.lines.filter((line) => line.role === "item-name").map((line) => line.text).join(" ").includes(oneLine().productName), true);
   for (const page of preview.pages) {
     assert.ok(page.heightDots <= (preview.maxPageHeightDots ?? 0));
     assert.ok(page.ink.minX >= 0 && page.ink.minY >= 0);
-    assert.ok(page.ink.maxX < RECEIPT_CONTENT_WIDTH_DOTS && page.ink.maxY < page.heightDots);
+    assert.ok(page.ink.maxX < RECEIPT_LAYOUT_RIGHT + 2 && page.ink.maxY < page.heightDots);
+    assert.ok(page.ink.minX >= RECEIPT_LAYOUT_LEFT - 2);
     const png = Buffer.from(page.pngBase64, "base64");
     assert.ok(png.length >= 32);
     assert.equal(png.subarray(0, 4).toString("hex"), "89504e47");

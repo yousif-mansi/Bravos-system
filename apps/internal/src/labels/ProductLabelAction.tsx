@@ -7,6 +7,7 @@ export type ProductLabelActionProduct = {
   id: string;
   code: string;
   nameAr: string;
+  defaultSellingPricePiasters: number | null;
 };
 
 type ProductLabelDialogComponent = typeof import("./ProductLabelDialog.tsx").ProductLabelDialog;
@@ -52,7 +53,12 @@ export function ProductLabelAction({
   async function open() {
     const generation = accountGeneration();
     const requestId = ++requestRef.current;
-    const snapshot = { id: product.id, code: product.code, nameAr: product.nameAr };
+    const snapshot = {
+      id: product.id,
+      code: product.code,
+      nameAr: product.nameAr,
+      defaultSellingPricePiasters: product.defaultSellingPricePiasters,
+    };
     setPhase("loading");
     setOpenProduct(null);
     try {

@@ -11,6 +11,7 @@ import {
   exactKeys,
   isDisplayText,
   isInteger,
+  isMoney,
   isProductCode,
   isSafeTree,
   parseJobId,
@@ -23,6 +24,8 @@ export type LabelJob = {
   product: {
     code: string;
     name: string;
+    /** Saved default selling price, pounds. Omitted on older jobs. */
+    price?: string;
   };
   paper: {
     widthMm: typeof LABEL_PAPER_WIDTH_MM;
@@ -42,15 +45,21 @@ export function parseLabelJob(value: unknown): LabelJob | null {
   if (record.dpi !== LABEL_DPI || record.profile !== LABEL_PROFILE) return null;
   const paper = exactKeys(record.paper, ["widthMm", "heightMm"]);
   if (!paper || paper.widthMm !== LABEL_PAPER_WIDTH_MM || paper.heightMm !== LABEL_PAPER_HEIGHT_MM) return null;
-  const product = exactKeys(record.product, ["code", "name"]);
+  const withPrice = exactKeys(record.product, ["code", "name", "price"]);
+  const product = withPrice ?? exactKeys(record.product, ["code", "name"]);
   const code = product?.code;
   const name = product?.name;
   if (!isProductCode(code) || !isDisplayText(name, PRODUCT_NAME_MAX)) return null;
+  let price: string | undefined;
+  if (withPrice) {
+    if (!isMoney(withPrice.price)) return null;
+    price = withPrice.price;
+  }
   return {
     kind: "label",
     id,
     copies,
-    product: { code, name },
+    product: price === undefined ? { code, name } : { code, name, price },
     paper: { widthMm: LABEL_PAPER_WIDTH_MM, heightMm: LABEL_PAPER_HEIGHT_MM },
     dpi: LABEL_DPI,
     profile: LABEL_PROFILE,

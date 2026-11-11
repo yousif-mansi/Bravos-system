@@ -7,9 +7,9 @@ import {
   PHONE_MAX,
   PRINTED_REFERENCE_MAX,
   PRODUCT_NAME_MAX,
-  RECEIPT_CONTENT_WIDTH_MM,
   RECEIPT_COPIES,
   TAXONOMY_NAME_MAX,
+  isReceiptContentWidth,
 } from "./constants.ts";
 import {
   exactKeys,
@@ -58,7 +58,7 @@ export type ReceiptViewDto = {
   cashCollected: string | null;
   paymentMethodLabel: string;
   paymentAllocations: ReceiptMoneyLineDto[];
-  contentWidthMm: typeof RECEIPT_CONTENT_WIDTH_MM;
+  contentWidthMm: 48 | 72;
 };
 
 export type ReceiptJob = {
@@ -180,7 +180,8 @@ export function parseReceiptJob(value: unknown): ReceiptJob | null {
     "paymentAllocations",
     "contentWidthMm",
   ]);
-  if (!view || view.brand !== "BRAVOS" || view.contentWidthMm !== RECEIPT_CONTENT_WIDTH_MM) return null;
+  if (!view || view.brand !== "BRAVOS" || !isReceiptContentWidth(view.contentWidthMm)) return null;
+  const contentWidthMm = view.contentWidthMm;
   const branchName = view.branchName;
   const printedReference = view.printedReference;
   const occurredAtLabel = view.occurredAtLabel;
@@ -240,7 +241,7 @@ export function parseReceiptJob(value: unknown): ReceiptJob | null {
       cashCollected,
       paymentMethodLabel,
       paymentAllocations,
-      contentWidthMm: RECEIPT_CONTENT_WIDTH_MM,
+      contentWidthMm,
     },
   };
 }

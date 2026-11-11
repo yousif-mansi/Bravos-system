@@ -1,4 +1,5 @@
 import JsBarcode from "jsbarcode";
+import { piastersToEgpInput } from "../money.ts";
 
 /** Existing saved product codes. Case is significant and must be encoded unchanged. */
 export const PRODUCT_CODE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$/;
@@ -23,13 +24,16 @@ export const XP236B_38X25_DPI = 203 as const;
 const BAR_MIN_MM = 10;
 const GENERIC_CODE_FONT_MM = 3.2;
 const GENERIC_NAME_FONT_MM = 3.6;
+const GENERIC_BRAND_FONT_MM = 3.2;
 const GENERIC_LINE_HEIGHT = 1.35;
 /** Larger than the 13-dot / 12-dot diagnostic proof, still inside 25 mm. */
-const COMPACT_CODE_FONT_MM = 2.8;
-const COMPACT_NAME_FONT_MM = 2;
-const COMPACT_LINE_HEIGHT = 1.2;
-export const TEXT_GAP_MM = 1;
-export const NAME_GAP_MM = 0.6;
+const COMPACT_CODE_FONT_MM = 2;
+const COMPACT_NAME_FONT_MM = 1.6;
+const COMPACT_BRAND_FONT_MM = 2;
+const COMPACT_LINE_HEIGHT = 1.15;
+export const TEXT_GAP_MM = 0.5;
+export const NAME_GAP_MM = 0.3;
+export const BRAND_GAP_MM = 0.25;
 /** Latin product codes are narrower than Arabic display names. */
 const CODE_CHAR_EM = 0.62;
 const NAME_CHAR_EM = 1.05;
@@ -42,6 +46,8 @@ export type LabelProduct = {
   id: string;
   code: string;
   nameAr: string;
+  /** Saved catalog default selling price in piasters. Null when the price is unavailable. */
+  defaultSellingPricePiasters?: number | null;
 };
 
 export type ProductLabelSettings = {
@@ -71,10 +77,13 @@ export type LabelLayout = {
   pagePaddingMm: number;
   codeFontMm: number;
   nameFontMm: number;
+  brandFontMm: number;
   lineHeight: number;
   /** Native printer dots per module. Generic is always 2. Compact is 1 or 2. */
   moduleDots: 1 | 2;
   profile: LabelProfileId;
+  /** `450 EGP` from the saved default, or null when no valid default exists. */
+  priceText: string | null;
 };
 
 type LibraryEncoding = {
@@ -111,6 +120,7 @@ function dotsToMm(dots: number, dpi: 203 | 300): number {
 type TypeSpec = {
   codeFontMm: number;
   nameFontMm: number;
+  brandFontMm: number;
   lineHeight: number;
   codeCharEm: number;
   nameCharEm: number;
@@ -121,6 +131,7 @@ function typeSpec(profile: LabelProfileId): TypeSpec {
     return {
       codeFontMm: COMPACT_CODE_FONT_MM,
       nameFontMm: COMPACT_NAME_FONT_MM,
+      brandFontMm: COMPACT_BRAND_FONT_MM,
       lineHeight: COMPACT_LINE_HEIGHT,
       codeCharEm: CODE_CHAR_EM,
       nameCharEm: COMPACT_NAME_CHAR_EM,
@@ -129,10 +140,26 @@ function typeSpec(profile: LabelProfileId): TypeSpec {
   return {
     codeFontMm: GENERIC_CODE_FONT_MM,
     nameFontMm: GENERIC_NAME_FONT_MM,
+    brandFontMm: GENERIC_BRAND_FONT_MM,
     lineHeight: GENERIC_LINE_HEIGHT,
     codeCharEm: CODE_CHAR_EM,
     nameCharEm: NAME_CHAR_EM,
   };
+}
+
+const MONEY = /^(?:0|[1-9]\d{0,7})(?:\.\d{2})?$/;
+
+/** Saved default selling price as pounds. Null when the value is missing or not a stored price. */
+export function formatSavedDefaultPrice(piasters: unknown): string | null {
+  if (typeof piasters !== "number" || !Number.isInteger(piasters) || piasters < 0) return null;
+  const amount = piastersToEgpInput(piasters);
+  return MONEY.test(amount) ? amount : null;
+}
+
+/** Label price text, including EGP. Null when no valid saved default exists. Zero is printed. */
+export function formatLabelPriceText(piasters: unknown): string | null {
+  const amount = formatSavedDefaultPrice(piasters);
+  return amount === null ? null : `${amount} EGP`;
 }
 
 function lineCount(text: string, fontMm: number, charEm: number, contentWidthMm: number): number {
@@ -141,13 +168,15 @@ function lineCount(text: string, fontMm: number, charEm: number, contentWidthMm:
   return Math.ceil(text.length / perLine);
 }
 
-function textStackMm(code: string, name: string, contentWidthMm: number, type: TypeSpec): number {
-  const codeLines = Math.max(1, lineCount(code, type.codeFontMm, type.codeCharEm, contentWidthMm));
+function textStackMm(code: string, name: string, contentWidthMm: number, type: TypeSpec, priceText: string | null): number {
+  const brandBlock = type.brandFontMm * type.lineHeight;
+  const codeWidth = priceText ? contentWidthMm * 0.58 : contentWidthMm;
+  const codeLines = Math.max(1, lineCount(code, type.codeFontMm, type.codeCharEm, codeWidth));
   const nameLines = lineCount(name, type.nameFontMm, type.nameCharEm, contentWidthMm);
   const codeBlock = codeLines * type.codeFontMm * type.lineHeight;
   const nameBlock = nameLines * type.nameFontMm * type.lineHeight;
   const nameGap = nameLines > 0 ? NAME_GAP_MM : 0;
-  return codeBlock + nameGap + nameBlock;
+  return brandBlock + BRAND_GAP_MM + codeBlock + nameGap + nameBlock;
 }
 
 export function resolveLabelProfile(settings: ProductLabelSettings): LabelProfileId {
@@ -238,7 +267,8 @@ export function planLabelLayout(product: LabelProduct, settings: ProductLabelSet
 
   const type = typeSpec(profile);
   const contentWidthMm = settings.widthMm - PAGE_PADDING_MM * 2;
-  const stack = textStackMm(product.code, product.nameAr, contentWidthMm, type);
+  const priceText = formatLabelPriceText(product.defaultSellingPricePiasters);
+  const stack = textStackMm(product.code, product.nameAr, contentWidthMm, type, priceText);
   const rawMinimumHeight = PAGE_PADDING_MM * 2 + BAR_MIN_MM + TEXT_GAP_MM + stack;
   const minimumHeightMm = Math.ceil(rawMinimumHeight * 10) / 10;
   const barHeightMm = settings.heightMm - PAGE_PADDING_MM * 2 - TEXT_GAP_MM - stack;
@@ -258,8 +288,10 @@ export function planLabelLayout(product: LabelProduct, settings: ProductLabelSet
     pagePaddingMm: PAGE_PADDING_MM,
     codeFontMm: type.codeFontMm,
     nameFontMm: type.nameFontMm,
+    brandFontMm: type.brandFontMm,
     lineHeight: type.lineHeight,
     moduleDots,
     profile,
+    priceText,
   };
 }

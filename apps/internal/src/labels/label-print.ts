@@ -12,6 +12,7 @@ import { accountGeneration, subscribeAccount } from "../account-session.ts";
 import { ConnectorClientError, hasPairingToken, submitConnectorJob } from "../printing/connector-client.ts";
 import { claimBrowserPrint, releaseBrowserPrint } from "../printing/browser-print-lock.ts";
 import {
+  formatSavedDefaultPrice,
   LabelPrintError,
   planLabelLayout,
   XP236B_38X25_PROFILE,
@@ -94,16 +95,23 @@ export function connectorLabelJob(product: LabelProduct, settings: ProductLabelS
   ) {
     throw fail(LABEL_SIZE_UNSUPPORTED);
   }
+  const price = formatSavedDefaultPrice(product.defaultSellingPricePiasters);
+  const productPayload = price === null
+    ? { code: product.code, name: product.nameAr }
+    : { code: product.code, name: product.nameAr, price };
   const parsed = parseLabelJob({
     kind: "label",
     id,
     copies: settings.copies,
-    product: { code: product.code, name: product.nameAr },
+    product: productPayload,
     paper: { widthMm: LABEL_PAPER_WIDTH_MM, heightMm: LABEL_PAPER_HEIGHT_MM },
     dpi: LABEL_DPI,
     profile: LABEL_PROFILE,
   });
   if (!parsed || parsed.product.code !== product.code || parsed.product.name !== product.nameAr) {
+    throw fail("بيانات الملصق لا تطابق طابعة الملصقات المربوطة. لن يُختصر الاسم ولن تُستخدم طابعة أخرى.");
+  }
+  if (price !== null && parsed.product.price !== price) {
     throw fail("بيانات الملصق لا تطابق طابعة الملصقات المربوطة. لن يُختصر الاسم ولن تُستخدم طابعة أخرى.");
   }
   return parsed;

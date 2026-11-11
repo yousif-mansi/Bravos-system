@@ -11,9 +11,17 @@ export const LABEL_PAPER_HEIGHT_MM = 25;
 export const LABEL_DPI = 203;
 export const LABEL_PROFILE = "compact";
 
-/** 80mm receipt layout from the staff receipt view. 58mm (48mm content) is not this printer. */
-export const RECEIPT_CONTENT_WIDTH_MM = 72;
+/** 58 mm portrait content column after inset. The XP-80TS roll remains 80 mm. */
+export const RECEIPT_CONTENT_WIDTH_MM = 48;
+/** Older paired browsers sent 72 mm. The updated connector still accepts that value. */
+export const RECEIPT_LEGACY_CONTENT_WIDTH_MM = 72;
+export const RECEIPT_PAPER_WIDTH_MM = 58;
+export const RECEIPT_HARDWARE_WIDTH_MM = 80;
 export const RECEIPT_COPIES = 1;
+
+export function isReceiptContentWidth(value: unknown): value is 48 | 72 {
+  return value === RECEIPT_CONTENT_WIDTH_MM || value === RECEIPT_LEGACY_CONTENT_WIDTH_MM;
+}
 export const LABEL_COPIES_MIN = 1;
 export const LABEL_COPIES_MAX = 100;
 

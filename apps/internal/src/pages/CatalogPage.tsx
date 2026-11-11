@@ -470,7 +470,12 @@ export default function CatalogPage({
                 <p>حالة الموقع: {publicationLabel(item.publication)} · {formatEgpFromPiasters(item.defaultSellingPricePiasters)}</p>
                 <div className="form-actions">
                   <ProductLabelAction
-                    product={{ id: item.id, code: item.code, nameAr: item.nameAr }}
+                    product={{
+                      id: item.id,
+                      code: item.code,
+                      nameAr: item.nameAr,
+                      defaultSellingPricePiasters: item.defaultSellingPricePiasters,
+                    }}
                     disabled={Boolean(productPending)}
                   />
                 </div>

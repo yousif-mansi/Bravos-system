@@ -164,9 +164,13 @@ test("oversized, invalid, and wrong-copy jobs never reach the print port", async
   assert.equal(oversized.status, 413);
   assert.equal(oversized.json.error, "payload_too_large");
   const tooMany = labelJob(jobId(8), 101);
-  const narrow = receiptJob(jobId(9));
-  narrow.receiptView.contentWidthMm = 48;
-  narrow.copies = 2;
+  const extraCopies = receiptJob(jobId(9));
+  extraCopies.copies = 2;
+  const portrait = receiptJob(jobId(90));
+  portrait.receiptView.contentWidthMm = 48;
+  const eighty = receiptJob(jobId(91));
+  eighty.receiptView.contentWidthMm = 80;
+  assert.equal(parsePrintJob(eighty), null);
   const html = labelJob(jobId(10));
   html.html = "<script>";
   const marked = labelJob(jobId(11), 1, "قميص (قطن) — diagnostic 😀");
@@ -174,16 +178,21 @@ test("oversized, invalid, and wrong-copy jobs never reach the print port", async
   assert.equal(accepted.status, 202);
   await connector.waitUntilIdle();
   assert.equal(calls.at(-1).document.product.name, "قميص (قطن) — diagnostic 😀");
+  const portraitAccepted = await request(connector, { method: "POST", path: "/jobs", token, body: portrait });
+  assert.equal(portraitAccepted.status, 202);
+  assert.ok(parsePrintJob(portrait));
+  await connector.waitUntilIdle();
+  assert.equal(calls.at(-1).document.receiptView.contentWidthMm, 48);
   const traced = receiptJob(jobId(12), "أحمد <ضيف>، diagnostic");
   traced.receiptView.serverReference = "1042";
   traced.receiptView.localOperationReference = "عملية محلية 1";
   const controlled = labelJob(jobId(13), 1, "قميص\u202E");
-  for (const body of [tooMany, narrow, html, { kind: "label", id: "not-a-uuid" }, traced, controlled]) {
+  for (const body of [tooMany, extraCopies, html, { kind: "label", id: "not-a-uuid" }, traced, controlled]) {
     const response = await request(connector, { method: "POST", path: "/jobs", token, body });
     assert.equal(response.status, 400);
     assert.equal(response.json.error, "invalid_job");
   }
-  assert.equal(parsePrintJob(narrow), null);
+  assert.equal(parsePrintJob(extraCopies), null);
   assert.equal(parsePrintJob(traced), null);
   const rich = receiptJob(jobId(14), "أحمد (ضيف)، «عميل» 😀 <b>markup</b>");
   const richAccepted = await request(connector, { method: "POST", path: "/jobs", token, body: rich });
@@ -193,8 +202,9 @@ test("oversized, invalid, and wrong-copy jobs never reach the print port", async
   assert.equal(Object.hasOwn(calls.at(-1).document.receiptView, "serverReference"), false);
   assert.equal(Object.hasOwn(calls.at(-1).document.receiptView, "localOperationReference"), false);
   assert.equal(JSON.stringify(richAccepted.json).includes("serverReference"), false);
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 3);
   assert.equal(calls[0].document.product.name, "قميص (قطن) — diagnostic 😀");
+  assert.equal(calls[1].document.receiptView.contentWidthMm, 48);
 });
 
 test("the queue is serialized and capped, and a finished job does not consume the cap", async (t) => {

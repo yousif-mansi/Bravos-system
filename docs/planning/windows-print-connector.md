@@ -29,9 +29,9 @@ That script is `pnpm --filter @bravos/print-connector start`, which runs `node s
 | Job | Fixed queue | Driver check | Paper |
 | --- | --- | --- | --- |
 | `label` | `Xprinter XP-236B` | `Xprinter XP-236B` | 38×25 mm, 203 dpi, profile `xp236b-38x25` |
-| `receipt` | `Bravos Receipts - Xprinter XP-80TS` | `Xprinter XP-80` | 80 mm paper, `contentWidthMm` 72, copies exactly 1 |
+| `receipt` | `Bravos Receipts - Xprinter XP-80TS` | `Xprinter XP-80` | 80 mm hardware roll, 58 mm portrait layout centered in the printable width, copies exactly 1 |
 
-The job cannot name a printer, path, command, HTML document, or script. A label is never routed to the receipt printer. There is no fallback to the Windows default printer, the other device, or a paired browser dialog. A 58 mm receipt (`contentWidthMm` 48) is rejected so it is not scaled onto the 80 mm device. Copies for a label are an integer 1..100.
+The job cannot name a printer, path, command, HTML document, or script. A label is never routed to the receipt printer. There is no fallback to the Windows default printer, the other device, or a paired browser dialog. The updated connector accepts `contentWidthMm` 48 (current 58 mm portrait) and the older browser value 72, and always draws the 58 mm layout centered on the XP-80TS 80 mm roll. It does not rotate the page or change Windows paper settings. An older connector that still requires 72 rejects 48 as `invalid_job`; the staff app reports that the print program must be updated and does not open the browser printer. Copies for a label are an integer 1..100. An optional label `product.price` is the saved default selling price; older jobs without that field remain valid and print without a price.
 
 `startWindowsPrintConnector` dynamically imports `submitNativePrint` and passes it to `createWindowsPrintPort`. The allowlist runs before that submitter. Production does not add a second printer probe; the native submitter probes the live USB queue (`USB###`, matching device id, ready status, not offline). A missing submitter still fails closed with `renderer_unavailable` after the platform and allowlist. Each job is submitted on its own, so an offline receipt does not block a later label.
 
@@ -41,13 +41,13 @@ The job cannot name a printer, path, command, HTML document, or script. A label 
 
 Label geometry is 38 mm by 25 mm at 203 dpi, with a 2 mm inset and CODE128 quiet zones of 10 modules. Module width is one or two dots. A code that cannot fit without scaling is `invalid_layout` and is not submitted. The product code and saved display name are drawn as data.
 
-Receipt geometry is 80 mm paper, 72 mm content width, at the same 203 dpi. The page is capped. The helper loads only its private bundled `Cairo-Regular.ttf` and `bravos-receipt-logo.png`. A job must not carry font or logo paths. If either trusted file is absent, the result is `renderer_unavailable`.
+Receipt geometry is an 80 mm hardware bitmap with a 58 mm portrait layout centered in that width, at the same 203 dpi. Hard margins are left as side clearance so the 58 mm column stays inside the printable area. The page is capped. The helper loads only its private bundled `Cairo-Regular.ttf` and `bravos-receipt-logo.png`. A job must not carry font or logo paths. If either trusted file is absent, the result is `renderer_unavailable`.
 
 `submitted` means the native port reported an exact spooler handoff. It is not physical success. `queued` and `submitting` are not terminal and are not paper output.
 
 ## Jobs
 
-`LabelJob` carries `product.code` and `product.name` unchanged. Names are stored display text: bounded length, no C0 controls or bidi overrides, and otherwise the characters the catalog already saved. The renderer draws that text as data. There is no HTML interpreter.
+`LabelJob` carries `product.code` and `product.name` unchanged, and may include `product.price` as the saved default selling price in pounds. Names are stored display text: bounded length, no C0 controls or bidi overrides, and otherwise the characters the catalog already saved. The renderer draws that text as data. There is no HTML interpreter.
 
 `ReceiptJob.receiptView` follows the printed public fields of `ReceiptView`: brand, branch, contact phone, `printedReference`, Cairo or stored time, cashier, customer, lines, adjustments, totals, payment lines, and `contentWidthMm`. `serverReference` and `localOperationReference` are not on this transport. Amounts stay the strings the paired app already formatted. Bounds follow the producers: product, size, color, branch, and cashier names 80; customer name 120; phones 40; printed reference 256; money up to `10000000.00`; quantity 1..1000000. Purchase-cost, printer, path, command, and HTML fields are rejected keys. The product code stays the existing SKU pattern.
 

@@ -2,6 +2,7 @@ import type { SaleDto } from "@bravos/contracts";
 import {
   RECEIPT_CONTENT_WIDTH_MM,
   RECEIPT_COPIES,
+  isReceiptContentWidth,
   parseReceiptJob,
   type ReceiptJob,
 } from "@bravos/print-contracts";
@@ -10,7 +11,13 @@ import { ConnectorClientError, hasPairingToken, submitConnectorJob } from "../pr
 import { claimBrowserPrint, releaseBrowserPrint } from "../printing/browser-print-lock.ts";
 import { withSelectedReceiptNumber } from "../receipt-number.ts";
 import { resolveReceiptOptions } from "./receipt-options.ts";
-import { buildReceiptView, isCompletedSale, type ReceiptOptions, type ReceiptView } from "./receipt-model.ts";
+import {
+  RECEIPT_PAPER_WIDTH_MM,
+  buildReceiptView,
+  isCompletedSale,
+  type ReceiptOptions,
+  type ReceiptView,
+} from "./receipt-model.ts";
 import { finalizeReceiptDocumentSize, renderReceiptDocument } from "./receipt-document.ts";
 
 /**
@@ -49,7 +56,20 @@ export type ReceiptPrintResult =
   | { channel: "browser"; dialogRequested: true; dialogReturned: boolean }
   | { channel: "connector"; submitted: true };
 
-const RECEIPT_WIDTH_UNSUPPORTED = "عرض الإيصال المحفوظ غير مدعوم على طابعة الإيصالات المربوطة. المدعوم ورق 80 مم فقط، ولن يُغيّر العرض المحفوظ ولن تُستخدم طابعة المتصفح. البيع مكتمل.";
+const RECEIPT_WIDTH_UNSUPPORTED = "عرض الإيصال المحفوظ غير مدعوم على طابعة الإيصالات المربوطة. لن تُستخدم طابعة المتصفح. البيع مكتمل.";
+const RECEIPT_LAYOUT_REJECTED = "رُفض تخطيط طباعة الإيصال.";
+const RECEIPT_LAYOUT_UPDATE = "حدّث برنامج الطباعة على هذا الجهاز ثم أعد الطباعة.";
+const RECEIPT_LAYOUT_HOLD = "لن تُستخدم طابعة المتصفح حتى لا تتكرر الورقة. البيع مكتمل.";
+
+/**
+ * Layout rejection stays on the connector. An update is mentioned only when the
+ * running program rejected the current 48 mm column as `invalid_job`, which is
+ * what an older connector does. Other layout failures are not called an old program.
+ */
+export function receiptConnectorLayoutMessage(oldConnector: boolean): string {
+  const update = oldConnector ? `${RECEIPT_LAYOUT_UPDATE} ` : "";
+  return `${RECEIPT_LAYOUT_REJECTED} ${update}${RECEIPT_LAYOUT_HOLD}`;
+}
 
 function pairingOrThrow(): boolean {
   try {
@@ -64,7 +84,7 @@ function pairingOrThrow(): boolean {
  * Internal trace ids stay off the payload. Amounts and names are not recalculated.
  */
 export function connectorReceiptJob(view: ReceiptView, id: string): ReceiptJob {
-  if (view.contentWidthMm !== RECEIPT_CONTENT_WIDTH_MM) {
+  if (!isReceiptContentWidth(view.contentWidthMm)) {
     throw unavailable(RECEIPT_WIDTH_UNSUPPORTED);
   }
   const receiptView = {
@@ -174,7 +194,7 @@ function openFrame(title: string, host: HTMLElement, presentation: "print" | "pr
     iframe.style.position = "fixed";
     iframe.style.left = "-10000px";
     iframe.style.top = "0";
-    iframe.style.width = "80mm";
+    iframe.style.width = `${RECEIPT_PAPER_WIDTH_MM}mm`;
     iframe.style.height = "400px";
     iframe.style.opacity = "0";
     iframe.style.pointerEvents = "none";
@@ -377,6 +397,11 @@ async function printReceiptThroughConnector(
     if (error instanceof ConnectorClientError) {
       if (error.code === "aborted") {
         throw unavailable("أُلغيت طباعة الإيصال قبل الإرسال. البيع مكتمل.");
+      }
+      if (error.code === "layout") {
+        const oldConnector = error.connectorError === "invalid_job"
+          && job.receiptView.contentWidthMm === RECEIPT_CONTENT_WIDTH_MM;
+        throw unavailable(receiptConnectorLayoutMessage(oldConnector));
       }
       throw unavailable(`${error.message} البيع مكتمل.`);
     }

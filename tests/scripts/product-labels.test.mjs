@@ -4,6 +4,7 @@ import { BitArray, Code128Reader } from "@zxing/library";
 import {
   assertLabelSettings,
   encodeProductBarcode,
+  formatLabelPriceText,
   LabelPrintError,
   planLabelLayout,
 } from "../../apps/internal/src/labels/barcode.ts";
@@ -110,6 +111,8 @@ test("203 and 300 dpi layouts use two-dot modules and quiet zones", () => {
     assert.equal(layout.lineHeight, 1.35);
     assert.equal(layout.codeFontMm, 3.2);
     assert.equal(layout.nameFontMm, 3.6);
+    assert.equal(layout.brandFontMm, 3.2);
+    assert.equal(layout.priceText, null);
     assert.equal(layout.moduleWidthMm, moduleWidthMm);
     assert.equal(layout.barcode.quietZoneModules, QUIET_MODULES);
     assert.equal(layout.barcodeWidthMm, spanned * moduleWidthMm);
@@ -191,9 +194,11 @@ test("XP-236B 38x25 keeps one native dot for BRV-SAMPLE-001 and ten quiet module
   assert.ok(Math.abs(layout.moduleWidthMm * 203 - 25.4) < 1e-9);
   assert.ok(Math.abs(layout.barcodeWidthMm - (209 * 25.4) / 203) < 1e-9);
   assert.ok(layout.barcodeWidthMm < 38);
-  assert.equal(layout.codeFontMm, 2.8);
-  assert.equal(layout.nameFontMm, 2);
-  assert.equal(layout.lineHeight, 1.2);
+  assert.equal(layout.codeFontMm, 2);
+  assert.equal(layout.nameFontMm, 1.6);
+  assert.equal(layout.brandFontMm, 2);
+  assert.equal(layout.priceText, null);
+  assert.equal(layout.lineHeight, 1.15);
   assert.ok(layout.barHeightMm >= 10);
   assert.ok(layout.codeFontMm > (13 * 25.4) / 203);
   assert.ok(layout.nameFontMm > (12 * 25.4) / 203);
@@ -228,8 +233,8 @@ test("compact 38x25 accepts a mixed-script name and rejects a name that cannot f
   assert.equal(layout.product.nameAr, name);
   assert.equal(layout.barcode.value, "BRV-SAMPLE-001");
   assert.ok(layout.barHeightMm + 1e-9 >= 10);
-  assert.equal(layout.codeFontMm, 2.8);
-  assert.equal(layout.nameFontMm, 2);
+  assert.equal(layout.codeFontMm, 2);
+  assert.equal(layout.nameFontMm, 1.6);
 
   const tooLong = `${"بنطال تويل المفصل ".repeat(24)}Extra English twill that must stay intact`;
   assert.throws(
@@ -255,6 +260,22 @@ test("XP-236B profile is optional and rejects a non-203 dpi or a width under 38"
   assert.equal(generic.moduleDots, 2);
   assert.equal(generic.profile, "generic");
   assert.ok(Math.abs(generic.moduleWidthMm - (2 * 25.4) / 300) < 1e-9);
+});
+
+test("saved default price formats zero and decimals and does not invent a missing price", () => {
+  assert.equal(formatLabelPriceText(0), "0 EGP");
+  assert.equal(formatLabelPriceText(45000), "450 EGP");
+  assert.equal(formatLabelPriceText(45050), "450.50 EGP");
+  assert.equal(formatLabelPriceText(null), null);
+  assert.equal(formatLabelPriceText(undefined), null);
+  assert.equal(formatLabelPriceText(12.5), null);
+  assert.equal(formatLabelPriceText(-1), null);
+  const priced = planLabelLayout(
+    { id: "prod-label-1", code: "BRV-071", nameAr: "Basic T-shirt", defaultSellingPricePiasters: 45000 },
+    xp(),
+  );
+  assert.equal(priced.priceText, "450 EGP");
+  assert.equal(priced.product.defaultSellingPricePiasters, 45000);
 });
 
 test("the print lock belongs to the claim token", () => {

@@ -2,6 +2,7 @@ import type { SaleDto, SalePaymentDto } from "@bravos/contracts";
 import { piastersToEgpInput } from "../money.ts";
 import { customerReceiptNumber } from "../receipt-number.ts";
 
+/** Browser paper is 58 mm portrait. A stored 80 is accepted and treated as 58. */
 export type ReceiptPaperWidthMm = 58 | 80;
 
 /** Explicit receipt settings. The owner supplies the phone; an empty string means it is not configured. */
@@ -58,7 +59,7 @@ export type ReceiptView = {
   cashCollected: string | null;
   paymentMethodLabel: string;
   paymentAllocations: ReceiptMoneyLine[];
-  /** Content column width in millimetres. The browser page size is left to the Windows driver. */
+  /** Content column width in millimetres after the 58 mm paper inset. */
   contentWidthMm: number;
 };
 
@@ -66,6 +67,10 @@ export type ReceiptView = {
 const CSS_PX_PER_MM = 96 / 25.4;
 /** Long receipts paginate at this height instead of becoming an A4 sheet. */
 export const RECEIPT_MAX_PAGE_HEIGHT_MM = 300;
+/** Physical browser page width. Native hardware roll stays 80 mm. */
+export const RECEIPT_PAPER_WIDTH_MM = 58;
+const RECEIPT_CONTENT_INSET_MM = 48;
+const CAIRO_DATE_TIME = /^(\d{2}\/\d{2}\/\d{4}) (\d{2}):(\d{2})$/;
 
 const LOCAL_REFERENCE_PREFIX = "عملية محلية ";
 const UNREGISTERED_LABEL = "غير مسجل";
@@ -105,8 +110,30 @@ export function formatCairoDateTime(iso: string): string {
   return `${read("day")}/${read("month")}/${read("year")} ${read("hour")}:${read("minute")}`;
 }
 
-export function contentWidthMm(paperWidthMm: ReceiptPaperWidthMm): number {
-  return paperWidthMm === 58 ? 48 : 72;
+export function contentWidthMm(_paperWidthMm: ReceiptPaperWidthMm = 58): number {
+  return RECEIPT_CONTENT_INSET_MM;
+}
+
+/**
+ * Split the stored Cairo `DD/MM/YYYY HH:mm` label into receipt date and 12-hour time.
+ * Unparseable stored labels are kept whole on the date row.
+ */
+export function splitReceiptDateTime(label: string): { dateLabel: string; timeLabel: string | null } {
+  const match = CAIRO_DATE_TIME.exec(label);
+  if (!match) return { dateLabel: label, timeLabel: null };
+  const hour24 = Number(match[2]);
+  const minute = match[3] ?? "00";
+  if (!Number.isInteger(hour24) || hour24 < 0 || hour24 > 23) return { dateLabel: label, timeLabel: null };
+  const period = hour24 < 12 ? "ص" : "م";
+  const hour12 = hour24 % 12 === 0 ? 12 : hour24 % 12;
+  return { dateLabel: match[1] ?? label, timeLabel: `${hour12}:${minute} ${period}` };
+}
+
+/** Quantity and original unit price from the stored `quantityAndUnitPrice` string. */
+export function splitQuantityAndUnitPrice(value: string): { quantity: string; unitPrice: string } | null {
+  const parts = value.split(" × ");
+  if (parts.length !== 2 || !parts[0] || !parts[1]) return null;
+  return { quantity: parts[0], unitPrice: parts[1] };
 }
 
 /** Two explicit millimetre lengths. `auto` is invalid CSS page size. */
@@ -115,13 +142,17 @@ export function receiptPageSizeCss(widthMm: number, heightMm: number): string {
 }
 
 /**
- * Thermal page box from content width and measured CSS-pixel height.
- * Height is rounded up with a 1mm buffer, then capped so long receipts paginate.
+ * Thermal page box for 58 mm portrait paper.
+ * Height is rounded up with a 1mm buffer, kept at least as tall as the paper
+ * width so a short receipt stays portrait, then capped so long receipts paginate.
  */
-export function receiptPageSizeMm(contentWidthMm: number, contentHeightPx: number): { widthMm: number; heightMm: number } {
+export function receiptPageSizeMm(_paperOrContentWidthMm: number, contentHeightPx: number): { widthMm: number; heightMm: number } {
   const measuredMm = Math.max(0, contentHeightPx) / CSS_PX_PER_MM;
-  const heightMm = Math.min(RECEIPT_MAX_PAGE_HEIGHT_MM, Math.max(1, Math.ceil(measuredMm + 1)));
-  return { widthMm: contentWidthMm, heightMm };
+  const heightMm = Math.min(
+    RECEIPT_MAX_PAGE_HEIGHT_MM,
+    Math.max(RECEIPT_PAPER_WIDTH_MM, Math.ceil(measuredMm + 1)),
+  );
+  return { widthMm: RECEIPT_PAPER_WIDTH_MM, heightMm };
 }
 
 function money(piasters: number): string {

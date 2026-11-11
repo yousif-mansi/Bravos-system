@@ -14,11 +14,12 @@ export const LABEL_TEXT_GAP_MM = 1;
 export const LABEL_NAME_GAP_MM = 0.5;
 
 export const RECEIPT_PAPER_WIDTH_MM = 80;
-export const RECEIPT_CONTENT_WIDTH_MM = 72;
+export const RECEIPT_LAYOUT_WIDTH_MM = 58;
+export const RECEIPT_CONTENT_WIDTH_MM = 48;
 export const RECEIPT_MAX_PAGE_MM = 300;
-export const RECEIPT_TOP_MM = 2;
+export const RECEIPT_TOP_MM = 4;
 export const RECEIPT_BOTTOM_MM = 4;
-export const RECEIPT_LOGO_MM = 34;
+export const RECEIPT_LOGO_MM = 26;
 
 export function mmToDots(mm: number): number {
   return Math.round((mm * NATIVE_DPI) / 25.4);
@@ -32,6 +33,7 @@ export const LABEL_CONTENT_HEIGHT_DOTS = LABEL_HEIGHT_DOTS - LABEL_INSET_DOTS * 
 export const LABEL_MIN_BAR_DOTS = mmToDots(LABEL_MIN_BAR_MM);
 
 export const RECEIPT_PAPER_WIDTH_DOTS = mmToDots(RECEIPT_PAPER_WIDTH_MM);
+export const RECEIPT_LAYOUT_WIDTH_DOTS = mmToDots(RECEIPT_LAYOUT_WIDTH_MM);
 export const RECEIPT_CONTENT_WIDTH_DOTS = mmToDots(RECEIPT_CONTENT_WIDTH_MM);
 export const RECEIPT_MAX_PAGE_DOTS = mmToDots(RECEIPT_MAX_PAGE_MM);
 

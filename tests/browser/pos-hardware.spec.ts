@@ -169,7 +169,7 @@ test("complete without printing persists one sale and leaves reprint available",
   await expect.poll(branchStock).toBe(beforeStock - 1);
 });
 
-test("receipt preview renders the completed sale at 58mm and 80mm", async ({ page }) => {
+test("receipt preview renders the completed sale at 58mm portrait", async ({ page }) => {
   const data = await seed(page);
   const customerName = `زبون <img src=x onerror="alert(1)"><script>steal()</script> ${data.tag}`;
   const customerPhone = "01099887766";
@@ -207,13 +207,14 @@ test("receipt preview renders the completed sale at 58mm and 80mm", async ({ pag
     const frame = page.frameLocator('iframe[title="معاينة الإيصال"]');
     const logo = frame.locator('[data-receipt-logo="official"] svg.logo');
     await expect(logo).toHaveCount(1);
-    await expect(logo).toHaveAttribute("viewBox", "0 0 923 389");
+    await expect(logo).toHaveAttribute("viewBox", "0 0 503 629");
     await expect(logo).toHaveAttribute("aria-hidden", "true");
     await expect(frame.getByRole("heading", { name: "BRAVOS" })).toHaveCount(1);
+    await expect(frame.locator(".logo-caption")).toHaveText("MEN'S WEAR");
     expect(await frame.locator("html").evaluate((element) => element.ownerDocument.title)).toBe("إيصال بيع");
     await expect(frame.getByText(data.nameAr, { exact: false })).toBeVisible();
     await expect(frame.locator("body")).toContainText("120");
-    await expect(frame.locator("body")).toContainText(contactPhone);
+    await expect(frame.locator("body")).not.toContainText(contactPhone);
     await expect(frame.locator("body")).toContainText("BRAVOS");
     await expect(frame.locator("body")).not.toContainText(data.product.code);
     await expect(frame.locator("body")).toContainText(customerName);
@@ -230,9 +231,11 @@ test("receipt preview renders the completed sale at 58mm and 80mm", async ({ pag
     }
     await expect(frame.locator("body")).not.toContainText(sale.operationId);
     await expect(frame.locator("body")).not.toContainText("عملية محلية");
-    await expect(frame.locator("body")).toContainText("رقم الإيصال");
+    await expect(frame.locator("body")).toContainText("رقم الفاتورة");
     await expect(frame.locator("body")).not.toContainText("رقم الطلب");
-    await expect(frame.locator(".payment")).toContainText("المبلغ النقدي");
+    await expect(frame.locator(".payment")).toContainText("نقدي");
+    await expect(frame.locator(".payment")).not.toContainText("المبلغ النقدي");
+    await expect(frame.locator(".footer")).toHaveText("استايلك على كيفك");
     await expect(frame.locator("img, script")).toHaveCount(0);
     await expect(frame.locator('b[data-injected="pos-hardware"]')).toHaveCount(0);
     await expect(frame.getByRole("link", { name: "تغيير الفرع" })).toHaveCount(0);
@@ -243,27 +246,23 @@ test("receipt preview renders the completed sale at 58mm and 80mm", async ({ pag
     await expect(frame.locator("body")).not.toContainText("ج.م.");
     await expect(frame.locator("body")).not.toContainText("EGP");
     await expect(frame.getByRole("table")).toHaveCount(1);
-    await expect(frame.locator(".details .detail").first()).toHaveCSS("border-bottom-style", "none");
-    await expect(frame.locator(".summary .detail").first()).toHaveCSS("border-bottom-style", "none");
     const items = frame.getByRole("table", { name: "الأصناف" });
-    await expect(items.getByRole("columnheader")).toHaveText(["الصنف", "عدد", "السعر"]);
-    await expect(items.locator("tbody tr").first().getByRole("cell")).toHaveCount(3);
+    await expect(items.getByRole("columnheader")).toHaveText(["م", "الصنف", "الكمية", "السعر", "الإجمالي"]);
+    await expect(items.locator("tbody tr").first().getByRole("cell")).toHaveCount(5);
     const figures = items.locator("tbody .figures");
-    await expect(figures).toHaveText(["1", "120"]);
+    await expect(figures).toHaveText(["1", "120", "120"]);
     await expect(figures.first()).toHaveAttribute("dir", "ltr");
-    await expect(figures.first()).toHaveCSS("font-weight", "400");
-    await expect(figures.first()).toHaveCSS("font-size", "9.5px");
     await expect(figures.first()).toHaveCSS("border-inline-start-style", "none");
-    await expect(frame.locator(".total")).toHaveCSS("font-weight", "600");
-    await expect(frame.locator(".total .label")).toHaveText("الإجمالي");
+    await expect(frame.locator(".total")).toHaveCount(0);
+    await expect(frame.locator(".subtotal")).toContainText("إجمالي الأصناف");
     await expect(frame.locator("body")).not.toContainText("الخصم");
-    await expect(frame.locator("html")).toHaveAttribute("data-receipt-page-width-mm", paperWidthMm === 80 ? "72" : "48");
+    await expect(frame.locator("html")).toHaveAttribute("data-receipt-page-width-mm", "58");
     const pageHeightMm = Number(await frame.locator("html").getAttribute("data-receipt-page-height-mm"));
-    expect(pageHeightMm).toBeGreaterThan(20);
+    expect(pageHeightMm).toBeGreaterThanOrEqual(58);
     expect(pageHeightMm).toBeLessThanOrEqual(300);
     expect(pageHeightMm).toBeLessThan(297);
     const pageCss = await frame.locator("#receipt-page-size").textContent();
-    expect(pageCss).toMatch(new RegExp(`size:\\s*${paperWidthMm === 80 ? 72 : 48}mm\\s+${pageHeightMm}mm`));
+    expect(pageCss).toMatch(new RegExp(`size:\\s*58mm\\s+${pageHeightMm}mm`));
     expect(pageCss).not.toContain("auto");
     await frame.locator("body").evaluate(async (node) => { await node.ownerDocument.fonts.ready; });
     expect(await frame.locator(".receipt").evaluate((node) => node.scrollWidth <= node.clientWidth + 1)).toBe(true);
@@ -293,8 +292,8 @@ test("receipt preview renders the completed sale at 58mm and 80mm", async ({ pag
   expect(unsyncedPreview.reference).toBeNull();
   expect(unsyncedPreview.receiptReference).toBeNull();
   expect(await narrow.locator(".receipt").evaluate((node) => node.scrollWidth <= node.clientWidth + 1)).toBe(true);
-  for (const labelText of ["رقم الإيصال", "العميل"]) {
-    const fitsOneLine = await narrow.locator(".details .label").filter({ hasText: labelText }).evaluate((node) => {
+  for (const labelText of ["رقم الفاتورة", "العميل"]) {
+    const fitsOneLine = await narrow.locator(".meta strong").filter({ hasText: labelText }).evaluate((node) => {
       const cell = node.getBoundingClientRect();
       const text = node.ownerDocument.createRange();
       text.selectNodeContents(node);
@@ -318,7 +317,7 @@ test("receipt preview renders the completed sale at 58mm and 80mm", async ({ pag
     await receipts.mountReceiptPreview(host, sale, { paperWidthMm: 80, contactPhone });
   }, { sale: preparedPreview, contactPhone });
   const preparedFrame = page.frameLocator('iframe[title="معاينة الإيصال"]');
-  await expect(preparedFrame.locator("body")).toContainText("رقم الإيصال");
+  await expect(preparedFrame.locator("body")).toContainText("رقم الفاتورة");
   await expect(preparedFrame.locator("body")).toContainText("POS-000123");
   await expect(preparedFrame.locator("body")).not.toContainText(sale.operationId);
   await expect(preparedFrame.locator("body")).not.toContainText("عملية محلية");

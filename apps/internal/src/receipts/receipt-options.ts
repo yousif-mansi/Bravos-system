@@ -11,19 +11,16 @@ function envRecord(): Record<string, string | undefined> {
   };
 }
 
-export function parsePaperWidth(value: string | undefined): ReceiptPaperWidthMm {
-  const trimmed = value?.trim();
-  if (trimmed === "58") return 58;
-  return 80;
+export function parsePaperWidth(_value: string | undefined): ReceiptPaperWidthMm {
+  return 58;
 }
 
 /** Env defaults, then optional explicit overrides for tests and a future settings call. */
 export function resolveReceiptOptions(overrides?: Partial<ReceiptOptions>): ReceiptOptions {
   const env = envRecord();
-  const paperWidthMm = overrides?.paperWidthMm ?? parsePaperWidth(env[WIDTH_ENV]);
   const contactPhone = overrides?.contactPhone ?? env[PHONE_ENV] ?? "";
   return {
-    paperWidthMm: paperWidthMm === 58 ? 58 : 80,
+    paperWidthMm: 58,
     contactPhone,
   };
 }

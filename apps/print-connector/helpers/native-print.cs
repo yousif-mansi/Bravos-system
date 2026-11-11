@@ -27,6 +27,9 @@ namespace Bravos.NativePrint
 
     static readonly Regex Money = new Regex("^(?:0|[1-9]\\d{0,7})(?:\\.\\d{2})?$", RegexOptions.CultureInvariant);
     static readonly Regex Quantity = new Regex("^(?:[1-9]\\d{0,5}|1000000) \u00d7 (?:0|[1-9]\\d{0,7})(?:\\.\\d{2})?$", RegexOptions.CultureInvariant);
+    static readonly Regex CairoTime = new Regex("^(\\d{2}/\\d{2}/\\d{4}) (\\d{2}):(\\d{2})$", RegexOptions.CultureInvariant);
+    static readonly Color PaperGray = Color.FromArgb(230, 230, 228);
+    static readonly Color InkBlack = Color.FromArgb(21, 21, 21);
 
     public static string Classify(string json)
     {
@@ -201,16 +204,24 @@ namespace Bravos.NativePrint
       measure.PageUnit = GraphicsUnit.Pixel;
       try
       {
-        if (!Calibrate(measure, fonts.LabelCode) || !Calibrate(measure, fonts.LabelName)) { drawn.Error = "invalid_layout"; return drawn; }
-        List<string> codeLines = Wrap(measure, job.Code, fonts.LabelCode, contentW, false);
+        if (!Calibrate(measure, fonts.LabelCode) || !Calibrate(measure, fonts.LabelName) || !Calibrate(measure, fonts.LabelBrand)) { drawn.Error = "invalid_layout"; return drawn; }
+        List<string> brandLines = Wrap(measure, "Bravos", fonts.LabelBrand, contentW, false);
+        string priceText = job.Price == null ? null : job.Price + " EGP";
+        int codeWidth = priceText == null ? contentW : contentW * 58 / 100;
+        List<string> codeLines = Wrap(measure, job.Code, fonts.LabelCode, codeWidth, false);
         List<string> nameLines = Wrap(measure, job.Name, fonts.LabelName, contentW, HasArabic(job.Name));
-        if (codeLines == null || nameLines == null) { drawn.Error = "invalid_layout"; return drawn; }
+        List<string> priceLines = priceText == null ? null : Wrap(measure, priceText, fonts.LabelPrice, contentW - codeWidth - Mm(1), false);
+        if (brandLines == null || codeLines == null || nameLines == null || (priceText != null && priceLines == null)) { drawn.Error = "invalid_layout"; return drawn; }
+        int brandH = BlockHeight(measure, brandLines, fonts.LabelBrand, false);
         int codeH = BlockHeight(measure, codeLines, fonts.LabelCode, false);
+        int priceH = priceLines == null ? 0 : BlockHeight(measure, priceLines, fonts.LabelPrice, false);
         int nameH = BlockHeight(measure, nameLines, fonts.LabelName, HasArabic(job.Name));
-        if (codeH < 1 || nameH < 1) { drawn.Error = "invalid_layout"; return drawn; }
-        int textGap = Mm(1);
-        int nameGap = Mm(0.5);
-        int bar = contentH - textGap - codeH - nameGap - nameH;
+        if (brandH < 1 || codeH < 1 || nameH < 1) { drawn.Error = "invalid_layout"; return drawn; }
+        int rowH = Math.Max(codeH, priceH);
+        int brandGap = Mm(0.25);
+        int textGap = Mm(0.5);
+        int nameGap = Mm(0.25);
+        int bar = contentH - brandH - brandGap - textGap - rowH - nameGap - nameH;
         if (bar < Mm(10)) { drawn.Error = "invalid_layout"; return drawn; }
         Bitmap page = new Bitmap(width, height, PixelFormat.Format24bppRgb);
         page.SetResolution(Dpi, Dpi);
@@ -220,18 +231,32 @@ namespace Bravos.NativePrint
         canvas.InterpolationMode = InterpolationMode.NearestNeighbor;
         canvas.PixelOffsetMode = PixelOffsetMode.None;
         canvas.Clear(Color.White);
+        int textY = inset;
+        if (!DrawCentered(canvas, brandLines, fonts.LabelBrand, inset, contentW, ref textY, false, drawn, 0, "brand")) { drawn.Error = "invalid_layout"; canvas.Dispose(); page.Dispose(); return drawn; }
+        textY += brandGap;
         using (SolidBrush brush = new SolidBrush(Color.Black))
         {
           int cursor = origin + QuietModules * dots;
-          int y = inset;
           for (int i = 0; i < job.Modules.Length; i++)
           {
-            if (job.Modules[i] == '1') canvas.FillRectangle(brush, cursor, y, dots, bar);
+            if (job.Modules[i] == '1') canvas.FillRectangle(brush, cursor, textY, dots, bar);
             cursor += dots;
           }
         }
-        int textY = inset + bar + textGap;
-        if (!DrawCentered(canvas, codeLines, fonts.LabelCode, inset, contentW, ref textY, false, drawn, 0, "code")) { drawn.Error = "invalid_layout"; canvas.Dispose(); page.Dispose(); return drawn; }
+        textY += bar + textGap;
+        int rowY = textY;
+        if (priceLines == null)
+        {
+          if (!DrawCentered(canvas, codeLines, fonts.LabelCode, inset, contentW, ref textY, false, drawn, 0, "code")) { drawn.Error = "invalid_layout"; canvas.Dispose(); page.Dispose(); return drawn; }
+        }
+        else
+        {
+          int codeY = rowY;
+          int priceY = rowY;
+          if (!DrawStart(canvas, codeLines, fonts.LabelCode, inset, codeWidth, ref codeY, false, drawn, 0, "code")) { drawn.Error = "invalid_layout"; canvas.Dispose(); page.Dispose(); return drawn; }
+          if (!DrawEnd(canvas, priceLines, fonts.LabelPrice, inset, contentW, ref priceY, drawn, 0, "price")) { drawn.Error = "invalid_layout"; canvas.Dispose(); page.Dispose(); return drawn; }
+          textY = Math.Max(codeY, priceY);
+        }
         textY += nameGap;
         if (!DrawCentered(canvas, nameLines, fonts.LabelName, inset, contentW, ref textY, HasArabic(job.Name), drawn, 0, "name")) { drawn.Error = "invalid_layout"; canvas.Dispose(); page.Dispose(); return drawn; }
         if (textY > height - inset) { drawn.Error = "invalid_layout"; canvas.Dispose(); page.Dispose(); return drawn; }
@@ -258,15 +283,43 @@ namespace Bravos.NativePrint
       return amount.ToString(amount == Decimal.Truncate(amount) ? "0" : "0.00", CultureInfo.InvariantCulture);
     }
 
+    static void SplitOccurred(string label, out string date, out string time)
+    {
+      date = label;
+      time = null;
+      if (label == null) return;
+      Match match = CairoTime.Match(label);
+      if (!match.Success) return;
+      int hour24;
+      if (!int.TryParse(match.Groups[2].Value, NumberStyles.None, CultureInfo.InvariantCulture, out hour24)) return;
+      if (hour24 < 0 || hour24 > 23) return;
+      string minute = match.Groups[3].Value;
+      string period = hour24 < 12 ? "ص" : "م";
+      int hour12 = hour24 % 12 == 0 ? 12 : hour24 % 12;
+      date = match.Groups[1].Value;
+      time = hour12.ToString(CultureInfo.InvariantCulture) + ":" + minute + " " + period;
+    }
+
+    static void SplitQty(string qty, out string quantity, out string unit)
+    {
+      quantity = qty;
+      unit = "";
+      int sep = qty.IndexOf(" \u00d7 ", StringComparison.Ordinal);
+      if (sep <= 0) return;
+      quantity = qty.Substring(0, sep);
+      unit = qty.Substring(sep + 3);
+    }
+
     static Drawn DrawReceipt(Job job, Fonts fonts)
     {
       Drawn drawn = new Drawn();
       int pageW = Mm(80);
-      int contentW = Mm(72);
-      int pad = Mm(1.5);
-      int textLeft = pad;
-      int textW = contentW - pad * 2;
-      int top = Mm(2);
+      int layoutW = Mm(58);
+      int layoutLeft = (pageW - layoutW) / 2;
+      int pad = Mm(2.6);
+      int textLeft = layoutLeft + pad;
+      int textW = layoutW - pad * 2;
+      int top = Mm(4);
       int bottom = Mm(4);
       int maxPage = Mm(300);
       Bitmap scratch = new Bitmap(pageW, 8, PixelFormat.Format24bppRgb);
@@ -275,10 +328,13 @@ namespace Bravos.NativePrint
       measure.PageUnit = GraphicsUnit.Pixel;
       try
       {
-        if (!Calibrate(measure, fonts.Body)) { drawn.Error = "invalid_layout"; return drawn; }
-        int logoW = Mm(22);
-        int logoH = (int)Math.Floor(fonts.Logo.Height * (logoW / (double)fonts.Logo.Width) + 0.5);
-        if (logoH < 8 || logoH > 400) { drawn.Error = "invalid_layout"; return drawn; }
+        if (!Calibrate(measure, fonts.Body) || !Calibrate(measure, fonts.Meta)) { drawn.Error = "invalid_layout"; return drawn; }
+        int logoBoxW = Mm(26);
+        int logoBoxH = Mm(18);
+        double scale = Math.Min(logoBoxW / (double)fonts.Logo.Width, logoBoxH / (double)fonts.Logo.Height);
+        int logoW = Math.Max(8, (int)Math.Floor(fonts.Logo.Width * scale + 0.5));
+        int logoH = Math.Max(8, (int)Math.Floor(fonts.Logo.Height * scale + 0.5));
+        if (logoW > 400 || logoH > 400) { drawn.Error = "invalid_layout"; return drawn; }
         Sheet sheet = new Sheet();
         sheet.PageW = pageW;
         sheet.TextLeft = textLeft;
@@ -287,28 +343,25 @@ namespace Bravos.NativePrint
         sheet.Bottom = bottom;
         sheet.Max = maxPage;
         sheet.Y = top;
-        sheet.AddLogo(logoW, logoH, (contentW - logoW) / 2);
-        if (job.ContactPhone != null)
-        {
-          if (!sheet.AddPair(measure, "branch", job.BranchName, job.ContactPhone, fonts.Body, false, drawn)) return drawn;
-        }
-        else if (!sheet.AddRight(measure, "branch", job.BranchName, fonts.Body, HasArabic(job.BranchName), drawn)) return drawn;
+        sheet.AddLogo(logoW, logoH, textLeft + (textW - logoW) / 2);
+        if (!sheet.AddCentered(measure, "caption", "MEN'S WEAR", fonts.Caption, false, drawn)) return drawn;
         sheet.AddSectionGap();
-        if (!sheet.AddPair(measure, "reference", "رقم الإيصال", job.PrintedReference, fonts.Title, HasArabic(job.PrintedReference), drawn)) return drawn;
-        int detailGap = Mm(0.5);
-        if (!sheet.AddPair(measure, "detail", "التاريخ", job.OccurredAt, fonts.Body, false, drawn, detailGap)) return drawn;
-        if (job.Cashier != "غير مسجل" && !sheet.AddPair(measure, "detail", "الكاشير", job.Cashier, fonts.Body, HasArabic(job.Cashier), drawn, detailGap)) return drawn;
-        if (job.CustomerName != "غير مسجل" && !sheet.AddPair(measure, "detail", "العميل", job.CustomerName, fonts.Body, HasArabic(job.CustomerName), drawn, detailGap)) return drawn;
-        if (job.CustomerPhone != null && !sheet.AddPair(measure, "detail", "الهاتف", job.CustomerPhone, fonts.Body, false, drawn, detailGap)) return drawn;
+        string dateLabel;
+        string timeLabel;
+        SplitOccurred(job.OccurredAt, out dateLabel, out timeLabel);
+        if (!sheet.AddMeta(measure, fonts.Meta, drawn,
+          job.PrintedReference, dateLabel, timeLabel,
+          job.Cashier, job.CustomerName, job.CustomerPhone)) return drawn;
         sheet.AddSectionGap();
-        if (!sheet.AddItemRow(measure, new[] { "الصنف", "عدد", "السعر" }, true, fonts.Title, drawn)) return drawn;
+        if (!sheet.AddItemRow(measure, new[] { "م", "الصنف", "الكمية", "السعر", "الإجمالي" }, true, fonts.Title, drawn)) return drawn;
         for (int i = 0; i < job.Lines.Count; i++)
         {
           ItemLine line = job.Lines[i];
-          string quantity = line.Qty.Substring(0, line.Qty.IndexOf(' '));
-          if (!sheet.AddItemRow(measure, new[] { line.Name, quantity, line.Original }, false, fonts.Body, drawn)) return drawn;
+          string quantity;
+          string unit;
+          SplitQty(line.Qty, out quantity, out unit);
+          if (!sheet.AddItemRow(measure, new[] { (i + 1).ToString(CultureInfo.InvariantCulture), line.Name, quantity, unit, line.Original }, false, fonts.Body, drawn)) return drawn;
         }
-        sheet.AddSectionGap();
         string subtotal = null;
         decimal discount = 0;
         foreach (MoneyLine adjustment in job.Adjustments)
@@ -316,27 +369,27 @@ namespace Bravos.NativePrint
           if (adjustment.Label == "الإجمالي قبل الخصم") subtotal = adjustment.Amount;
           else discount += Decimal.Parse(adjustment.Amount, CultureInfo.InvariantCulture);
         }
+        string itemsTotal = discount > 0 ? (subtotal ?? job.FinalTotal) : job.FinalTotal;
+        if (!sheet.AddBar(measure, "subtotal", "إجمالي الأصناف", itemsTotal, fonts.Title, drawn)) return drawn;
+        if (!sheet.AddPair(measure, "payment", "طريقة الدفع:", job.PaymentMethod, fonts.Body, HasArabic(job.PaymentMethod), drawn)) return drawn;
+        if (job.ExchangeCredit != null && !sheet.AddPair(measure, "exchange", "رصيد استبدال", job.ExchangeCredit, fonts.Body, false, drawn)) return drawn;
+        bool simpleCash = job.Allocations.Count == 1 && job.Allocations[0].Label == "المبلغ النقدي" && job.PaymentMethod == "نقدي";
+        if (!simpleCash)
+        {
+          for (int i = 0; i < job.Allocations.Count; i++)
+          {
+            if (!sheet.AddPair(measure, "allocation", job.Allocations[i].Label, job.Allocations[i].Amount, fonts.Body, false, drawn)) return drawn;
+          }
+        }
+        bool collectedAlreadyShown = simpleCash && job.Allocations[0].Amount == job.CashCollected;
+        if (job.CashCollected != null && !collectedAlreadyShown && !sheet.AddPair(measure, "collected", "النقد المحصّل", job.CashCollected, fonts.Body, false, drawn)) return drawn;
         if (discount > 0)
         {
-          if (subtotal == null)
-          {
-            decimal sum = 0;
-            foreach (ItemLine line in job.Lines) sum += Decimal.Parse(line.Original, CultureInfo.InvariantCulture);
-            subtotal = ReceiptAmount(sum);
-          }
-          if (!sheet.AddPair(measure, "subtotal", "الإجمالي قبل الخصم", subtotal, fonts.Body, false, drawn)) return drawn;
-          if (!sheet.AddPair(measure, "discount", "الخصم", ReceiptAmount(discount), fonts.Body, false, drawn)) return drawn;
+          sheet.AddRule();
+          if (!sheet.AddPair(measure, "discount", "الخصم:", ReceiptAmount(discount), fonts.Body, false, drawn)) return drawn;
+          if (!sheet.AddPill(measure, "total", "الإجمالي بعد الخصم", job.FinalTotal, fonts.Total, drawn)) return drawn;
         }
-        string totalLabel = discount > 0 ? "الإجمالي بعد الخصم" : "الإجمالي";
-        if (!sheet.AddPair(measure, "total", totalLabel, job.FinalTotal, fonts.Total, false, drawn)) return drawn;
-        if (job.ExchangeCredit != null && !sheet.AddPair(measure, "exchange", "رصيد استبدال", job.ExchangeCredit, fonts.Body, false, drawn)) return drawn;
-        for (int i = 0; i < job.Allocations.Count; i++)
-        {
-          if (!sheet.AddPair(measure, "allocation", job.Allocations[i].Label, job.Allocations[i].Amount, fonts.Body, false, drawn)) return drawn;
-        }
-        bool collectedAlreadyShown = job.Allocations.Count == 1 && job.Allocations[0].Label == "المبلغ النقدي"
-          && job.Allocations[0].Amount == job.CashCollected;
-        if (job.CashCollected != null && !collectedAlreadyShown && !sheet.AddPair(measure, "collected", "النقد المحصّل", job.CashCollected, fonts.Body, false, drawn)) return drawn;
+        if (!sheet.AddFooter(measure, "footer", "استايلك على كيفك", fonts.Title, drawn)) return drawn;
         sheet.Finish();
         if (sheet.Error != null) { drawn.Error = sheet.Error; return drawn; }
         if (sheet.PageCount < 1 || sheet.PageCount > 6) { drawn.Error = "invalid_layout"; return drawn; }
@@ -348,7 +401,7 @@ namespace Bravos.NativePrint
           page.SetResolution(Dpi, Dpi);
           Graphics canvas = Graphics.FromImage(page);
           canvas.PageUnit = GraphicsUnit.Pixel;
-          canvas.SmoothingMode = SmoothingMode.None;
+          canvas.SmoothingMode = SmoothingMode.AntiAlias;
           canvas.PixelOffsetMode = PixelOffsetMode.None;
           canvas.Clear(Color.White);
           for (int m = 0; m < sheet.Marks.Count; m++)
@@ -363,13 +416,24 @@ namespace Bravos.NativePrint
             }
             else if (mark.Kind == "rule")
             {
-              canvas.DrawLine(Pens.Black, mark.X, mark.Y, mark.X + mark.W, mark.Y);
+              using (Pen pen = new Pen(Color.FromArgb(85, 85, 85), 1)) canvas.DrawLine(pen, mark.X, mark.Y, mark.X + mark.W, mark.Y);
+            }
+            else if (mark.Kind == "vline")
+            {
+              using (Pen pen = new Pen(Color.FromArgb(85, 85, 85), 1)) canvas.DrawLine(pen, mark.X, mark.Y, mark.X, mark.Y + mark.H);
+            }
+            else if (mark.Kind == "fill")
+            {
+              using (SolidBrush brush = new SolidBrush(mark.White ? InkBlack : PaperGray))
+                FillRound(canvas, brush, mark.X, mark.Y, mark.W, mark.H, mark.Radius);
             }
             else
             {
               TextFormatFlags flags = DrawFlags(mark.Rtl, false);
               Rectangle rect = new Rectangle(mark.X, mark.Y, mark.W, mark.H + 4);
-              TextRenderer.DrawText(canvas, mark.Text, mark.Font, rect, Color.Black, Color.White, flags);
+              Color fore = mark.White ? Color.White : Color.Black;
+              // Omit the back color so GDI does not paint a white rectangle over the gray bars.
+              TextRenderer.DrawText(canvas, mark.Text, mark.Font, rect, fore, flags);
             }
           }
           canvas.Dispose();
@@ -386,6 +450,20 @@ namespace Bravos.NativePrint
         scratch.Dispose();
       }
       return drawn;
+    }
+
+    static void FillRound(Graphics canvas, Brush brush, int x, int y, int w, int h, int radius)
+    {
+      int r = Math.Max(1, Math.Min(radius, Math.Min(w, h) / 2));
+      using (GraphicsPath path = new GraphicsPath())
+      {
+        path.AddArc(x, y, r * 2, r * 2, 180, 90);
+        path.AddArc(x + w - r * 2, y, r * 2, r * 2, 270, 90);
+        path.AddArc(x + w - r * 2, y + h - r * 2, r * 2, r * 2, 0, 90);
+        path.AddArc(x, y + h - r * 2, r * 2, r * 2, 90, 90);
+        path.CloseFigure();
+        canvas.FillPath(brush, path);
+      }
     }
 
     static string Submit(Job job, List<Bitmap> pages, PrintAttempt attempt)
@@ -568,6 +646,37 @@ namespace Bravos.NativePrint
       return true;
     }
 
+    static bool DrawStart(Graphics canvas, List<string> lines, Font font, int left, int width, ref int y, bool rtl, Drawn drawn, int page, string role)
+    {
+      TextFormatFlags flags = MeasureFlags(rtl);
+      for (int i = 0; i < lines.Count; i++)
+      {
+        Size size = TextRenderer.MeasureText(canvas, lines[i], font, new Size(int.MaxValue, int.MaxValue), flags);
+        if (size.Width > width || size.Height < 1) return false;
+        Rectangle rect = new Rectangle(left, y, width, size.Height + 4);
+        TextRenderer.DrawText(canvas, lines[i], font, rect, Color.Black, Color.White, flags);
+        drawn.Lines.Add(new TextLine(page, role, lines[i], left, y, size.Width, size.Height));
+        y += size.Height + 2;
+      }
+      return true;
+    }
+
+    static bool DrawEnd(Graphics canvas, List<string> lines, Font font, int left, int width, ref int y, Drawn drawn, int page, string role)
+    {
+      TextFormatFlags flags = MeasureFlags(false);
+      for (int i = 0; i < lines.Count; i++)
+      {
+        Size size = TextRenderer.MeasureText(canvas, lines[i], font, new Size(int.MaxValue, int.MaxValue), flags);
+        if (size.Width > width || size.Height < 1) return false;
+        int x = left + width - size.Width;
+        Rectangle rect = new Rectangle(x, y, size.Width + 2, size.Height + 4);
+        TextRenderer.DrawText(canvas, lines[i], font, rect, Color.Black, Color.White, flags);
+        drawn.Lines.Add(new TextLine(page, role, lines[i], x, y, size.Width, size.Height));
+        y += size.Height + 2;
+      }
+      return true;
+    }
+
     static int BlockHeight(Graphics measure, List<string> lines, Font font, bool rtl)
     {
       int height = 0;
@@ -714,7 +823,7 @@ namespace Bravos.NativePrint
       using (MemoryStream stream = new MemoryStream())
       {
         bmp.Save(stream, ImageFormat.Png);
-        if (stream.Length < 32 || stream.Length > 360000) return null;
+        if (stream.Length < 32 || stream.Length > 720000) return null;
         return Convert.ToBase64String(stream.ToArray());
       }
     }
@@ -874,13 +983,16 @@ namespace Bravos.NativePrint
     static string ParseLabel(string action, Dictionary<string, object> body, out Job job)
     {
       job = null;
-      if (!Keys(body, "kind", "copies", "code", "name", "modules")) return "invalid_job";
+      bool withPrice = Keys(body, "kind", "copies", "code", "name", "modules", "price");
+      if (!withPrice && !Keys(body, "kind", "copies", "code", "name", "modules")) return "invalid_job";
       int copies;
       if (!TryInt(body["copies"], 1, 100, out copies)) return "invalid_job";
       string code = body["code"] as string;
       string name = body["name"] as string;
       string modules = body["modules"] as string;
       if (!IsCode(code) || !IsDisplay(name, 80) || !IsModules(modules)) return "invalid_job";
+      string price = null;
+      if (withPrice && !TryMoney(body["price"], out price)) return "invalid_job";
       job = new Job();
       job.Action = action;
       job.Kind = "label";
@@ -888,6 +1000,7 @@ namespace Bravos.NativePrint
       job.Code = code;
       job.Name = name;
       job.Modules = modules;
+      job.Price = price;
       return null;
     }
 
@@ -1126,6 +1239,7 @@ namespace Bravos.NativePrint
     public string Code;
     public string Name;
     public string Modules;
+    public string Price;
     public string BranchName;
     public string ContactPhone;
     public string PrintedReference;
@@ -1204,6 +1318,8 @@ namespace Bravos.NativePrint
     public Font Font;
     public bool Rtl;
     public string Kind;
+    public int Radius;
+    public bool White;
   }
 
   sealed class Drawn
@@ -1251,6 +1367,221 @@ namespace Bravos.NativePrint
       Y += block;
     }
 
+    public bool AddCentered(Graphics measure, string role, string text, Font font, bool rtl, Drawn drawn)
+    {
+      Size size = TextRenderer.MeasureText(measure, text, font, new Size(int.MaxValue, int.MaxValue), HostMeasure(rtl));
+      if (size.Width < 1 || size.Height < 1 || size.Width > TextW) { Error = "invalid_layout"; return false; }
+      int height = size.Height + 2;
+      if (!Ensure(height)) { Error = Error ?? "invalid_layout"; return false; }
+      int x = TextLeft + (TextW - size.Width) / 2;
+      AddText(role, text, font, rtl, x, Y, size, drawn);
+      Y += height;
+      return true;
+    }
+
+    public bool AddMeta(Graphics measure, Font font, Drawn drawn,
+      string invoice, string date, string time, string cashier, string customer, string phone)
+    {
+      int gap = Mm(1);
+      int rightW = TextW * 55 / 100;
+      int leftW = TextW - rightW - gap;
+      if (leftW < 8 || rightW < 8) { Error = "invalid_layout"; return false; }
+      int rightX = TextLeft + leftW + gap;
+      int leftX = TextLeft;
+      List<string[]> rightRows = new List<string[]>();
+      rightRows.Add(new[] { "رقم الفاتورة:", invoice });
+      rightRows.Add(new[] { "التاريخ:", date });
+      if (time != null) rightRows.Add(new[] { "الوقت:", time });
+      List<string[]> leftRows = new List<string[]>();
+      leftRows.Add(new[] { "الكاشير:", cashier });
+      leftRows.Add(new[] { "العميل:", customer });
+      if (phone != null) leftRows.Add(new[] { "الهاتف:", phone });
+      int rightH = MeasureColonColumn(measure, font, rightRows, rightW);
+      int leftH = MeasureColonColumn(measure, font, leftRows, leftW);
+      if (rightH < 1 || leftH < 1) { Error = "invalid_layout"; return false; }
+      int block = Math.Max(rightH, leftH) + Mm(2);
+      if (!Ensure(block)) { Error = Error ?? "invalid_layout"; return false; }
+      AddRuleAt(Y);
+      Y += Mm(1);
+      int start = Y;
+      DrawColonColumn(measure, font, rightRows, rightX, rightW, drawn, "reference");
+      Y = start;
+      DrawColonColumn(measure, font, leftRows, leftX, leftW, drawn, "detail");
+      Y = start + Math.Max(rightH, leftH);
+      AddRuleAt(Y);
+      Mark divider = new Mark();
+      divider.Kind = "vline";
+      divider.Page = Page;
+      divider.X = TextLeft + leftW + gap / 2;
+      divider.Y = start;
+      divider.W = 1;
+      divider.H = Math.Max(rightH, leftH);
+      Marks.Add(divider);
+      Y += Mm(1);
+      return true;
+    }
+
+    int MeasureColonColumn(Graphics measure, Font font, List<string[]> rows, int width)
+    {
+      int height = 0;
+      for (int i = 0; i < rows.Count; i++)
+      {
+        int rowH = ColonRowHeight(measure, font, rows[i][0], rows[i][1], width);
+        if (rowH < 1) return -1;
+        height += rowH;
+      }
+      return height;
+    }
+
+    int ColonRowHeight(Graphics measure, Font font, string label, string value, int width)
+    {
+      Size labelSize = TextRenderer.MeasureText(measure, label, font, new Size(int.MaxValue, int.MaxValue), HostMeasure(true));
+      int valueWidth = width - labelSize.Width - 2;
+      if (labelSize.Width < 1 || valueWidth < 8) return -1;
+      List<string> lines = HostWrap(measure, value, font, valueWidth, HostArabic(value) || !HostArabic(label));
+      if (lines == null) return -1;
+      int height = 0;
+      foreach (string line in lines)
+      {
+        Size size = TextRenderer.MeasureText(measure, line, font, new Size(int.MaxValue, int.MaxValue), HostMeasure(HostArabic(line)));
+        height += size.Height + 2;
+      }
+      return Math.Max(height, labelSize.Height + 2);
+    }
+
+    void DrawColonColumn(Graphics measure, Font font, List<string[]> rows, int x, int width, Drawn drawn, string role)
+    {
+      for (int i = 0; i < rows.Count; i++)
+      {
+        string label = rows[i][0];
+        string value = rows[i][1];
+        Size labelSize = TextRenderer.MeasureText(measure, label, font, new Size(int.MaxValue, int.MaxValue), HostMeasure(true));
+        int valueWidth = width - labelSize.Width - 2;
+        List<string> lines = HostWrap(measure, value, font, valueWidth, HostArabic(value));
+        int rowTop = Y;
+        AddText(role, label, font, true, x + width - labelSize.Width, Y, labelSize, drawn);
+        int valueY = Y;
+        int firstRight = x + width - labelSize.Width - 2;
+        for (int line = 0; line < lines.Count; line++)
+        {
+          Size size = TextRenderer.MeasureText(measure, lines[line], font, new Size(int.MaxValue, int.MaxValue), HostMeasure(HostArabic(lines[line])));
+          int valueX = line == 0 ? firstRight - size.Width : x + width - size.Width;
+          AddText(role, lines[line], font, HostArabic(lines[line]), valueX, valueY, size, drawn);
+          valueY += size.Height + 2;
+        }
+        Y = Math.Max(rowTop + labelSize.Height + 2, valueY);
+      }
+    }
+
+    public bool AddBar(Graphics measure, string role, string label, string amount, Font font, Drawn drawn)
+    {
+      Size labelSize = TextRenderer.MeasureText(measure, label, font, new Size(int.MaxValue, int.MaxValue), HostMeasure(true));
+      Size amountSize = TextRenderer.MeasureText(measure, amount, font, new Size(int.MaxValue, int.MaxValue), HostMeasure(false));
+      int height = Math.Max(labelSize.Height, amountSize.Height) + Mm(1.7);
+      if (!Ensure(height + Mm(1.6))) { Error = Error ?? "invalid_layout"; return false; }
+      Y += Mm(1.6);
+      Mark fill = new Mark();
+      fill.Kind = "fill";
+      fill.Page = Page;
+      fill.X = TextLeft;
+      fill.Y = Y;
+      fill.W = TextW;
+      fill.H = height;
+      fill.Radius = Mm(1.4);
+      Marks.Add(fill);
+      int textY = Y + (height - Math.Max(labelSize.Height, amountSize.Height)) / 2;
+      AddText(role, label, font, true, TextLeft + TextW - Mm(1.5) - labelSize.Width, textY, labelSize, drawn);
+      AddText(role, amount, font, false, TextLeft + Mm(1.5), textY, amountSize, drawn);
+      Y += height;
+      return true;
+    }
+
+    public bool AddPill(Graphics measure, string role, string label, string amount, Font font, Drawn drawn)
+    {
+      Size labelSize = TextRenderer.MeasureText(measure, label, font, new Size(int.MaxValue, int.MaxValue), HostMeasure(true));
+      Size amountSize = TextRenderer.MeasureText(measure, amount, font, new Size(int.MaxValue, int.MaxValue), HostMeasure(false));
+      int height = Math.Max(labelSize.Height, amountSize.Height) + Mm(1.7);
+      if (!Ensure(height + Mm(1.2))) { Error = Error ?? "invalid_layout"; return false; }
+      Y += Mm(1.2);
+      Mark fill = new Mark();
+      fill.Kind = "fill";
+      fill.Page = Page;
+      fill.X = TextLeft;
+      fill.Y = Y;
+      fill.W = TextW;
+      fill.H = height;
+      fill.Radius = height / 2;
+      fill.White = true;
+      Marks.Add(fill);
+      int textY = Y + (height - Math.Max(labelSize.Height, amountSize.Height)) / 2;
+      AddWhiteText(role, label, font, true, TextLeft + TextW - Mm(2.25) - labelSize.Width, textY, labelSize, drawn);
+      AddWhiteText(role, amount, font, false, TextLeft + Mm(2.25), textY, amountSize, drawn);
+      Y += height;
+      return true;
+    }
+
+    public bool AddFooter(Graphics measure, string role, string text, Font font, Drawn drawn)
+    {
+      Size size = TextRenderer.MeasureText(measure, text, font, new Size(int.MaxValue, int.MaxValue), HostMeasure(true));
+      if (size.Width < 1 || size.Width + Mm(8) > TextW) { Error = "invalid_layout"; return false; }
+      int height = size.Height + Mm(2.8);
+      if (!Ensure(height)) { Error = Error ?? "invalid_layout"; return false; }
+      Y += Mm(2.8);
+      int textX = TextLeft + (TextW - size.Width) / 2;
+      AddRuleSegment(TextLeft, textX - Mm(2));
+      AddRuleSegment(textX + size.Width + Mm(2), TextLeft + TextW);
+      AddText(role, text, font, true, textX, Y, size, drawn);
+      Y += size.Height + 2;
+      return true;
+    }
+
+    public void AddRule()
+    {
+      AddRuleAt(Y + Mm(0.6));
+      Y += Mm(1.2);
+    }
+
+    void AddRuleAt(int y)
+    {
+      Mark mark = new Mark();
+      mark.Kind = "rule";
+      mark.Page = Page;
+      mark.X = TextLeft;
+      mark.Y = y;
+      mark.W = TextW;
+      Marks.Add(mark);
+    }
+
+    void AddRuleSegment(int x1, int x2)
+    {
+      if (x2 <= x1) return;
+      Mark mark = new Mark();
+      mark.Kind = "rule";
+      mark.Page = Page;
+      mark.X = x1;
+      mark.Y = Y + 4;
+      mark.W = x2 - x1;
+      Marks.Add(mark);
+    }
+
+    void AddWhiteText(string role, string text, Font font, bool rtl, int x, int y, Size size, Drawn drawn)
+    {
+      Mark mark = new Mark();
+      mark.Kind = "text";
+      mark.Page = Page;
+      mark.Role = role;
+      mark.Text = text;
+      mark.Font = font;
+      mark.Rtl = rtl;
+      mark.White = true;
+      mark.X = x;
+      mark.Y = y;
+      mark.W = size.Width + 2;
+      mark.H = size.Height;
+      Marks.Add(mark);
+      drawn.Lines.Add(new TextLine(Page, role, text, x, y, mark.W, size.Height));
+    }
+
     public bool AddRight(Graphics measure, string role, string text, Font font, bool rtl, Drawn drawn)
     {
       Size size = TextRenderer.MeasureText(measure, text, font, new Size(int.MaxValue, int.MaxValue), HostMeasure(rtl));
@@ -1286,20 +1617,26 @@ namespace Bravos.NativePrint
 
     public bool AddItemRow(Graphics measure, string[] cells, bool heading, Font font, Drawn drawn)
     {
-      int moneyWidth = TextW * 28 / 100;
-      int quantityWidth = TextW * 16 / 100;
-      int[] widths = { TextW - quantityWidth - moneyWidth, quantityWidth, moneyWidth };
+      int[] widths = {
+        TextW * 9 / 100,
+        TextW * 31 / 100,
+        TextW * 17 / 100,
+        TextW * 19 / 100,
+        TextW - TextW * 9 / 100 - TextW * 31 / 100 - TextW * 17 / 100 - TextW * 19 / 100
+      };
       string[] roles = heading
-        ? new[] { "items-heading", "items-heading", "items-heading" }
-        : new[] { "item-name", "item-quantity", "item-total" };
-      int inset = Mm(0.45);
+        ? new[] { "items-heading", "items-heading", "items-heading", "items-heading", "items-heading" }
+        : new[] { "item-seq", "item-name", "item-quantity", "item-unit", "item-total" };
+      int inset = Mm(0.4);
       List<string>[] lines = new List<string>[cells.Length];
       List<Size>[] sizes = new List<Size>[cells.Length];
       int rowHeight = 0;
       for (int column = 0; column < cells.Length; column++)
       {
-        lines[column] = HostWrap(measure, cells[column], font, widths[column] - 2 * inset, HostArabic(cells[column]));
+        int wrapWidth = Math.Max(8, widths[column] - 2 * inset);
+        lines[column] = HostWrap(measure, cells[column] == "" ? " " : cells[column], font, wrapWidth, HostArabic(cells[column]));
         if (lines[column] == null) { Error = "invalid_layout"; return false; }
+        if (cells[column] == "") lines[column] = new List<string>();
         sizes[column] = new List<Size>();
         int cellHeight = 0;
         foreach (string text in lines[column])
@@ -1308,9 +1645,21 @@ namespace Bravos.NativePrint
           sizes[column].Add(size);
           cellHeight += size.Height + 2;
         }
-        rowHeight = Math.Max(rowHeight, cellHeight);
+        rowHeight = Math.Max(rowHeight, Math.Max(cellHeight, Mm(3)));
       }
       if (!Ensure(rowHeight + 2 * inset)) return false;
+      if (heading)
+      {
+        Mark fill = new Mark();
+        fill.Kind = "fill";
+        fill.Page = Page;
+        fill.X = TextLeft;
+        fill.Y = Y;
+        fill.W = TextW;
+        fill.H = rowHeight + 2 * inset;
+        fill.Radius = Mm(1.4);
+        Marks.Add(fill);
+      }
       int bottom = Y + rowHeight + 2 * inset;
 
       int right = TextLeft + TextW;
@@ -1326,7 +1675,7 @@ namespace Bravos.NativePrint
         }
         right -= widths[column];
       }
-      AddItemRule(bottom);
+      if (!heading) AddItemRule(bottom);
       Y = bottom;
       return true;
     }
@@ -1487,9 +1836,13 @@ namespace Bravos.NativePrint
 
     public Font LabelCode;
     public Font LabelName;
+    public Font LabelBrand;
+    public Font LabelPrice;
     public Font Body;
+    public Font Meta;
     public Font Title;
     public Font Total;
+    public Font Caption;
     public Image Logo;
     public string Error;
     IntPtr handle;
@@ -1515,12 +1868,16 @@ namespace Bravos.NativePrint
         fonts.family = fonts.collection.Families[0];
         string name = fonts.family.Name;
         if (name.IndexOf("Cairo", StringComparison.OrdinalIgnoreCase) < 0) { fonts.Error = "renderer_unavailable"; return fonts; }
-        fonts.LabelCode = Make(fonts.family, Mm(2.8));
-        fonts.LabelName = Make(fonts.family, Mm(2));
-        fonts.Body = Make(fonts.family, Px(12));
-        fonts.Title = Make(fonts.family, Px(13));
-        fonts.Total = Make(fonts.family, Px(16));
-        if (!Named(fonts.LabelCode) || !Named(fonts.Body)) { fonts.Error = "renderer_unavailable"; return fonts; }
+        fonts.LabelCode = Make(fonts.family, Mm(1.6));
+        fonts.LabelName = Make(fonts.family, Mm(1.4));
+        fonts.LabelBrand = MakeBold(fonts.family, Mm(1.6));
+        fonts.LabelPrice = MakeBold(fonts.family, Mm(1.6));
+        fonts.Body = Make(fonts.family, Px(9));
+        fonts.Meta = Make(fonts.family, Px(8));
+        fonts.Title = MakeBold(fonts.family, Px(9));
+        fonts.Total = MakeBold(fonts.family, Px(13));
+        fonts.Caption = MakeBold(fonts.family, Px(6));
+        if (!Named(fonts.LabelCode) || !Named(fonts.Body) || !Named(fonts.LabelBrand)) { fonts.Error = "renderer_unavailable"; return fonts; }
         fonts.Logo = Image.FromFile(logoPath);
         if (fonts.Logo.Width < 8 || fonts.Logo.Height < 8 || fonts.Logo.Width > 4000 || fonts.Logo.Height > 4000)
         {
@@ -1544,6 +1901,11 @@ namespace Bravos.NativePrint
       return new Font(family, pixels, FontStyle.Regular, GraphicsUnit.Pixel);
     }
 
+    static Font MakeBold(FontFamily family, int pixels)
+    {
+      return new Font(family, pixels, FontStyle.Bold, GraphicsUnit.Pixel);
+    }
+
     static bool Named(Font font)
     {
       return font != null && font.Name.IndexOf("Cairo", StringComparison.OrdinalIgnoreCase) >= 0;
@@ -1563,9 +1925,13 @@ namespace Bravos.NativePrint
     {
       if (LabelCode != null) LabelCode.Dispose();
       if (LabelName != null) LabelName.Dispose();
+      if (LabelBrand != null) LabelBrand.Dispose();
+      if (LabelPrice != null) LabelPrice.Dispose();
       if (Body != null) Body.Dispose();
+      if (Meta != null) Meta.Dispose();
       if (Title != null) Title.Dispose();
       if (Total != null) Total.Dispose();
+      if (Caption != null) Caption.Dispose();
       if (Logo != null) Logo.Dispose();
       if (family != null) family.Dispose();
       if (collection != null) collection.Dispose();

@@ -36,7 +36,7 @@ const rawSvgHook = registerHooks({
 });
 
 const { connectorLabelJob } = await import("../../apps/internal/src/labels/label-print.ts");
-const { connectorReceiptJob } = await import("../../apps/internal/src/receipts/receipt-print.ts");
+const { connectorReceiptJob, receiptConnectorLayoutMessage } = await import("../../apps/internal/src/receipts/receipt-print.ts");
 rawSvgHook.deregister();
 
 const ORIGIN = "http://127.0.0.1:5177";
@@ -381,11 +381,18 @@ test("explicit failure and unknown do not poll a new job or fall back", async ()
   assert.deepEqual(journal, ["POST"]);
 });
 
-test("receipt and label jobs stay apart, and a narrow receipt is refused before any request", () => {
+test("receipt and label jobs stay apart, and a 58 mm receipt uses the receipt printer", () => {
   const label = labelJob();
   assert.equal(label.kind, "label");
   assert.equal(label.profile, "compact");
   assert.deepEqual(label.paper, { widthMm: 38, heightMm: 25 });
+  assert.equal(Object.hasOwn(label.product, "price"), false);
+  const priced = connectorLabelJob(
+    { id: "product-1", code: "BRV-001", nameAr: "قميص", defaultSellingPricePiasters: 45000 },
+    { widthMm: 38, heightMm: 25, copies: 1, dpi: 203, profile: "xp236b-38x25" },
+    JOB_ID,
+  );
+  assert.equal(priced.product.price, "450");
   assert.throws(
     () => connectorLabelJob(
       { id: "product-1", code: "BRV-001", nameAr: "قميص" },
@@ -398,6 +405,7 @@ test("receipt and label jobs stay apart, and a narrow receipt is refused before 
   const view = buildReceiptView(sale(), { paperWidthMm: 80, contactPhone: "" });
   const receipt = connectorReceiptJob(view, JOB_ID);
   assert.equal(receipt.kind, "receipt");
+  assert.equal(receipt.receiptView.contentWidthMm, 48);
   assert.equal(receipt.receiptView.printedReference, "BRV-7-12");
   assert.equal(receipt.receiptView.finalTotal, view.finalTotal);
   assert.equal(Object.hasOwn(receipt.receiptView, "serverReference"), false);
@@ -406,10 +414,47 @@ test("receipt and label jobs stay apart, and a narrow receipt is refused before 
   assert.equal(packed.includes(OPERATION_ID), false);
   assert.equal(packed.includes(SALE_ID), false);
   assert.equal(packed.includes("serverReference"), false);
-  assert.throws(
-    () => connectorReceiptJob(buildReceiptView(sale(), { paperWidthMm: 58, contactPhone: "" }), JOB_ID),
-    /80/,
-  );
+  const narrow = connectorReceiptJob(buildReceiptView(sale(), { paperWidthMm: 58, contactPhone: "" }), JOB_ID);
+  assert.equal(narrow.receiptView.contentWidthMm, 48);
+  assert.equal(narrow.kind, "receipt");
+});
+
+test("receipt layout text rejects the layout and mentions an update only for an old connector", () => {
+  const current = receiptConnectorLayoutMessage(false);
+  const old = receiptConnectorLayoutMessage(true);
+  assert.match(current, /رُفض تخطيط طباعة الإيصال/);
+  assert.match(old, /رُفض تخطيط طباعة الإيصال/);
+  assert.equal(current.includes("حدّث برنامج الطباعة"), false);
+  assert.match(old, /حدّث برنامج الطباعة على هذا الجهاز ثم أعد الطباعة/);
+  assert.equal(current.includes("58 مم"), false);
+  assert.equal(old.includes("58 مم"), false);
+  for (const message of [current, old]) {
+    assert.match(message, /لن تُستخدم طابعة المتصفح/);
+    assert.match(message, /البيع مكتمل/);
+  }
+});
+
+test("layout responses keep the connector error and do not post again", async () => {
+  const store = storage(new Map([[PRINT_PAIRING_TOKEN_KEY, TOKEN]]));
+  for (const [status, errorCode] of [[400, "invalid_job"], [400, "invalid_request"], [413, "payload_too_large"], [415, "unsupported_media_type"]]) {
+    const calls = [];
+    await assert.rejects(
+      () => submitConnectorJob(labelJob(), {
+        deps: deps(store, async (_url, init) => {
+          calls.push(init.method);
+          return new Response(JSON.stringify({ error: errorCode }), { status });
+        }),
+      }),
+      (error) => {
+        assert.equal(error instanceof ConnectorClientError, true);
+        assert.equal(error.code, "layout");
+        assert.equal(error.connectorError, errorCode);
+        assert.match(error.message, /غير مدعوم/);
+        return true;
+      },
+    );
+    assert.deepEqual(calls, ["POST"]);
+  }
 });
 
 test("the default fetch is called with the global receiver", async () => {

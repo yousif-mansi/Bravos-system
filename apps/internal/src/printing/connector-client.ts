@@ -52,11 +52,14 @@ const STORAGE_STRANDED_MESSAGE = "تعذر حفظ الربط في المتصفح
 
 export class ConnectorClientError extends Error {
   readonly code: ConnectorErrorCode;
+  /** Existing connector `error` string. Null when this client classified the failure itself. */
+  readonly connectorError: string | null;
 
-  constructor(code: ConnectorErrorCode, message: string) {
+  constructor(code: ConnectorErrorCode, message: string, connectorError: string | null = null) {
     super(message);
     this.name = "ConnectorClientError";
     this.code = code;
+    this.connectorError = connectorError;
   }
 }
 
@@ -99,8 +102,15 @@ type ResolvedDeps = {
   origin: string;
 };
 
-function fail(code: ConnectorErrorCode, message: string): ConnectorClientError {
-  return new ConnectorClientError(code, message);
+function fail(code: ConnectorErrorCode, message: string, connectorError: string | null = null): ConnectorClientError {
+  return new ConnectorClientError(code, message, connectorError);
+}
+
+function connectorErrorCode(body: unknown): string | null {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+  const error = (body as { error?: unknown }).error;
+  if (typeof error !== "string" || error.length < 1 || error.length > 64) return null;
+  return error;
 }
 
 function defaultStorage(): TokenStorage {
@@ -411,7 +421,9 @@ export async function submitConnectorJob(
     await forgetRejectedToken(deps.storage);
     throw fail("unpaired", UNPAIRED_MESSAGE);
   }
-  if (response.status === 400 || response.status === 413 || response.status === 415) throw fail("layout", LAYOUT_MESSAGE);
+  if (response.status === 400 || response.status === 413 || response.status === 415) {
+    throw fail("layout", LAYOUT_MESSAGE, connectorErrorCode(await readJson(response)));
+  }
   if (response.status === 500) throw fail("journal", JOURNAL_MESSAGE);
   if (response.status === 429) throw fail("journal", QUEUE_MESSAGE);
   if (response.status === 409 || !response.ok) throw fail("uncertain", UNCERTAIN_MESSAGE);

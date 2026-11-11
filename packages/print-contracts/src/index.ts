@@ -27,9 +27,13 @@ export {
   QUEUE_CAP,
   RECEIPT_CONTENT_WIDTH_MM,
   RECEIPT_COPIES,
+  RECEIPT_HARDWARE_WIDTH_MM,
+  RECEIPT_LEGACY_CONTENT_WIDTH_MM,
+  RECEIPT_PAPER_WIDTH_MM,
   RECEIPT_PRINTER_NAME,
   TAXONOMY_NAME_MAX,
   assertStaffOrigin,
+  isReceiptContentWidth,
 } from "./constants.ts";
 export { parseLabelJob, type LabelJob } from "./label-job.ts";
 export { parsePrintJob, type PrintJob } from "./parse-job.ts";

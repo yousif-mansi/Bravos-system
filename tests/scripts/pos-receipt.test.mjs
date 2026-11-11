@@ -11,8 +11,11 @@ import {
   isCompletedSale,
   localOperationReference,
   RECEIPT_MAX_PAGE_HEIGHT_MM,
+  RECEIPT_PAPER_WIDTH_MM,
   receiptPageSizeCss,
   receiptPageSizeMm,
+  splitQuantityAndUnitPrice,
+  splitReceiptDateTime,
 } from "../../apps/internal/src/receipts/receipt-model.ts";
 import {
   findCachedProductByCode,
@@ -221,9 +224,9 @@ test("exchange credit is separate from cash actually collected", () => {
   assert.equal(plain.cashCollected, null);
 });
 
-test("58mm and 80mm paper map to content widths 48 and 72", () => {
+test("58mm and a shipped 80mm setting both use 48 mm content on 58 mm paper", () => {
   assert.equal(contentWidthMm(58), 48);
-  assert.equal(contentWidthMm(80), 72);
+  assert.equal(contentWidthMm(80), 48);
   const narrow = buildReceiptView(structuredClone(saleFixture()), {
     paperWidthMm: 58,
     contactPhone: "1",
@@ -233,7 +236,8 @@ test("58mm and 80mm paper map to content widths 48 and 72", () => {
     contactPhone: "1",
   });
   assert.equal(narrow.contentWidthMm, 48);
-  assert.equal(wide.contentWidthMm, 72);
+  assert.equal(wide.contentWidthMm, 48);
+  assert.equal(RECEIPT_PAPER_WIDTH_MM, 58);
 });
 
 test("printed reference prefers the server reference and keeps the full operation id", () => {
@@ -433,6 +437,17 @@ test("long mixed and local-reference text stay complete without invented shorten
   assert.equal(view.contentWidthMm, 48);
 });
 
+test("Cairo date and time split to 12-hour labels and keep an unparsed fallback", () => {
+  assert.deepEqual(splitReceiptDateTime("11/11/2026 11:30"), { dateLabel: "11/11/2026", timeLabel: "11:30 ص" });
+  assert.deepEqual(splitReceiptDateTime("31/10/2026 14:05"), { dateLabel: "31/10/2026", timeLabel: "2:05 م" });
+  assert.deepEqual(splitReceiptDateTime("01/01/2026 00:00"), { dateLabel: "01/01/2026", timeLabel: "12:00 ص" });
+  assert.deepEqual(splitReceiptDateTime("01/01/2026 12:00"), { dateLabel: "01/01/2026", timeLabel: "12:00 م" });
+  const raw = "31/10/2026، 14:05";
+  assert.deepEqual(splitReceiptDateTime(raw), { dateLabel: raw, timeLabel: null });
+  assert.deepEqual(splitQuantityAndUnitPrice("2 × 425.00"), { quantity: "2", unitPrice: "425.00" });
+  assert.equal(splitQuantityAndUnitPrice("2x425"), null);
+});
+
 test("receipt amounts stay numeric without currency symbols including zero and fractions", () => {
   const view = buildReceiptView(structuredClone(saleFixture()), { paperWidthMm: 80, contactPhone: "" });
   assert.equal(view.lines[0].quantityAndUnitPrice, "1 × 300");
@@ -463,22 +478,22 @@ test("receipt amounts stay numeric without currency symbols including zero and f
 });
 
 test("thermal page size uses two millimetre lengths and never auto", () => {
-  assert.equal(contentWidthMm(80), 72);
+  assert.equal(contentWidthMm(80), 48);
   assert.equal(contentWidthMm(58), 48);
   const short = receiptPageSizeMm(72, 80);
-  assert.equal(short.widthMm, 72);
-  assert.equal(short.heightMm, Math.ceil(80 / (96 / 25.4) + 1));
+  assert.equal(short.widthMm, 58);
+  assert.equal(short.heightMm, 58);
   assert.equal(short.heightMm < 297, true);
   const css = receiptPageSizeCss(short.widthMm, short.heightMm);
-  assert.match(css, /^@page \{ size: 72mm \d+mm; margin: 0; \}$/);
+  assert.match(css, /^@page \{ size: 58mm \d+mm; margin: 0; \}$/);
   assert.equal(css.includes("auto"), false);
   const narrow = receiptPageSizeMm(48, 200);
-  assert.equal(narrow.widthMm, 48);
-  assert.match(receiptPageSizeCss(narrow.widthMm, narrow.heightMm), /^@page \{ size: 48mm \d+mm; margin: 0; \}$/);
+  assert.equal(narrow.widthMm, 58);
+  assert.match(receiptPageSizeCss(narrow.widthMm, narrow.heightMm), /^@page \{ size: 58mm \d+mm; margin: 0; \}$/);
   const long = receiptPageSizeMm(72, 4000);
-  assert.equal(long.widthMm, 72);
+  assert.equal(long.widthMm, 58);
   assert.equal(long.heightMm, RECEIPT_MAX_PAGE_HEIGHT_MM);
-  assert.equal(receiptPageSizeCss(72, long.heightMm).includes("auto"), false);
+  assert.equal(receiptPageSizeCss(58, long.heightMm).includes("auto"), false);
 });
 
 test("prepared server POS reference is kept for immediate local printing", () => {
@@ -576,13 +591,13 @@ test("authorized sale keeps a matching local receipt number only", () => {
   assert.equal(withPreservedLocalReceipt(remote, null, "staff-1"), remote);
 });
 
-test("receipt paper names the customer number رقم الإيصال", () => {
+test("receipt paper names the customer number رقم الفاتورة", () => {
   const source = readFileSync(new URL("../../apps/internal/src/receipts/receipt-document.ts", import.meta.url), "utf8");
-  const referenceCall = 'detail(doc, details, "رقم الإيصال", view.printedReference, "auto", "receipt-reference")';
+  const referenceCall = 'metaLine(doc, invoice, "رقم الفاتورة", view.printedReference)';
   assert.ok(source.includes(referenceCall));
   const itemTable = 'const table = create(doc, "table", "items")';
   assert.ok(source.indexOf(referenceCall) < source.indexOf(itemTable));
-  assert.ok(source.indexOf(itemTable) < source.indexOf('detail(doc, summary, "الخصم"'));
+  assert.ok(source.includes('footer.textContent = "استايلك على كيفك"'));
   assert.equal(source.includes("رقم الطلب"), false);
   assert.equal(source.includes("عملية محلية"), false);
 });
