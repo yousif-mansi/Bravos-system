@@ -4,8 +4,9 @@ import { ApiError, listProducts, listStockLocations, transferStock } from "../ap
 import { isNetworkFailure } from "../session.ts";
 import { Modal } from "../ui/BusinessUi.tsx";
 
-export function TransferPanel({ workspace, active = true, stockRows, onCompleted }: {
+export function TransferPanel({ workspace, onDirtyChange, active = true, stockRows, onCompleted }: {
   workspace: WorkspaceDto;
+  onDirtyChange?: (dirty: boolean) => void;
   active?: boolean;
   stockRows?: ProductLocationStockDto[] | null;
   onCompleted?: () => void;
@@ -89,6 +90,7 @@ export function TransferPanel({ workspace, active = true, stockRows, onCompleted
       setReviewOpen(false);
       onCompleted?.();
       setQuantity("1");
+      onDirtyChange?.(false);
     } catch (caught) {
       if (!isNetworkFailure(caught)) attemptRef.current = null;
       setError(caught instanceof ApiError ? caught.messageAr : "تعذر نقل المخزون. أعد المحاولة بنفس البيانات إذا لم تظهر النتيجة.");
@@ -113,25 +115,25 @@ export function TransferPanel({ workspace, active = true, stockRows, onCompleted
       <form className="card" aria-label="نقل كمية" onSubmit={(event) => void onSubmit(event)}>
         <div className="transfer-fields">
         <div className="field"><label htmlFor="transferSource">من</label>
-          <select id="transferSource" value={sourceBranchId} onChange={(event) => setSourceBranchId(event.target.value)} required>
+          <select id="transferSource" value={sourceBranchId} onChange={(event) => { setSourceBranchId(event.target.value); onDirtyChange?.(true); }} required>
             <option value="">اختر المصدر</option>
             {locations.map((place) => <option key={place.id} value={place.id} disabled={place.id === destinationBranchId}>{place.nameAr}</option>)}
           </select>
         </div>
         <div className="field"><label htmlFor="transferDestination">إلى</label>
-          <select id="transferDestination" value={destinationBranchId} onChange={(event) => setDestinationBranchId(event.target.value)} required>
+          <select id="transferDestination" value={destinationBranchId} onChange={(event) => { setDestinationBranchId(event.target.value); onDirtyChange?.(true); }} required>
             <option value="">اختر الوجهة</option>
             {locations.map((place) => <option key={place.id} value={place.id} disabled={place.id === sourceBranchId}>{place.nameAr}</option>)}
           </select>
         </div>
         <div className="field"><label htmlFor="transferProduct">المنتج</label>
-          <select id="transferProduct" value={productId} onChange={(event) => setProductId(event.target.value)} required>
+          <select id="transferProduct" value={productId} onChange={(event) => { setProductId(event.target.value); onDirtyChange?.(true); }} required>
             <option value="">اختر المنتج</option>
             {products.map((product) => <option key={product.id} value={product.id}>{product.code} — {product.nameAr}</option>)}
           </select>
         </div>
         <div className="field"><label htmlFor="transferQuantity">الكمية</label>
-          <input id="transferQuantity" type="number" min="1" step="1" value={quantity} onChange={(event) => setQuantity(event.target.value)} required />
+          <input id="transferQuantity" type="number" min="1" step="1" value={quantity} onChange={(event) => { setQuantity(event.target.value); onDirtyChange?.(true); }} required />
         </div>
         </div>
         {productId && sourceBranchId ? <p>المتاح في المصدر: {sourceBalance === undefined ? "غير متاح حالياً" : sourceBalance}</p> : null}

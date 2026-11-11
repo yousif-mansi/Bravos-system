@@ -93,7 +93,7 @@ test("staff screens remain navigable at desktop and narrow widths and cashier ca
   await signIn(page);
   for (const [route, heading, key] of [
     ["/", "لوحة التحكم", "dashboard"],
-    ["/lookup", "الكاشير", "pos"],
+    ["/lookup", "نقطة البيع", "pos"],
     ["/sales", "المبيعات", "sales"],
     ["/receiving", "استلام المخزون", "receiving"],
     ["/catalog", "إدارة المنتجات", "catalog"],

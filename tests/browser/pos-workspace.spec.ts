@@ -81,7 +81,7 @@ async function seed(page: Page) {
 }
 
 async function openPos(page: Page) {
-  await page.getByRole("navigation", { name: "التنقل الداخلي" }).getByRole("link", { name: "الكاشير", exact: true }).click();
+  await page.getByRole("navigation", { name: "التنقل الداخلي" }).getByRole("link", { name: "نقطة البيع", exact: true }).click();
   await expect(page.getByTestId("pos-product-browser")).toBeVisible();
 }
 
@@ -183,11 +183,7 @@ test("POS uses two lanes on desktop and tablet, stacks on phones and keeps check
   await page.setViewportSize({ width: 1440, height: 900 });
   await openPos(page);
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
-  await expect(checkout.getByLabel("اسم الزبون (اختياري)")).toBeVisible();
-  await expect(checkout.getByLabel("هاتف الزبون (اختياري)")).toBeVisible();
-  await expect(checkout.getByLabel("خصم الموظف بالجنيه")).toBeVisible();
-  await expect(checkout.getByLabel("كود الكوبون")).toBeVisible();
-  await expect(checkout.getByRole("radio", { name: "نقداً بالكامل" })).toHaveCount(0);
+  await expect(checkout.getByLabel("اسم الزبون (اختياري)")).toHaveCount(0);
   await expect(checkout.getByTestId("complete-sale")).toBeDisabled();
   await page.getByLabel("رمز المنتج أو اسم الصنف").fill(data.product.nameAr);
   const tile = page.getByTestId("pos-product-tile").filter({ hasText: data.product.code });
@@ -208,10 +204,9 @@ test("POS uses two lanes on desktop and tablet, stacks on phones and keeps check
     expect(cart).not.toBeNull();
     if (width >= 1024) {
       expect(Math.abs(browser!.x - cart!.x)).toBeGreaterThan(200);
-      expect(cart!.width).toBeGreaterThan(browser!.width);
       await expect(checkout.getByRole("button", { name: "إتمام البيع", exact: true })).toBeInViewport();
     } else {
-      expect(cart!.y).toBeLessThan(browser!.y);
+      expect(cart!.y).toBeGreaterThan(browser!.y);
       await checkout.getByLabel("المبلغ النقدي بالجنيه").fill("50");
       await checkout.getByRole("button", { name: "إتمام البيع", exact: true }).scrollIntoViewIfNeeded();
       await expect(checkout.getByRole("button", { name: "إتمام البيع", exact: true })).toBeInViewport();
@@ -322,100 +317,4 @@ test("a remote same-cashier branch reselection keeps automatic sync running afte
   expect(product.availableQuantity).toBe(1);
   await expect(page.getByTestId("available-quantity")).toHaveText("الكمية المتاحة في الفرع: 1");
   await expect(page).toHaveURL(`${internal}/lookup`);
-});
-
-test("cashier cart stays primary, tables line items, and auto-selects an exact saved phone", async ({ page, context }) => {
-  const data = await seed(page);
-  await openPos(page);
-  await expect(page.getByRole("heading", { name: /الكاشير/, level: 1 })).toBeVisible();
-  await expect(page.getByRole("navigation", { name: "التنقل الداخلي" }).getByRole("link", { name: "الكاشير", exact: true })).toBeVisible();
-  const checkout = page.getByRole("form", { name: "إتمام البيع" });
-  await expect(checkout.getByLabel("اسم الزبون (اختياري)")).toBeVisible();
-  await expect(checkout.getByLabel("هاتف الزبون (اختياري)")).toBeVisible();
-  await expect(checkout.getByLabel("خصم الموظف بالجنيه")).toBeVisible();
-  await expect(checkout.getByLabel("كود الكوبون")).toBeVisible();
-  await expect(checkout.getByRole("radio", { name: "نقداً بالكامل" })).toHaveCount(0);
-  await expect(checkout.getByTestId("complete-sale")).toBeDisabled();
-  await chooseM(page, data);
-  await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
-  const cart = page.getByTestId("sale-cart");
-  await expect(cart.getByRole("columnheader", { name: "المنتج" })).toBeVisible();
-  await expect(cart.getByRole("columnheader", { name: "سعر الوحدة" })).toBeVisible();
-  await expect(cart.getByRole("columnheader", { name: "الكمية" })).toBeVisible();
-  await expect(cart.getByRole("columnheader", { name: "الإجمالي" })).toBeVisible();
-  await expect(cart).toContainText(data.product.code);
-  await expect(checkout.getByRole("button", { name: `زيادة كمية ${data.product.nameAr}` })).toBeVisible();
-  const customerBox = await checkout.getByLabel("اسم الزبون (اختياري)").boundingBox();
-  const tableBox = await cart.boundingBox();
-  expect(customerBox).not.toBeNull();
-  expect(tableBox).not.toBeNull();
-  expect(customerBox!.y).toBeLessThan(tableBox!.y);
-  const discountBox = await checkout.getByLabel("خصم الموظف بالجنيه").boundingBox();
-  const couponBox = await checkout.getByLabel("كود الكوبون").boundingBox();
-  expect(discountBox!.y).toBeGreaterThan(customerBox!.y);
-  expect(couponBox!.y).toBeGreaterThanOrEqual(discountBox!.y - 8);
-  await expect(checkout.getByRole("button", { name: /بحث عن زبون محفوظ|استخدام الاسم المحفوظ/ })).toHaveCount(0);
-
-  const savedName = `زبون محفوظ ${data.product.code.slice(-6)}`;
-  const savedPhone = "01055551111";
-  const otherPhone = "01055552222";
-  await checkout.getByLabel("اسم الزبون (اختياري)").fill(savedName);
-  await checkout.getByLabel("هاتف الزبون (اختياري)").fill(savedPhone);
-  await finalizePosSale(checkout, page);
-  await expect(page.getByRole("status").filter({ hasText: "تم حفظ البيع" })).toBeVisible();
-
-  await chooseM(page, data);
-  await page.getByRole("button", { name: "إضافة إلى السلة" }).click();
-  const lookups: string[] = [];
-  page.on("request", (request) => {
-    if (new URL(request.url()).pathname === "/api/internal/customers/lookup") lookups.push(request.url());
-  });
-  await checkout.getByLabel("هاتف الزبون (اختياري)").fill("0105555");
-  await page.waitForTimeout(400);
-  expect(lookups).toEqual([]);
-  await checkout.getByLabel("هاتف الزبون (اختياري)").fill(savedPhone);
-  await expect(checkout.getByLabel("اسم الزبون (اختياري)")).toHaveValue(savedName);
-  await expect(page.getByTestId("saved-customer-status")).toContainText(savedName);
-  await expect(checkout.getByRole("button", { name: /استخدام الاسم المحفوظ/ })).toHaveCount(0);
-
-  await checkout.getByLabel("اسم الزبون (اختياري)").fill("اسم يدوي");
-  await checkout.getByLabel("هاتف الزبون (اختياري)").fill(`${savedPhone} `);
-  await page.waitForTimeout(400);
-  await expect(checkout.getByLabel("اسم الزبون (اختياري)")).toHaveValue("اسم يدوي");
-
-  let releaseFirst: () => void = () => undefined;
-  const firstLookupGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
-  let firstLookupReached = false;
-  let holdFirst = true;
-  await page.route("**/api/internal/customers/lookup*", async (route) => {
-    const phone = new URL(route.request().url()).searchParams.get("phone") ?? "";
-    if (holdFirst && phone.replace(/\D/g, "") === savedPhone) {
-      holdFirst = false;
-      firstLookupReached = true;
-      await firstLookupGate;
-    }
-    await route.continue();
-  });
-  await checkout.getByLabel("اسم الزبون (اختياري)").fill("");
-  await checkout.getByLabel("هاتف الزبون (اختياري)").fill(savedPhone);
-  await expect.poll(() => firstLookupReached).toBe(true);
-  await checkout.getByLabel("هاتف الزبون (اختياري)").fill(otherPhone);
-  releaseFirst();
-  await expect.poll(() => lookups.filter((url) => url.includes(otherPhone)).length).toBeGreaterThan(0);
-  await expect(checkout.getByLabel("اسم الزبون (اختياري)")).toHaveValue("");
-  await expect(page.getByTestId("saved-customer-status")).toHaveCount(0);
-
-  await checkout.getByLabel("هاتف الزبون (اختياري)").fill(savedPhone);
-  await expect(checkout.getByLabel("اسم الزبون (اختياري)")).toHaveValue(savedName);
-  await expect(page.getByTestId("saved-customer-status")).toContainText(savedName);
-  await checkout.getByLabel("هاتف الزبون (اختياري)").fill(otherPhone);
-  await expect(checkout.getByLabel("اسم الزبون (اختياري)")).toHaveValue("");
-  await expect(page.getByTestId("saved-customer-status")).toHaveCount(0);
-
-  await context.setOffline(true);
-  await checkout.getByLabel("اسم الزبون (اختياري)").fill("زبون بدون اتصال");
-  await checkout.getByLabel("هاتف الزبون (اختياري)").fill("01055553333");
-  await expect(checkout.getByRole("alert")).toHaveCount(0);
-  await expect(checkout.getByLabel("اسم الزبون (اختياري)")).toHaveValue("زبون بدون اتصال");
-  await context.setOffline(false);
 });

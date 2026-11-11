@@ -619,7 +619,7 @@ export function WorkspacePage({
           <p className="page-subtitle">{workspace.staff.role === "manager" ? "ملخص كل الفروع والمتجر" : "مساحة العمل"}</p>
         </div>
         {workspace.capabilities.cashier ? (
-          <Link className="dashboard-primary" to="/lookup" aria-label="الكاشير البحث عن منتج">بيع جديد</Link>
+          <Link className="dashboard-primary" to="/lookup" aria-label="نقطة البيع البحث عن منتج">بيع جديد</Link>
         ) : null}
       </header>
 

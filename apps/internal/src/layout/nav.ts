@@ -29,7 +29,7 @@ export function navigationFor(workspace: WorkspaceDto, online: boolean): NavGrou
     {
       label: "التشغيل",
       items: [
-        { to: "/lookup", name: "الكاشير", show: (value) => value.capabilities.cashier },
+        { to: "/lookup", name: "نقطة البيع", show: (value) => value.capabilities.cashier },
         { to: "/sales", name: "المبيعات", show: (value) => Boolean(value.activeBranch) },
         {
           to: "/online-orders",

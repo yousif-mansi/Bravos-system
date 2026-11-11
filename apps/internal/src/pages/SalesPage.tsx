@@ -203,7 +203,7 @@ export default function SalesPage({
 
   return (
     <main className="shell business-page">
-      <header className="business-page-header"><h1>المبيعات</h1>{workspace.capabilities.cashier ? <Link className="button" to="/lookup" aria-label="الكاشير البحث عن منتج">الكاشير</Link> : null}</header>
+      <header className="business-page-header"><h1>المبيعات</h1>{workspace.capabilities.cashier ? <Link className="button" to="/lookup" aria-label="نقطة البيع البحث عن منتج">نقطة البيع</Link> : null}</header>
       {error ? <div className="error" role="alert">{error}</div> : null}
       {notice ? <p className="notice" role="status">{notice}</p> : null}
       {error ? <button type="button" className="secondary" disabled={loading || Boolean(loadingSaleId)} onClick={() => failedSaleId ? void openSale(failedSaleId) : setReloadRevision((current) => current + 1)}>{failedSaleId ? "إعادة محاولة فتح البيع" : "إعادة تحميل المبيعات"}</button> : null}

@@ -10,24 +10,6 @@
 .receiving-page .receiving-history { display: grid; gap: 1rem; }
 .receiving-page .transfer-panel { min-width: 0; }
 .receiving-page .business-table-wrap { max-width: 100%; overflow-x: auto; }
-.receiving-receipt-meta {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr));
-  gap: 0.4rem 0.75rem;
-  margin: 0 0 0.85rem;
-}
-.receiving-receipt-meta div { min-width: 0; }
-.receiving-receipt-meta dt {
-  margin: 0;
-  color: var(--muted);
-  font-size: 0.75rem;
-  font-weight: 500;
-}
-.receiving-receipt-meta dd {
-  margin: 0;
-  font-weight: 700;
-  overflow-wrap: anywhere;
-}
 
 .receiving-page .supplier-inline input,
 .receiving-page .supplier-inline select,
