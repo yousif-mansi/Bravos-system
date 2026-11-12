@@ -1622,41 +1622,8 @@ export default function LookupPage({
       >
         <div className="pos-section-heading pos-checkout-heading"><h2>سلة البيع</h2><span className="muted">{cartUnitCount} قطعة</span></div>
         <div className="pos-checkout-body">
-        {cart.length === 0 ? (
-          <EmptyState title="السلة فاضية" message="اختر صنفاً من القائمة وأضفه بالكمية المتاحة في الفرع." />
-        ) : (
-          <ul className="pos-cart" data-testid="sale-cart">
-            {cart.map((line) => (
-              <li key={line.key}>
-                <div><p className="pos-cart-name">{line.product.nameAr}</p>
-                <p className="pos-cart-meta">{line.product.code}</p>
-                <p className="pos-cart-meta">سعر الوحدة: {formatEgpFromPiasters(line.variant.sellingPricePiasters)}</p>
-                <p className="pos-cart-meta">الإجمالي: {formatEgpFromPiasters(line.variant.sellingPricePiasters * line.quantity)}</p></div>
-                <div className="field pos-quantity">
-                  <label htmlFor={`qty-${line.key}`}>الكمية</label>
-                  <div className="pos-quantity-controls">
-                  <button type="button" className="secondary" aria-label={`تقليل كمية ${line.product.nameAr}`} disabled={formLocked || line.quantity <= 1} onClick={() => updateQuantity(line.key, line.quantity - 1)}>−</button>
-                  <input
-                    id={`qty-${line.key}`}
-                    type="number"
-                    min={1}
-                    max={Math.max(1, (effectiveByVariant[line.variant.id] ?? line.variant.availableQuantity) - cart.filter((item) => item.product.id === line.product.id && item.key !== line.key).reduce((sum, item) => sum + item.quantity, 0))}
-                    value={line.quantity}
-                    disabled={formLocked}
-                    onChange={(event) => updateQuantity(line.key, Number(event.target.value))}
-                  />
-                  <button type="button" className="secondary" aria-label={`زيادة كمية ${line.product.nameAr}`} disabled={formLocked || line.quantity >= Math.max(1, (effectiveByVariant[line.variant.id] ?? line.variant.availableQuantity) - cart.filter((item) => item.product.id === line.product.id && item.key !== line.key).reduce((sum, item) => sum + item.quantity, 0))} onClick={() => updateQuantity(line.key, line.quantity + 1)}>+</button>
-                  </div>
-                </div>
-                <button type="button" className="danger" disabled={formLocked} onClick={() => updateQuantity(line.key, 0)}>
-                  حذف
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-        {checkoutHasDetails ? <details className="pos-optional-details">
-        <summary>العميل والخصم والكوبون <span className="muted">{[customerName || customerPhone ? "بيانات العميل مضافة" : "عميل اختياري", couponCode ? "كوبون مضاف" : "", discountEgp && discountEgp !== "0" ? `خصم ${discountEgp} ج.م` : ""].filter(Boolean).join(" • ")}</span></summary>
+        <section className="pos-checkout-details" aria-label="العميل والخصم والكوبون">
+        <h3 className="pos-checkout-details-heading">العميل والخصم والكوبون</h3>
         <div className="pos-checkout-fields">
         <div className="field">
           <label htmlFor="customerName">اسم الزبون (اختياري)</label>
@@ -1678,11 +1645,32 @@ export default function LookupPage({
           <label htmlFor="discountEgp">خصم الموظف بالجنيه</label>
           <input id="discountEgp" value={discountEgp} disabled={formLocked} onChange={(event) => { if (beginCartRevision()) setDiscountEgp(event.target.value); }} />
         </div>
-        <div className="field pos-field-wide">
+        <div className="field">
           <label htmlFor="discountReason">سبب الخصم (اختياري)</label>
           <input id="discountReason" value={discountReason} disabled={formLocked} onChange={(event) => { if (beginCartRevision()) setDiscountReason(event.target.value); }} />
         </div>
-        </div></details> : null}
+        </div>
+        </section>
+        <fieldset className="field pos-payment" disabled={formLocked}>
+          <legend>طريقة الدفع</legend>
+          <div className="pos-payment-options">
+            <label><input type="radio" name="payment-method" value="cash" checked={paymentMethod === "cash"} onChange={() => setPaymentMethod("cash")} /> نقداً بالكامل</label>
+            <label><input type="radio" name="payment-method" value="online" checked={paymentMethod === "online"} onChange={() => setPaymentMethod("online")} /> إلكترونياً بالكامل (محفظة أو إنستا باي)</label>
+            <label><input type="radio" name="payment-method" value="split" checked={paymentMethod === "split"} onChange={() => setPaymentMethod("split")} /> دفع مقسّم</label>
+          </div>
+          {paymentMethod === "split" ? (
+            <div className="grid two">
+              <div className="field"><label htmlFor="payment-cash">المبلغ النقدي بالجنيه</label><input id="payment-cash" inputMode="decimal" value={cashEgp} onChange={(event) => setCashEgp(event.target.value)} /></div>
+              <div className="field"><label htmlFor="payment-online">المبلغ الإلكتروني بالجنيه</label><input id="payment-online" inputMode="decimal" value={onlineEgp} onChange={(event) => setOnlineEgp(event.target.value)} /></div>
+            </div>
+          ) : null}
+          {checkoutHasDetails ? (
+            <p role="status" data-testid="payment-remaining">
+              {paymentBalancePiasters < 0 ? "المبلغ الزائد: " : "المتبقي: "}
+              {formatEgpFromPiasters(Math.abs(paymentBalancePiasters))}
+            </p>
+          ) : null}
+        </fieldset>
         {quote ? (
           <section className="pos-accepted-prices" data-testid="accepted-prices">
             <h3>المبلغ المستحق</h3>
@@ -1699,28 +1687,59 @@ export default function LookupPage({
             <p>الإجمالي: {formatEgpFromPiasters(quote.finalTotalPiasters)}</p>
           </section>
         ) : null}
-        {checkoutHasDetails ? (
-          <fieldset className="field pos-payment" disabled={formLocked}>
-            <legend>طريقة الدفع</legend>
-            <label><input type="radio" name="payment-method" value="cash" checked={paymentMethod === "cash"} onChange={() => setPaymentMethod("cash")} /> نقداً بالكامل</label>
-            <label><input type="radio" name="payment-method" value="online" checked={paymentMethod === "online"} onChange={() => setPaymentMethod("online")} /> إلكترونياً بالكامل (محفظة أو إنستا باي)</label>
-            <label><input type="radio" name="payment-method" value="split" checked={paymentMethod === "split"} onChange={() => setPaymentMethod("split")} /> دفع مقسّم</label>
-            {paymentMethod === "split" ? (
-              <div className="grid two">
-                <div className="field"><label htmlFor="payment-cash">المبلغ النقدي بالجنيه</label><input id="payment-cash" inputMode="decimal" value={cashEgp} onChange={(event) => setCashEgp(event.target.value)} /></div>
-                <div className="field"><label htmlFor="payment-online">المبلغ الإلكتروني بالجنيه</label><input id="payment-online" inputMode="decimal" value={onlineEgp} onChange={(event) => setOnlineEgp(event.target.value)} /></div>
-              </div>
-            ) : null}
-            <p role="status" data-testid="payment-remaining">
-              {paymentBalancePiasters < 0 ? "المبلغ الزائد: " : "المتبقي: "}
-              {formatEgpFromPiasters(Math.abs(paymentBalancePiasters))}
-            </p>
-          </fieldset>
-        ) : null}
+        {cart.length === 0 ? (
+          <EmptyState title="السلة فاضية" message="اختر صنفاً من القائمة وأضفه بالكمية المتاحة في الفرع." />
+        ) : (
+          <div className="pos-cart-table-wrap">
+          <table className="pos-cart" data-testid="sale-cart">
+            <thead>
+              <tr>
+                <th scope="col">المنتج</th>
+                <th scope="col">الكود</th>
+                <th scope="col">الكمية</th>
+                <th scope="col">سعر الوحدة</th>
+                <th scope="col">الإجمالي</th>
+                <th scope="col">حذف</th>
+              </tr>
+            </thead>
+            <tbody>
+            {cart.map((line) => (
+              <tr key={line.key}>
+                <td><p className="pos-cart-name">{line.product.nameAr}</p></td>
+                <td><p className="pos-cart-meta">{line.product.code}</p></td>
+                <td>
+                  <div className="field pos-quantity">
+                    <label className="sr-only" htmlFor={`qty-${line.key}`}>الكمية</label>
+                    <div className="pos-quantity-controls">
+                    <button type="button" className="secondary" aria-label={`تقليل كمية ${line.product.nameAr}`} disabled={formLocked || line.quantity <= 1} onClick={() => updateQuantity(line.key, line.quantity - 1)}>−</button>
+                    <input
+                      id={`qty-${line.key}`}
+                      type="number"
+                      min={1}
+                      max={Math.max(1, (effectiveByVariant[line.variant.id] ?? line.variant.availableQuantity) - cart.filter((item) => item.product.id === line.product.id && item.key !== line.key).reduce((sum, item) => sum + item.quantity, 0))}
+                      value={line.quantity}
+                      disabled={formLocked}
+                      onChange={(event) => updateQuantity(line.key, Number(event.target.value))}
+                    />
+                    <button type="button" className="secondary" aria-label={`زيادة كمية ${line.product.nameAr}`} disabled={formLocked || line.quantity >= Math.max(1, (effectiveByVariant[line.variant.id] ?? line.variant.availableQuantity) - cart.filter((item) => item.product.id === line.product.id && item.key !== line.key).reduce((sum, item) => sum + item.quantity, 0))} onClick={() => updateQuantity(line.key, line.quantity + 1)}>+</button>
+                    </div>
+                  </div>
+                </td>
+                <td className="pos-cart-numeric">{formatEgpFromPiasters(line.variant.sellingPricePiasters)}</td>
+                <td className="pos-cart-numeric">{formatEgpFromPiasters(line.variant.sellingPricePiasters * line.quantity)}</td>
+                <td>
+                  <button type="button" className="danger" disabled={formLocked} onClick={() => updateQuantity(line.key, 0)}>
+                    حذف
+                  </button>
+                </td>
+              </tr>
+            ))}
+            </tbody>
+          </table>
+          </div>
+        )}
         </div>
         <div className="pos-checkout-footer">
-        <p className="pos-cart-total"><span>{quote ? "الإجمالي المستحق" : "الإجمالي بعد خصم الموظف"}</span><strong>{formatEgpFromPiasters(displayedPayableTotal)}</strong></p>
-        {!quote && cart.length > 0 ? <p className="pos-total-note">قبل تطبيق العروض والكوبون.</p> : null}
         {error ? <div className="error" role="alert">{error}</div> : null}
         {notice ? (
           <div
@@ -1733,6 +1752,7 @@ export default function LookupPage({
         ) : null}
         {receiptStatus ? <p className="notice" role="status" data-testid="pos-receipt-status">{receiptStatus}</p> : null}
         {receiptError ? <p className="error" role="alert" data-testid="pos-receipt-error">{receiptError}</p> : null}
+        <div className="pos-checkout-complete">
         <div className="actions">
           <button
             type="button"
@@ -1748,13 +1768,18 @@ export default function LookupPage({
           </button>
           <button
             type="button"
-            className="confirm pos-complete"
+            className="pos-complete-print"
             data-testid="complete-sale-print"
             disabled={finalizeDisabled}
             onClick={() => void submit({ print: true })}
           >
             {pending === "complete" ? "جارٍ الحفظ…" : "حفظ البيع وطباعة الإيصال"}
           </button>
+        </div>
+        <div className="pos-cart-total-block">
+        <p className="pos-cart-total"><span>{quote ? "الإجمالي المستحق" : "الإجمالي بعد خصم الموظف"}</span><strong>{formatEgpFromPiasters(displayedPayableTotal)}</strong></p>
+        {!quote && cart.length > 0 ? <p className="pos-total-note">قبل تطبيق العروض والكوبون.</p> : null}
+        </div>
         </div>
         </div>
       </form>

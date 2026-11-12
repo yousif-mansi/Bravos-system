@@ -1,12 +1,12 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 
-/** Reveal the optional customer, discount, and coupon fields without closing an already-open disclosure. */
+/** Customer, discount, and coupon fields are visible directly in checkout; no disclosure click. */
 export async function openPosOptionalDetails(checkout: Locator): Promise<void> {
-  const details = checkout.locator("details.pos-optional-details");
-  await expect(details).toHaveCount(1);
-  if (await details.getAttribute("open") === null) {
-    await details.locator("summary").click();
-  }
+  await expect(checkout.getByLabel("اسم الزبون (اختياري)")).toBeVisible();
+  await expect(checkout.getByLabel("هاتف الزبون (اختياري)")).toBeVisible();
+  await expect(checkout.getByLabel("كود الكوبون")).toBeVisible();
+  await expect(checkout.getByLabel("خصم الموظف بالجنيه")).toBeVisible();
+  await expect(checkout.getByLabel("سبب الخصم (اختياري)")).toBeVisible();
 }
 
 /** Exercise validation to keep a priced cart unpaid for tests that need to edit it or simulate a race. */

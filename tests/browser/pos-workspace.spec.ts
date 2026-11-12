@@ -183,7 +183,7 @@ test("POS uses two lanes on desktop and tablet, stacks on phones and keeps check
   await page.setViewportSize({ width: 1440, height: 900 });
   await openPos(page);
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
-  await expect(checkout.getByLabel("اسم الزبون (اختياري)")).toHaveCount(0);
+  await expect(checkout.getByLabel("اسم الزبون (اختياري)")).toBeVisible();
   await expect(checkout.getByTestId("complete-sale")).toBeDisabled();
   await page.getByLabel("رمز المنتج أو اسم الصنف").fill(data.product.nameAr);
   const tile = page.getByTestId("pos-product-tile").filter({ hasText: data.product.code });
