@@ -16,4 +16,7 @@ mv -- "$tmp_media" "$prefix-media.tar.gz"
 chmod 600 "$prefix.dump" "$prefix-media.tar.gz"
 sha256sum "$prefix.dump" "$prefix-media.tar.gz" > "$prefix.sha256"
 chmod 600 "$prefix.sha256"
+# A cleanup problem must not fail a backup that succeeded, or stop the deploy waiting on it.
+"$DEPLOY_DIR/scripts/prune-backups.sh" "$backup_dir" "${BRAVOS_BACKUP_RETENTION_DAYS:-30}" \
+  || echo "Warning: old backups were not cleaned up; the new backup is complete." >&2
 echo "Created $prefix.dump and media archive; copy encrypted off the VPS and rehearse restore."
