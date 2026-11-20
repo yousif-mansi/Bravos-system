@@ -313,7 +313,7 @@ export async function printSaleReceipt(
     return printReceiptThroughConnector(sale, overrides, generation, onProgress);
   }
   if (typeof window === "undefined" || typeof document === "undefined") {
-    throw unavailable("الطباعة متاحة من شاشة نقطة البيع في المتصفح فقط.");
+    throw unavailable("الطباعة متاحة من شاشة الكاشير في المتصفح فقط.");
   }
 
   let printToken: symbol;

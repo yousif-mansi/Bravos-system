@@ -81,7 +81,7 @@ async function seed(page: Page) {
 }
 
 async function openPos(page: Page) {
-  await page.getByRole("navigation", { name: "التنقل الداخلي" }).getByRole("link", { name: "نقطة البيع", exact: true }).click();
+  await page.getByRole("navigation", { name: "التنقل الداخلي" }).getByRole("link", { name: "الكاشير", exact: true }).click();
   await expect(page.getByTestId("pos-product-browser")).toBeVisible();
 }
 

@@ -779,7 +779,7 @@ export default function LookupPage({
   async function quoteFromSnapshot(pending: PendingSale, payload: SalePayload): Promise<SaleDto> {
     const snapshot = quoteSnapshotRef.current ?? (await pos.loadSnapshot(workspace.staff.id));
     if (!snapshot || !workspace.activeBranch) {
-      throw new ApiError(503, "VALIDATION", "لم تكتمل جاهزية نقطة البيع دون اتصال بعد.");
+      throw new ApiError(503, "VALIDATION", "لم تكتمل جاهزية الكاشير للعمل دون اتصال بعد.");
     }
     await assertLocalCartStock(cart);
     quoteSnapshotRef.current = snapshot;
@@ -915,7 +915,7 @@ export default function LookupPage({
       notifyPosStockChange({ staffId: recorded.staffId, branchId: recorded.branch.id });
       return saleFromOffline(recorded);
     }
-    throw new PosStorageError("لم تكتمل جاهزية نقطة البيع دون اتصال بعد.");
+    throw new PosStorageError("لم تكتمل جاهزية الكاشير للعمل دون اتصال بعد.");
   }
 
   async function syncPersistedSale(saleId: string): Promise<SaleDto | null> {
@@ -1534,7 +1534,7 @@ export default function LookupPage({
   return (
     <main className="shell pos-workspace">
       <header className="page-hero">
-        <h1>نقطة البيع<span className="sr-only"> البحث عن منتج</span></h1>
+        <h1>الكاشير<span className="sr-only"> البحث عن منتج</span></h1>
         <p className="pos-branch-context">أصناف ومخزون {workspace.activeBranch?.nameAr}</p>
       </header>
       {stockPause ? (

@@ -42,7 +42,7 @@ export type ExpenseRecord = {
   changes: ExpenseChangeRecord[];
 };
 
-export type ExpenseScope = { manager: true } | { manager: false; staffId: string; branchId: string };
+export type ExpenseScope = { manager: true; branchId?: string } | { manager: false; staffId: string; branchId: string };
 
 export type ExpenseReportingFact = {
   expenseId: string;

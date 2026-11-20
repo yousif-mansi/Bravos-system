@@ -296,12 +296,18 @@ export function createPostgresOnlineOrderStore(queryable: Queryable): OnlineOrde
         throw error;
       }
     },
-    async listOrders() {
-      const result = await queryable.query<{ id: string }>("SELECT id FROM online_order ORDER BY submitted_at DESC,id DESC");
+    async listOrders(branchId = null) {
+      const result = await queryable.query<{ id: string }>(
+        `SELECT orders.id FROM online_order orders
+         LEFT JOIN online_order_confirmation confirmation ON confirmation.order_id = orders.id
+         WHERE $1::uuid IS NULL OR confirmation.order_id IS NULL OR confirmation.fulfillment_branch_id = $1
+         ORDER BY orders.submitted_at DESC, orders.id DESC`,
+        [branchId],
+      );
       const orders = await Promise.all(result.rows.map((row) => loadOrder(queryable, row.id)));
       return orders.filter((order): order is OnlineOrderDto => order !== null);
     },
-    async listCompletedOrders() {
+    async listCompletedOrders(branchId = null) {
       const result = await queryable.query<{
         id: string;
         reference: string;
@@ -316,8 +322,9 @@ export function createPostgresOnlineOrderStore(queryable: Queryable): OnlineOrde
          JOIN online_order_confirmation confirmation ON confirmation.order_id=order_row.id
          JOIN online_order_fulfillment_event event
            ON event.order_id=order_row.id AND event.event_type='delivered'
-         WHERE order_row.status='delivered'
+         WHERE order_row.status='delivered' AND ($1::uuid IS NULL OR confirmation.fulfillment_branch_id = $1)
          ORDER BY event.occurred_at DESC,order_row.id DESC`,
+        [branchId],
       );
       return result.rows.map((row): CompletedOnlineOrderDto => ({
         orderId: row.id,

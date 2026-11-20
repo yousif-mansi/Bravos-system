@@ -486,7 +486,9 @@ async function loadTotals(queryable: Queryable, scope: ExpenseScope): Promise<Ex
 }
 
 function scopeClause(scope: ExpenseScope, firstParameter: number): { sql: string; args: unknown[] } {
-  if (scope.manager) return { sql: "", args: [] };
+  if (scope.manager) return scope.branchId
+    ? { sql: `WHERE e.branch_id = $${firstParameter}`, args: [scope.branchId] }
+    : { sql: "", args: [] };
   return {
     sql: `WHERE e.created_by_staff_id = $${firstParameter} AND e.branch_id = $${firstParameter + 1}`,
     args: [scope.staffId, scope.branchId],

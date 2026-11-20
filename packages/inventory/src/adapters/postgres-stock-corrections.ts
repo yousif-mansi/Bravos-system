@@ -182,7 +182,7 @@ export function createPostgresStockCoordinationStore(
           [input.coordinationId, input.deviceId, input.snapshotId, state.stock_version],
         );
         const row = acknowledged.rows[0];
-        if (!row) throw new CoordinationStaleError("نقطة البيع ليست ضمن أجهزة هذا التنسيق.");
+        if (!row) throw new CoordinationStaleError("جهاز الكاشير غير مسجل في هذا التنسيق.");
         return {
           coordinationId: input.coordinationId,
           deviceId: input.deviceId,

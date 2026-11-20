@@ -57,7 +57,7 @@ test("staff intake is product-level and storefront options share one quantity", 
   });
   expect(moved.status, JSON.stringify(moved.body)).toBe(201);
 
-  await page.goto("http://127.0.0.1:5174/receiving");
+  await page.goto("http://127.0.0.1:5174/receiving?tab=receive");
   const receive = page.getByRole("form", { name: "تسجيل إذن استلام" });
   await receive.getByRole("button", { name: "إضافة منتج موجود" }).click();
   await receive.getByRole("button", { name: "إضافة منتج جديد" }).click();
@@ -68,7 +68,6 @@ test("staff intake is product-level and storefront options share one quantity", 
   await expect(intake.getByLabel("المقاس واللون")).toHaveCount(0);
   await expect(page.getByRole("radio", { name: "مقاس ولون جديدان لمنتج موجود" })).toHaveCount(0);
   await expect(page.getByRole("form", { name: "تسجيل إذن استلام" }).getByLabel("المنتج").first()).toBeVisible();
-  page.once("dialog", (dialog) => void dialog.accept());
   await page.getByRole("tab", { name: "أرصدة المخازن" }).click();
   await expect(page.getByRole("region", { name: "أماكن المخزون" })).toBeVisible();
   await expect(page.getByTestId("stock-location-table")).toBeVisible();

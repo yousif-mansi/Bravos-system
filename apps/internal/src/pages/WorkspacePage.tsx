@@ -221,7 +221,8 @@ export function WorkspacePage({
     setLowStockCount(null);
     setBackupHint(null);
     setSummaryStatus({});
-    if (!online || workspace.staff.role !== "manager") return;
+    const branchId = workspace.activeBranch?.id;
+    if (!online || workspace.staff.role !== "manager" || !branchId) return;
     let cancelled = false;
     const epoch = accountGeneration();
     const staffId = workspace.staff.id;
@@ -233,7 +234,7 @@ export function WorkspacePage({
     void (async () => {
       if (workspace.staff.role === "manager") {
         try {
-          const report = await getManagementReport({ period: "today", detailPage: 1, detailPageSize: 1 });
+          const report = await getManagementReport({ period: "today", branchId, detailPage: 1, detailPageSize: 1 });
           if (!stillCurrent()) return;
           setTodaySales(formatEgpFromPiasters(report.summary.netFinalSalesPiasters));
           setTodayCount(report.summary.completedCount);
@@ -280,7 +281,7 @@ export function WorkspacePage({
     return () => {
       cancelled = true;
     };
-  }, [workspace.staff.id, workspace.staff.role, online, summaryRetry]);
+  }, [workspace.staff.id, workspace.staff.role, workspace.activeBranch?.id, online, summaryRetry]);
 
   function summaryDetail(key: string, readyLabel: string) {
     if (!online) return "غير متاح بدون اتصال";
@@ -492,7 +493,7 @@ export function WorkspacePage({
         } catch (caught) {
           const retryable = caught instanceof ApiError && caught.status === 409 && caught.messageAr === stalePreview && Date.now() < deadline;
           if (!retryable || !stillCurrent()) {
-            if (stillCurrent()) setSyncError(caught instanceof ApiError ? caught.messageAr : "تعذر تأكيد توقف نقطة البيع للاستعادة.");
+            if (stillCurrent()) setSyncError(caught instanceof ApiError ? caught.messageAr : "تعذر تأكيد توقف جهاز الكاشير للاستعادة.");
             return;
           }
           const pause = await getRestorePause();
@@ -512,7 +513,7 @@ export function WorkspacePage({
         setRestorePauseAcknowledged(true);
       }
     } catch (caught) {
-      if (stillCurrent()) setSyncError(caught instanceof ApiError ? caught.messageAr : "تعذر تأكيد توقف نقطة البيع للاستعادة.");
+      if (stillCurrent()) setSyncError(caught instanceof ApiError ? caught.messageAr : "تعذر تأكيد توقف جهاز الكاشير للاستعادة.");
     } finally {
       syncingRef.current = false;
       if (stillCurrent()) setSyncing(false);
@@ -592,7 +593,7 @@ export function WorkspacePage({
       });
       if (stillCurrent()) setPauseAcknowledged(true);
     } catch (caught) {
-      if (stillCurrent()) setSyncError(caught instanceof ApiError ? caught.messageAr : "تعذر تأكيد توقف نقطة البيع.");
+      if (stillCurrent()) setSyncError(caught instanceof ApiError ? caught.messageAr : "تعذر تأكيد توقف جهاز الكاشير.");
     } finally {
       if (stillCurrent()) setSyncing(false);
     }
@@ -619,7 +620,7 @@ export function WorkspacePage({
           <p className="page-subtitle">{workspace.staff.role === "manager" ? "ملخص كل الفروع والمتجر" : "مساحة العمل"}</p>
         </div>
         {workspace.capabilities.cashier ? (
-          <Link className="dashboard-primary" to="/lookup" aria-label="نقطة البيع البحث عن منتج">بيع جديد</Link>
+          <Link className="dashboard-primary" to="/lookup" aria-label="الكاشير البحث عن منتج">بيع جديد</Link>
         ) : null}
       </header>
 
@@ -629,7 +630,7 @@ export function WorkspacePage({
           <span className="dashboard-status-item" data-testid="offline-ready" role="status">جاهز للعمل دون اتصال</span>
         ) : null}
         {workspace.capabilities.cashier && !ready ? (
-          <span className="dashboard-status-item is-warning" data-testid="offline-not-ready">نقطة البيع بتتجهز</span>
+          <span className="dashboard-status-item is-warning" data-testid="offline-not-ready">الكاشير بيتجهز</span>
         ) : null}
         <PrinterConnectionPanel />
       </div>
@@ -697,10 +698,10 @@ export function WorkspacePage({
       ) : null}
 
       {workspace.staff.role === "manager" ? (
-        <section className="kpi-grid" aria-label="ملخص كل الفروع والمتجر">
+        <section className="kpi-grid" aria-label="ملخص الفرع والمتجر">
           <Link className="kpi-card dashboard-kpi-link" to="/reports">
             <strong>{todaySales ?? "—"}</strong>
-            <span>صافي مبيعات اليوم — كل الفروع والمتجر</span>
+            <span>صافي مبيعات اليوم — {workspace.activeBranch?.nameAr}</span>
             <small>{summaryDetail("sales", `${todayCount} عملية`)}</small>
           </Link>
           <Link className="kpi-card dashboard-kpi-link" to="/online-orders">

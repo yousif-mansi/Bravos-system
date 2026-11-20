@@ -214,6 +214,7 @@ test("a cheaper replacement applies only its merchandise value as credit and pay
     restorations: [],
   });
   expect((await batches(manager)).find((batch: { id: string }) => batch.id === originalBatch.lines[0].batchId).remainingQuantity).toBe(0);
+  expect((await api(manager, "POST", "/api/internal/active-branch", { branchId: fayoumId })).status).toBe(200);
   const replacementSale = await api(manager, "GET", `/api/internal/sales/${command.replacementSaleId}`);
   expect(replacementSale.body).toMatchObject({
     reference: "POS-1000000",
@@ -260,6 +261,7 @@ test("a cheaper replacement applies only its merchandise value as credit and pay
   expect(await listAppliedMigrations(built.pool)).toEqual(appliedBeforeDowngrade);
   const retainedAfterGuard = await api(manager, "GET", `/api/internal/returns/${drafted.body.id}`);
   expect(retainedAfterGuard.body.exchange).toEqual(paid.body.exchange);
+  expect((await api(manager, "POST", "/api/internal/active-branch", { branchId: abshwayId })).status).toBe(200);
   await receive(manager, originalVariant, 1, 10000);
   const nextSale = await sale(manager, {
     occurredAt: "2026-09-15T12:00:00.000Z",
@@ -809,6 +811,12 @@ test("manager picks an unattributed-phone sale, drafts cross-branch, restores th
   });
   expect(secondPaymentIdentity.status).toBe(409);
   expect(await batches(manager)).toEqual(afterPost);
+
+  expect((await api(manager, "GET", `/api/internal/returns/${returnId}`)).status).toBe(404);
+  expect((await api(manager, "GET", "/api/internal/returns")).body.items).toEqual([]);
+  expect((await api(manager, "POST", "/api/internal/active-branch", { branchId: fayoumId })).status).toBe(200);
+  expect((await api(manager, "GET", `/api/internal/returns/${returnId}`)).body.id).toBe(returnId);
+  expect((await api(manager, "GET", "/api/internal/returns")).body.items).toMatchObject([{ id: returnId }]);
 });
 
 test("the receipt-plus-14 Cairo-day cutoff is inclusive before and at the instant and rejects immediately after", async () => {
@@ -1055,6 +1063,7 @@ test("an exchange and later replacement return retain the corrected cost of thei
     allocations: [expect.objectContaining(retainedBatchCost)],
   });
   const replacementId = quote.body.settlement.replacementSaleId;
+  expect((await api(manager, "POST", "/api/internal/active-branch", { branchId: fayoumId })).status).toBe(200);
   const replacement = await api(manager, "GET", `/api/internal/sales/${replacementId}`);
   expect(replacement.body).toMatchObject({
     finalTotalPiasters: 32000, exchangeCreditAppliedPiasters: 28000, cashReceivedPiasters: 4000,
@@ -1154,6 +1163,7 @@ test("optional return reasons preserve legacy create replays and distinguish omi
   });
   expect(posted.status).toBe(201);
   expect(posted.body.reason).toBe(maximumReason);
+  expect((await api(manager, "POST", "/api/internal/active-branch", { branchId: fayoumId })).status).toBe(200);
   const detail = await api(manager, "GET", `/api/internal/returns/${command.returnId}`);
   expect(detail.body.reason).toBe(maximumReason);
   const history = await api(manager, "GET", "/api/internal/returns");

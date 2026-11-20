@@ -59,7 +59,7 @@ export function createPostgresCustomerDirectory(queryable: Queryable): CustomerD
       );
       return result.rows.map(toCustomer);
     },
-    async listPhysicalPurchases(customer, from, to) {
+    async listPhysicalPurchases(customer, from, to, branchId) {
       const result = await queryable.query<{
         id: string;
         reference: string;
@@ -76,7 +76,7 @@ export function createPostgresCustomerDirectory(queryable: Queryable): CustomerD
                 line.line_index
          FROM sales_sale s
          JOIN sales_sale_line line ON line.sale_id = s.id
-         WHERE s.physically_completed = true
+         WHERE s.physically_completed = true AND s.branch_id = $6
            AND (s.occurred_at AT TIME ZONE 'Africa/Cairo') >= $4::date
            AND (s.occurred_at AT TIME ZONE 'Africa/Cairo') < $5::date
            AND (
@@ -97,7 +97,7 @@ export function createPostgresCustomerDirectory(queryable: Queryable): CustomerD
              )
            )
          ORDER BY s.occurred_at DESC, s.id DESC, line.line_index`,
-        [customer.id, customer.normalizedPhone, customer.displayName, from, to],
+        [customer.id, customer.normalizedPhone, customer.displayName, from, to, branchId],
       );
       const purchases = new Map<string, PhysicalPaidPurchase>();
       for (const row of result.rows) {

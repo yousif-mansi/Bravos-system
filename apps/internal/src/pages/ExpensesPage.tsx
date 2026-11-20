@@ -244,7 +244,7 @@ export default function ExpensesPage({
           </div>
         </form>
 
-        <section className="card"><h2>{manager ? "كل المصروفات" : "مصروفاتي في الفرع"}</h2>
+        <section className="card"><h2>{manager ? "مصروفات الفرع" : "مصروفاتي في الفرع"}</h2>
           {!loading && !loadFailed && expenses.length === 0 ? (
             <EmptyState title="لسه مفيش مصروفات" message="سجّل أول مصروف من النموذج جنب القائمة." />
           ) : (

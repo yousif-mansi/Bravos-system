@@ -65,6 +65,14 @@ export function createReturnServices(ports: Omit<ReturnServiceDependencies, "clo
     return staff;
   }
 
+  async function requireHistoryBranch(auth: VerifiedAuth | null) {
+    if (!auth) throw new UnauthenticatedError();
+    const manager = await requireManager(auth);
+    const branchId = await ports.actors.getSessionBranch(auth.sessionId);
+    if (!branchId || !canUseBranch(manager, branchId)) throw new ForbiddenError();
+    return branchId;
+  }
+
   async function onlineSourceRecord(
     delivered: DeliveredOnlineOrderSource,
     allocations: ProtectedOrderAllocationProvenance[],
@@ -887,9 +895,9 @@ export function createReturnServices(ports: Omit<ReturnServiceDependencies, "clo
     },
 
     async list(auth, input) {
-      await requireManager(auth);
+      const branchId = await requireHistoryBranch(auth);
       const page = parseReturnList(input);
-      const result = await ports.returns.listPage(page);
+      const result = await ports.returns.listPage({ ...page, branchId });
       const identities = await ports.variants.getVariants([...new Set(result.items.flatMap((row) => row.lines.map((line) => line.variantId)))]);
       const variantsById = new Map(identities.map((variant) => [variant.id, variant]));
       return {
@@ -928,9 +936,9 @@ export function createReturnServices(ports: Omit<ReturnServiceDependencies, "clo
     },
 
     async get(auth, id) {
-      await requireManager(auth);
+      const branchId = await requireHistoryBranch(auth);
       const record = await ports.returns.getById(assertUuid(id, "الإرجاع غير موجود."));
-      if (!record) throw new NotFoundError("الإرجاع غير موجود.");
+      if (!record || record.handlingBranchId !== branchId) throw new NotFoundError("الإرجاع غير موجود.");
       return hydrate(record);
     },
   };

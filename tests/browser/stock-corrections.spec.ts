@@ -309,7 +309,7 @@ test("failed stock reads stay explicit and a list retry shows same-sale variant 
     await expect(large.getByTestId("reconciliation-identity")).toContainText(`الفرع: ${other!.nameAr}`);
     await expect(medium).toContainText("المباع: 2");
     await expect(large).toContainText("المباع: 1");
-    await expect(unknown.getByTestId("reconciliation-identity")).toContainText(`تعذر مطابقة الصنف ${lateVariantUnknown} مع قائمة نقطة البيع المحملة.`);
+    await expect(unknown.getByTestId("reconciliation-identity")).toContainText(`تعذر مطابقة الصنف ${lateVariantUnknown} مع قائمة الأصناف المحمّلة على الكاشير.`);
     await expect(unknown.getByTestId("reconciliation-identity")).toContainText("تعذر مطابقة الفرع مع الفروع المتاحة.");
     await expect(unknown.getByTestId("reconciliation-identity")).not.toContainText("SKU-LATE");
     expect(await medium.locator("details").textContent()).toContain(lateSaleId);

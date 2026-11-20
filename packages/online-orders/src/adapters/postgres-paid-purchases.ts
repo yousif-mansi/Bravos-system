@@ -10,7 +10,7 @@ export type PaidOnlinePurchase = {
 };
 
 export type PaidOnlinePurchaseReader = {
-  listDeliveredPurchases(normalizedPhone: string, from: string, to: string): Promise<PaidOnlinePurchase[]>;
+  listDeliveredPurchases(normalizedPhone: string, from: string, to: string, branchId: string): Promise<PaidOnlinePurchase[]>;
 };
 
 const PHONE_FOLD = `regexp_replace(translate(COALESCE(order_row.primary_phone, ''), '٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹', '01234567890123456789'), '[^0-9]', '', 'g')`;
@@ -25,7 +25,7 @@ type StoredLine = {
 
 export function createPostgresPaidOnlinePurchaseReader(queryable: Queryable): PaidOnlinePurchaseReader {
   return {
-    async listDeliveredPurchases(normalizedPhone, from, to) {
+    async listDeliveredPurchases(normalizedPhone, from, to, branchId) {
       const result = await queryable.query<{
         id: string;
         reference: string;
@@ -59,7 +59,7 @@ export function createPostgresPaidOnlinePurchaseReader(queryable: Queryable): Pa
            LIMIT 1
          ) event ON true
          LEFT JOIN online_order_line line ON line.order_id = order_row.id
-         WHERE order_row.status = 'delivered'
+         WHERE order_row.status = 'delivered' AND confirmation.fulfillment_branch_id = $4
            AND (event.occurred_at AT TIME ZONE 'Africa/Cairo') >= $2::date
            AND (event.occurred_at AT TIME ZONE 'Africa/Cairo') < $3::date
            AND (
@@ -71,7 +71,7 @@ export function createPostgresPaidOnlinePurchaseReader(queryable: Queryable): Pa
            ) = $1
          GROUP BY order_row.id, order_row.reference, event.occurred_at, confirmation.confirmed_quote_json
          ORDER BY event.occurred_at DESC, order_row.id DESC`,
-        [normalizedPhone, from, to],
+        [normalizedPhone, from, to, branchId],
       );
       return result.rows.map((row) => ({
         sourceId: row.id,

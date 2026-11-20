@@ -16,6 +16,7 @@ import {
   isManager,
   NotFoundError,
   UnauthenticatedError,
+  canUseBranch,
   capabilitiesFor,
 } from "@bravos/identity";
 import {
@@ -314,6 +315,12 @@ export function createSalesServices(ports: {
       .filter((grant) => grant.cashier || grant.orderRepresentative)
       .map((grant) => grant.branchId);
     return record.soldByStaffId === staff.id && authorized.includes(record.branchId);
+  }
+
+  async function readBranch(auth: VerifiedAuth | null, staff: Awaited<ReturnType<typeof requireStaff>>) {
+    const branchId = auth && await ports.actors.getSessionBranch(auth.sessionId);
+    if (!branchId || !canUseBranch(staff, branchId)) throw new ForbiddenError();
+    return branchId;
   }
 
   function canCashierOn(staff: Awaited<ReturnType<typeof requireStaff>>, branchId: string): boolean {
@@ -1249,20 +1256,21 @@ export function createSalesServices(ports: {
 
     async list(auth: VerifiedAuth | null): Promise<Array<SaleDto | ManagerSaleDto>> {
       const staff = await requireStaff(auth);
+      const branchId = await readBranch(auth, staff);
       const rows = isManager(staff)
-        ? await ports.sales.listCompleted()
-        : await ports.sales.listCompletedForStaff(
-            staff.id,
-            staff.grants.filter((grant) => grant.cashier || grant.orderRepresentative).map((grant) => grant.branchId),
-          );
+        ? await ports.sales.listCompleted(branchId)
+        : staff.grants.some((grant) => grant.branchId === branchId && (grant.cashier || grant.orderRepresentative))
+          ? await ports.sales.listCompletedForStaff(staff.id, [branchId])
+          : [];
       return Promise.all(rows.map((row) => hydrate(row, isManager(staff))));
     },
 
     async get(auth: VerifiedAuth | null, id: string): Promise<SaleDto | ManagerSaleDto> {
       const staff = await requireStaff(auth);
+      const branchId = await readBranch(auth, staff);
       const saleId = assertUuid(id, "البيع غير موجود.");
       const record = await ports.sales.getById(saleId);
-      if (!record?.physicallyCompleted) {
+      if (!record?.physicallyCompleted || record.branchId !== branchId) {
         throw new NotFoundError("البيع غير موجود.");
       }
       if (!canRead(staff, record)) {
@@ -1358,7 +1366,8 @@ export function createSalesServices(ports: {
       customerId: string,
       periodInput: unknown,
     ): Promise<CustomerHistoryDto> {
-      await requireManager(auth);
+      if (!auth) throw new UnauthenticatedError();
+      const branchId = await readBranch(auth, await requireManager(auth));
       const id = assertUuid(customerId, "العميل غير موجود.");
       const period = periodInput === undefined || periodInput === null || periodInput === ""
         ? "year"
@@ -1370,8 +1379,8 @@ export function createSalesServices(ports: {
       if (!customer) throw new NotFoundError("العميل غير موجود.");
       const bounds = cairoPeriod(ports.clock?.now() ?? new Date(), period);
       const [physical, online] = await Promise.all([
-        ports.customers.listPhysicalPurchases(customer, bounds.from, bounds.to),
-        ports.paidOnline.listDeliveredPurchases(customer.normalizedPhone, bounds.from, bounds.to),
+        ports.customers.listPhysicalPurchases(customer, bounds.from, bounds.to, branchId),
+        ports.paidOnline.listDeliveredPurchases(customer.normalizedPhone, bounds.from, bounds.to, branchId),
       ]);
       const variantIds = [...new Set(physical.flatMap((purchase) => purchase.lines.map((line) => line.variantId)))];
       const listed = variantIds.length === 0 ? [] : await ports.prices.getListedPrices(variantIds);

@@ -233,7 +233,7 @@ export type OnlineOrderReportingReader = {
   }): Promise<Array<{ eventId: string; operationId: string; orderId: string; occurredAt: Date;
     fulfillmentBranchId: string | null }>>;
   getFulfillmentBranchesByOrderIds(orderIds: string[]): Promise<Map<string, string>>;
-  currentStatusCounts(): Promise<{
+  currentStatusCounts(branchId?: string | null): Promise<{
     pendingCount: number;
     confirmedCount: number;
     shippedCount: number;
@@ -252,8 +252,8 @@ export type OnlineOrderStore = DeliveredOnlineOrderSourceReader & {
   getQuote(id: string, lock?: boolean): Promise<StoredQuote | null>;
   getSubmissionByOperation(operationId: string): Promise<{ payloadFingerprint: string; result: PublicOrderSubmissionDto } | null>;
   insertOrder(input: AcceptedOrderWrite): Promise<PublicOrderSubmissionDto>;
-  listOrders(): Promise<OnlineOrderDto[]>;
-  listCompletedOrders(): Promise<CompletedOnlineOrderDto[]>;
+  listOrders(branchId?: string | null): Promise<OnlineOrderDto[]>;
+  listCompletedOrders(branchId?: string | null): Promise<CompletedOnlineOrderDto[]>;
   getOrder(id: string, lock?: boolean): Promise<OnlineOrderDto | null>;
   insertAgreementQuote(input: AgreementQuoteWrite): Promise<void>;
   getAgreementQuote(id: string, lock?: boolean): Promise<StoredAgreementQuote | null>;

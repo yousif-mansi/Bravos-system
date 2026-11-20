@@ -37,9 +37,11 @@ export async function printCompletedBranchReceipt(
 export function SaleSummary({
   sale,
   printDisabled = false,
+  tableSaleNumber,
 }: {
   sale: SaleDto;
   printDisabled?: boolean;
+  tableSaleNumber?: string;
 }) {
   const [printError, setPrintError] = useState("");
   const [printStatus, setPrintStatus] = useState("");
@@ -56,6 +58,7 @@ export function SaleSummary({
     blockedIds: [sale.id, sale.operationId],
   });
   const saleNumber = acknowledgedPosReference(sale.reference);
+  const standalone = tableSaleNumber === undefined;
 
   useEffect(() => {
     mountedRef.current = true;
@@ -98,16 +101,20 @@ export function SaleSummary({
 
   return (
     <section className="card sale-summary" data-testid="sale-details">
-      <h2>تفاصيل البيع</h2>
-      <p>رقم الإيصال: {receiptNumber}</p>
-      {saleNumber && saleNumber !== receiptNumber ? <p>رقم البيع: {saleNumber}</p> : null}
+      {standalone ? <h2>تفاصيل البيع</h2> : null}
+      {receiptNumber !== tableSaleNumber ? <p>رقم الإيصال: {receiptNumber}</p> : null}
+      {standalone && saleNumber && saleNumber !== receiptNumber ? <p>رقم البيع: {saleNumber}</p> : null}
       {sale.receiptNumberingConflict ? <p data-testid="receipt-number-conflict">{RECEIPT_NUMBER_CONFLICT}</p> : null}
-      <p>الموظف: {sale.soldByDisplayName}</p>
-      <p>الفرع: {sale.branch.nameAr}</p>
-      <p>وقت الحدوث: {formatTime(sale.occurredAt)}</p>
-      <p>وقت التسجيل: {sale.recordedAt ? formatTime(sale.recordedAt) : "غير مسجّل بعد"}</p>
-      {sale.customerName ? <p>الزبون: {sale.customerName}</p> : <p className="muted">بدون اسم زبون</p>}
-      <p>الأصلي: {formatEgpFromPiasters(sale.originalTotalPiasters)}</p>
+      {standalone ? (
+        <>
+          <p>الموظف: {sale.soldByDisplayName}</p>
+          <p>الفرع: {sale.branch.nameAr}</p>
+          <p>وقت الحدوث: {formatTime(sale.occurredAt)}</p>
+          <p>وقت التسجيل: {sale.recordedAt ? formatTime(sale.recordedAt) : "غير مسجّل بعد"}</p>
+          {sale.customerName ? <p>الزبون: {sale.customerName}</p> : <p className="muted">بدون اسم زبون</p>}
+        </>
+      ) : null}
+      {standalone || sale.originalTotalPiasters !== sale.finalTotalPiasters ? <p>الأصلي: {formatEgpFromPiasters(sale.originalTotalPiasters)}</p> : null}
       {sale.appliedAutomaticOffer ? (
         <p data-testid="sale-automatic-offer">
           العرض التلقائي: {sale.appliedAutomaticOffer.nameAr} — {formatEgpFromPiasters(sale.automaticOfferDiscountPiasters)}
@@ -118,9 +125,13 @@ export function SaleSummary({
           الكوبون: {sale.appliedCoupon.code} — {formatEgpFromPiasters(sale.couponDiscountPiasters)}
         </p>
       ) : null}
-      <p>خصم الموظف: {formatEgpFromPiasters(sale.employeeDiscountPiasters)}</p>
-      <p>الإجمالي: {formatEgpFromPiasters(sale.finalTotalPiasters)}</p>
-      <p>طريقة الدفع: {sale.payment.method === "cash" ? "نقداً" : sale.payment.method === "online" ? "إلكترونياً" : "مقسّم"}</p>
+      {standalone || sale.employeeDiscountPiasters > 0 ? <p>خصم الموظف: {formatEgpFromPiasters(sale.employeeDiscountPiasters)}</p> : null}
+      {standalone ? (
+        <>
+          <p>الإجمالي: {formatEgpFromPiasters(sale.finalTotalPiasters)}</p>
+          <p>طريقة الدفع: {sale.payment.method === "cash" ? "نقداً" : sale.payment.method === "online" ? "إلكترونياً" : "مقسّم"}</p>
+        </>
+      ) : null}
       {sale.payment.method === "split" ? <p>نقداً: {formatEgpFromPiasters(sale.payment.cashPiasters)} · إلكترونياً: {formatEgpFromPiasters(sale.payment.onlinePiasters)}</p> : null}
       {sale.exchangeCreditAppliedPiasters > 0 ? (
         <p data-testid="sale-exchange-settlement">

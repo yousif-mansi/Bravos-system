@@ -506,8 +506,8 @@ export function App() {
         <Route
           path="/customers"
           element={
-            workspace?.staff.role === "manager" ? (
-              guarded(<CustomersPage workspace={workspace} onChanged={replaceWorkspace} />)
+            workspace?.activeBranch && workspace.staff.role === "manager" ? (
+              guarded(<CustomersPage key={workspace.activeBranch.id} workspace={workspace} onChanged={replaceWorkspace} />)
             ) : (
               <Navigate to={workspace ? "/workspace" : "/login"} replace />
             )
@@ -527,7 +527,7 @@ export function App() {
           path="/sales"
           element={
             workspace?.activeBranch ? (
-              guarded(<SalesPage workspace={workspace} onChanged={replaceWorkspace} />)
+              guarded(<SalesPage key={workspace.activeBranch.id} workspace={workspace} onChanged={replaceWorkspace} />)
             ) : (
               <Navigate to={workspace ? "/select-branch" : "/login"} replace />
             )
@@ -537,7 +537,7 @@ export function App() {
           path="/expenses"
           element={
             workspace?.activeBranch ? (
-              guarded(<ExpensesPage workspace={workspace} onChanged={replaceWorkspace} />)
+              guarded(<ExpensesPage key={workspace.activeBranch.id} workspace={workspace} onChanged={replaceWorkspace} />)
             ) : (
               <Navigate to={workspace ? "/select-branch" : "/login"} replace />
             )
@@ -547,7 +547,7 @@ export function App() {
           path="/returns"
           element={
             workspace?.activeBranch && workspace.staff.role === "manager" && workspace.capabilities.manageInventory ? (
-              guarded(<ReturnsPage workspace={workspace} onChanged={replaceWorkspace} />)
+              guarded(<ReturnsPage key={workspace.activeBranch.id} workspace={workspace} onChanged={replaceWorkspace} />)
             ) : (
               <Navigate to={workspace?.activeBranch ? "/workspace" : workspace ? "/select-branch" : "/login"} replace />
             )
@@ -557,7 +557,7 @@ export function App() {
           path="/corrections"
           element={
             workspace?.activeBranch && workspace.staff.role === "manager" && workspace.capabilities.manageInventory ? (
-              guarded(<CorrectionsPage workspace={workspace} onChanged={replaceWorkspace} />)
+              guarded(<CorrectionsPage key={workspace.activeBranch.id} workspace={workspace} onChanged={replaceWorkspace} />)
             ) : (
               <Navigate to={workspace?.activeBranch ? "/workspace" : workspace ? "/select-branch" : "/login"} replace />
             )
@@ -577,7 +577,7 @@ export function App() {
           path="/online-orders/:orderId?"
           element={
             workspace && (workspace.staff.role === "manager" || workspace.capabilities.orderRepresentative) ? (
-              guarded(<OnlineOrdersPage key={workspace.staff.id} workspace={workspace} />)
+              guarded(<OnlineOrdersPage key={`${workspace.staff.id}:${workspace.activeBranch?.id ?? ""}`} workspace={workspace} />)
             ) : (
               <Navigate to={workspace?.activeBranch ? "/workspace" : workspace ? "/select-branch" : "/login"} replace />
             )
@@ -608,8 +608,8 @@ export function App() {
         <Route
           path="/reports"
           element={
-            workspace?.staff.role === "manager" ? (
-              guarded(<ReportsPage key={workspace.staff.id} workspace={workspace} />)
+            workspace?.activeBranch && workspace.staff.role === "manager" ? (
+              guarded(<ReportsPage key={workspace.activeBranch.id} workspace={workspace} />)
             ) : (
               <Navigate to={workspace?.activeBranch ? "/workspace" : workspace ? "/select-branch" : "/login"} replace />
             )

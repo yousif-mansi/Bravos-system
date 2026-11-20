@@ -5,6 +5,7 @@ export type { VerifiedAuth };
 
 export type CorrectionsActorPort = {
   getStaff(staffId: string): Promise<AuthenticatedStaff | null>;
+  getSessionBranch(sessionId: string): Promise<string | null>;
 };
 
 export type CashFactWrite = { direction: "paid_out" | "recovered"; amountPiasters: number } | null;
@@ -28,6 +29,7 @@ export type SaleCorrectionWrite = {
   correctionId: string;
   operationId: string;
   saleId: string;
+  branchId: string;
   expectedRevision: number;
   type: "correction" | "cancellation";
   reason: string;
@@ -50,9 +52,9 @@ export type ChangeResult<T> =
   | { kind: "stale" };
 
 export type CorrectionsRepository = {
-  getSale(saleId: string, revision?: number): Promise<SaleCorrectionDetailDto | null>;
+  getSale(saleId: string, branchId: string): Promise<SaleCorrectionDetailDto | null>;
   changeSale(input: SaleCorrectionWrite): Promise<ChangeResult<SaleCorrectionDetailDto>>;
-  getReturn(returnId: string, revision?: number): Promise<ReturnCorrectionDetailDto | null>;
+  getReturn(returnId: string, branchId: string): Promise<ReturnCorrectionDetailDto | null>;
   changeReturn(input: ReturnCorrectionWrite): Promise<ChangeResult<ReturnCorrectionDetailDto>>;
 };
 

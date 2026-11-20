@@ -5,7 +5,7 @@ import type {
   ReportRefundDto, VariantIdentityDto,
 } from "@bravos/contracts";
 import type { ReturnCorrectionReportingFact, SaleCorrectionReportingFact } from "@bravos/corrections";
-import { ForbiddenError, UnauthenticatedError, isManager } from "@bravos/identity";
+import { ForbiddenError, UnauthenticatedError, canUseBranch, isManager } from "@bravos/identity";
 import type { BatchRecord, ProtectedOrderAllocationProvenance, ReportingAllocationRecord } from "@bravos/inventory";
 import type { ReturnReportingFact, ReturnReportingHeader } from "@bravos/returns";
 import type { SaleRecord } from "@bravos/sales";
@@ -43,10 +43,14 @@ export function createReportingServices(input: {
 }): ReportingServices {
   const now = input.clock?.now ?? (() => new Date());
   const execute = async (auth: VerifiedAuth | null, rawQuery: unknown, page: DetailPage) => {
-    await requireManager(input.actors, auth);
+    const branchId = await reportBranch(input.actors, auth);
     const query = object(rawQuery);
     const period = parseReportingPeriod(query, now(), page.exportMode);
     const filters = parseFilters(query);
+    if (branchId) {
+      if (filters.branchId && filters.branchId !== branchId) throw new ForbiddenError();
+      filters.branchId = branchId;
+    }
     const [branches, staff] = await Promise.all([input.actors.listBranches(), input.actors.listStaff()]);
     assertFilterReferences(filters, branches, staff.map((item) => item.id));
     return input.uow.run((context) => buildReport(context, branches, staff, period, filters, page));
@@ -146,7 +150,7 @@ async function buildReport(
     }
   }
   const [inventory, lowStock, orderStatusCounts] = await Promise.all([
-    inventorySnapshot(context), lowStockSnapshot(context, filters.branchId), context.orders.currentStatusCounts(),
+    inventorySnapshot(context), lowStockSnapshot(context, filters.branchId), context.orders.currentStatusCounts(filters.branchId),
   ]);
   const total = state.total;
   const knownNetCost = checkedSubtract(total.knownCost, total.restoredCost);
@@ -823,11 +827,14 @@ function retainedDetailBudget(limitBytes: number) {
   } };
 }
 
-async function requireManager(actors: ReportingActorPort, auth: VerifiedAuth | null) {
+async function reportBranch(actors: ReportingActorPort, auth: VerifiedAuth | null) {
   if (!auth) throw new UnauthenticatedError();
   const actor = await actors.getStaff(auth.staffId);
   if (!actor || actor.disabled) throw new UnauthenticatedError();
   if (!isManager(actor)) throw new ForbiddenError();
+  const branchId = await actors.getSessionBranch(auth.sessionId);
+  if (branchId && !canUseBranch(actor, branchId)) throw new ForbiddenError();
+  return branchId;
 }
 
 function object(value: unknown): Record<string, unknown> {

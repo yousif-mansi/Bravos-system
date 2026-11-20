@@ -685,8 +685,9 @@ test("schema 2 individual paid units and signed-in session survive upgrade and o
     ]);
     expect(restored.effects[0]?.quantity).toBe(1);
     await again.reload();
-    await again.getByTestId("sale-list").getByRole("row").filter({ has: again.getByRole("cell", { name: customerName, exact: true }) }).getByRole("button", { name: "فتح التفاصيل" }).click();
-    await expect(again.getByTestId("sale-details")).toContainText("كاشير تجريبي");
+    const saleRow = again.getByTestId("sale-list").getByRole("row").filter({ has: again.getByRole("cell", { name: customerName, exact: true }) });
+    await expect(saleRow).toContainText("كاشير تجريبي");
+    await saleRow.getByRole("button", { name: "فتح التفاصيل" }).click();
     await expect(again.getByTestId("sale-details")).toContainText("199");
     await expect(again.getByTestId("sale-list")).toContainText("غير مزامن");
   } finally {
@@ -890,7 +891,7 @@ test("schema 2 completed sales missing paid-unit allocations defer upgrade and k
     await again.getByRole("link", { name: "العودة لمساحة العمل" }).click();
     await restarted.setOffline(false);
     await again.getByTestId("retry-sync").click();
-    await expect(again.getByTestId("sync-error")).toContainText("تحديث نقطة البيع مؤجل");
+    await expect(again.getByTestId("sync-error")).toContainText("تحديث الكاشير مؤجل");
     await expect(again.getByTestId("unsynced-count")).toContainText("مبيعات غير مزامنة: 1");
     expect(blockedUploadAttempts).toBe(0);
 
@@ -902,7 +903,7 @@ test("schema 2 completed sales missing paid-unit allocations defer upgrade and k
     await expect(again).toHaveURL(`${PREVIEW_ORIGIN}/workspace`);
     await expect(again.getByTestId("foreign-queue")).toContainText("مبيعات محفوظة لحساب تاني: 1");
     await again.getByTestId("recover-queue").click();
-    await expect(again.getByTestId("sync-error")).toContainText("تحديث نقطة البيع مؤجل");
+    await expect(again.getByTestId("sync-error")).toContainText("تحديث الكاشير مؤجل");
     expect(blockedUploadAttempts).toBe(0);
   } finally {
     if (context) {

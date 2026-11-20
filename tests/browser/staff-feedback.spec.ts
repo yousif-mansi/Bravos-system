@@ -1,6 +1,93 @@
 import { expect, test, type Page } from "@playwright/test";
 import type { SaleDto, WorkspaceDto } from "@bravos/contracts";
 
+test("sales sort before pagination and the details show transaction extras", async ({ page }) => {
+  await signIn(page);
+  const workspace = await (await page.request.get("http://127.0.0.1:5174/api/internal/workspace")).json() as WorkspaceDto;
+  const rows = Array.from({ length: 23 }, (_, index) => {
+    const suffix = String(index + 1).padStart(6, "0");
+    return {
+      ...feedbackSale(workspace, suffix),
+      reference: `POS-${suffix}`,
+      receiptReference: `BRV-001-${suffix}`,
+      occurredAt: new Date(Date.UTC(2026, 8, index + 1)).toISOString(),
+      recordedAt: new Date(Date.UTC(2026, 9, 24 - index)).toISOString(),
+      originalTotalPiasters: 35000,
+      employeeDiscountPiasters: 5000,
+      discountReason: "خصم اختبار",
+    };
+  });
+  const newest = rows[22]!;
+  const otherBranch = workspace.authorizedBranches.find((branch) => branch.id !== workspace.activeBranch?.id)!;
+  const foreignSale = { ...rows[22], id: "foreign-sale", reference: "POS-999999", branch: otherBranch };
+  let responseRows = [...rows, foreignSale];
+  await page.route("**/api/internal/sales", (route) => route.fulfill({ json: responseRows }));
+  await page.route(`**/api/internal/sales/${newest.id}`, (route) =>
+    route.fulfill({ json: { ...newest, allocations: [], costsIncomplete: false } }));
+  const orders = ["02", "03", "01"].map((day) => ({
+    id: `order-${day}`,
+    reference: `ONLINE-${day}`,
+    customerName: "عميل أونلاين",
+    primaryPhone: "01000000000",
+    confirmedAt: `2026-09-${day}T11:00:00Z`,
+    status: "confirmed",
+    fulfillmentBranchId: workspace.activeBranch!.id,
+  }));
+  await page.route("**/api/internal/online-orders", (route) => route.fulfill({
+    json: [...orders, { ...orders[1], id: "foreign-order", reference: "ONLINE-OTHER", fulfillmentBranchId: otherBranch.id }],
+  }));
+
+  await page.getByRole("link", { name: "المبيعات", exact: true }).click();
+  const list = page.getByTestId("sale-list");
+  const numbers = list.locator("tbody td:first-child");
+  const expected = rows.map((row) => row.reference).reverse();
+  await expect(numbers).toHaveText(expected.slice(0, 20));
+  await list.getByRole("row").filter({ hasText: newest.reference }).getByRole("button", { name: "فتح التفاصيل" }).click();
+  const details = page.getByTestId("sale-details");
+  await expect(details).toContainText(newest.receiptReference);
+  await expect(details).toContainText(newest.discountReason);
+  await expect(details).toContainText("350");
+  await expect(details.locator(":scope > p").filter({
+    hasText: /^(?:وقت الحدوث:|وقت التسجيل:|الفرع:|الموظف:|الزبون:|طريقة الدفع:|الإجمالي:|مزامن|غير مزامن|رقم البيع:)/,
+  })).toHaveCount(0);
+  await expect(details).not.toContainText(newest.customerName!);
+  await expect(details.getByTestId("reprint-receipt")).toBeEnabled();
+  await expect(page.getByRole("link", { name: "تصحيح تسجيل هذا البيع" })).toBeVisible();
+  await expect(page.getByTestId("sale-costs")).toBeVisible();
+
+  await page.getByRole("button", { name: "التالي", exact: true }).click();
+  await expect(numbers).toHaveText(expected.slice(20));
+  responseRows = [foreignSale, ...rows.slice(9), ...rows.slice(0, 9)];
+  await page.reload();
+  await expect(numbers).toHaveText(expected.slice(0, 20));
+
+  await page.getByRole("tab", { name: "الطلبات الإلكترونية" }).click();
+  await expect(page.getByTestId("confirmed-online-sales").locator("tbody td:first-child"))
+    .toHaveText(["ONLINE-03", "ONLINE-02", "ONLINE-01"]);
+});
+
+test("mouse wheel scrolls the Sales table and chains to the page at its edge", async ({ page }) => {
+  await page.setViewportSize({ width: 1200, height: 420 });
+  await signIn(page);
+  const workspace = await (await page.request.get("http://127.0.0.1:5174/api/internal/workspace")).json() as WorkspaceDto;
+  const sales = Array.from({ length: 21 }, (_, index) => feedbackSale(workspace, String(index)));
+  await page.route("**/api/internal/sales", (route) => route.fulfill({ json: sales }));
+
+  await page.getByRole("link", { name: "المبيعات", exact: true }).click();
+  const table = page.getByTestId("sale-list").locator("..");
+  await expect(table.locator("tbody tr")).toHaveCount(20);
+  await table.hover({ position: { x: 45, y: 55 } });
+  await page.mouse.wheel(0, 125);
+  await expect.poll(() => table.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+
+  await page.mouse.move(0, 0);
+  await table.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+  await table.hover({ position: { x: 45, y: 55 } });
+  const pageTop = await page.evaluate(() => window.scrollY);
+  await page.mouse.wheel(0, 250);
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(pageTop);
+});
+
 test("same-account refresh during initial sales loading starts a fresh read and rejects stale rows", async ({ page }) => {
   await signIn(page);
   const workspace = await (await page.request.get("http://127.0.0.1:5174/api/internal/workspace")).json() as WorkspaceDto;

@@ -31,6 +31,7 @@ test("receiving, split sale and authorized sales view form one connected workflo
   const variantId = product.body.operationalVariantId as string;
 
   await page.getByRole("link", { name: "استلام المخزون" }).click();
+  await page.getByRole("tab", { name: "استلام بضاعة" }).click();
   const receive = page.getByRole("form", { name: "تسجيل إذن استلام" });
   await receive.getByLabel("تاريخ الاستلام").fill("2026-09-11");
   await receive.getByRole("button", { name: "إضافة منتج موجود" }).click();
@@ -184,9 +185,10 @@ test("receiving, split sale and authorized sales view form one connected workflo
   expect(savedSplitSale.reference).toMatch(/^POS-[0-9]+$/);
   await page.getByRole("link", { name: "المبيعات" }).click();
   await expect(page.getByRole("heading", { name: "المبيعات", exact: true })).toBeVisible();
-  await expect(page.getByTestId("sale-list")).toContainText("كاشير تجريبي");
-  await page.getByTestId("sale-list").getByRole("row").filter({ hasText: savedSplitSale.reference! }).getByRole("button", { name: "فتح التفاصيل" }).click();
-  await expect(page.getByTestId("sale-details")).toContainText("أبشواي");
+  const saleRow = page.getByTestId("sale-list").getByRole("row").filter({ hasText: savedSplitSale.reference! });
+  await expect(saleRow).toContainText("أبشواي · كاشير تجريبي");
+  await saleRow.getByRole("button", { name: "فتح التفاصيل" }).click();
+  await expect(page.getByTestId("sale-details")).toContainText("نقداً: 400 ج.م. · إلكترونياً: 450 ج.م.");
   await expect(page.getByTestId("sale-costs")).toHaveCount(0);
 
   await page.getByRole("button", { name: "تسجيل الخروج" }).click();
@@ -195,9 +197,8 @@ test("receiving, split sale and authorized sales view form one connected workflo
   await page.getByRole("button", { name: "دخول" }).click();
   await page.getByRole("button", { name: "أبشواي" }).click();
   await page.getByRole("link", { name: "المبيعات" }).click();
-  await expect(page.getByTestId("sale-list")).toContainText("كاشير تجريبي");
-  await page.getByTestId("sale-list").getByRole("row").filter({ hasText: savedSplitSale.reference! }).getByRole("button", { name: "فتح التفاصيل" }).click();
-  await expect(page.getByTestId("sale-details")).toContainText("أبشواي");
+  await expect(saleRow).toContainText("أبشواي · كاشير تجريبي");
+  await saleRow.getByRole("button", { name: "فتح التفاصيل" }).click();
   await expect(page.getByTestId("sale-costs")).toContainText("تكلفة الدفعات");
 
   const batches = await staffApi(page, "GET", "/api/internal/inventory/batches");

@@ -458,12 +458,14 @@ export function createPostgresReturnsStore(queryable: Queryable,
          LEFT JOIN online_order_confirmation online_confirmation ON online_confirmation.order_id = online_source.id
          LEFT JOIN branch original_branch ON original_branch.id = COALESCE(source_sale.branch_id, online_confirmation.fulfillment_branch_id)
          JOIN branch handling_branch ON handling_branch.id = r.handling_branch_id
-         WHERE ($2::uuid IS NULL OR (r.created_at, r.id) < (
-           SELECT cursor_return.created_at, cursor_return.id FROM returns_return cursor_return WHERE cursor_return.id = $2
-         ))
+         WHERE r.handling_branch_id = $3
+           AND ($2::uuid IS NULL OR (r.created_at, r.id) < (
+             SELECT cursor_return.created_at, cursor_return.id FROM returns_return cursor_return
+             WHERE cursor_return.id = $2 AND cursor_return.handling_branch_id = $3
+           ))
          ORDER BY r.created_at DESC, r.id DESC
          LIMIT $1`,
-        [input.limit + 1, input.cursor],
+        [input.limit + 1, input.cursor, input.branchId],
       );
       const hasMore = result.rows.length > input.limit;
       const visible = result.rows.slice(0, input.limit);

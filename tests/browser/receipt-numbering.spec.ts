@@ -277,7 +277,8 @@ test("connected and cached offline sales keep one receipt through reload, reprin
   await expect(page.getByTestId("sale-list")).toContainText(first!);
   await expect(page.getByTestId("sale-list")).not.toContainText("عملية محلية");
   await page.getByTestId("sale-list").getByRole("row").filter({ hasText: first! }).getByRole("button", { name: "فتح التفاصيل" }).click();
-  await expect(page.getByTestId("sale-details")).toContainText(`رقم الإيصال: ${first}`);
+  await expect(page.getByTestId("sale-detail-region").getByRole("heading", { name: `بيع ${first}`, exact: true })).toBeVisible();
+  await expect(page.getByTestId("sale-details")).not.toContainText(`رقم الإيصال: ${first}`);
   await page.getByTestId("reprint-receipt").click();
   await expect.poll(() => page.evaluate(() => (window.top as Window & { __receiptPrintCalls?: number }).__receiptPrintCalls ?? 0)).toBe(1);
   await expect.poll(() => page.evaluate(() => (window.top as Window & { __lastReceiptText?: string }).__lastReceiptText)).toContain(first!);

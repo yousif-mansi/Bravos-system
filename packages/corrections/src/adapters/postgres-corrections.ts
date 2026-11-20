@@ -80,8 +80,8 @@ export function createPostgresCorrectionsRepository(
   onlineSourcesFor?: (client: PoolClient) => DeliveredOnlineOrderSourceReader,
 ): CorrectionsRepository {
   return {
-    getSale: (saleId, revision) => loadSale(pool, saleId, revision),
-    getReturn: (returnId, revision) => loadReturn(pool, returnId, revision),
+    getSale: (saleId, branchId) => loadSale(pool, saleId, undefined, branchId),
+    getReturn: (returnId, branchId) => loadReturn(pool, returnId, undefined, branchId),
     changeSale: (input) => transaction(pool, async (client) => changeSale(client, inventoryFor(client), input)),
     changeReturn: (input) => transaction(pool, async (client) => changeReturn(
       client,
@@ -116,7 +116,7 @@ export function createPostgresReturnCorrectionStateReader(queryable: Queryable) 
 async function changeSale(client: PoolClient, inventory: InventoryTransaction, input: SaleCorrectionWrite): Promise<ChangeResult<SaleCorrectionDetailDto>> {
   await inventory.lockStockClock("update");
   const locked = await client.query<SaleRow>(`SELECT id, branch_id, operation_id, final_total_piasters, cash_received_piasters, physically_completed FROM sales_sale WHERE id = $1 FOR UPDATE`, [input.saleId]);
-  if (!locked.rows[0]?.physically_completed) return { kind: "not-found" };
+  if (!locked.rows[0]?.physically_completed || locked.rows[0].branch_id !== input.branchId) return { kind: "not-found" };
   const existingOperation = await correctionByOperation(client, input.operationId);
   if (existingOperation) return replaySale(client, input, existingOperation);
   await inventory.assertStockMutationAllowed();
@@ -212,7 +212,7 @@ async function changeReturn(
             authorized_merchandise_refund_piasters,authorized_checkout_charge_refund_piasters,
             refund_paid_piasters,exchange_credit_applied_piasters
      FROM returns_return WHERE id = $1 FOR UPDATE`, [input.returnId]);
-  if (locked.rows[0]?.status !== "posted") return { kind: "not-found" };
+  if (locked.rows[0]?.status !== "posted" || locked.rows[0].handling_branch_id !== input.branchId) return { kind: "not-found" };
   const existingOperation = await correctionByOperation(client, input.operationId);
   if (existingOperation) return replayReturn(client, input, existingOperation);
   await inventory.assertStockMutationAllowed();
@@ -789,8 +789,11 @@ async function insertFacts(client: Queryable, correctionId: string, target: Targ
   );
 }
 
-async function loadSale(queryable: Queryable, saleId: string, upToRevision = 2_147_483_647): Promise<SaleCorrectionDetailDto | null> {
-  const saleResult = await queryable.query<SaleRow>(`SELECT id, operation_id, final_total_piasters, cash_received_piasters, physically_completed FROM sales_sale WHERE id = $1`, [saleId]);
+async function loadSale(queryable: Queryable, saleId: string, upToRevision = 2_147_483_647, branchId: string | null = null): Promise<SaleCorrectionDetailDto | null> {
+  const saleResult = await queryable.query<SaleRow>(
+    `SELECT id, operation_id, final_total_piasters, cash_received_piasters, physically_completed
+     FROM sales_sale WHERE id = $1 AND ($2::uuid IS NULL OR branch_id = $2)`, [saleId, branchId],
+  );
   const sale = saleResult.rows[0];
   if (!sale?.physically_completed) return null;
   const original = await saleLines(queryable, saleId);
@@ -845,12 +848,12 @@ async function loadSale(queryable: Queryable, saleId: string, upToRevision = 2_1
   };
 }
 
-async function loadReturn(queryable: Queryable, returnId: string, upToRevision = 2_147_483_647): Promise<ReturnCorrectionDetailDto | null> {
+async function loadReturn(queryable: Queryable, returnId: string, upToRevision = 2_147_483_647, branchId: string | null = null): Promise<ReturnCorrectionDetailDto | null> {
   const result = await queryable.query<ReturnRow>(
     `SELECT id,source_sale_id,source_online_order_id,status,authorized_refund_piasters,
             authorized_merchandise_refund_piasters,authorized_checkout_charge_refund_piasters,
             refund_paid_piasters,exchange_credit_applied_piasters
-     FROM returns_return WHERE id = $1`, [returnId]);
+     FROM returns_return WHERE id = $1 AND ($2::uuid IS NULL OR handling_branch_id = $2)`, [returnId, branchId]);
   const row = result.rows[0];
   if (!row || row.status !== "posted") return null;
   const original = await returnLines(queryable, returnId);

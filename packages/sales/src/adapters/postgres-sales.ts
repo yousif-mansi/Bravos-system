@@ -459,11 +459,11 @@ export function createPostgresSaleStore(queryable: Queryable): SaleStore {
       const proofs = await loadCompletedProofs(queryable, operationIds);
       return proofs.map((proof) => proof.operationId);
     },
-    async listCompleted() {
+    async listCompleted(branchId) {
       return loadMany(
         queryable,
-        `SELECT * FROM sales_sale WHERE physically_completed = true ORDER BY recorded_at DESC, id DESC`,
-        [],
+        `SELECT * FROM sales_sale WHERE physically_completed = true AND branch_id = $1 ORDER BY occurred_at DESC, id DESC`,
+        [branchId],
       );
     },
     async listCompletedForStaff(staffId, branchIds) {
@@ -474,7 +474,7 @@ export function createPostgresSaleStore(queryable: Queryable): SaleStore {
         queryable,
         `SELECT * FROM sales_sale
          WHERE physically_completed = true AND sold_by_staff_id = $1 AND branch_id = ANY($2::uuid[])
-         ORDER BY recorded_at DESC, id DESC`,
+         ORDER BY occurred_at DESC, id DESC`,
         [staffId, branchIds],
       );
     },

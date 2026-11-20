@@ -36,7 +36,7 @@ export function ProductBrowser({ products, quantities, cartQuantities, selectedI
       </div>
       {message ? <div className="pos-browse-message"><p>{message}</p><button type="button" className="secondary" onClick={onRetry}>إعادة تحميل الأصناف</button></div> : null}
       {loading ? <p className="muted">لحظات…</p> : visible.length === 0 ? (
-        <div className="pos-browse-empty"><h3>{products.length ? "لا توجد أصناف مطابقة" : "لا توجد أصناف في القائمة"}</h3><p className="muted">{products.length ? "جرّب اسماً آخر أو اختر الكل." : "تظهر الأصناف هنا بعد حفظ قائمة نقطة البيع."}</p></div>
+        <div className="pos-browse-empty"><h3>{products.length ? "لا توجد أصناف مطابقة" : "لا توجد أصناف في القائمة"}</h3><p className="muted">{products.length ? "جرّب اسماً آخر أو اختر الكل." : "تظهر الأصناف هنا بعد حفظ قائمة الأصناف على الكاشير."}</p></div>
       ) : (
         <div className="pos-product-grid">
           {visible.map((product) => {

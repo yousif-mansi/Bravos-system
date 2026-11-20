@@ -264,7 +264,7 @@ export default function StockCorrectionsPage({ workspace }: { workspace: Workspa
       await cacheIssuedSnapshot(workspace.staff.id, snapshot);
       if (!snapshot.stockPause) throw new Error("لم تعد مهلة التوقف نشطة. حدّث الصفحة وابدأ تنسيقاً جديداً.");
       setPauseSnapshot(snapshot);
-      setNotice("استلمت نقطة البيع أمر التوقف بعد مزامنة طابورها. راجع رقم اللقطة ثم أكد التوقف.");
+      setNotice("استلم جهاز الكاشير أمر التوقف بعد مزامنة مبيعاته. راجع رقم اللقطة ثم أكد التوقف.");
     });
   }
 
@@ -691,7 +691,7 @@ export default function StockCorrectionsPage({ workspace }: { workspace: Workspa
           return (
           <article className="history-item" key={item.id} data-testid="stock-reconciliation-row">
             <p data-testid="reconciliation-history-identity">
-              <strong>{variant ? `${variant.code} — ${variant.nameAr} / ${variant.sizeNameAr} / ${variant.colorNameAr}` : `تعذر مطابقة الصنف ${item.variantId} مع قائمة نقطة البيع المحملة.`}</strong>
+              <strong>{variant ? `${variant.code} — ${variant.nameAr} / ${variant.sizeNameAr} / ${variant.colorNameAr}` : `تعذر مطابقة الصنف ${item.variantId} مع قائمة الأصناف المحمّلة على الكاشير.`}</strong>
               {" — "}
               {branchName ? `الفرع: ${branchName}` : "تعذر مطابقة الفرع مع الفروع المتاحة."}
               {" — "}
@@ -755,7 +755,7 @@ function VariantBranchIdentity({
       <p>
         {variant
           ? `${variant.code} — ${variant.nameAr} / ${variant.sizeNameAr} / ${variant.colorNameAr}`
-          : `تعذر مطابقة الصنف ${unresolvedVariantId} مع قائمة نقطة البيع المحملة.`}
+          : `تعذر مطابقة الصنف ${unresolvedVariantId} مع قائمة الأصناف المحمّلة على الكاشير.`}
         {" · "}
         {branchName ? `الفرع: ${branchName}` : "تعذر مطابقة الفرع مع الفروع المتاحة."}
       </p>

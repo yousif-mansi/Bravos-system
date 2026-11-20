@@ -391,7 +391,7 @@ test("workspace ready status stays hidden until readiness data is cached", async
   });
   try {
     await page.getByRole("button", { name: "أبشواي", exact: true }).click();
-    await expect(page.getByTestId("offline-not-ready")).toHaveText("نقطة البيع بتتجهز");
+    await expect(page.getByTestId("offline-not-ready")).toHaveText("الكاشير بيتجهز");
     await expect(page.getByTestId("offline-ready")).toHaveCount(0);
     await expect.poll(() => snapshots, { timeout: 30_000 }).toBeGreaterThan(0);
     await expect(page.getByTestId("offline-ready")).toHaveCount(0);

@@ -158,17 +158,24 @@ export function createOnlineOrderServices(ports: {
 
     async listOrders(auth: VerifiedAuth | null): Promise<OnlineOrderDto[]> {
       const actor = await requireOrderReader(auth);
-      return (await ports.store.listOrders()).map((order) => presentOrder(order, isManager(actor)));
+      const branchId = auth ? await ports.actors.getSessionBranch(auth.sessionId) : null;
+      return (await ports.store.listOrders(branchId)).map((order) => presentOrder(order, isManager(actor)));
     },
 
     async getOrder(auth: VerifiedAuth | null, id: string): Promise<OnlineOrderDto> {
       const actor = await requireOrderReader(auth);
-      return presentOrder(requiredOrder(await ports.store.getOrder(uuid(id))), isManager(actor));
+      const order = requiredOrder(await ports.store.getOrder(uuid(id)));
+      const branchId = auth ? await ports.actors.getSessionBranch(auth.sessionId) : null;
+      if (branchId && order.confirmedAt && order.fulfillmentBranchId !== branchId) {
+        throw new NotFoundError("الطلب غير موجود.");
+      }
+      return presentOrder(order, isManager(actor));
     },
 
     async listCompletedOrders(auth: VerifiedAuth | null) {
       await requireManager(auth);
-      return ports.store.listCompletedOrders();
+      const branchId = auth ? await ports.actors.getSessionBranch(auth.sessionId) : null;
+      return ports.store.listCompletedOrders(branchId);
     },
 
     async createAgreementQuote(auth: VerifiedAuth | null, id: string, input: unknown): Promise<OnlineOrderAgreementQuoteDto> {

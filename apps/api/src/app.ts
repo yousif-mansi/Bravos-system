@@ -419,7 +419,8 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
     const onlineOrderStore = createPostgresOnlineOrderStore(pool);
     const returns = createReturnServices({
       actors: {
-        getStaff: (staffId) => directory.getStaff(staffId),
+        getStaff: actors.getStaff,
+        getSessionBranch: actors.getSessionBranch,
         listBranches: async () => {
           const rows = await directory.listBranches();
           return rows.map((row) => ({ id: row.id, code: row.code, nameAr: row.nameAr }));
@@ -453,7 +454,7 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
       clock: { now: config.businessClock ?? (() => new Date()) },
     });
     const corrections = createCorrectionServices({
-      actors: { getStaff: (staffId) => directory.getStaff(staffId) },
+      actors,
       corrections: createPostgresCorrectionsRepository(pool, createInventoryTransaction, createPostgresOnlineOrderStore),
       clock: { now: config.businessClock ?? (() => new Date()) },
     });
@@ -533,7 +534,8 @@ export async function buildApp(config: AppConfig): Promise<BuiltApp> {
     });
     const reporting = createReportingServices({
       actors: {
-        getStaff: (staffId) => directory.getStaff(staffId),
+        getStaff: actors.getStaff,
+        getSessionBranch: actors.getSessionBranch,
         listBranches: () => directory.listBranches(),
         listStaff: () => directory.listStaff(),
       },

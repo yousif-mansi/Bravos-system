@@ -8,6 +8,7 @@ test("manager maintains a product and cashier looks it up by code", async ({ pag
   await expect(page.getByRole("heading", { name: "اختيار الفرع النشط" })).toBeVisible();
   await page.getByRole("button", { name: "أبشواي" }).click();
   await page.getByRole("link", { name: "استلام المخزون" }).click();
+  await page.getByRole("tab", { name: "استلام بضاعة" }).click();
   await page.locator("summary").filter({ hasText: "إضافة تصنيف جديد" }).click();
   const categoryForm = page.getByRole("form", { name: "إضافة تصنيف للمخزون" });
   await categoryForm.getByLabel("تصنيف جديد").fill("تيشيرتات");
@@ -108,6 +109,7 @@ test("manager renames taxonomy, selects an inventory SKU, and keeps existing ima
   await expect(page.getByRole("status")).toContainText("تم حفظ اللون.");
 
   await page.getByRole("link", { name: "استلام المخزون" }).click();
+  await page.getByRole("tab", { name: "استلام بضاعة" }).click();
   await page.getByRole("button", { name: "إضافة منتج جديد" }).click();
   const intake = page.getByRole("form", { name: "إضافة منتج إلى المخزون" });
   await intake.getByLabel("رمز المنتج / SKU").fill("JK-E2E");
@@ -218,6 +220,7 @@ test("manager renames taxonomy, selects an inventory SKU, and keeps existing ima
   await expect(page.getByRole("status")).toContainText("تم تحديث المنتج.");
 
   await page.getByRole("link", { name: "استلام المخزون" }).click();
+  await page.getByRole("tab", { name: "استلام بضاعة" }).click();
   const receive = page.getByRole("form", { name: "تسجيل إذن استلام" });
   await receive.getByRole("button", { name: "إضافة منتج موجود" }).click();
   await receive.getByLabel("المنتج", { exact: true }).selectOption({ label: "JK-E2E — جاكيت تجريبي" });

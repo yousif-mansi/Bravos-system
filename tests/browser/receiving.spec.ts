@@ -1,15 +1,10 @@
 import { expect, test, type Page } from "@playwright/test";
+import type { ReceiptDto } from "@bravos/contracts";
 
 const WAREHOUSE_BRANCH_ID = "33333333-3333-4333-8333-333333333333";
 
 async function showHistory(page: Page, code?: string) {
-  const acceptDraftWarning = (dialog: import("@playwright/test").Dialog) => void dialog.accept();
-  page.on("dialog", acceptDraftWarning);
-  try {
-    await page.getByRole("tab", { name: "سجل الاستلام" }).click();
-  } finally {
-    page.off("dialog", acceptDraftWarning);
-  }
+  await page.getByRole("tab", { name: "سجل الاستلام" }).click();
   if (code) {
     await page.getByLabel("بحث بالمورد أو الرمز أو التاريخ").fill(code);
     await page.getByTestId("receipt-list").getByRole("row").filter({ hasText: code }).getByRole("button", { name: "عرض التفاصيل" }).click();
@@ -45,10 +40,41 @@ test("manager sees concise receipt facts and expands correction audit after a sa
   });
   expect(receipt.status).toBe(201);
 
+  const saved = receipt.body as ReceiptDto;
+  const extraReceipts = Array.from({ length: 20 }, (_, index): ReceiptDto => ({
+    ...saved,
+    id: crypto.randomUUID(),
+    lines: saved.lines.map((line) => ({
+      ...line,
+      variant: {
+        ...line.variant,
+        product: { ...line.variant.product, code: `HISTORY-${index + 1}`, nameAr: "إذن استلام تجريبي" },
+      },
+    })),
+  }));
+  await page.route("**/api/internal/receiving/receipts", (route) =>
+    route.fulfill({ json: [saved, ...extraReceipts] }));
   await page.getByRole("link", { name: "استلام المخزون" }).click();
+  await expect(page.getByRole("tab", { name: "استلام بضاعة" })).toHaveAttribute("aria-selected", "true");
   await page.getByRole("tab", { name: "سجل الاستلام" }).click();
-  await page.getByLabel("بحث بالمورد أو الرمز أو التاريخ").fill("RC-E2E");
+  const history = page.getByTestId("receipt-list");
+  await expect(history).toBeVisible();
+  await expect(history.locator("tbody tr")).toHaveCount(20);
+  await expect(page.getByText("تفاصيل دفعات الشراء", { exact: true })).toHaveCount(0);
+  await history.hover({ position: { x: 50, y: 60 } });
+  await page.mouse.wheel(0, 270);
+  await expect.poll(() => history.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+  const pages = page.getByRole("navigation", { name: "تصفح السجلات" });
+  await pages.getByRole("button", { name: "التالي", exact: true }).click();
+  await expect(history.locator("tbody tr")).toHaveCount(1);
+  await expect(history.locator("tbody")).toContainText("HISTORY-20");
+  await page.unroute("**/api/internal/receiving/receipts");
+
+  await page.getByLabel("بحث بالمورد أو الرمز أو التاريخ أو اسم المنتج").fill("منتج تصحيح الاستلام");
+  const headings = history.locator("thead th");
+  await expect(headings).toHaveText(["التاريخ", "المورد", "اسم المنتج", "الأصناف", "القيمة", "التفاصيل"]);
   const receiptCard = page.getByTestId("receipt-list").getByRole("row").filter({ hasText: "RC-E2E" });
+  await expect(receiptCard.getByRole("cell", { name: "منتج تصحيح الاستلام", exact: true })).toBeVisible();
   await receiptCard.getByRole("button", { name: "عرض التفاصيل" }).click();
   const details = page.getByTestId("receipt-details");
   await expect(details.getByText("الكمية المستلمة: 2 — تكلفة شراء الوحدة: 100 ج.م.", { exact: true })).toHaveCount(1);
@@ -98,13 +124,6 @@ test("manager sees concise receipt facts and expands correction audit after a sa
   await expect(details).toContainText("تصحيح فاتورة المورد");
   await expect(details.getByText("التصحيح 1: تصحيح فاتورة المورد")).toHaveCount(1);
   await expect(audit.getByText(/نفّذه مالك برافوس — .+/)).toBeVisible();
-  await page.locator("summary").filter({ hasText: "تفاصيل دفعات الشراء" }).click();
-  const batch = page.getByTestId("batch-list").getByText("RC-E2E").locator("..");
-  await expect(batch.getByText("تكلفة شراء الوحدة: 140 ج.م.", { exact: true })).toBeVisible();
-  await expect(batch).toContainText("المتبقي بالمخزون: 2");
-  await expect(batch).toContainText("أبشواي: 2");
-  await expect(batch).not.toContainText("الأصلية");
-  await expect(batch).not.toContainText("الفعالة");
 });
 
 test("manager receives separate cost batches and cashier sees their branch quantity without costs", async ({
@@ -137,6 +156,7 @@ test("manager receives separate cost batches and cashier sees their branch quant
 
   await page.getByRole("link", { name: "استلام المخزون" }).click();
   await expect(page.getByRole("heading", { name: "استلام المخزون", exact: true })).toBeVisible();
+  await page.getByRole("tab", { name: "استلام بضاعة" }).click();
 
   const form = page.getByRole("form", { name: "تسجيل إذن استلام" });
   await form.getByLabel("تاريخ الاستلام").fill("2026-09-11");
@@ -153,7 +173,6 @@ test("manager receives separate cost batches and cashier sees their branch quant
   await costs.nth(1).fill("140");
   await form.getByRole("button", { name: "حفظ الاستلام" }).click();
   await expect(page.getByRole("status")).toContainText("تم حفظ إذن الاستلام.");
-  page.once("dialog", (dialog) => void dialog.accept());
   await page.getByRole("tab", { name: "أرصدة المخازن" }).click();
   await expect(page.getByRole("button", { name: "كل المخزون" })).toHaveAttribute("aria-pressed", "true");
   const stockedRow = page.getByTestId("stock-location-table").getByRole("row", { name: /PT-E2E/ });
@@ -165,13 +184,6 @@ test("manager receives separate cost batches and cashier sees their branch quant
   await showHistory(page);
   await expect(page.getByTestId("receipt-details")).toContainText("الكمية المستلمة: 10 — تكلفة شراء الوحدة: 100 ج.م.");
   await expect(page.getByTestId("receipt-details")).toContainText("الكمية المستلمة: 10 — تكلفة شراء الوحدة: 140 ج.م.");
-  await page.locator("summary").filter({ hasText: "تفاصيل دفعات الشراء" }).click();
-  const costBatches = page.getByTestId("batch-list").locator("article").filter({ hasText: "PT-E2E" });
-  await expect(costBatches).toHaveCount(2);
-  await expect(costBatches.getByText("تكلفة شراء الوحدة: 100 ج.م.", { exact: true })).toBeVisible();
-  await expect(costBatches.getByText("تكلفة شراء الوحدة: 140 ج.م.", { exact: true })).toBeVisible();
-  await expect(costBatches.getByText(/^المتبقي بالمخزون: 10 · حسب الفرع:/)).toHaveCount(2);
-  await expect(costBatches.getByText(/الأصلية|الفعالة/)).toHaveCount(0);
   await page.getByRole("tab", { name: "المخزون المنخفض" }).click();
   const lowStockRows = page.getByTestId("low-stock-list").getByRole("row").filter({ hasText: "PT-E2E" });
   await expect(lowStockRows).toHaveCount(0);
@@ -241,6 +253,7 @@ test("lost receiving response retries the same operation without duplicating sto
 
   await page.getByRole("link", { name: "استلام المخزون" }).click();
   await expect(page.getByRole("heading", { name: "استلام المخزون", exact: true })).toBeVisible();
+  await page.getByRole("tab", { name: "استلام بضاعة" }).click();
   const form = page.getByRole("form", { name: "تسجيل إذن استلام" });
   await form.getByLabel("تاريخ الاستلام").fill("2026-09-11");
   await form.getByRole("button", { name: "إضافة منتج موجود" }).click();
@@ -310,6 +323,7 @@ test("lost response then edit, reload and check result keep a single receiving e
 
   await page.getByRole("link", { name: "استلام المخزون" }).click();
   await expect(page.getByRole("heading", { name: "استلام المخزون", exact: true })).toBeVisible();
+  await page.getByRole("tab", { name: "استلام بضاعة" }).click();
   const form = page.getByRole("form", { name: "تسجيل إذن استلام" });
   await form.getByLabel("تاريخ الاستلام").fill("2026-09-11");
   await form.getByRole("button", { name: "إضافة منتج موجود" }).click();
@@ -407,6 +421,7 @@ test("a rejected receiving operation keeps its identity and can be retried after
 
   await page.getByRole("link", { name: "استلام المخزون" }).click();
   await expect(page.getByRole("heading", { name: "استلام المخزون", exact: true })).toBeVisible();
+  await page.getByRole("tab", { name: "استلام بضاعة" }).click();
   const form = page.getByRole("form", { name: "تسجيل إذن استلام" });
   await form.getByLabel("تاريخ الاستلام").fill("2026-09-11");
   await form.getByRole("button", { name: "إضافة منتج موجود" }).click();
@@ -479,6 +494,7 @@ test("two synchronous submit events before digest settles keep one receiving eff
 
   await page.getByRole("link", { name: "استلام المخزون" }).click();
   await expect(page.getByRole("heading", { name: "استلام المخزون", exact: true })).toBeVisible();
+  await page.getByRole("tab", { name: "استلام بضاعة" }).click();
   const form = page.getByRole("form", { name: "تسجيل إذن استلام" });
   await form.getByLabel("تاريخ الاستلام").fill("2026-09-11");
   await form.getByRole("button", { name: "إضافة منتج موجود" }).click();
@@ -550,6 +566,7 @@ test("lost request before send retries the same identity without duplicating sto
 
   await page.getByRole("link", { name: "استلام المخزون" }).click();
   await expect(page.getByRole("heading", { name: "استلام المخزون", exact: true })).toBeVisible();
+  await page.getByRole("tab", { name: "استلام بضاعة" }).click();
   const form = page.getByRole("form", { name: "تسجيل إذن استلام" });
   await form.getByLabel("تاريخ الاستلام").fill("2026-09-11");
   await form.getByRole("button", { name: "إضافة منتج موجود" }).click();
@@ -619,6 +636,7 @@ test("pending receiving identity survives closing the page and reopening a fresh
 
   await page.getByRole("link", { name: "استلام المخزون" }).click();
   await expect(page.getByRole("heading", { name: "استلام المخزون", exact: true })).toBeVisible();
+  await page.getByRole("tab", { name: "استلام بضاعة" }).click();
   const form = page.getByRole("form", { name: "تسجيل إذن استلام" });
   await form.getByLabel("تاريخ الاستلام").fill("2026-09-11");
   await form.getByRole("button", { name: "إضافة منتج موجود" }).click();
@@ -653,7 +671,7 @@ test("pending receiving identity survives closing the page and reopening a fresh
 
   await page.close();
   const next = await context.newPage();
-  await next.goto("http://127.0.0.1:5174/receiving");
+  await next.goto("http://127.0.0.1:5174/receiving?tab=receive");
   await expect(next.getByRole("heading", { name: "استلام المخزون", exact: true })).toBeVisible();
   const checkResult = next.getByRole("button", { name: "التحقق من النتيجة" });
   await expect(checkResult.or(next.getByRole("status"))).toBeVisible();
@@ -721,8 +739,9 @@ test("an already-open second tab cannot overwrite or clear another tab's uncerta
 
   await page.getByRole("link", { name: "استلام المخزون" }).click();
   await expect(page.getByRole("heading", { name: "استلام المخزون", exact: true })).toBeVisible();
+  await page.getByRole("tab", { name: "استلام بضاعة" }).click();
   const pageB = await context.newPage();
-  await pageB.goto("http://127.0.0.1:5174/receiving");
+  await pageB.goto("http://127.0.0.1:5174/receiving?tab=receive");
   await expect(pageB.getByRole("heading", { name: "استلام المخزون", exact: true })).toBeVisible();
 
   const formA = page.getByRole("form", { name: "تسجيل إذن استلام" });
@@ -781,7 +800,7 @@ test("an already-open second tab cannot overwrite or clear another tab's uncerta
   await page.close();
   await pageB.close();
   const reopened = await context.newPage();
-  await reopened.goto("http://127.0.0.1:5174/receiving");
+  await reopened.goto("http://127.0.0.1:5174/receiving?tab=receive");
   await expect(reopened.getByRole("heading", { name: "استلام المخزون", exact: true })).toBeVisible();
   const checkResult = reopened.getByRole("button", { name: "التحقق من النتيجة" });
   await expect(checkResult.or(reopened.getByRole("status"))).toBeVisible();
@@ -832,10 +851,11 @@ test("tab A keeps its frozen operation after tab B recovers and clears the share
 
   await page.getByRole("link", { name: "استلام المخزون" }).click();
   await expect(page.getByRole("heading", { name: "استلام المخزون", exact: true })).toBeVisible();
+  await page.getByRole("tab", { name: "استلام بضاعة" }).click();
   await page.setViewportSize({ width: 1440, height: 1000 });
   await armNativeSubmitCounter(page);
   const pageB = await context.newPage();
-  await pageB.goto("http://127.0.0.1:5174/receiving");
+  await pageB.goto("http://127.0.0.1:5174/receiving?tab=receive");
   await expect(pageB.getByRole("heading", { name: "استلام المخزون", exact: true })).toBeVisible();
 
   const formA = page.getByRole("form", { name: "تسجيل إذن استلام" });
@@ -982,8 +1002,9 @@ test("a later same-account receive keeps its marker when the recovered tab retri
 
   await page.getByRole("link", { name: "استلام المخزون" }).click();
   await expect(page.getByRole("heading", { name: "استلام المخزون", exact: true })).toBeVisible();
+  await page.getByRole("tab", { name: "استلام بضاعة" }).click();
   const pageB = await context.newPage();
-  await pageB.goto("http://127.0.0.1:5174/receiving");
+  await pageB.goto("http://127.0.0.1:5174/receiving?tab=receive");
   await expect(pageB.getByRole("heading", { name: "استلام المخزون", exact: true })).toBeVisible();
 
   const operationIdsA: string[] = [];

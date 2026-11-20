@@ -7,6 +7,7 @@ export type { VerifiedAuth };
 
 export type ReturnsActorPort = {
   getStaff(staffId: string): Promise<AuthenticatedStaff | null>;
+  getSessionBranch(sessionId: string): Promise<string | null>;
   listBranches(): Promise<BranchDto[]>;
 };
 
@@ -269,7 +270,7 @@ export type ReturnsStore = {
   }): Promise<ReturnRecord>;
   getById(id: string, lock?: boolean): Promise<ReturnRecord | null>;
   getByOperationId(operationId: string): Promise<ReturnRecord | null>;
-  listPage(input: { limit: number; cursor: string | null }): Promise<{ items: ReturnListRecord[]; nextCursor: string | null }>;
+  listPage(input: { limit: number; cursor: string | null; branchId: string }): Promise<{ items: ReturnListRecord[]; nextCursor: string | null }>;
   getRefundEventByOperation(operationId: string): Promise<(RefundEventRecord & { returnId: string }) | null>;
   getExchangeByReturnId(returnId: string, lock?: boolean): Promise<ReturnExchangeRecord | null>;
   getExchangeById(id: string): Promise<ReturnExchangeRecord | null>;

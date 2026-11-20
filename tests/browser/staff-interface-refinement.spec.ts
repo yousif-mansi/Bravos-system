@@ -16,20 +16,36 @@ test("receiving tabs preserve draft and legacy transfer updates locations once",
   });
   expect(receipt.status).toBe(201);
   await page.goto(`${base}/receiving`);
+  const dialogs: string[] = [];
+  page.on("dialog", async (dialog) => {
+    dialogs.push(dialog.message());
+    await dialog.dismiss();
+  });
   const tabs = page.getByRole("tablist", { name: "أقسام المخزون" });
-  await expect(tabs.getByRole("tab")).toHaveCount(5);
+  await expect(tabs.getByRole("tab")).toHaveText(["استلام بضاعة", "أرصدة المخازن", "تحويل مخزون", "المخزون المنخفض", "سجل الاستلام"]);
   await expect(tabs.getByRole("tab", { name: "استلام بضاعة" })).toHaveAttribute("aria-selected", "true");
+  await expect(page).toHaveURL(/\/receiving$/);
   await page.getByRole("button", { name: "إضافة منتج موجود" }).click();
   await page.locator("[id^='product-']").selectOption(item.id);
   await page.locator("[id^='qty-']").fill("3");
   await page.locator("[id^='cost-']").fill("40");
-  page.once("dialog", (dialog) => dialog.accept());
   await tabs.getByRole("tab", { name: "أرصدة المخازن" }).click();
   await expect(page.getByRole("form", { name: "تسجيل إذن استلام" })).toBeHidden();
   await tabs.getByRole("tab", { name: "استلام بضاعة" }).click();
   await expect(page.locator("[id^='qty-']")).toHaveValue("3");
   await expect(page.locator("[id^='cost-']")).toHaveValue("40");
   await capture(page, "receiving-draft");
+
+  await page.getByRole("button", { name: "إضافة منتج جديد" }).click();
+  const productForm = page.getByRole("form", { name: "إضافة منتج إلى المخزون" });
+  await productForm.getByLabel("اسم المنتج").fill("مسودة منتج");
+  await tabs.getByRole("tab", { name: "سجل الاستلام" }).click();
+  await expect(productForm).toBeHidden();
+  await tabs.getByRole("tab", { name: "استلام بضاعة" }).click();
+  await expect(productForm.getByLabel("اسم المنتج")).toHaveValue("مسودة منتج");
+  await page.getByRole("link", { name: "المبيعات", exact: true }).click();
+  await expect(page).toHaveURL(/\/sales$/);
+  expect(dialogs).toEqual([]);
 
   await page.goto(`${base}/transfers`);
   await expect(page).toHaveURL(/\/receiving\?tab=transfers/);
@@ -93,7 +109,7 @@ test("staff screens remain navigable at desktop and narrow widths and cashier ca
   await signIn(page);
   for (const [route, heading, key] of [
     ["/", "لوحة التحكم", "dashboard"],
-    ["/lookup", "نقطة البيع", "pos"],
+    ["/lookup", "الكاشير", "pos"],
     ["/sales", "المبيعات", "sales"],
     ["/receiving", "استلام المخزون", "receiving"],
     ["/catalog", "إدارة المنتجات", "catalog"],

@@ -73,7 +73,7 @@ export default function ReturnsPage({ workspace }: { workspace: WorkspaceDto; on
   const [authorizedMerchandise, setAuthorizedMerchandise] = useState("0");
   const [authorizedCheckoutCharge, setAuthorizedCheckoutCharge] = useState("0");
   const [authorizedEdited, setAuthorizedEdited] = useState(false);
-  const [handlingBranchId, setHandlingBranchId] = useState(workspace.activeBranch?.id ?? "");
+  const handlingBranchId = workspace.activeBranch?.id ?? "";
   const [exchangeCatalog, setExchangeCatalog] = useState<CashierProductLookupDto[]>([]);
   const [replacementVariantId, setReplacementVariantId] = useState("");
   const [replacementQuantity, setReplacementQuantity] = useState(1);
@@ -243,7 +243,6 @@ export default function ReturnsPage({ workspace }: { workspace: WorkspaceDto; on
     setLookupOpen(false);
     setSelectedReturn(null);
     setEditingReturn(null);
-    setHandlingBranchId(workspace.activeBranch?.id ?? "");
     setSelection(Object.fromEntries(source.lines.map((line) => [line.sourceLineId, { quantity: 0, sellableQuantity: 0 }])));
     setAuthorizedMerchandise("0");
     setAuthorizedCheckoutCharge("0");
@@ -600,7 +599,6 @@ export default function ReturnsPage({ workspace }: { workspace: WorkspaceDto; on
     if (!selectedReturn || selectedReturn.status !== "draft") return;
     setEditingReturn(selectedReturn);
     setReason(selectedReturn.reason ?? "");
-    setHandlingBranchId(selectedReturn.handlingBranch.id);
     setSelectedSource(selectedReturn.source);
     setLookupOpen(false);
     setSelection(Object.fromEntries(selectedReturn.source.lines.map((sourceLine) => {
@@ -692,7 +690,10 @@ export default function ReturnsPage({ workspace }: { workspace: WorkspaceDto; on
             })}</tbody></table></div>
             <div className="notice" data-testid="refund-suggestion"><strong>الاسترداد المقترح من الدفع الأصلي</strong><p>قيمة البضاعة: {formatEgpFromPiasters(suggestion.merchandisePiasters)} · رسوم التوصيل: {formatEgpFromPiasters(suggestion.checkoutChargePiasters)} · الإجمالي: {formatEgpFromPiasters(suggestion.totalPiasters)}</p>{selectedSource.channel === "online" && suggestion.checkoutChargePiasters === 0 ? <p className="muted">لا تُقترح رسوم التوصيل للإرجاع الجزئي أو إذا سبق أن حملها مرتجع فعّال.</p> : null}</div>
             <div className="return-editor-fields">
-            <div className="field"><label htmlFor="return-handling-branch-select">فرع استلام المرتجع</label><select id="return-handling-branch-select" value={handlingBranchId} onChange={(event) => setHandlingBranchId(event.target.value)} required>{workspace.authorizedBranches.map((branch) => <option key={branch.id} value={branch.id}>{branch.nameAr}</option>)}</select></div>
+            <div className="field">
+              <label htmlFor="return-handling-branch">فرع استلام المرتجع</label>
+              <input id="return-handling-branch" value={workspace.activeBranch?.nameAr ?? ""} readOnly />
+            </div>
             <div className="grid two"><div className="field"><label htmlFor="authorized-merchandise-refund">{selectedSource.channel === "online" ? "استرداد البضاعة المعتمد بالجنيه" : "قيمة الاسترداد المعتمدة بالجنيه"}</label><input id="authorized-merchandise-refund" inputMode="decimal" value={authorizedMerchandise} onChange={(event) => { setAuthorizedMerchandise(event.target.value); setAuthorizedEdited(true); }} /></div>{selectedSource.channel === "online" ? <div className="field"><label htmlFor="authorized-checkout-refund">استرداد رسوم التوصيل المعتمد بالجنيه</label><input id="authorized-checkout-refund" inputMode="decimal" value={authorizedCheckoutCharge} onChange={(event) => { setAuthorizedCheckoutCharge(event.target.value); setAuthorizedEdited(true); }} /></div> : null}</div>
             <div className="field"><label htmlFor="return-reason">سبب المرتجع (اختياري)</label><input id="return-reason" maxLength={500} value={reason} onChange={(event) => setReason(event.target.value)} /></div>
             </div>

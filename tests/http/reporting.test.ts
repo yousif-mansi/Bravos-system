@@ -256,6 +256,68 @@ test("manager report composes effective revenue, retained batch costs, returns a
   ]);
 });
 
+test("active branches isolate sales, direct details and financial reports in both directions", async () => {
+  const manager = await signIn("owner", "owner-pass-1");
+  const fayoum = (await built.pool.query<{ id: string }>("SELECT id FROM branch WHERE code='fayoum'")).rows[0]!.id;
+  const branches = [branchId, fayoum];
+  const variants = await seedProduct(manager);
+  const category = await api(manager, "POST", "/api/internal/expense-categories", { nameAr: "مصروف فصل الفروع" });
+  expect(category.status).toBe(201);
+  const sales: string[] = [];
+  const expenses: string[] = [];
+  const amounts = [1000, 2000];
+
+  for (const [index, activeBranch] of branches.entries()) {
+    await expectOk(await api(manager, "POST", "/api/internal/active-branch", { branchId: activeBranch }));
+    const receipt = await api(manager, "POST", "/api/internal/receiving/receipts", {
+      operationId: crypto.randomUUID(), branchId: activeBranch, receiptDate: "2026-09-16",
+      lines: [{ variantId: variants.first, quantity: 1, unitCostPiasters: 10000 }],
+    });
+    expect(receipt.status, JSON.stringify(receipt.body)).toBe(201);
+    const sale = await api(manager, "POST", "/api/internal/sales", {
+      saleId: crypto.randomUUID(), operationId: crypto.randomUUID(),
+      physicallyCompleted: true, occurredAt: "2026-09-16T09:00:00.000Z",
+      customerName: "عميل له مشتريات بالفرعين", customerPhone: "01012345678",
+      employeeDiscountPiasters: 0, lines: [{ variantId: variants.first, quantity: 1 }],
+    });
+    expect(sale.status, JSON.stringify(sale.body)).toBe(201);
+    sales.push(sale.body.id);
+    const expense = await api(manager, "POST", "/api/internal/expenses", {
+      operationId: crypto.randomUUID(), amountPiasters: amounts[index], expenseDate: "2026-09-16",
+      categoryId: category.body.id, description: "مصروف الفرع",
+    });
+    expect(expense.status, JSON.stringify(expense.body)).toBe(201);
+    expenses.push(expense.body.id);
+  }
+
+  const customer = await api(manager, "GET", "/api/internal/customers/lookup?phone=01012345678");
+  expect(customer.status).toBe(200);
+  for (const [index, activeBranch] of branches.entries()) {
+    await expectOk(await api(manager, "POST", "/api/internal/active-branch", { branchId: activeBranch }));
+    const ownSale = sales[index];
+    const otherSale = sales[1 - index];
+    const ownExpense = expenses[index];
+    const list = await api(manager, "GET", "/api/internal/sales");
+    expect(list.body.map((row: { id: string }) => row.id)).toEqual([ownSale]);
+    expect((await api(manager, "GET", `/api/internal/sales/${ownSale}`)).status).toBe(200);
+    expect((await api(manager, "GET", `/api/internal/sales/${otherSale}`)).status).toBe(404);
+    expect((await api(manager, "GET", `/api/internal/corrections/sales/${otherSale}`)).status).toBe(404);
+    const history = await api(manager, "GET", `/api/internal/customers/${customer.body.customer.id}/history`);
+    expect(history.status, JSON.stringify(history.body)).toBe(200);
+    expect(history.body.purchases).toMatchObject([{ sourceId: ownSale }]);
+
+    const report = await api(manager, "GET", "/api/internal/reports/management?period=today");
+    expect(report.status, JSON.stringify(report.body)).toBe(200);
+    expect(report.body.filters.branchId).toBe(activeBranch);
+    expect(report.body.summary).toMatchObject({
+      completedCount: 1, grossFinalSalesPiasters: 30000, effectiveExpensesPiasters: amounts[index],
+    });
+    expect(report.body.completedSales).toMatchObject([{ source: { id: ownSale } }]);
+    expect(report.body.expenses.items).toMatchObject([{ expenseId: ownExpense }]);
+    expect((await api(manager, "GET", `/api/internal/reports/management?period=today&branchId=${branches[1 - index]}`)).status).toBe(403);
+  }
+});
+
 test("Cairo day boundaries use occurred time and invalid or unauthenticated report requests fail", async () => {
   const manager = await signIn("owner", "owner-pass-1");
   await expectOk(await api(manager, "POST", "/api/internal/active-branch", { branchId }));
@@ -503,6 +565,15 @@ test("confirmed online orders contribute merchandise and delivery once while pen
   expect(branchReport.body.summary).toMatchObject({ completedCount: 1, grossFinalSalesPiasters: 50000 });
   expect(branchReport.body.byBranch.find((row: { branch: { id: string } }) => row.branch.id === branchId))
     .toMatchObject({ completedCount: 1, grossFinalSalesPiasters: 50000 });
+
+  const fayoum = (await built.pool.query<{ id: string }>("SELECT id FROM branch WHERE code='fayoum'")).rows[0]!.id;
+  await expectOk(await api(manager, "POST", "/api/internal/active-branch", { branchId: fayoum }));
+  expect((await api(manager, "GET", `/api/internal/online-orders/${deliveredOrder.orderId}`)).status).toBe(404);
+  const fayoumOrders = await api(manager, "GET", "/api/internal/online-orders");
+  expect(fayoumOrders.body.map((order: { status: string }) => order.status)).toEqual(["pending"]);
+  const fayoumReport = await api(manager, "GET", "/api/internal/reports/management?period=today&channel=online");
+  expect(fayoumReport.body.completedSales).toEqual([]);
+  expect(fayoumReport.body.summary).toMatchObject({ completedCount: 0, grossFinalSalesPiasters: 0 });
 });
 
 test("protected confirmed and in-transit stock stays out of available value while a delivered online return reports its charge refund", async () => {

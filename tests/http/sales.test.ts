@@ -223,7 +223,7 @@ test("unassigned, representative-only and spoofed actors cannot complete a conne
   expect(created.body.lines[0].listedUnitPricePiasters).toBe(25000);
 });
 
-test("managers see every completed sale and employees see only their own authorized records", async () => {
+test("managers see the active branch and employees see only their own records in that branch", async () => {
   const manager = await signIn("owner", "owner-pass-1");
   await api(manager, "POST", "/api/internal/active-branch", { branchId: abshwayId });
   const seed = await seedShirt(manager, { price: 18000, extraColor: true });
@@ -279,7 +279,8 @@ test("managers see every completed sale and employees see only their own authori
 
   const ownList = await api(first, "GET", "/api/internal/sales");
   expect(ownList.status).toBe(200);
-  expect(ownList.body.map((row: { id: string }) => row.id)).toEqual([firstSale.body.id]);
+  expect(ownList.body).toEqual([]);
+  expect((await api(first, "GET", `/api/internal/sales/${firstSale.body.id}`)).status).toBe(404);
   const foreignDetail = await api(first, "GET", `/api/internal/sales/${secondSale.body.id}`);
   expect(foreignDetail.status).toBe(403);
   expect(foreignDetail.body.error.code).toBe("FORBIDDEN");
@@ -287,11 +288,12 @@ test("managers see every completed sale and employees see only their own authori
   const otherList = await api(second, "GET", "/api/internal/sales");
   expect(otherList.body.map((row: { id: string }) => row.id)).toEqual([secondSale.body.id]);
 
+  await api(first, "POST", "/api/internal/active-branch", { branchId: abshwayId });
+  expect((await api(first, "GET", "/api/internal/sales")).body.map((row: { id: string }) => row.id)).toEqual([firstSale.body.id]);
   const managerList = await api(manager, "GET", "/api/internal/sales");
   expect(managerList.status).toBe(200);
-  expect(managerList.body.map((row: { id: string }) => row.id).sort()).toEqual(
-    [firstSale.body.id, secondSale.body.id].sort(),
-  );
+  expect(managerList.body.map((row: { id: string }) => row.id)).toEqual([firstSale.body.id]);
+  expect((await api(manager, "GET", `/api/internal/sales/${secondSale.body.id}`)).status).toBe(404);
   const managerDetail = await api(manager, "GET", `/api/internal/sales/${firstSale.body.id}`);
   expect(managerDetail.status).toBe(200);
   expect(managerDetail.body.allocations[0]).toMatchObject({
@@ -955,6 +957,9 @@ test("completing a prepared sale keeps the original branch after a session switc
   expect(completed.status).toBe(201);
   expect(completed.body.branch.code).toBe("abshway");
   expect(completed.body.soldByDisplayName).toBe("كاشير التحويل");
+  expect((await api(cashier, "GET", "/api/internal/sales")).body).toEqual([]);
+  const recovery = await api(cashier, "GET", `/api/internal/sales/operations/${operationId}`);
+  expect(recovery.body).toMatchObject({ id: saleId, branch: { id: abshwayId }, physicallyCompleted: true });
 
   await api(manager, "POST", `/api/internal/staff/${completed.body.soldByStaffId}/grants`, {
     grants: [{ branchId: fayoumId, cashier: true, orderRepresentative: false }],

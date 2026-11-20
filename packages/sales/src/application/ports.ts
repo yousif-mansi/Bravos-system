@@ -288,7 +288,7 @@ export type SaleStore = {
   markRestoreDeferredReconciled(operationId: string, managerStaffId: string): Promise<void>;
   getRestoreDeferredPreparedSale(operationId: string): Promise<SaleInsert | null>;
   listCompletedOperationIds(operationIds: string[]): Promise<string[]>;
-  listCompleted(): Promise<SaleRecord[]>;
+  listCompleted(branchId: string): Promise<SaleRecord[]>;
   listCompletedForStaff(staffId: string, branchIds: string[]): Promise<SaleRecord[]>;
   referencedVariantIds(variantIds: string[]): Promise<string[]>;
   registerReceiptPrefix(input: {
@@ -438,7 +438,7 @@ export type CustomerDirectory = {
   findByPhone(normalizedPhone: string): Promise<CustomerRecord | null>;
   getById(id: string): Promise<CustomerRecord | null>;
   list(input: CustomerListQuery): Promise<CustomerRecord[]>;
-  listPhysicalPurchases(customer: CustomerRecord, from: string, to: string): Promise<PhysicalPaidPurchase[]>;
+  listPhysicalPurchases(customer: CustomerRecord, from: string, to: string, branchId: string): Promise<PhysicalPaidPurchase[]>;
 };
 
 /**
@@ -450,6 +450,7 @@ export type PaidOnlinePurchaseReader = {
     normalizedPhone: string,
     from: string,
     to: string,
+    branchId: string,
   ): Promise<Array<{
     sourceId: string;
     reference: string;

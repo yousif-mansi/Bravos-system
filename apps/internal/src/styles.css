@@ -1558,7 +1558,7 @@ button.business-primary-action:hover:not(:disabled) {
 .business-detail-header h2, .business-modal-header h2 { margin: 0; font-size: 1.1rem; }
 .business-modal-header p { margin: 0.35rem 0 0; color: var(--text-secondary); font-size: 0.88rem; }
 .business-close { width: 36px; min-height: 36px; padding: 0; flex-shrink: 0; font-size: 1.4rem; line-height: 1; }
-.business-detail-body { min-height: 0; padding: 0.95rem; overflow: auto; overscroll-behavior-block: contain; }
+.business-detail-body { min-height: 0; padding: 0.95rem; overflow: auto; }
 .business-detail-body .card { padding: 0.85rem; box-shadow: none; }
 .sale-summary { display: flex; flex-direction: column; gap: 0.45rem; }
 .sale-summary > h2 { margin: 0 0 0.25rem; font-size: 1rem; }
@@ -1569,7 +1569,7 @@ button.business-primary-action:hover:not(:disabled) {
   max-width: 100%;
   max-height: min(61dvh, 38rem);
   overflow: auto;
-  overscroll-behavior: contain;
+  overscroll-behavior-inline: contain;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--surface-elevated);

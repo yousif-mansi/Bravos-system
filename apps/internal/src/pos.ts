@@ -303,7 +303,7 @@ async function retryUnsyncedSalesUnlocked(
   }
   const rows = await pos.listUnsynced(staffId);
   if (!(await pos.canUpgradeSafely(POS_SCHEMA_VERSION))) {
-    return { synced: 0, remaining: rows.length, error: "تحديث نقطة البيع مؤجل لحماية المبيعات المحفوظة." };
+    return { synced: 0, remaining: rows.length, error: "تحديث الكاشير مؤجل لحماية المبيعات المحفوظة." };
   }
   let syncedCount = 0;
   let error = "";
@@ -346,7 +346,7 @@ export async function recoverPreservedQueues(
       return {
         recovered: 0,
         remaining: await pos.countOtherPending(managerStaffId),
-        error: "تحديث نقطة البيع مؤجل لحماية المبيعات المحفوظة.",
+        error: "تحديث الكاشير مؤجل لحماية المبيعات المحفوظة.",
       };
     }
     const result = await pos.recoverPreservedQueues(managerStaffId, async (sale) => {

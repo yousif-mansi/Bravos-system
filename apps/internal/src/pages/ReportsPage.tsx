@@ -32,10 +32,12 @@ export default function ReportsPage({ workspace }: { workspace: WorkspaceDto }) 
   const [period, setPeriod] = useState<PeriodKind>("today");
   const [day, setDay] = useState(cairoToday.day);
   const [month, setMonth] = useState(cairoToday.month);
-  const [branchId, setBranchId] = useState("");
+  const branchId = workspace.activeBranch?.id;
   const [channel, setChannel] = useState<ChannelFilter>("all");
   const [employeeId, setEmployeeId] = useState("");
-  const [query, setQuery] = useState<ManagementReportQuery>({ period: "today", detailPage: 1, detailPageSize: 25 });
+  const [query, setQuery] = useState<ManagementReportQuery>({
+    period: "today", ...(branchId ? { branchId } : {}), detailPage: 1, detailPageSize: 25,
+  });
   const [report, setReport] = useState<ManagementReportDto | null>(null);
   const [knownEmployees, setKnownEmployees] = useState<Array<{ staffId: string; displayName: string }>>([]);
   const [loading, setLoading] = useState(true);
@@ -149,10 +151,7 @@ export default function ReportsPage({ workspace }: { workspace: WorkspaceDto }) 
         ) : null}
         <div className="field">
           <label htmlFor="report-branch">الفرع</label>
-          <select id="report-branch" value={branchId} onChange={(event) => setBranchId(event.target.value)}>
-            <option value="">كل الفروع</option>
-            {workspace.authorizedBranches.map((branch) => <option key={branch.id} value={branch.id}>{branch.nameAr}</option>)}
-          </select>
+          <input id="report-branch" value={workspace.activeBranch?.nameAr ?? ""} readOnly />
         </div>
         <div className="field">
           <label htmlFor="report-channel">القناة</label>
@@ -259,7 +258,7 @@ function ReportContents({
       <OnlineOrderOperations report={report} />
       <DetailPaging report={report} loading={loading} onPageChange={onPageChange} />
       <CompletedSales sales={report.completedSales} />
-      <Refunds refunds={report.refunds} branches={workspace.authorizedBranches} />
+      <Refunds refunds={report.refunds} branches={workspace.authorizedBranches} activeBranchId={report.filters.branchId} />
       <BestSellers report={report} />
       <Inventory report={report} />
       <OpeningStock report={report} />
@@ -342,10 +341,10 @@ function OnlineOrderOperations({ report }: { report: ManagementReportDto }) {
   return (
     <section className="card" data-testid="online-order-operations" aria-labelledby="online-order-operations-heading">
       <h2 id="online-order-operations-heading">طلبات الأونلاين قيد التشغيل</h2>
-      <p className="report-scope">الآن · كل الفروع · لا يتأثر بالفلاتر</p>
+      <p className="report-scope">حالة الطلبات الآن · الطلبات المسندة للفرع الحالي</p>
       <details className="business-disclosure">
         <summary>كيف تُحسب الأرقام؟</summary>
-        <p>الطلبات المعلقة خارج المبيعات، وتُسجل قيمة الطلب عند التأكيد مرة واحدة.</p>
+        <p>الطلبات المعلقة تخص المتجر قبل تحديد فرع التجهيز. تُسجّل قيمة الطلب للفرع عند التأكيد مرة واحدة.</p>
       </details>
       <div className="report-metrics">
         <Metric label="معلق" value={String(operations.pendingCount)} />
@@ -443,7 +442,11 @@ function SourceLink({ sale }: { sale: ReportCompletedSaleDto }) {
   return <Link to={destination.to}>{destination.shortLabel}</Link>;
 }
 
-function Refunds({ refunds, branches }: { refunds: ReportRefundDto[]; branches: BranchDto[] }) {
+function Refunds({ refunds, branches, activeBranchId }: {
+  refunds: ReportRefundDto[];
+  branches: BranchDto[];
+  activeBranchId: string | null;
+}) {
   const branchNames = new Map(branches.map((branch) => [branch.id, branch.nameAr]));
   return (
     <section className="card" aria-labelledby="refunds-heading">
@@ -456,7 +459,11 @@ function Refunds({ refunds, branches }: { refunds: ReportRefundDto[]; branches: 
                 <h3>مرتجع {refund.reference}</h3>
                 <p className="muted">{formatCairoDateTime(refund.postedAt)}</p>
               </div>
-              <RefundLinks refund={refund} />
+              <RefundLinks
+                refund={refund}
+                handlingBranchName={branchNames.get(refund.handlingBranchId)}
+                canOpenReturn={!activeBranchId || activeBranchId === refund.handlingBranchId}
+              />
             </div>
             <div className="report-amount-line">
               <span>القناة الأصلية: {channelName[refund.channel]}</span>
@@ -499,11 +506,16 @@ function Refunds({ refunds, branches }: { refunds: ReportRefundDto[]; branches: 
   );
 }
 
-function RefundLinks({ refund }: { refund: ReportRefundDto }) {
+function RefundLinks({ refund, handlingBranchName, canOpenReturn }: {
+  refund: ReportRefundDto;
+  handlingBranchName: string | undefined;
+  canOpenReturn: boolean;
+}) {
   const destination = sourceDestination(refund.source);
   return (
     <div className="actions">
-      <Link to={`/returns?returnId=${encodeURIComponent(refund.returnId)}`}>فتح المرتجع</Link>
+      {canOpenReturn ? <Link to={`/returns?returnId=${encodeURIComponent(refund.returnId)}`}>فتح المرتجع</Link>
+        : <span className="muted">تفاصيل المرتجع في فرع {handlingBranchName ?? "الاستلام"}</span>}
       <Link to={destination.to}>{destination.originalLabel}</Link>
     </div>
   );

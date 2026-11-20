@@ -13,6 +13,7 @@ export type { VerifiedAuth };
 
 export type ReportingActorPort = {
   getStaff(staffId: string): Promise<AuthenticatedStaff | null>;
+  getSessionBranch(sessionId: string): Promise<string | null>;
   listBranches(): Promise<BranchDto[]>;
   listStaff(): Promise<AuthenticatedStaff[]>;
 };

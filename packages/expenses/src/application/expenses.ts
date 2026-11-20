@@ -57,13 +57,8 @@ export function createExpenseServices(ports: { actors: ExpenseActorPort; expense
   }
 
   async function readScope(auth: VerifiedAuth | null): Promise<ExpenseScope> {
-    const context = await requireActor(auth);
-    if (isManager(context.staff)) return { manager: true };
-    const branchId = await ports.actors.getSessionBranch(context.auth.sessionId);
-    if (!branchId || !canUseBranch(context.staff, branchId)) {
-      throw new ExpensesValidationError("يجب اختيار فرع نشط ومصرح به.");
-    }
-    return { manager: false, staffId: context.staff.id, branchId };
+    const { staff, branchId } = await activeBranchContext(auth);
+    return isManager(staff) ? { manager: true, branchId } : { manager: false, staffId: staff.id, branchId };
   }
 
   return {
@@ -134,8 +129,12 @@ export function createExpenseServices(ports: { actors: ExpenseActorPort; expense
     },
 
     async change(auth: VerifiedAuth | null, expenseIdValue: string, input: unknown): Promise<ChangeExpenseResult> {
-      const { staff } = await requireManager(auth);
+      const { staff, branchId } = await activeBranchContext(auth);
+      if (!isManager(staff)) throw new ForbiddenError();
       const expenseId = assertUuid(expenseIdValue, "المصروف غير موجود.");
+      if (!await ports.expenses.getById(expenseId, { manager: true, branchId })) {
+        throw new NotFoundError("المصروف غير موجود.");
+      }
       const command = parseChange(input);
       const payloadFingerprint = fingerprintExpensePayload({
         actorStaffId: staff.id,

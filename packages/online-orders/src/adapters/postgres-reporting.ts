@@ -106,16 +106,20 @@ export function createPostgresOnlineOrderReportingReader(queryable: Queryable): 
       );
       return new Map(result.rows.map((row) => [row.order_id, row.fulfillment_branch_id]));
     },
-    async currentStatusCounts() {
+    async currentStatusCounts(branchId = null) {
       const result = await queryable.query<{
         pending_count: number | string; confirmed_count: number | string;
         shipped_count: number | string; delivery_failed_count: number | string;
       }>(
-        `SELECT COUNT(*) FILTER (WHERE status='pending')::bigint AS pending_count,
-                COUNT(*) FILTER (WHERE status='confirmed')::bigint AS confirmed_count,
-                COUNT(*) FILTER (WHERE status='shipped')::bigint AS shipped_count,
-                COUNT(*) FILTER (WHERE status='delivery_failed')::bigint AS delivery_failed_count
-         FROM online_order`,
+        `SELECT COUNT(*) FILTER (WHERE orders.status='pending')::bigint AS pending_count,
+                COUNT(*) FILTER (WHERE orders.status='confirmed')::bigint AS confirmed_count,
+                COUNT(*) FILTER (WHERE orders.status='shipped')::bigint AS shipped_count,
+                COUNT(*) FILTER (WHERE orders.status='delivery_failed')::bigint AS delivery_failed_count
+         FROM online_order orders
+         LEFT JOIN online_order_confirmation confirmation ON confirmation.order_id = orders.id
+         WHERE $1::uuid IS NULL OR confirmation.fulfillment_branch_id = $1
+           OR (orders.status = 'pending' AND confirmation.fulfillment_branch_id IS NULL)`,
+        [branchId],
       );
       const row = result.rows[0];
       return {

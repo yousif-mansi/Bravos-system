@@ -68,14 +68,21 @@ test("employee expense is server-attributed to the active authorized branch and 
     categoryId: category.body.id, description: "مصروف الفيوم",
   });
   expect(managerExpense.body.branch.code).toBe("fayoum");
-  const all = await api(manager, "GET", "/api/internal/expenses");
-  expect(all.body).toHaveLength(2);
-  const managerTotals = await api(manager, "GET", "/api/internal/expenses/totals");
-  expect(managerTotals.body).toMatchObject({ totalPiasters: 51000, activeExpenseCount: 2 });
-  expect(managerTotals.body.byBranch).toEqual(expect.arrayContaining([
-    expect.objectContaining({ branch: expect.objectContaining({ code: "abshway" }), totalPiasters: 50000 }),
-    expect.objectContaining({ branch: expect.objectContaining({ code: "fayoum" }), totalPiasters: 1000 }),
-  ]));
+  for (const [branchId, included, excluded, totalPiasters] of [
+    [fayoumId, managerExpense.body.id, created.body.id, 1000],
+    [abshwayId, created.body.id, managerExpense.body.id, 50000],
+  ] as const) {
+    await selectBranch(manager, branchId);
+    const scoped = await api(manager, "GET", "/api/internal/expenses");
+    expect(scoped.body.map((expense: { id: string }) => expense.id)).toEqual([included]);
+    expect((await api(manager, "GET", `/api/internal/expenses/${excluded}`)).status).toBe(404);
+    expect((await api(manager, "POST", `/api/internal/expenses/${excluded}/changes`, {
+      operationId: crypto.randomUUID(), expectedRevision: 0, type: "cancellation", reason: "اختبار الفصل بين الفروع",
+    })).status).toBe(404);
+    const totals = await api(manager, "GET", "/api/internal/expenses/totals");
+    expect(totals.body).toMatchObject({ totalPiasters, activeExpenseCount: 1 });
+    expect(totals.body.byBranch).toMatchObject([{ branch: { id: branchId }, totalPiasters }]);
+  }
 });
 
 test("500 EGP corrected to 50 preserves original history and contributes 50 exactly once", async () => {

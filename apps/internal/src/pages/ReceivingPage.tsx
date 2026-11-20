@@ -1,8 +1,8 @@
 import { type FormEvent, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 
 import type {
   CategoryDto,
-  InventoryBatchDto,
   InventorySettingsDto,
   LowStockVariantDto,
   ManagerProductDto,
@@ -21,7 +21,6 @@ import {
   finalizeReceipt,
   getReceipt,
   getInventorySettings,
-  listBatches,
   listCategories,
   listLowStock,
   listProductLocationStock,
@@ -311,10 +310,9 @@ export default function ReceivingPage({
     { id: "low-stock", label: "المخزون المنخفض" },
     { id: "history", label: "سجل الاستلام" },
   ] as const;
-  const [tab, setTab] = useState(() => {
-    const requested = new URLSearchParams(window.location.search).get("tab");
-    return tabItems.some((item) => item.id === requested && !("disabled" in item && item.disabled)) ? requested! : "receive";
-  });
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requestedTab = searchParams.get("tab");
+  const tab = tabItems.find((item) => item.id === requestedTab && !("disabled" in item && item.disabled))?.id ?? "receive";
   const [transferDirty, setTransferDirty] = useState(false);
   const [stockPage, setStockPage] = useState(1);
   const [lowPage, setLowPage] = useState(1);
@@ -352,7 +350,6 @@ export default function ReceivingPage({
   const restoreIntakeFocus = useRef(false);
   const [detailLoadingId, setDetailLoadingId] = useState<string | null>(null);
   const [receipts, setReceipts] = useState<ReceiptDto[]>([]);
-  const [batches, setBatches] = useState<InventoryBatchDto[]>([]);
   const [lowStock, setLowStock] = useState<LowStockVariantDto[]>([]);
   const [settings, setSettings] = useState<InventorySettingsDto | null>(null);
   const [selectedReceiptId, setSelectedReceiptId] = useState<string | null>(null);
@@ -391,10 +388,9 @@ export default function ReceivingPage({
 
   async function refresh() {
     const taxonomyRevision = taxonomyRevisionRef.current;
-    const [nextProducts, nextReceipts, nextBatches, nextLowStock, nextSettings, nextCategories, nextSuppliers] = await Promise.all([
+    const [nextProducts, nextReceipts, nextLowStock, nextSettings, nextCategories, nextSuppliers] = await Promise.all([
       listProducts(),
       listReceipts(),
-      listBatches(),
       listLowStock(),
       getInventorySettings(),
       listCategories(),
@@ -404,7 +400,6 @@ export default function ReceivingPage({
     setSuppliers(nextSuppliers);
     setProducts(nextProducts);
     setReceipts(nextReceipts);
-    setBatches(nextBatches);
     setLowStock(nextLowStock);
     setSettings(nextSettings);
     setThresholdInput(String(nextSettings.lowStockThreshold));
@@ -492,7 +487,9 @@ export default function ReceivingPage({
 
   const visibleLowStock = lowStock.filter((item) => matchesNameOrSku(item.variant.product, lowQuery));
   const historyNeedle = historyQuery.trim().toLocaleLowerCase();
-  const visibleReceipts = receipts.filter((receipt) => !historyNeedle || [receipt.supplierNameAr ?? "", receipt.receiptDate, ...receipt.lines.map((line) => line.variant.product.code)].some((value) => value.toLocaleLowerCase().includes(historyNeedle)));
+  const visibleReceipts = receipts.filter((receipt) => !historyNeedle || [receipt.supplierNameAr ?? "", receipt.receiptDate,
+    ...receipt.lines.flatMap(({ variant: { product } }) => [product.code, product.nameAr]),
+  ].some((value) => value.toLocaleLowerCase().includes(historyNeedle)));
   const safeStockPage = Math.min(stockPage, Math.max(1, Math.ceil(visibleStockRows.length / 20)));
   const safeLowPage = Math.min(lowPage, Math.max(1, Math.ceil(visibleLowStock.length / 20)));
   const safeHistoryPage = Math.min(historyPage, Math.max(1, Math.ceil(visibleReceipts.length / 20)));
@@ -1006,14 +1003,13 @@ export default function ReceivingPage({
 
   function changeTab(next: string) {
     if (next === tab || (next === "transfers" && !canTransfer)) return;
-    const dirtyReceive = lines.length > 0 || addingNewProduct || Boolean(supplierName.trim() || categoryName.trim() || receiptSupplierId) || receiptDate !== todayCairoDate();
-    const dirty = (tab === "receive" && dirtyReceive) || (tab === "transfers" && transferDirty) || (tab === "history" && editingCorrection);
-    if (dirty && !window.confirm("لديك بيانات غير محفوظة. هل تريد الانتقال؟ ستبقى البيانات في هذه الصفحة.")) return;
-    setTab(next);
+    const hasUnsavedChanges = (tab === "transfers" && transferDirty) || (tab === "history" && editingCorrection);
+    if (hasUnsavedChanges && !window.confirm("لديك بيانات غير محفوظة. هل تريد الانتقال؟ ستبقى البيانات في هذه الصفحة.")) return;
     if (next === "transfers") void refreshStockRows();
-    const url = new URL(window.location.href);
-    if (next === "receive") url.searchParams.delete("tab"); else url.searchParams.set("tab", next);
-    window.history.replaceState(window.history.state, "", url);
+    const nextParams = new URLSearchParams(searchParams);
+    if (next === "receive") nextParams.delete("tab");
+    else nextParams.set("tab", next);
+    setSearchParams(nextParams, { replace: true });
   }
   const totalQuantity = lines.reduce((sum, line) => sum + (Number(line.quantity) || 0), 0);
   const totalCost = lines.reduce((sum, line) => sum + (egpInputToPiasters(line.costEgp) ?? 0) * (Number(line.quantity) || 0), 0);
@@ -1342,17 +1338,56 @@ export default function ReceivingPage({
 
       </div>
       <div role="tabpanel" id="receiving-tabs-panel-history" aria-labelledby="receiving-tabs-tab-history" hidden={tab !== "history"}>
-      <div className="receiving-history">
         <div className="business-master-detail">
         <section className="card business-list-panel" aria-label="سجل الاستلام">
           <h2>سجل الاستلام</h2>
-          <div className="field"><label htmlFor="receiptHistoryQuery">بحث بالمورد أو الرمز أو التاريخ</label><input id="receiptHistoryQuery" value={historyQuery} onChange={(event) => { setHistoryQuery(event.target.value); setHistoryPage(1); }} /></div>
+          <div className="field"><label htmlFor="receiptHistoryQuery">بحث بالمورد أو الرمز أو التاريخ أو اسم المنتج</label><input id="receiptHistoryQuery" value={historyQuery} onChange={(event) => { setHistoryQuery(event.target.value); setHistoryPage(1); }} /></div>
           {visibleReceipts.length === 0 ? (
             <EmptyState title={historyQuery ? "لا توجد نتائج مطابقة" : "لسه مفيش استلام"} message={historyQuery ? "غيّر البحث لعرض أذون أخرى." : "سجّل أول إذن من نموذج الاستلام."} />
           ) : (
-            <div className="business-table-wrap" data-testid="receipt-list"><table className="business-table"><thead><tr><th>التاريخ</th><th>المورد</th><th>المكان</th><th>الأصناف</th><th>القيمة</th><th>التفاصيل</th></tr></thead><tbody>
-              {visibleReceipts.slice((safeHistoryPage - 1) * 20, safeHistoryPage * 20).map((receipt) => <tr key={receipt.id}><td>{receipt.receiptDate}</td><td>{receipt.supplierNameAr ?? "—"}</td><td>{placeName(receipt.branchId)}</td><td>{receipt.lines.length} · {receipt.lines.map((line) => line.variant.product.code).join("، ")}</td><td>{formatEgpFromPiasters(receipt.lines.reduce((sum, line) => sum + line.effectiveQuantity * line.effectiveUnitCostPiasters, 0))}</td><td><button type="button" className="secondary" disabled={Boolean(detailLoadingId)} aria-busy={detailLoadingId === receipt.id} onClick={() => void openReceiptDetails(receipt.id)}>{detailLoadingId === receipt.id ? "جارٍ تحميل التفاصيل…" : "عرض التفاصيل"}</button></td></tr>)}
-            </tbody></table></div>
+            <div
+              key={`${safeHistoryPage}:${historyNeedle}`}
+              className="business-table-wrap receiving-history-scroll"
+              role="region"
+              aria-label="جدول سجل الاستلام"
+              tabIndex={0}
+              data-testid="receipt-list"
+            >
+              <table className="business-table">
+                <thead>
+                  <tr>
+                    <th scope="col">التاريخ</th>
+                    <th scope="col">المورد</th>
+                    <th scope="col">اسم المنتج</th>
+                    <th scope="col">الأصناف</th>
+                    <th scope="col">القيمة</th>
+                    <th scope="col">التفاصيل</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visibleReceipts.slice((safeHistoryPage - 1) * 20, safeHistoryPage * 20).map((receipt) => {
+                    const productNames = new Set(receipt.lines.map((line) => line.variant.product.nameAr));
+                    const total = receipt.lines.reduce((sum, line) => sum + line.effectiveQuantity * line.effectiveUnitCostPiasters, 0);
+                    const opening = detailLoadingId === receipt.id;
+                    return (
+                      <tr key={receipt.id}>
+                        <td>{receipt.receiptDate}</td>
+                        <td>{receipt.supplierNameAr ?? "—"}</td>
+                        <td>{[...productNames].join("، ") || "—"}</td>
+                        <td>{receipt.lines.length} · {receipt.lines.map((line) => line.variant.product.code).join("، ")}</td>
+                        <td>{formatEgpFromPiasters(total)}</td>
+                        <td>
+                          <button type="button" className="secondary" disabled={Boolean(detailLoadingId)} aria-busy={opening}
+                            onClick={() => void openReceiptDetails(receipt.id)}>
+                            {opening ? "جارٍ تحميل التفاصيل…" : "عرض التفاصيل"}
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           )}
           <TablePagination page={safeHistoryPage} pageSize={20} total={visibleReceipts.length} onPageChange={setHistoryPage} />
         </section>
@@ -1468,30 +1503,6 @@ export default function ReceivingPage({
             </DetailPanel>
           ) : null}
         </div>
-
-        <section className="card" aria-label="تفاصيل دفعات الشراء">
-          {batches.length === 0 ? (
-            <EmptyState title="لسه مفيش دفعات" message="بعد أول استلام هتظهر هنا." />
-          ) : (
-            <details className="business-disclosure">
-              <summary>تفاصيل دفعات الشراء</summary>
-              <div className="business-archive-scroll" role="region" aria-label="تفاصيل دفعات الشراء" tabIndex={0}>
-                <div className="staff-list" data-testid="batch-list">
-                  {batches.map((batch) => (
-                    <article className="staff-item business-archive-row" key={batch.id}>
-                      <p>
-                        {merchandiseLabel(batch.variant)}
-                      </p>
-                      <p>المتبقي بالمخزون: {batch.remainingQuantity} · حسب الفرع: {batch.branchBalances.map((balance) => `${placeName(balance.branchId)}: ${balance.availableQuantity}`).join("، ")}</p>
-                      <p>تكلفة شراء الوحدة: {formatEgpFromPiasters(batch.effectiveUnitCostPiasters)}</p>
-                    </article>
-                  ))}
-                </div>
-              </div>
-            </details>
-          )}
-        </section>
-      </div>
       </div>
 
     </main>

@@ -8,7 +8,7 @@ async function manager(page: Page) {
   await page.getByRole("button", { name: "أبشواي" }).click();
 }
 
-test("dashboard explains combined scope and recovers failed reads without lingering loading", async ({ page, context }) => {
+test("dashboard uses the active branch and recovers failed reads without lingering loading", async ({ page, context }) => {
   const endpoints = [
     "**/api/internal/reports/management?*",
     "**/api/internal/online-orders",
@@ -17,7 +17,7 @@ test("dashboard explains combined scope and recovers failed reads without linger
   ];
   for (const endpoint of endpoints) await page.route(endpoint, (route) => route.abort("failed"));
   await manager(page);
-  const summary = page.getByRole("region", { name: "ملخص كل الفروع والمتجر" });
+  const summary = page.getByRole("region", { name: "ملخص الفرع والمتجر" });
   await expect(summary.getByText("تعذر تحميل البيانات", { exact: true })).toHaveCount(3);
   await expect(page.getByRole("alert").filter({ hasText: "حالة النسخ الاحتياطي" })).toBeVisible();
   await expect(summary).not.toContainText("لحظات");
@@ -28,11 +28,11 @@ test("dashboard explains combined scope and recovers failed reads without linger
   const reportResponse = await response;
   const query = new URL(reportResponse.url()).searchParams;
   expect(query.get("period")).toBe("today");
-  expect(query.has("branchId")).toBe(false);
+  expect(query.get("branchId")).toBeTruthy();
   expect(query.has("channel")).toBe(false);
   const report = await reportResponse.json();
   await expect(summary.getByText(`${report.summary.completedCount} عملية`, { exact: true })).toBeVisible();
-  await expect(summary).toContainText("صافي مبيعات اليوم — كل الفروع والمتجر");
+  await expect(summary).toContainText("صافي مبيعات اليوم — أبشواي");
   await expect(page.getByRole("button", { name: "إعادة تحميل الملخص" })).toHaveCount(0);
   await context.setOffline(true);
   await expect(summary.getByText("غير متاح بدون اتصال", { exact: true })).toHaveCount(3);
@@ -40,6 +40,15 @@ test("dashboard explains combined scope and recovers failed reads without linger
   await context.setOffline(false);
   await expect(summary.getByText("غير متاح بدون اتصال", { exact: true })).toHaveCount(0);
   await expect(summary.getByText(`${report.summary.completedCount} عملية`, { exact: true })).toBeVisible();
+
+  await page.getByTestId("active-branch").click();
+  const fayoumReport = page.waitForResponse((result) => result.url().includes("/reports/management?") && result.ok());
+  await page.getByRole("button", { name: "الفيوم", exact: true }).click();
+  const nextReport = await fayoumReport;
+  expect(new URL(nextReport.url()).searchParams.get("branchId")).not.toBe(query.get("branchId"));
+  const next = await nextReport.json();
+  expect(next.byBranch.map((row: { branch: { code: string } }) => row.branch.code)).toEqual(["fayoum"]);
+  await expect(summary).toContainText("صافي مبيعات اليوم — الفيوم");
 });
 
 test("native form constraints expose invalid fields and clear when corrected", async ({ page }) => {

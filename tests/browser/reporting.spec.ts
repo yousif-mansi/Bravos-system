@@ -171,7 +171,7 @@ test("manager filters a connected report and follows its real sale and Return pr
   await expect(page.getByTestId("report-summary")).toBeVisible();
 
   const filters = page.getByRole("form", { name: "فلاتر التقارير" });
-  await filters.getByLabel("الفرع").selectOption(branchId);
+  await expect(filters.getByLabel("الفرع")).toHaveValue(branchName);
   await filters.getByLabel("القناة").selectOption("physical");
   await expect(filters.locator(`option[value="${employee.body.id}"]`)).toHaveText(employeeName);
   await filters.getByLabel("الموظف").selectOption(employee.body.id);
@@ -354,8 +354,9 @@ test("manager filters a connected report and follows its real sale and Return pr
     has: page.locator(`a[href="/sales?saleId=${saleId}"]`),
   }).getByRole("link", { name: "فتح سجل المبيعات" }).click();
   await expect(page).toHaveURL(new RegExp(`/sales\\?saleId=${saleId}$`));
-  await expect(page.getByTestId("sale-details")).toContainText(employeeName);
-  await expect(page.getByTestId("sale-details")).toContainText("الإجمالي: 450 ج.م.");
+  const saleRow = page.getByTestId("sale-list").getByRole("row").filter({ hasText: sale.body.reference! });
+  await expect(saleRow).toContainText(employeeName);
+  await expect(saleRow).toContainText("450 ج.م.");
   await expect(page.getByTestId("sale-details")).toContainText(discountReason);
 
   await page.goto(`${internalOrigin}/returns?returnId=${returnId}`);
@@ -531,8 +532,11 @@ test("manager sees accepted opening stock apart from purchases", async ({ page }
   expect(sawFayoumOpening, "Fayoum opening receipt visible with its 720 EGP cost").toBe(true);
   expect(sawDistinctPurchase, "distinct purchase visible with its 75 EGP cost").toBe(true);
 
+  await page.getByTestId("active-branch").click();
+  await page.getByRole("button", { name: fayoum.nameAr, exact: true }).click();
+  await page.getByRole("link", { name: "التقارير", exact: true }).click();
   const filters = page.getByRole("form", { name: "فلاتر التقارير" });
-  await filters.getByLabel("الفرع").selectOption(fayoum.id);
+  await expect(filters.getByLabel("الفرع")).toHaveValue(fayoum.nameAr);
   await filters.getByLabel("القناة").selectOption("physical");
   await expect(filters.locator(`option[value="${workspace.body.staff.id}"]`)).toHaveCount(1);
   await filters.getByLabel("الموظف").selectOption(workspace.body.staff.id);

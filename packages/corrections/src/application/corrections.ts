@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { ForbiddenError, isManager, NotFoundError, UnauthenticatedError } from "@bravos/identity";
+import { ForbiddenError, canUseBranch, isManager, NotFoundError, UnauthenticatedError } from "@bravos/identity";
 import { OperationConflictError } from "@bravos/inventory";
 import { CorrectionsValidationError } from "../domain/errors.ts";
 import type {
@@ -25,42 +25,44 @@ export function createCorrectionServices(ports: { actors: CorrectionsActorPort; 
     const staff = await ports.actors.getStaff(auth.staffId);
     if (!staff || staff.disabled) throw new UnauthenticatedError();
     if (!isManager(staff)) throw new ForbiddenError();
-    return staff;
+    const branchId = await ports.actors.getSessionBranch(auth.sessionId);
+    if (!branchId || !canUseBranch(staff, branchId)) throw new ForbiddenError();
+    return { staff, branchId };
   }
   return {
     async getSale(auth, saleIdValue) {
-      await manager(auth);
+      const { branchId } = await manager(auth);
       const saleId = uuid(saleIdValue, "البيع غير موجود.");
-      const value = await ports.corrections.getSale(saleId);
+      const value = await ports.corrections.getSale(saleId, branchId);
       if (!value) throw new NotFoundError("البيع غير موجود.");
       return value;
     },
     async changeSale(auth, saleIdValue, input) {
-      const staff = await manager(auth);
+      const { staff, branchId } = await manager(auth);
       const saleId = uuid(saleIdValue, "البيع غير موجود.");
       const command = parse(input, "sale");
       const payloadFingerprint = fingerprint({ actorStaffId: staff.id, saleId, ...command });
       const result = await ports.corrections.changeSale({
-        correctionId: crypto.randomUUID(), saleId, actorStaffId: staff.id, at: clock.now(), payloadFingerprint, ...command,
+        correctionId: crypto.randomUUID(), saleId, branchId, actorStaffId: staff.id, at: clock.now(), payloadFingerprint, ...command,
       });
       if (result.kind === "not-found") throw new NotFoundError("البيع غير موجود.");
       if (result.kind === "stale") throw new OperationConflictError("تغيرت بيانات البيع الفعالة. أعد تحميلها قبل التصحيح.");
       return { value: result.value, created: result.kind === "created" };
     },
     async getReturn(auth, returnIdValue) {
-      await manager(auth);
+      const { branchId } = await manager(auth);
       const returnId = uuid(returnIdValue, "الإرجاع غير موجود.");
-      const value = await ports.corrections.getReturn(returnId);
+      const value = await ports.corrections.getReturn(returnId, branchId);
       if (!value) throw new NotFoundError("الإرجاع غير موجود.");
       return value;
     },
     async changeReturn(auth, returnIdValue, input) {
-      const staff = await manager(auth);
+      const { staff, branchId } = await manager(auth);
       const returnId = uuid(returnIdValue, "الإرجاع غير موجود.");
       const command = parse(input, "return");
       const payloadFingerprint = fingerprint({ actorStaffId: staff.id, returnId, ...command });
       const result = await ports.corrections.changeReturn({
-        correctionId: crypto.randomUUID(), returnId, actorStaffId: staff.id, at: clock.now(), payloadFingerprint, ...command,
+        correctionId: crypto.randomUUID(), returnId, branchId, actorStaffId: staff.id, at: clock.now(), payloadFingerprint, ...command,
       });
       if (result.kind === "not-found") throw new NotFoundError("الإرجاع غير موجود.");
       if (result.kind === "stale") throw new OperationConflictError("تغيرت بيانات الإرجاع الفعالة. أعد تحميلها قبل التصحيح.");

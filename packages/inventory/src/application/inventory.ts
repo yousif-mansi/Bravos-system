@@ -230,8 +230,8 @@ export function createInventoryServices(ports: {
 
     async acknowledgeCoordination(auth, input) {
       const staff = await requireStaff(auth);
-      const body = expectObject(input, "بيانات تأكيد نقطة البيع غير صالحة.");
-      assertAllowedKeys(body, new Set(["coordinationId", "deviceId", "snapshotId"]), "بيانات تأكيد نقطة البيع غير صالحة.");
+      const body = expectObject(input, "بيانات تأكيد جهاز الكاشير غير صالحة.");
+      assertAllowedKeys(body, new Set(["coordinationId", "deviceId", "snapshotId"]), "بيانات تأكيد جهاز الكاشير غير صالحة.");
       return ports.coordination.acknowledge({
         coordinationId: assertUuid(body.coordinationId, "تنسيق العد غير موجود."),
         deviceId: assertUuid(body.deviceId, "معرّف الجهاز غير صالح."),
