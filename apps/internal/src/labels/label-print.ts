@@ -9,7 +9,13 @@ import {
   type LabelJob,
 } from "@bravos/print-contracts";
 import { accountGeneration, subscribeAccount } from "../account-session.ts";
-import { ConnectorClientError, hasPairingToken, submitConnectorJob } from "../printing/connector-client.ts";
+import {
+  ConnectorClientError,
+  PRODUCTION_PAIRING_MESSAGE,
+  hasPairingToken,
+  requiresPairedPrinter,
+  submitConnectorJob,
+} from "../printing/connector-client.ts";
 import { claimBrowserPrint, releaseBrowserPrint } from "../printing/browser-print-lock.ts";
 import {
   formatSavedDefaultPrice,
@@ -331,7 +337,8 @@ export async function printProductLabels(
   if (accountGeneration() !== generation) throw abortError(signal ?? new AbortController().signal);
   const paired = pairingOrThrow();
   if (paired && !connectorLabelShape(settings)) throw fail(LABEL_SIZE_UNSUPPORTED);
-  else if (!paired && layout.profile === XP236B_38X25_PROFILE) throw fail(XP_NEEDS_PAIRING);
+  if (!paired && requiresPairedPrinter()) throw fail(PRODUCTION_PAIRING_MESSAGE);
+  if (!paired && layout.profile === XP236B_38X25_PROFILE) throw fail(XP_NEEDS_PAIRING);
   if (typeof window === "undefined" || typeof document === "undefined") {
     throw fail("الطباعة متاحة من شاشة المتصفح فقط.");
   }

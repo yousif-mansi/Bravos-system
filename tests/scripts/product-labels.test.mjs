@@ -194,12 +194,11 @@ test("XP-236B 38x25 keeps one native dot for BRV-SAMPLE-001 and ten quiet module
   assert.ok(Math.abs(layout.moduleWidthMm * 203 - 25.4) < 1e-9);
   assert.ok(Math.abs(layout.barcodeWidthMm - (209 * 25.4) / 203) < 1e-9);
   assert.ok(layout.barcodeWidthMm < 38);
-  assert.equal(layout.codeFontMm, 2);
-  assert.equal(layout.nameFontMm, 1.6);
-  assert.equal(layout.brandFontMm, 2);
+  assert.ok(layout.nameFontMm > layout.codeFontMm);
+  assert.ok(layout.brandFontMm > layout.nameFontMm);
   assert.equal(layout.priceText, null);
-  assert.equal(layout.lineHeight, 1.15);
   assert.ok(layout.barHeightMm >= 10);
+  assert.ok(layout.barHeightMm <= 12);
   assert.ok(layout.codeFontMm > (13 * 25.4) / 203);
   assert.ok(layout.nameFontMm > (12 * 25.4) / 203);
   assert.equal(decodeModules(layout.barcode.modules, 1), code);
@@ -226,22 +225,18 @@ test("compact profile uses two dots only when that integer width fits", () => {
   assert.ok(Math.abs(short.moduleWidthMm * 203 - 50.8) < 1e-9);
 });
 
-test("compact 38x25 accepts a mixed-script name and rejects a name that cannot fit", () => {
+test("compact 38x25 leaves fixed barcode space for long names shown with an ellipsis", () => {
   const name = "Tapered Twill Pants بنطال تويل";
   const item = product("BRV-SAMPLE-001", name);
   const layout = planLabelLayout(item, xp());
   assert.equal(layout.product.nameAr, name);
   assert.equal(layout.barcode.value, "BRV-SAMPLE-001");
   assert.ok(layout.barHeightMm + 1e-9 >= 10);
-  assert.equal(layout.codeFontMm, 2);
-  assert.equal(layout.nameFontMm, 1.6);
 
-  const tooLong = `${"بنطال تويل المفصل ".repeat(24)}Extra English twill that must stay intact`;
-  assert.throws(
-    () => planLabelLayout(product("BRV-SAMPLE-001", tooLong), xp()),
-    (error) => error instanceof LabelPrintError && /بارتفاع .+ مم على الأقل|بعرض .+ مم على الأقل/.test(error.message),
-  );
-  assert.equal(tooLong.includes("Extra English twill that must stay intact"), true);
+  const longName = "بنطال تويل مع اسم طويل ثم وصف إضافي Extra English twill";
+  const longLayout = planLabelLayout(product("BRV-SAMPLE-001", longName), xp());
+  assert.equal(longLayout.product.nameAr, longName);
+  assert.equal(longLayout.barHeightMm, layout.barHeightMm);
 });
 
 test("XP-236B profile is optional and rejects a non-203 dpi or a width under 38", () => {

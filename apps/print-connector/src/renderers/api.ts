@@ -234,6 +234,8 @@ function readQueue(value: unknown): ObservedQueue | null {
   if (!isRecord(value)) return null;
   if (typeof value.found !== "boolean" || typeof value.workOffline !== "boolean" || typeof value.truncated !== "boolean") return null;
   if (typeof value.driverName !== "string" || typeof value.portName !== "string" || typeof value.status !== "string") return null;
+  const verifiedLabelDeviceId = value.verifiedLabelDeviceId;
+  if (Object.hasOwn(value, "verifiedLabelDeviceId") && (typeof verifiedLabelDeviceId !== "string" || verifiedLabelDeviceId.length > 180)) return null;
   if (!Array.isArray(value.devices) || value.devices.length > 16) return null;
   const devices: ObservedDevice[] = [];
   for (const device of value.devices) {
@@ -248,6 +250,7 @@ function readQueue(value: unknown): ObservedQueue | null {
     portName: value.portName,
     status: value.status,
     truncated: value.truncated,
+    ...(typeof verifiedLabelDeviceId === "string" ? { verifiedLabelDeviceId } : {}),
     devices,
   };
 }

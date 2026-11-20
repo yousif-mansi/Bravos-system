@@ -2,6 +2,7 @@
 export const PRINT_CONNECTOR_HOST = "127.0.0.1";
 export const PRINT_CONNECTOR_PORT = 17831;
 export const DEFAULT_STAFF_ORIGIN = "http://127.0.0.1:5177";
+export const PRODUCTION_STAFF_ORIGIN = "https://staff.bravoswear.store";
 
 export const LABEL_PRINTER_NAME = "Xprinter XP-236B";
 export const RECEIPT_PRINTER_NAME = "Bravos Receipts - Xprinter XP-80TS";
@@ -58,8 +59,9 @@ export const PAIRING_LOCK_MS = 60_000;
 
 const ORIGIN = /^http:\/\/127\.0\.0\.1:(\d{1,5})$/;
 
-/** Configured staff page origin. HTTPS, localhost names, and the connector port are refused. */
+/** Allow the exact hosted staff origin or an existing local development origin. */
 export function assertStaffOrigin(value: string): string {
+  if (value === PRODUCTION_STAFF_ORIGIN) return value;
   const match = ORIGIN.exec(value);
   if (!match?.[1]) {
     throw new Error("invalid_staff_origin");

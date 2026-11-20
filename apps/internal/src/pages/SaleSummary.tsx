@@ -8,30 +8,16 @@ import {
   receiptPhoneWarning,
   ReceiptPrintError,
   resolveReceiptOptions,
-  type ReceiptPrintResult,
 } from "../receipts/index.ts";
 
-const RECEIPT_PRINT_REQUESTED =
+export const RECEIPT_PRINT_REQUESTED =
   "تم طلب طباعة الإيصال. إذا لم يخرج، يمكنك إعادة الطباعة.";
-const RECEIPT_CONNECTOR_SUBMITTED =
-  "أُرسل الإيصال إلى طابعة الإيصالات. هذا تسليم لبرنامج الطباعة فقط، وليس خروج الورق. إذا لم يخرج، تحقق من الطابعة ثم أعد الطباعة.";
-
-export function receiptPrintStatus(result: ReceiptPrintResult): string {
-  return result.channel === "connector" ? RECEIPT_CONNECTOR_SUBMITTED : RECEIPT_PRINT_REQUESTED;
-}
 
 export function receiptPrintFailureMessage(error: unknown): string {
   if (error instanceof ReceiptPrintError) {
     return error.message;
   }
   return "تعذرت طباعة الإيصال. البيع محفوظ. يمكنك إعادة طباعة الإيصال.";
-}
-
-export async function printCompletedBranchReceipt(
-  sale: SaleDto,
-  onProgress?: (message: string) => void,
-): Promise<ReceiptPrintResult> {
-  return onProgress ? printSaleReceipt(sale, {}, onProgress) : printSaleReceipt(sale);
 }
 
 export function SaleSummary({
@@ -79,13 +65,11 @@ export function SaleSummary({
     setPrintStatus("جارٍ تجهيز الإيصال…");
     setPrinting(true);
     try {
-      const result = await printCompletedBranchReceipt(sale, (message) => {
-        if (jobLive()) setPrintStatus(message);
-      });
+      await printSaleReceipt(sale);
       if (!jobLive()) {
         return;
       }
-      setPrintStatus(receiptPrintStatus(result));
+      setPrintStatus(RECEIPT_PRINT_REQUESTED);
     } catch (caught) {
       if (!jobLive()) {
         return;

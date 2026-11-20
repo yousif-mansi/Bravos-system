@@ -122,7 +122,7 @@ async function sellOne(
   if (available !== undefined) {
     await expect(selection.getByTestId("available-quantity")).toHaveText(`الكمية المتاحة في الفرع: ${available}`);
   }
-  await selection.getByTestId("add-operational").click();
+  await expect(page.getByTestId("sale-cart")).toContainText(seeded.code);
   await finalizePosSale(page.getByRole("form", { name: "إتمام البيع" }), page, { print: button === "complete-sale-print" });
   await expect(page.getByTestId("sale-details")).toContainText(new RegExp(`رقم الإيصال: ${receipt.source}`));
 }
@@ -403,7 +403,7 @@ test("two tabs allocate different counters and a failed sale rolls the counter b
   const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
   await lookup.getByLabel("رمز المنتج").fill(seeded.code);
   await lookup.getByLabel("رمز المنتج").press("Enter");
-  await page.getByTestId("add-operational").click();
+  await expect(page.getByTestId("sale-cart")).toContainText(seeded.code);
   await page.getByTestId("complete-sale").click();
   await expect(page.getByRole("alert")).toContainText("تعذر حفظ البيع");
   const afterFailure = await readPosDb(page);

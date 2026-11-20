@@ -2,8 +2,8 @@ import type { SaleDto, SalePaymentDto } from "@bravos/contracts";
 import { piastersToEgpInput } from "../money.ts";
 import { customerReceiptNumber } from "../receipt-number.ts";
 
-/** Browser paper is 58 mm portrait. A stored 80 is accepted and treated as 58. */
-export type ReceiptPaperWidthMm = 58 | 80;
+/** Legacy paper preferences are accepted. Receipt output uses the fixed width. */
+export type ReceiptPaperWidthMm = 58 | 75 | 80;
 
 /** Explicit receipt settings. The owner supplies the phone; an empty string means it is not configured. */
 export type ReceiptOptions = {
@@ -59,7 +59,7 @@ export type ReceiptView = {
   cashCollected: string | null;
   paymentMethodLabel: string;
   paymentAllocations: ReceiptMoneyLine[];
-  /** Content column width in millimetres after the 58 mm paper inset. */
+  /** Width inside the side margins of the printed document. */
   contentWidthMm: number;
 };
 
@@ -67,9 +67,8 @@ export type ReceiptView = {
 const CSS_PX_PER_MM = 96 / 25.4;
 /** Long receipts paginate at this height instead of becoming an A4 sheet. */
 export const RECEIPT_MAX_PAGE_HEIGHT_MM = 300;
-/** Physical browser page width. Native hardware roll stays 80 mm. */
-export const RECEIPT_PAPER_WIDTH_MM = 58;
-const RECEIPT_CONTENT_INSET_MM = 48;
+export const RECEIPT_PAPER_WIDTH_MM = 75;
+export const RECEIPT_SIDE_INSET_MM = 3;
 const CAIRO_DATE_TIME = /^(\d{2}\/\d{2}\/\d{4}) (\d{2}):(\d{2})$/;
 
 const LOCAL_REFERENCE_PREFIX = "عملية محلية ";
@@ -110,8 +109,8 @@ export function formatCairoDateTime(iso: string): string {
   return `${read("day")}/${read("month")}/${read("year")} ${read("hour")}:${read("minute")}`;
 }
 
-export function contentWidthMm(_paperWidthMm: ReceiptPaperWidthMm = 58): number {
-  return RECEIPT_CONTENT_INSET_MM;
+export function contentWidthMm(_paperWidthMm: ReceiptPaperWidthMm = RECEIPT_PAPER_WIDTH_MM): number {
+  return RECEIPT_PAPER_WIDTH_MM - 2 * RECEIPT_SIDE_INSET_MM;
 }
 
 /**
@@ -142,7 +141,7 @@ export function receiptPageSizeCss(widthMm: number, heightMm: number): string {
 }
 
 /**
- * Thermal page box for 58 mm portrait paper.
+ * Thermal page box for the fixed-width portrait receipt.
  * Height is rounded up with a 1mm buffer, kept at least as tall as the paper
  * width so a short receipt stays portrait, then capped so long receipts paginate.
  */

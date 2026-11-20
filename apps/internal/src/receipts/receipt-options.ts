@@ -1,4 +1,4 @@
-import type { ReceiptOptions, ReceiptPaperWidthMm } from "./receipt-model.ts";
+import { RECEIPT_PAPER_WIDTH_MM, type ReceiptOptions, type ReceiptPaperWidthMm } from "./receipt-model.ts";
 
 const PHONE_ENV = "VITE_POS_RECEIPT_PHONE";
 const WIDTH_ENV = "VITE_POS_RECEIPT_PAPER_WIDTH";
@@ -12,7 +12,7 @@ function envRecord(): Record<string, string | undefined> {
 }
 
 export function parsePaperWidth(_value: string | undefined): ReceiptPaperWidthMm {
-  return 58;
+  return RECEIPT_PAPER_WIDTH_MM;
 }
 
 /** Env defaults, then optional explicit overrides for tests and a future settings call. */
@@ -20,7 +20,7 @@ export function resolveReceiptOptions(overrides?: Partial<ReceiptOptions>): Rece
   const env = envRecord();
   const contactPhone = overrides?.contactPhone ?? env[PHONE_ENV] ?? "";
   return {
-    paperWidthMm: 58,
+    paperWidthMm: RECEIPT_PAPER_WIDTH_MM,
     contactPhone,
   };
 }

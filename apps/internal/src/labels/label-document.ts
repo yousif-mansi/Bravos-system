@@ -1,5 +1,19 @@
 import { receiptFontStyles } from "../receipts/receipt-document.ts";
-import { BRAND_GAP_MM, formatLabelMm, LabelPrintError, NAME_GAP_MM, TEXT_GAP_MM, type LabelLayout } from "./barcode.ts";
+import officialVerticalLogoSvg from "../../../../logo svg/01_Primary-Logo_Vertical_Black.svg?raw";
+import {
+  BRAND_GAP_MM,
+  COMPACT_BAR_HEIGHT_MM,
+  COMPACT_LOGO_HEIGHT_MM,
+  COMPACT_PRICE_FONT_MM,
+  COMPACT_ROW_GAP_MM,
+  COMPACT_VERTICAL_PADDING_MM,
+  formatLabelMm,
+  LabelPrintError,
+  NAME_GAP_MM,
+  TEXT_GAP_MM,
+  XP236B_38X25_PROFILE,
+  type LabelLayout,
+} from "./barcode.ts";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const BAR_FLOOR_MM = 10;
@@ -95,6 +109,59 @@ body { font-family: Cairo, sans-serif; }
   line-height: ${lineHeight};
   text-align: center;
 }
+${layout.profile === XP236B_38X25_PROFILE ? compactStyles(layout) : ""}
+`;
+}
+
+function compactStyles(layout: LabelLayout): string {
+  return `
+.label {
+  padding: ${mm(COMPACT_VERTICAL_PADDING_MM)} ${mm(layout.pagePaddingMm)};
+  border: none;
+  gap: ${mm(COMPACT_ROW_GAP_MM)};
+  justify-content: space-between;
+  align-items: stretch;
+  overflow: hidden;
+  print-color-adjust: exact;
+  -webkit-print-color-adjust: exact;
+}
+.label-header, .label-footer {
+  display: flex;
+  direction: ltr;
+  justify-content: space-between;
+  gap: ${mm(1)};
+}
+.label-header { align-items: center; }
+.label-footer { align-items: baseline; }
+.label-header .code {
+  font-weight: 500;
+  font-size: ${mm(layout.barcode.value.length > 18 ? 1.8 : layout.codeFontMm)};
+  text-align: left;
+}
+.label-header .brand {
+  flex: none;
+  display: block;
+  width: ${mm(COMPACT_LOGO_HEIGHT_MM * 503 / 629)};
+  height: ${mm(COMPACT_LOGO_HEIGHT_MM)};
+  margin: 0;
+}
+.label-footer .name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-weight: 600;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin: 0;
+}
+.label-footer .price {
+  flex: none;
+  font-size: ${mm((layout.priceText?.length ?? 0) > 12 ? 3.05 : COMPACT_PRICE_FONT_MM)};
+  font-weight: 800;
+  white-space: nowrap;
+  text-align: right;
+}
 `;
 }
 
@@ -139,41 +206,52 @@ function appendLabel(doc: Document, layout: LabelLayout): void {
   section.dataset.moduleDots = String(layout.moduleDots);
   section.dataset.labelProfile = layout.profile;
 
-  const brand = doc.createElement("p");
-  brand.className = "brand";
-  brand.dir = "ltr";
-  brand.textContent = "Bravos";
-  section.appendChild(brand);
-
   const bars = doc.createElement("div");
   bars.className = "bars";
   const graphic = drawBars(doc, layout.barcode.modules, layout.barcode.quietZoneModules);
   graphic.setAttribute("aria-label", layout.barcode.value);
   bars.appendChild(graphic);
-  section.appendChild(bars);
-
-  const meta = doc.createElement("div");
-  meta.className = layout.priceText ? "meta" : "meta single";
   const code = doc.createElement("p");
   code.className = "code";
   code.dir = "ltr";
   code.textContent = layout.barcode.value;
-  meta.appendChild(code);
+  const price = doc.createElement("p");
   if (layout.priceText) {
-    const price = doc.createElement("p");
     price.className = "price";
     price.dir = "ltr";
     price.textContent = layout.priceText;
-    meta.appendChild(price);
   }
-  section.appendChild(meta);
 
-  if (layout.product.nameAr.length > 0) {
-    const name = doc.createElement("p");
-    name.className = "name";
-    name.dir = "auto";
-    name.textContent = layout.product.nameAr;
-    section.appendChild(name);
+  const name = doc.createElement("p");
+  name.className = "name";
+  name.dir = "auto";
+  name.textContent = layout.product.nameAr;
+
+  if (layout.profile === XP236B_38X25_PROFILE) {
+    const header = doc.createElement("div");
+    const footer = doc.createElement("div");
+    header.className = "label-header";
+    footer.className = "label-footer";
+    const svg = new DOMParser().parseFromString(officialVerticalLogoSvg, "image/svg+xml").documentElement;
+    const logo = doc.importNode(svg, true);
+    logo.setAttribute("class", "brand");
+    logo.setAttribute("role", "img");
+    logo.setAttribute("aria-label", "Bravos");
+    header.append(code, logo);
+    footer.appendChild(name);
+    if (layout.priceText) footer.appendChild(price);
+    section.append(header, bars, footer);
+  } else {
+    const brand = doc.createElement("p");
+    brand.className = "brand";
+    brand.dir = "ltr";
+    brand.textContent = "Bravos";
+    const meta = doc.createElement("div");
+    meta.className = layout.priceText ? "meta" : "meta single";
+    meta.appendChild(code);
+    if (layout.priceText) meta.appendChild(price);
+    section.append(brand, bars, meta);
+    if (layout.product.nameAr.length > 0) section.appendChild(name);
   }
 
   doc.body.appendChild(section);
@@ -201,26 +279,24 @@ function requiredHeightMessage(paddingPx: number, textPx: number): string {
 export function fitAndValidateLabelDocument(doc: Document, layout: LabelLayout): void {
   const view = doc.defaultView;
   const label = doc.querySelector<HTMLElement>(".label");
-  const meta = label?.querySelector<HTMLElement>(".meta") ?? null;
-  if (!view || !label || !meta) {
+  if (!view || !label) {
     throw new LabelPrintError("تعذر قياس الملصق.");
   }
 
   const labelStyle = view.getComputedStyle(label);
   const padTop = pxLength(labelStyle.paddingTop);
   const padBottom = pxLength(labelStyle.paddingBottom);
-  const brand = label.querySelector<HTMLElement>(".brand");
-  const name = label.querySelector<HTMLElement>(".name");
-  const textPx = (brand ? outerBlockPx(brand, view) : 0)
-    + outerBlockPx(meta, view)
-    + (name ? outerBlockPx(name, view) : 0);
+  const compact = layout.profile === XP236B_38X25_PROFILE;
+  const textRows = label.querySelectorAll<HTMLElement>(compact ? ".label-header, .label-footer" : ".brand, .meta, .name");
+  const textPx = Array.from(textRows).reduce((sum, row) => sum + outerBlockPx(row, view), 0)
+    + (compact ? 2 * pxLength(labelStyle.rowGap) : 0);
   const innerHeight = label.getBoundingClientRect().height - padTop - padBottom;
   const remainingPx = innerHeight - textPx;
   if (remainingPx / PX_PER_MM + 1e-4 < BAR_FLOOR_MM) {
     throw new LabelPrintError(requiredHeightMessage(padTop + padBottom, textPx));
   }
 
-  const fitted = `${remainingPx}px`;
+  const fitted = `${compact ? Math.min(remainingPx, COMPACT_BAR_HEIGHT_MM * PX_PER_MM) : remainingPx}px`;
   for (const bars of doc.querySelectorAll<HTMLElement>(".bars")) {
     bars.style.height = fitted;
   }
@@ -231,7 +307,7 @@ export function fitAndValidateLabelDocument(doc: Document, layout: LabelLayout):
     const left = box.left + pxLength(style.paddingLeft);
     const right = box.right - pxLength(style.paddingRight);
     const bottom = box.bottom - pxLength(style.paddingBottom);
-    for (const child of section.children) {
+    for (const child of section.querySelectorAll(".bars, .brand, .meta, .name, .code, .price")) {
       const childBox = child.getBoundingClientRect();
       if (childBox.left < left - OVERFLOW_PX || childBox.right > right + OVERFLOW_PX) {
         throw new LabelPrintError(`رمز المنتج يحتاج ملصقاً بعرض ${formatLabelMm(layout.minimumWidthMm)} مم على الأقل`);
@@ -246,7 +322,8 @@ export function fitAndValidateLabelDocument(doc: Document, layout: LabelLayout):
 /** Fills an empty document. The print iframe and the preview iframe both use this. */
 export function renderLabelDocument(doc: Document, layout: LabelLayout, fontBaseUrl: string): void {
   const style = doc.createElement("style");
-  style.textContent = `${receiptFontStyles(fontBaseUrl)}${labelPrintStyles(layout)}`;
+  const weights = layout.profile === XP236B_38X25_PROFILE ? [500, 600, 800] : [400, 700];
+  style.textContent = `${receiptFontStyles(fontBaseUrl, weights)}${labelPrintStyles(layout)}`;
   doc.head.appendChild(style);
   doc.documentElement.lang = "ar";
   doc.documentElement.dir = "rtl";

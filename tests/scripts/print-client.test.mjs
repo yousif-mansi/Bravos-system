@@ -13,7 +13,6 @@ import {
   readConnectorConnection,
   submitConnectorJob,
 } from "../../apps/internal/src/printing/connector-client.ts";
-import { buildReceiptView } from "../../apps/internal/src/receipts/receipt-model.ts";
 
 function isRawSvgUrl(url) {
   const parsed = new URL(url);
@@ -36,15 +35,11 @@ const rawSvgHook = registerHooks({
 });
 
 const { connectorLabelJob } = await import("../../apps/internal/src/labels/label-print.ts");
-const { connectorReceiptJob, receiptConnectorLayoutMessage } = await import("../../apps/internal/src/receipts/receipt-print.ts");
 rawSvgHook.deregister();
 
 const ORIGIN = "http://127.0.0.1:5177";
 const TOKEN = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ";
 const JOB_ID = "11111111-1111-4111-8111-111111111111";
-const OPERATION_ID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
-const SALE_ID = "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee";
-
 function storage(seed = new Map()) {
   const blocked = new Set();
   return {
@@ -97,58 +92,6 @@ function labelJob() {
     { widthMm: 38, heightMm: 25, copies: 1, dpi: 203, profile: "xp236b-38x25" },
     JOB_ID,
   );
-}
-
-function sale(overrides = {}) {
-  return {
-    id: SALE_ID,
-    reference: "POS-9",
-    receiptReference: "BRV-7-12",
-    operationId: OPERATION_ID,
-    branch: { id: "branch-1", nameAr: "فرع مدينة نصر" },
-    soldByStaffId: "staff-1",
-    soldByDisplayName: "أمين الصندوق",
-    occurredAt: "2026-01-15T22:30:00.000Z",
-    recordedAt: null,
-    customerName: "زبون",
-    customerPhone: null,
-    originalTotalPiasters: 30000,
-    automaticOfferDiscountPiasters: 0,
-    appliedAutomaticOffer: null,
-    couponDiscountPiasters: 0,
-    appliedCoupon: null,
-    employeeDiscountPiasters: 0,
-    discountReason: null,
-    discountedByStaffId: null,
-    finalTotalPiasters: 30000,
-    exchangeCreditAppliedPiasters: 0,
-    cashReceivedPiasters: 30000,
-    payment: { method: "cash", cashPiasters: 30000, onlinePiasters: 0 },
-    physicallyCompleted: true,
-    discrepancy: null,
-    lines: [{
-      id: "line-1",
-      variantId: "variant-1",
-      quantity: 1,
-      listedUnitPricePiasters: 30000,
-      originalPiasters: 30000,
-      discountPiasters: 0,
-      paidPiasters: 30000,
-      automaticOfferDiscountPiasters: 0,
-      couponDiscountPiasters: 0,
-      employeeDiscountPiasters: 0,
-      allocatedQuantity: 1,
-      unallocatedQuantity: 0,
-      units: [],
-      variant: {
-        id: "variant-1",
-        product: { id: "product-1", code: "BRV-001", nameAr: "قميص" },
-        size: { id: "size-m", nameAr: "M" },
-        color: { id: "color-black", nameAr: "أسود" },
-      },
-    }],
-    ...overrides,
-  };
 }
 
 test("pairing saves a 43-character token at the fixed pair URL and clears nothing else", async () => {
@@ -381,7 +324,7 @@ test("explicit failure and unknown do not poll a new job or fall back", async ()
   assert.deepEqual(journal, ["POST"]);
 });
 
-test("receipt and label jobs stay apart, and a 58 mm receipt uses the receipt printer", () => {
+test("label jobs keep the dedicated dimensions and include the saved price when present", () => {
   const label = labelJob();
   assert.equal(label.kind, "label");
   assert.equal(label.profile, "compact");
@@ -402,36 +345,6 @@ test("receipt and label jobs stay apart, and a 58 mm receipt uses the receipt pr
     /38×25/,
   );
 
-  const view = buildReceiptView(sale(), { paperWidthMm: 80, contactPhone: "" });
-  const receipt = connectorReceiptJob(view, JOB_ID);
-  assert.equal(receipt.kind, "receipt");
-  assert.equal(receipt.receiptView.contentWidthMm, 48);
-  assert.equal(receipt.receiptView.printedReference, "BRV-7-12");
-  assert.equal(receipt.receiptView.finalTotal, view.finalTotal);
-  assert.equal(Object.hasOwn(receipt.receiptView, "serverReference"), false);
-  assert.equal(Object.hasOwn(receipt.receiptView, "localOperationReference"), false);
-  const packed = JSON.stringify(receipt);
-  assert.equal(packed.includes(OPERATION_ID), false);
-  assert.equal(packed.includes(SALE_ID), false);
-  assert.equal(packed.includes("serverReference"), false);
-  const narrow = connectorReceiptJob(buildReceiptView(sale(), { paperWidthMm: 58, contactPhone: "" }), JOB_ID);
-  assert.equal(narrow.receiptView.contentWidthMm, 48);
-  assert.equal(narrow.kind, "receipt");
-});
-
-test("receipt layout text rejects the layout and mentions an update only for an old connector", () => {
-  const current = receiptConnectorLayoutMessage(false);
-  const old = receiptConnectorLayoutMessage(true);
-  assert.match(current, /رُفض تخطيط طباعة الإيصال/);
-  assert.match(old, /رُفض تخطيط طباعة الإيصال/);
-  assert.equal(current.includes("حدّث برنامج الطباعة"), false);
-  assert.match(old, /حدّث برنامج الطباعة على هذا الجهاز ثم أعد الطباعة/);
-  assert.equal(current.includes("58 مم"), false);
-  assert.equal(old.includes("58 مم"), false);
-  for (const message of [current, old]) {
-    assert.match(message, /لن تُستخدم طابعة المتصفح/);
-    assert.match(message, /البيع مكتمل/);
-  }
 });
 
 test("layout responses keep the connector error and do not post again", async () => {

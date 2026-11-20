@@ -29,5 +29,4 @@ export {
   printSaleReceipt,
   releaseReceiptPrintResources,
   ReceiptPrintError,
-  type ReceiptPrintResult,
 } from "./receipt-print.ts";

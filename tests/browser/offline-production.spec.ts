@@ -131,8 +131,9 @@ test("production precache serves first offline POS navigation and survives a sam
     await again.getByRole("link", { name: "المبيعات" }).click();
     await expect(again.getByTestId("sale-list")).toContainText("كاشير تجريبي");
     await expect(again.getByTestId("sale-list")).toContainText("غير مزامن");
-    await again.getByTestId("sale-list").getByRole("row").filter({ has: again.getByRole("cell", { name: customerName, exact: true }) }).getByRole("button", { name: "فتح التفاصيل" }).click();
-    await expect(again.getByTestId("sale-details")).toContainText("أبشواي");
+    const saleRow = again.getByTestId("sale-list").getByRole("row").filter({ has: again.getByRole("cell", { name: customerName, exact: true }) });
+    await expect(saleRow).toContainText("أبشواي");
+    await saleRow.getByRole("button", { name: "فتح التفاصيل" }).click();
     await expect(again.getByTestId("sale-details")).toContainText("150");
     const restored = await readPosSales(again);
     expect(restored).toHaveLength(1);
@@ -628,8 +629,9 @@ test("schema 2 individual paid units and signed-in session survive upgrade and o
     await expect(again.getByTestId("active-branch")).toContainText("أبشواي");
     await again.getByRole("link", { name: "المبيعات" }).click();
     await expect(again.getByTestId("sale-list")).toContainText("كاشير تجريبي");
-    await again.getByTestId("sale-list").getByRole("row").filter({ has: again.getByRole("cell", { name: customerName, exact: true }) }).getByRole("button", { name: "فتح التفاصيل" }).click();
-    await expect(again.getByTestId("sale-details")).toContainText("أبشواي");
+    const saleRow = again.getByTestId("sale-list").getByRole("row").filter({ has: again.getByRole("cell", { name: customerName, exact: true }) });
+    await expect(saleRow).toContainText("أبشواي");
+    await saleRow.getByRole("button", { name: "فتح التفاصيل" }).click();
     await expect(again.getByTestId("sale-details")).toContainText("199");
     const restored = await again.evaluate(async () => {
       const db = await new Promise<IDBDatabase>((resolve, reject) => {

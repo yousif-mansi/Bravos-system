@@ -1,6 +1,6 @@
 # Windows print connector
 
-The assembled connector is a Windows-only loopback process. It pairs one staff browser origin, accepts label and receipt jobs, draws them with the private native helper, and submits each job to one fixed queue. `queued` and `submitted` record acceptance and spooler handoff. They do not mean paper came out. This note does not record a test run or a physical approval.
+The Windows connector pairs with one staff browser origin and sends barcode labels to the dedicated label queue. The current staff app prints receipts from the same document it uses for the receipt preview. Native receipt jobs remain supported for older staff builds.
 
 The connector has no database and does not call the business API. A job is not a sale. Reprints do not change stock.
 
@@ -10,7 +10,7 @@ The connector has no database and does not call the business API. A job is not a
 
 - Bind only `127.0.0.1:17831`. Other hosts, `localhost`, and other production ports are refused.
 - Staff origin defaults to `http://127.0.0.1:5177`.
-- `BRAVOS_PRINT_STAFF_ORIGIN` may be `http://127.0.0.1:<port>` other than `17831`. HTTPS and the `localhost` hostname are refused.
+- Set `BRAVOS_PRINT_STAFF_ORIGIN` to `https://staff.bravoswear.store` for production. Existing HTTP loopback development origins remain supported. A running connector trusts only the configured origin.
 - Every request must use `Host: 127.0.0.1:17831`. Pair, status, jobs, and unpair also require the exact `Origin`.
 - CORS echoes that origin only. There is no `*` and no credentialed CORS.
 - `Access-Control-Allow-Private-Network: true` is set only for a trusted-origin preflight that asks for it.
@@ -24,24 +24,35 @@ pnpm dev:print-connector
 
 That script is `pnpm --filter @bravos/print-connector start`, which runs `node src/main.ts`. Empty arguments call `startWindowsPrintConnector`. Do not install a service, startup entry, firewall rule, driver, or kiosk policy.
 
+## Connect a production cashier station
+
+1. In Windows **Printers & scanners**, verify the queue names below. Select 38 × 25 mm gap labels at 203 dpi for the XP-236B. Confirm the queues point to different connected USB devices.
+2. Start the updated connector under the cashier's Windows account. Set `BRAVOS_PRINT_STAFF_ORIGIN=https://staff.bravoswear.store` in the PowerShell session before running `pnpm dev:print-connector`. Use the pinned Node and pnpm tools in the updated checkout. Keep the connector running during the shift.
+3. Open production staff POS in the cashier's regular Chrome profile. Allow Chrome access to apps on this device or the local network. On **الرئيسية → برنامج الطباعة**, enter the private 16-character terminal code in **رمز الربط** and click **ربط هذا الجهاز** within two minutes. Check both destination names. If Chrome denied access, grant the site permission and reload. Use the pairing reset below if a fresh code is needed.
+4. Print and scan one 38 × 25 mm label for an existing product. Reprint a completed sale, select **Bravos Receipts - Xprinter XP-80TS** in the browser dialog, and check that the 75 mm portrait receipt prints with both outer table borders intact.
+
+Production label printing requires pairing. Receipt printing is available through the browser dialog.
+
 ## Printers
 
 | Job | Fixed queue | Driver check | Paper |
 | --- | --- | --- | --- |
 | `label` | `Xprinter XP-236B` | `Xprinter XP-236B` | 38×25 mm, 203 dpi, profile `xp236b-38x25` |
-| `receipt` | `Bravos Receipts - Xprinter XP-80TS` | `Xprinter XP-80` | 80 mm hardware roll, 58 mm portrait layout centered in the printable width, copies exactly 1 |
+| `receipt` (older staff builds) | `Bravos Receipts - Xprinter XP-80TS` | `Xprinter XP-80` or `XP-80C` | 80 mm roll, 58 mm portrait layout, copies exactly 1 |
 
-The job cannot name a printer, path, command, HTML document, or script. A label is never routed to the receipt printer. There is no fallback to the Windows default printer, the other device, or a paired browser dialog. The updated connector accepts `contentWidthMm` 48 (current 58 mm portrait) and the older browser value 72, and always draws the 58 mm layout centered on the XP-80TS 80 mm roll. It does not rotate the page or change Windows paper settings. An older connector that still requires 72 rejects 48 as `invalid_job`; the staff app reports that the print program must be updated and does not open the browser printer. Copies for a label are an integer 1..100. An optional label `product.price` is the saved default selling price; older jobs without that field remain valid and print without a price.
+The connector routes each job to its allowlisted queue. Its job schema rejects printer names, paths, commands, HTML, and scripts. For older staff builds it accepts receipt `contentWidthMm` values 48 and 72 and centers the 58 mm design on the XP-80TS 80 mm roll. Copies for a label are an integer 1..100. An optional label `product.price` carries the saved default selling price.
 
 `startWindowsPrintConnector` dynamically imports `submitNativePrint` and passes it to `createWindowsPrintPort`. The allowlist runs before that submitter. Production does not add a second printer probe; the native submitter probes the live USB queue (`USB###`, matching device id, ready status, not offline). A missing submitter still fails closed with `renderer_unavailable` after the platform and allowlist. Each job is submitted on its own, so an offline receipt does not block a later label.
+
+If an XP-236B prints a Windows test page through its named queue but its Plug and Play instance ID ends in a different USB number, an operator can set `BRAVOS_PRINT_LABEL_USB_PORT` to that queue's verified Windows port and `BRAVOS_PRINT_LABEL_USB_DEVICE` to the exact XP-236B instance ID in the local connector launcher. Confirm the test page came out of the XP-236B before setting either value. On every label job the helper checks the queue, driver and live spooler state, requires that exact healthy device to be present, and rejects duplicate XP-236Bs or a conflicting queue or device on the verified port. With a binding configured, an unverified match fails closed. Reverify the Windows test page if the printer, queue or USB connection changes. The binding is read locally by the Windows helper and applies only to labels.
 
 `normalizePortResult` accepts `invalid_layout` and `invalid_job` as definite failures. A throw, an extra field, or any other unrecognized result stays `unknown` and is not retried.
 
 ## Native drawing
 
-Label geometry is 38 mm by 25 mm at 203 dpi, with a 2 mm inset and CODE128 quiet zones of 10 modules. Module width is one or two dots. A code that cannot fit without scaling is `invalid_layout` and is not submitted. The product code and saved display name are drawn as data.
+The XP-236B label is 38 × 25 mm at 203 dpi with 2 mm side margins and 1.5 mm top and bottom margins. Its top row shows the SKU and Bravos logo, the middle row shows the CODE128 barcode, and the bottom row shows the product name and saved price. Long names end in an ellipsis so the price stays visible. The barcode keeps 10 quiet modules on each side and uses the largest fitting module width of one or two printer dots. A code that cannot fit is rejected with `invalid_layout`. The connector draws the entire label in black and white.
 
-Receipt geometry is an 80 mm hardware bitmap with a 58 mm portrait layout centered in that width, at the same 203 dpi. Hard margins are left as side clearance so the 58 mm column stays inside the printable area. The page is capped. The helper loads only its private bundled `Cairo-Regular.ttf` and `bravos-receipt-logo.png`. A job must not carry font or logo paths. If either trusted file is absent, the result is `renderer_unavailable`.
+For legacy receipt jobs the helper draws the 58 mm portrait layout centered on the 80 mm roll at 203 dpi using its bundled `Cairo-Regular.ttf` and `bravos-receipt-logo.png`. The current 75 mm receipt is rendered by the browser and uses the same Cairo web fonts and document as the staff preview.
 
 `submitted` means the native port reported an exact spooler handoff. It is not physical success. `queued` and `submitting` are not terminal and are not paper output.
 
@@ -78,7 +89,7 @@ On Windows the hash record is protected with DPAPI `CurrentUser` and written und
 
 The staff workspace pairs once for the browser origin. `PrinterConnectionPanel` posts the stdout code to `POST /pair` and keeps the returned token in this browser. A later status call must report the same staff origin. After a successful pair, the panel calls `selectKnownLabelProfile`, which stores `xp236b-38x25` under `bravos.product-label.profile`. That write does not overwrite the saved generic width, height, or dpi preference. A blocked profile store does not undo the token.
 
-With a pairing token, the known 38×25 / 203 dpi label and the 80 mm receipt are sent only to `http://127.0.0.1:17831`. The staff screen does not open a browser print dialog and does not use the Windows default printer as a fallback. A known XP-236B profile without a token is refused rather than sent to the browser. An unpaired generic label can still open the browser dialog. The staff app imports `@bravos/print-contracts` and does not import `apps/print-connector`.
+With a pairing token, the 38×25 / 203 dpi label is sent only to `http://127.0.0.1:17831`. An XP-236B profile requires a token. An unpaired generic label can open the browser dialog in local development. All receipt actions open the browser print dialog, where the cashier chooses the receipt printer.
 
 ## Pairing reset
 

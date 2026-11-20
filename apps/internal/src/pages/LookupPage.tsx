@@ -1,6 +1,6 @@
 import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import type { CashierProductLookupDto, CashierVariantDto, PosPriceSnapshotDto, SaleDto, SalePaymentDto, StockPauseDto, WorkspaceDto } from "@bravos/contracts";
-import { printCompletedBranchReceipt, receiptPrintFailureMessage, receiptPrintStatus, SaleSummary } from "./SaleSummary.tsx";
+import { RECEIPT_PRINT_REQUESTED, receiptPrintFailureMessage, SaleSummary } from "./SaleSummary.tsx";
 import { ApiError, acceptOfflineSale, completeSale, getStockPause, getWorkspace, lookupCustomer, lookupProductByCode, lookupSaleOperation, prepareSale } from "../api.ts";
 import { egpInputToPiasters, formatEgpFromPiasters } from "../money.ts";
 import {
@@ -35,10 +35,11 @@ import { ProductBrowser } from "./pos/ProductBrowser.tsx";
 import {
   findCachedProductByCode,
   isolateScanSubmit,
+  productCodesEqual,
   useProductCodeScanner,
 } from "./pos/useProductCodeScanner.ts";
 import { ProductLabelAction } from "../labels/ProductLabelAction.tsx";
-import { releaseReceiptPrintResources } from "../receipts/index.ts";
+import { printSaleReceipt, releaseReceiptPrintResources } from "../receipts/index.ts";
 import "./pos/pos-workspace.css";
 import {
   createPendingSale,
@@ -141,6 +142,8 @@ export default function LookupPage({
   const [receiptError, setReceiptError] = useState("");
   const [receiptStatus, setReceiptStatus] = useState("");
   const [searchError, setSearchError] = useState("");
+  const [searching, setSearching] = useState(false);
+  const searchTailRef = useRef<Promise<void> | null>(null);
   const [pendingSale, setPendingSale] = useState<PendingSale | null>(null);
   const inFlightRef = useRef(false);
   const pendingSaleRef = useRef<PendingSale | null>(null);
@@ -170,14 +173,20 @@ export default function LookupPage({
   const browseFingerprintRef = useRef("");
   const contextKey = `${workspace.staff.id}:${workspace.activeBranch?.id ?? ""}`;
   const contextRef = useRef(contextKey);
+  const inventoryPausedRef = useRef(false);
 
-  const { scanInputRef, onScanKeyDown, focusScanInput } = useProductCodeScanner();
+  const { scanInputRef, onScanKeyDown, focusScanInput } = useProductCodeScanner(scanProduct);
   const [sizeFocusNonce, setSizeFocusNonce] = useState(0);
   useEffect(() => {
     scanInputRef.current?.focus({ preventScroll: true });
   }, [scanInputRef]);
   contextRef.current = contextKey;
-  cartRef.current = cart;
+  inventoryPausedRef.current = Boolean(stockPause || restorePause);
+
+  const replaceCart = useCallback((next: CartLine[]) => {
+    cartRef.current = next;
+    setCart(next);
+  }, []);
 
   const refreshBrowse = useCallback(async (connected = false): Promise<void> => {
     if (browseNetworkRef.current) {
@@ -294,6 +303,7 @@ export default function LookupPage({
   useEffect(() => {
     if (sizeFocusNonce === 0) return;
     window.requestAnimationFrame(() => {
+      if (searchTailRef.current) return;
       document.querySelector<HTMLButtonElement>("[data-testid='add-operational']")?.focus({ preventScroll: true });
     });
   }, [sizeFocusNonce]);
@@ -306,7 +316,7 @@ export default function LookupPage({
         setBrowseProducts([]);
         setProduct(null);
         setEffectiveByVariant({});
-        setCart([]);
+        replaceCart([]);
         setQuote(null);
         setCompleted(null);
         setReceiptError("");
@@ -317,7 +327,7 @@ export default function LookupPage({
         foreignRecoverySnapshotRef.current = null;
       }
     });
-  }, [workspace.staff.id]);
+  }, [replaceCart, workspace.staff.id]);
 
   useEffect(() => {
     return () => {
@@ -383,7 +393,7 @@ export default function LookupPage({
   }, [workspace.staff.id]);
 
   useEffect(() => {
-    setCart([]);
+    replaceCart([]);
     setQuote(null);
     setCompleted(null);
     setError("");
@@ -398,7 +408,7 @@ export default function LookupPage({
     quoteSnapshotRef.current = null;
     quoteCachedRef.current = null;
     confirmActionRef.current = null;
-  }, [workspace.staff.id]);
+  }, [replaceCart, workspace.staff.id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -542,81 +552,111 @@ export default function LookupPage({
     };
   }, [workspace.staff.id]);
 
-  async function withLocalAvailability(found: CashierProductLookupDto): Promise<CashierProductLookupDto> {
+  async function withLocalAvailability(found: CashierProductLookupDto): Promise<number | undefined> {
     if (!workspace.activeBranch) throw new SalesValidationError("اختر فرع البيع أولاً.");
     const capturedContext = contextKey;
     const epoch = accountGeneration();
-    const next: Record<string, number> = {};
     const variant = sellableVariant(found);
-    if (variant) {
-      next[variant.id] = await pos.availableQuantity(workspace.activeBranch.id, variant.id, found.availableQuantity);
-    }
+    if (!variant) return;
+    const available = await pos.availableQuantity(workspace.activeBranch.id, variant.id, found.availableQuantity);
     if (browseMountedRef.current && contextRef.current === capturedContext && accountGeneration() === epoch) {
-      setEffectiveByVariant((current) => ({ ...current, ...next }));
+      setEffectiveByVariant((current) => ({ ...current, [variant.id]: available }));
     }
-    return found;
+    return available;
   }
 
-  async function onSearch(event: FormEvent) {
+  function onSearch(event: FormEvent) {
     isolateScanSubmit(event);
+    if (code.trim() && !searchTailRef.current) queueProductSearch(code, false);
+  }
+
+  function scanProduct(scannedCode: string) {
+    if (inFlightRef.current || formIsFrozen()) {
+      setSearchError("أنهِ مراجعة البيع الحالي قبل إضافة صنف.");
+      return;
+    }
+    // Take the input now so the scanner can fill it again while this lookup is pending.
+    setCode("");
+    queueProductSearch(scannedCode, true);
+  }
+
+  function queueProductSearch(entered: string, addOnMatch: boolean) {
     const capturedContext = contextKey;
     const epoch = accountGeneration();
     const stillCurrent = () => browseMountedRef.current && contextRef.current === capturedContext && accountGeneration() === epoch;
-    setError("");
-    setSearchError("");
-    setPending("search");
-    try {
-      let found;
+    setSearching(true);
+    const work = (searchTailRef.current ?? Promise.resolve()).then(async () => {
+      if (!stillCurrent()) return;
+      setError("");
+      setSearchError("");
       try {
-        found = await lookupProductByCode(code);
+        let found;
+        try {
+          found = await lookupProductByCode(entered);
+        } catch (caught) {
+          if (!isNetworkFailure(caught)) throw caught;
+          const snapshot = await pos.loadSnapshot(workspace.staff.id);
+          found = snapshot?.staffId === workspace.staff.id && snapshot.branch.id === workspace.activeBranch?.id
+            ? findCachedProductByCode(snapshot.products, entered) ?? null
+            : null;
+          if (!found) throw new ApiError(404, "NOT_FOUND", "المنتج غير موجود.");
+        }
+        const available = await withLocalAvailability(found);
+        if (!stillCurrent()) return;
+        setProduct(found);
+        if (addOnMatch && productCodesEqual(found.code, entered)) {
+          if (inventoryPausedRef.current) {
+            setSearchError("تغييرات المخزون متوقفة مؤقتاً.");
+          } else if (inFlightRef.current || formIsFrozen()) {
+            setSearchError("أنهِ مراجعة البيع الحالي قبل إضافة صنف.");
+          } else if (available === undefined) {
+            setSearchError("حدّث قائمة المنتجات قبل البيع.");
+          } else if (!addProduct(found, available)) {
+            setSearchError("الكمية المتاحة غير كافية لإضافة قطعة أخرى.");
+          }
+        } else if (!addOnMatch) {
+          setCode((current) => current === entered ? "" : current);
+          if (searchTailRef.current === work) setSizeFocusNonce((nonce) => nonce + 1);
+        }
       } catch (caught) {
-        if (!isNetworkFailure(caught)) {
-          throw caught;
-        }
-        const snapshot = await pos.loadSnapshot(workspace.staff.id);
-        found = snapshot?.staffId === workspace.staff.id && snapshot.branch.id === workspace.activeBranch?.id
-          ? findCachedProductByCode(snapshot.products, code) ?? null
-          : null;
-        if (!found) {
-          throw new ApiError(404, "NOT_FOUND", "المنتج غير موجود.");
-        }
+        if (!stillCurrent()) return;
+        setProduct(null);
+        setSearchError(caught instanceof ApiError ? caught.messageAr : "تعذر البحث عن المنتج.");
+        if (!addOnMatch && searchTailRef.current === work) focusScanInput();
       }
-      await withLocalAvailability(found);
-      if (!stillCurrent()) return;
-      setProduct(found);
-      setCode("");
-      setSizeFocusNonce((nonce) => nonce + 1);
-    } catch (caught) {
-      if (!stillCurrent()) return;
-      setProduct(null);
-      setSearchError(caught instanceof ApiError ? caught.messageAr : "تعذر البحث عن المنتج.");
-      focusScanInput();
-    } finally {
-      if (stillCurrent()) setPending("");
-    }
+    });
+    searchTailRef.current = work;
+    void work.finally(() => {
+      if (searchTailRef.current !== work) return;
+      searchTailRef.current = null;
+      if (browseMountedRef.current) setSearching(false);
+    });
   }
 
   const selected = product ? sellableVariant(product) : null;
   const selectedEffective = selected ? Math.max(0, effectiveByVariant[selected.id] ?? product?.availableQuantity ?? 0) : 0;
   const selectedCartQuantity = product ? cart.filter((line) => line.product.id === product.id).reduce((sum, line) => sum + line.quantity, 0) : 0;
 
-  function addProduct(item: CashierProductLookupDto) {
+  function addProduct(item: CashierProductLookupDto, available: number): boolean {
+    const variant = sellableVariant(item);
+    if (!variant || inventoryPausedRef.current) return false;
+    const current = cartRef.current;
+    const quantityInCart = current.reduce((sum, line) => sum + (line.product.id === item.id ? line.quantity : 0), 0);
+    if (quantityInCart >= available || !beginCartRevision()) return false;
+    const existing = current.find((line) => line.product.id === item.id);
+    replaceCart(existing
+      ? current.map((line) => line.key === existing.key ? { ...line, quantity: line.quantity + 1 } : line)
+      : [...current, { key: crypto.randomUUID(), product: item, variant, quantity: 1 }]);
+    return true;
+  }
+
+  function addProductManually(item: CashierProductLookupDto) {
     const variant = sellableVariant(item);
     if (!variant) {
       setError("حدّث قائمة المنتجات قبل البيع.");
       return;
     }
-    const available = Math.max(0, effectiveByVariant[variant.id] ?? item.availableQuantity);
-    const quantityInCart = cart.filter((line) => line.product.id === item.id).reduce((sum, line) => sum + line.quantity, 0);
-    if (quantityInCart >= available) return;
-    if (!beginCartRevision()) return;
-    setCart((current) => {
-      const existing = current.find((line) => line.product.id === item.id);
-      if (existing) {
-        return current.map((line) => line.key === existing.key ? { ...line, quantity: line.quantity + 1 } : line);
-      }
-      return [...current, { key: crypto.randomUUID(), product: item, variant, quantity: 1 }];
-    });
+    if (!addProduct(item, effectiveByVariant[variant.id] ?? item.availableQuantity)) return;
     setCode("");
     focusScanInput();
   }
@@ -645,10 +685,10 @@ export default function LookupPage({
       return;
     }
     if (quantity < 1) {
-      setCart((current) => current.filter((line) => line.key !== key));
+      replaceCart(cartRef.current.filter((line) => line.key !== key));
       return;
     }
-    setCart((current) => current.map((line) => (line.key === key ? { ...line, quantity } : line)));
+    replaceCart(cartRef.current.map((line) => line.key === key ? { ...line, quantity } : line));
   }
 
   function parsePayload(): SalePayload | null {
@@ -740,7 +780,7 @@ export default function LookupPage({
       localIdentityRef.current = null;
       setPendingSale(null);
       setQuote(null);
-      setCart([]);
+      replaceCart([]);
       setCustomerName("");
       setCustomerPhone("");
       setCouponCode("");
@@ -967,13 +1007,11 @@ export default function LookupPage({
       if (receiptSale !== sale) {
         setCompleted((current) => current?.id === sale.id ? receiptSale : current);
       }
-      const result = await printCompletedBranchReceipt(receiptSale, (message) => {
-        if (stillCurrent()) setReceiptStatus(message);
-      });
+      await printSaleReceipt(receiptSale);
       if (!stillCurrent()) {
         return;
       }
-      setReceiptStatus(receiptPrintStatus(result));
+      setReceiptStatus(RECEIPT_PRINT_REQUESTED);
     } catch (caught) {
       if (!stillCurrent()) {
         return;
@@ -984,7 +1022,7 @@ export default function LookupPage({
   }
 
   async function submit(options?: { print?: boolean }) {
-    if (inFlightRef.current) {
+    if (inFlightRef.current || searchTailRef.current) {
       return;
     }
     const requestedAction: "complete" | "print" = options?.print ? "print" : "complete";
@@ -1527,7 +1565,7 @@ export default function LookupPage({
   );
   const finalizeDisabled = Boolean(
     ((stockPause || restorePause) && !pendingSale?.physicallyCompleted)
-    || pending
+    || pending || searching
     || !canFinalize,
   );
 
@@ -1552,8 +1590,8 @@ export default function LookupPage({
       <form
         className="card pos-scanner"
         aria-label="البحث برمز المنتج"
-        aria-busy={pending === "search"}
-        onSubmit={(event) => void onSearch(event)}
+        aria-busy={searching}
+        onSubmit={onSearch}
       >
         <div className="field">
           <label htmlFor="lookupCode">رمز المنتج أو اسم الصنف</label>
@@ -1571,11 +1609,11 @@ export default function LookupPage({
             required
           />
         </div>
-        <button type="submit" className="secondary" disabled={Boolean(pending)} aria-disabled={Boolean(pending)}>
-          {pending === "search" ? "جارٍ البحث…" : "بحث"}
+        <button type="submit" className="secondary" disabled={Boolean(pending) || searching}>
+          {searching ? "جارٍ البحث…" : "بحث"}
         </button>
         {searchError ? <div className="error" role="alert">{searchError}</div> : null}
-        {pending === "search" ? <span className="sr-only" role="status">جارٍ البحث عن المنتج…</span> : null}
+        {searching ? <span className="sr-only" role="status">جارٍ البحث عن المنتج…</span> : null}
       </form>
       {product ? (
         <section className="card pos-selection" data-testid="lookup-result">
@@ -1601,7 +1639,7 @@ export default function LookupPage({
               {selectedEffective === 0 ? (
                 <p className="muted">غير متوفر في المخزون حتى يتم الاستلام.</p>
               ) : (
-                <button type="button" data-testid="add-operational" disabled={formLocked || Boolean(stockPause) || Boolean(restorePause) || selectedCartQuantity >= selectedEffective} onClick={() => addProduct(product)}>إضافة إلى السلة</button>
+                <button type="button" data-testid="add-operational" disabled={formLocked || Boolean(stockPause) || Boolean(restorePause) || selectedCartQuantity >= selectedEffective} onClick={() => addProductManually(product)}>إضافة إلى السلة</button>
               )}
             </div>
           ) : (
@@ -1609,7 +1647,7 @@ export default function LookupPage({
           )}
         </section>
       ) : null}
-      <ProductBrowser key={contextKey} products={browseProducts} quantities={effectiveByVariant} cartQuantities={cartQuantities} selectedId={product?.id} loading={browseLoading} message={browseMessage} filter={code} disabled={formLocked || Boolean(stockPause) || Boolean(restorePause)} onAdd={addProduct} onRetry={() => void refreshBrowse(true)} onSelect={(item) => {
+      <ProductBrowser key={contextKey} products={browseProducts} quantities={effectiveByVariant} cartQuantities={cartQuantities} selectedId={product?.id} loading={browseLoading} message={browseMessage} filter={code} disabled={formLocked || Boolean(stockPause) || Boolean(restorePause)} onAdd={addProductManually} onRetry={() => void refreshBrowse(true)} onSelect={(item) => {
         setProduct(item);
         setSizeFocusNonce((nonce) => nonce + 1);
       }} />

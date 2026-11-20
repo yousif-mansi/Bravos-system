@@ -23,6 +23,7 @@ import {
   nativeModuleEffects,
 } from "../../apps/print-connector/src/renderers/index.ts";
 import { prepareNativeJob } from "../../apps/print-connector/src/renderers/job.ts";
+import { LABEL_INSET_DOTS } from "../../apps/print-connector/src/renderers/geometry.ts";
 import { previewNativeJob, probeNativePrinters, submitNativePrint } from "../../apps/print-connector/src/renderers/api.ts";
 import { defaultNativeHelperPath, planNativeHelperSpawn } from "../../apps/print-connector/src/renderers/spawn.ts";
 
@@ -195,18 +196,7 @@ function decodeCode128(pixels, width, height) {
 
 function assertIntegerModules(pixels, width, preview) {
   const moduleDots = preview.moduleDots;
-  let y = -1;
-  for (let row = 0; row < preview.pageHeightDots; row += 1) {
-    let black = 0;
-    for (let x = 0; x < width; x += 1) {
-      if (pixels[(row * width + x) * 4] < 128) black += 1;
-    }
-    if (black > width / 6) {
-      y = row;
-      break;
-    }
-  }
-  assert.ok(y > 0 && y < preview.pageHeightDots);
+  const y = Math.floor(preview.pageHeightDots / 2);
   const black = [];
   for (let x = 0; x < width; x += 1) {
     black.push(pixels[(y * width + x) * 4] < 128);
@@ -214,18 +204,19 @@ function assertIntegerModules(pixels, width, preview) {
   let x = 0;
   while (x < width && !black[x]) x += 1;
   const start = x;
+  const end = start + preview.barcodeModules * moduleDots;
   const runs = [];
-  while (x < width) {
+  while (x < end) {
     const bit = black[x];
     let n = 0;
-    while (x < width && black[x] === bit) {
+    while (x < end && black[x] === bit) {
       n += 1;
       x += 1;
     }
     runs.push(n);
-    if (!bit && n > moduleDots * 2) break;
   }
   assert.equal(start, QUIET_ZONE_MODULES * moduleDots + Math.floor((width - preview.barcodeWidthDots) / 2));
+  assert.ok(black[end - 1] && black.slice(end).every((dot) => !dot));
   for (const run of runs) {
     assert.equal(run % moduleDots, 0);
     assert.ok(run === moduleDots || run === moduleDots * 2 || run === moduleDots * 3 || run === moduleDots * 4);
@@ -306,11 +297,9 @@ test("label preview is 304x200, quiet, integer, and decodes BRV-SAMPLE-001", { s
   assert.equal(preview.lines.every((line) => line.clipped === false), true);
   const name = preview.lines.find((line) => line.role === "name");
   const code = preview.lines.find((line) => line.role === "code");
-  const brand = preview.lines.find((line) => line.role === "brand");
   assert.equal(name?.text, "بنطال تويل");
   assert.equal(code?.text, "BRV-SAMPLE-001");
-  assert.equal(brand?.text, "Bravos");
-  assert.ok(brand.y < code.y);
+  assert.ok(code.y < name.y);
   assert.ok(preview.lines.every((line) => line.role !== "price"));
   const page = preview.pages[0];
   assert.ok(page);
@@ -331,25 +320,42 @@ test("label preview prints Bravos, saved price, and the product code", { skip: !
     kind: "label",
     printerName: LABEL_PRINTER_NAME,
     copies: 1,
-    document: labelDocument("Basic T-shirt", "450"),
+    document: { ...labelDocument("Basic T-shirt", "450"), product: { code: "BRV-071", name: "Basic T-shirt", price: "450" } },
   };
   const preview = await previewNativeJob(dispatch, { helperPath });
   assert.equal(preview.ok, true, preview.ok ? undefined : JSON.stringify(preview));
   if (!preview.ok) return;
   assert.equal(preview.printInvoked, false);
-  const brand = preview.lines.find((line) => line.role === "brand");
   const price = preview.lines.find((line) => line.role === "price");
   const code = preview.lines.find((line) => line.role === "code");
   const name = preview.lines.find((line) => line.role === "name");
-  assert.equal(brand?.text, "Bravos");
   assert.equal(price?.text, "450 EGP");
-  assert.equal(code?.text, "BRV-SAMPLE-001");
+  assert.equal(code?.text, "BRV-071");
   assert.equal(name?.text, "Basic T-shirt");
-  assert.ok(brand.y < code.y);
-  assert.equal(code.y, price.y);
+  assert.ok(code.y < name.y && code.y < price.y);
+  assert.equal(code.x, name.x);
+  assert.ok(name.x + name.w < price.x && price.x + price.w === 304 - LABEL_INSET_DOTS);
   const png = Buffer.from(preview.pages[0].pngBase64, "base64");
   const image = decodePng(png);
-  assert.equal(decodeCode128(image.pixels, image.width, image.height), "BRV-SAMPLE-001");
+  const logo = lineInk(image.pixels, image.width, image.height, { y: 12, h: 44 });
+  assert.ok(logo.maxX > 260);
+  assert.equal(preview.moduleDots, 2);
+  assert.ok(preview.barHeightDots >= 80 && preview.barHeightDots <= 96);
+  assertIntegerModules(image.pixels, image.width, preview);
+  for (let i = 0; i < image.pixels.length; i += 4) {
+    const tone = image.pixels[i];
+    assert.ok(tone === 0 || tone === 255);
+    assert.equal(image.pixels[i + 1], tone);
+    assert.equal(image.pixels[i + 2], tone);
+  }
+  assert.equal(decodeCode128(image.pixels, image.width, image.height), "BRV-071");
+
+  dispatch.document.product.name = "قميص صيفي من القطن مع اسم طويل وقياس كبير";
+  dispatch.document.product.price = "99999999.99";
+  const long = await previewNativeJob(dispatch, { helperPath });
+  assert.equal(long.ok, true);
+  assert.match(long.lines.find((line) => line.role === "name").text, /…$/);
+  assert.equal(long.lines.find((line) => line.role === "price").text, "99999999.99 EGP");
 });
 
 function lineInk(pixels, width, height, line) {
@@ -620,6 +626,97 @@ function observedReceiptQueue(overrides = {}) {
     ...overrides,
   };
 }
+
+test("XP-80C is accepted only on the receipt queue with a matching USB device", async () => {
+  const receipt = observedReceiptQueue({
+    driverName: "XP-80C",
+    portName: "USB002",
+    devices: [{ id: "USBPRINT\\PRINTERPOS-80\\6&CC95D4D&0&USB002", status: "OK" }],
+  });
+  const ready = await probeNativePrinters({
+    platform: "win32",
+    observations: { label: receipt, receipt },
+  });
+  assert.equal(ready.ok, true);
+  assert.equal(ready.receipt, "ready");
+  assert.equal(ready.label, "unsupported");
+
+  const wrongDevice = await probeNativePrinters({
+    platform: "win32",
+    observations: {
+      label: absentQueue(),
+      receipt: { ...receipt, devices: [{ id: "USBPRINT\\XPRINTERXP-236B\\SERIAL&USB002", status: "OK" }] },
+    },
+  });
+  assert.equal(wrongDevice.ok, true);
+  assert.equal(wrongDevice.receipt, "offline");
+});
+
+test("the live label probe checks a local binding when the queue and device USB numbers differ", { skip: !windows }, async () => {
+  const deviceId = "USBPRINT\\XPRINTERXP-236B\\6&1F8744B5&1&USB003";
+  const fixture = String.raw`
+    $fixtureId = $env:BRAVOS_TEST_LABEL_ID
+    $mode = $env:BRAVOS_TEST_LABEL_MODE
+    function Get-CimInstance($ClassName) {
+      if ($ClassName -eq 'Win32_Printer') {
+        [pscustomobject]@{Name='Xprinter XP-236B'; DriverName='Xprinter XP-236B'; PortName='USB001'; WorkOffline=($mode -eq 'offline'); PrinterState=0}
+        $receiptPort = if ($mode -eq 'shared') { 'USB001' } else { 'USB002' }
+        [pscustomobject]@{Name='Bravos Receipts - Xprinter XP-80TS'; DriverName='XP-80C'; PortName=$receiptPort; WorkOffline=$false; PrinterState=0}
+      } else {
+        [pscustomobject]@{PNPDeviceID=$fixtureId; Present=($mode -ne 'unplugged'); Status='OK'; ConfigManagerErrorCode=0}
+        [pscustomobject]@{PNPDeviceID='USBPRINT\PRINTERPOS-80\TEST&USB002'; Present=$true; Status='OK'; ConfigManagerErrorCode=0}
+        if ($mode -eq 'duplicate') { [pscustomobject]@{PNPDeviceID='USBPRINT\XPRINTERXP-236B\OTHER&USB001'; Present=$true; Status='OK'; ConfigManagerErrorCode=0} }
+      }
+    }
+    function Get-Printer($Name, $ErrorAction) {
+      if ($Name -ne 'Xprinter XP-236B') { throw 'unexpected spooler lookup' }
+      $spoolerStatus = if ($mode -eq 'paused') { 'Paused' } else { 'Normal' }
+      [pscustomobject]@{DriverName='Xprinter XP-236B'; PortName='USB001'; PrinterStatus=$spoolerStatus}
+    }
+    & $env:BRAVOS_TEST_HELPER
+  `;
+  const cases = [
+    ["ready", "USB001", deviceId, "ready", "ready"],
+    ["no-binding", "", "", "offline", "ready"],
+    ["wrong-port", "USB003", deviceId, "offline", "ready"],
+    ["wrong-device", "USB001", "USBPRINT\\XPRINTERXP-236B\\OTHER&USB003", "offline", "ready"],
+    ["unplugged", "USB001", deviceId, "offline", "ready"],
+    ["offline", "USB001", deviceId, "offline", "ready"],
+    ["paused", "USB001", deviceId, "offline", "ready"],
+    ["duplicate", "USB001", deviceId, "offline", "ready"],
+    ["shared", "USB001", deviceId, "offline", "offline"],
+  ];
+  for (const batch of [cases.slice(0, 5), cases.slice(5)]) {
+    await Promise.all(batch.map(async ([mode, port, binding, label, receipt]) => {
+      const result = await probeNativePrinters({
+        helperPath,
+        runner: (run) => new Promise((resolve, reject) => {
+          assert.equal(run.action, "probe");
+          const child = spawn(run.plan.file, ["-NoProfile", "-NonInteractive", "-Command", fixture], {
+            env: {
+              ...process.env,
+              BRAVOS_TEST_HELPER: helperPath,
+              BRAVOS_TEST_LABEL_ID: deviceId,
+              BRAVOS_TEST_LABEL_MODE: mode,
+              BRAVOS_PRINT_LABEL_USB_PORT: port,
+              BRAVOS_PRINT_LABEL_USB_DEVICE: binding,
+            },
+            shell: false,
+            windowsHide: true,
+            timeout: run.timeoutMs,
+            stdio: ["pipe", "pipe", "pipe"],
+          });
+          const chunks = [];
+          child.stdout.on("data", (chunk) => chunks.push(chunk));
+          child.on("error", reject);
+          child.on("close", (code) => resolve({ code, stdout: Buffer.concat(chunks), timedOut: false, spawnError: false, overflow: false }));
+          child.stdin.end(run.stdin);
+        }),
+      });
+      assert.deepEqual(result, { ok: true, outcome: "probe", printInvoked: false, label, receipt }, mode);
+    }));
+  }
+});
 
 test("PRINTERPOS-80 is a receipt-only alias and stays fail-closed", async () => {
   const ready = await probeNativePrinters({

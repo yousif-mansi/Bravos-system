@@ -3,6 +3,7 @@ import { LABEL_PRINTER_NAME, RECEIPT_PRINTER_NAME } from "../contracts.ts";
 /** Keep the allow-list in sync with Gate in helpers/native-print.cs. */
 export const LABEL_DRIVER_NAME = "Xprinter XP-236B";
 export const RECEIPT_DRIVER_NAME = "Xprinter XP-80";
+const RECEIPT_DRIVER_80C = "XP-80C";
 
 const READY_STATUS = new Set([
   "normal",
@@ -29,6 +30,7 @@ export type ObservedQueue = {
   portName: string;
   status: string;
   truncated: boolean;
+  verifiedLabelDeviceId?: string;
   devices: ObservedDevice[];
 };
 
@@ -51,11 +53,16 @@ function endsWithPort(id: string, port: string): boolean {
   return upper.endsWith(`\\${token}`) || upper.endsWith(`&${token}`);
 }
 
-function deviceMatches(role: QueueRole, port: string, device: ObservedDevice): boolean {
+function deviceMatches(role: QueueRole, row: ObservedQueue, device: ObservedDevice): boolean {
   if (device.status.toUpperCase() !== "OK") return false;
   const id = device.id.toUpperCase();
-  if (!id.startsWith("USBPRINT\\") || !endsWithPort(id, port)) return false;
-  if (role === "label") return id.includes("\\XPRINTERXP-236B\\");
+  if (!id.startsWith("USBPRINT\\")) return false;
+  const matchingPort = endsWithPort(id, row.portName);
+  if (role === "label") {
+    return id.startsWith("USBPRINT\\XPRINTERXP-236B\\")
+      && (row.verifiedLabelDeviceId === undefined ? matchingPort : id === row.verifiedLabelDeviceId.toUpperCase());
+  }
+  if (!matchingPort) return false;
   if (id.includes("236B")) return false;
   return id.startsWith("USBPRINT\\PRINTERPOS-80\\")
     || id.includes("XPRINTERXP-80")
@@ -66,12 +73,14 @@ function deviceMatches(role: QueueRole, port: string, device: ObservedDevice): b
 export function judgeObservedQueue(role: QueueRole, row: ObservedQueue): QueueState {
   if (row.truncated) return "unsupported";
   if (!row.found) return "missing";
-  const driver = role === "label" ? LABEL_DRIVER_NAME : RECEIPT_DRIVER_NAME;
-  if (row.driverName !== driver) return "unsupported";
+  const driverAllowed = role === "label"
+    ? row.driverName === LABEL_DRIVER_NAME
+    : row.driverName === RECEIPT_DRIVER_NAME || row.driverName === RECEIPT_DRIVER_80C;
+  if (!driverAllowed) return "unsupported";
   if (!isUsbPort(row.portName)) return "unsupported";
   if (row.workOffline) return "offline";
   if (!READY_STATUS.has(row.status.trim().toLowerCase())) return "offline";
-  const present = row.devices.some((device) => deviceMatches(role, row.portName, device));
+  const present = row.devices.some((device) => deviceMatches(role, row, device));
   if (!present) return "offline";
   return "ready";
 }

@@ -148,7 +148,7 @@ export function PrinterConnectionPanel() {
       {remembered ? (
         <>
           <p data-testid="printer-label-destination">ملصقات: {LABEL_PRINTER_NAME}</p>
-          <p data-testid="printer-receipt-destination">إيصالات: {RECEIPT_PRINTER_NAME}</p>
+          <p data-testid="printer-receipt-destination">للإيصالات، اختر {RECEIPT_PRINTER_NAME} في نافذة طباعة المتصفح.</p>
           <div className="actions">
             <button type="button" className="secondary" data-testid="printer-refresh" disabled={busy} onClick={() => void recheck()}>
               إعادة التحقق

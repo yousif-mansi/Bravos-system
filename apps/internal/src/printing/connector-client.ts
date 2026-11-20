@@ -3,12 +3,19 @@ import {
   PAIRING_CODE_LENGTH,
   PRINT_CONNECTOR_HOST,
   PRINT_CONNECTOR_PORT,
+  PRODUCTION_STAFF_ORIGIN,
   RECEIPT_PRINTER_NAME,
   parsePrintJob,
 } from "@bravos/print-contracts";
 
 /** Fixed loopback connector. Callers cannot supply a URL, printer, or document path. */
 export const PRINT_CONNECTOR_ORIGIN = `http://${PRINT_CONNECTOR_HOST}:${PRINT_CONNECTOR_PORT}`;
+
+export function requiresPairedPrinter(origin = globalThis.location?.origin): boolean {
+  return origin === PRODUCTION_STAFF_ORIGIN;
+}
+
+export const PRODUCTION_PAIRING_MESSAGE = "اربط برنامج الطباعة على هذا الجهاز من الصفحة الرئيسية أولاً.";
 
 /** Origin-scoped device preference. Logout does not clear it. Never put this value in a URL or log. */
 export const PRINT_PAIRING_TOKEN_KEY = "bravos.print-connector.token";

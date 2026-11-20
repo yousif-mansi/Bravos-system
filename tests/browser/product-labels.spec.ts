@@ -100,10 +100,11 @@ async function prints(page: Page): Promise<HardwarePrint[]> {
   return page.evaluate(() => (window.top as HardwareWindow).__hardwarePrints ?? []);
 }
 
-async function lookup(page: Page, code: string) {
+async function lookup(page: Page, code: string, scan = false) {
   const form = page.getByRole("form", { name: "البحث برمز المنتج" });
   await form.getByLabel("رمز المنتج").fill(code);
-  await form.getByLabel("رمز المنتج").press("Enter");
+  if (scan) await form.getByLabel("رمز المنتج").press("Enter");
+  else await form.getByRole("button", { name: "بحث", exact: true }).click();
   await expect(page.getByTestId("lookup-result")).toContainText(code);
 }
 
@@ -272,13 +273,11 @@ test("offline label printer to scanner to receipt flow synchronizes one sale and
     expect(await stock(page, data.product.code, data.variant.id)).toBe(2);
     await dialog.getByRole("button", { name: "إلغاء", exact: true }).click();
 
-    // A scanner types the decoded product code and Enter; adding the product remains manual.
-    await lookup(page, scannedCode);
+    await lookup(page, scannedCode, true);
     await expect(page.locator("#lookupSize")).toHaveCount(0);
     await expect(page.locator("#lookupColor")).toHaveCount(0);
     const checkout = page.getByRole("form", { name: "إتمام البيع" });
-    await expect(checkout).not.toContainText(data.product.nameAr);
-    await page.getByTestId("add-operational").click();
+    await expect(checkout.getByTestId("sale-cart")).toContainText(data.product.nameAr);
     await page.getByTestId("complete-sale-print").click();
     await expect(page.getByTestId("sale-details")).toBeVisible();
     await expect(page.getByRole("status").filter({ hasText: "تم حفظ البيع" })).toBeVisible();
@@ -402,27 +401,23 @@ async function measureLabel(label: Locator) {
     const price = node.querySelector(".price");
     const name = node.querySelector(".name");
     if (!bars || !code || !brand) throw new Error("Label is missing its barcode, brand, or code");
-    const ink = (element: Element) => {
-      const range = node.ownerDocument.createRange();
-      range.selectNodeContents(element);
-      return range.getBoundingClientRect();
-    };
     const barsBox = bars.getBoundingClientRect();
-    const brandBox = ink(brand);
+    const brandBox = brand.getBoundingClientRect();
     const codeBox = code.getBoundingClientRect();
     const priceBox = price ? price.getBoundingClientRect() : null;
-    const nameBox = name ? ink(name) : null;
+    const nameBox = name?.getBoundingClientRect();
     const first = node.children[0]?.getBoundingClientRect();
     const last = node.children[node.children.length - 1]?.getBoundingClientRect();
     const pxToMm = 25.4 / 96;
     return {
       pageDelta: Math.abs((labelBox.left + labelBox.width / 2) - (bodyBox.left + bodyBox.width / 2)),
       barsDelta: Math.abs((barsBox.left + barsBox.width / 2) - innerMid),
-      brandDelta: Math.abs((brandBox.left + brandBox.width / 2) - innerMid),
-      codeDelta: Math.abs((codeBox.left + codeBox.width / 2) - innerMid),
+      brandRight: innerRight - brandBox.right,
       codeLeft: codeBox.left - innerLeft,
+      headerAboveBars: codeBox.bottom <= barsBox.top && brandBox.bottom <= barsBox.top,
+      footerBelowBars: !!nameBox && nameBox.top >= barsBox.bottom && (!priceBox || priceBox.top >= barsBox.bottom),
       priceRight: priceBox ? innerRight - priceBox.right : null,
-      nameDelta: nameBox ? Math.abs((nameBox.left + nameBox.width / 2) - innerMid) : 0,
+      nameLeft: nameBox ? nameBox.left - innerLeft : null,
       topGap: first ? first.top - innerTop : 0,
       bottomGap: last ? innerBottom - last.bottom : 0,
       bodyWidth: bodyBox.width,
@@ -448,18 +443,17 @@ function expectCenteredCompact(measured: Awaited<ReturnType<typeof measureLabel>
   expect(measured.bodyWidth).toBeGreaterThan(measured.labelWidth + 16);
   expect(measured.pageDelta).toBeLessThan(2);
   expect(measured.barsDelta).toBeLessThan(2);
-  expect(measured.brandDelta).toBeLessThan(2);
-  if (measured.priceRight === null) {
-    expect(measured.codeDelta).toBeLessThan(2);
-  } else {
-    expect(measured.codeLeft).toBeLessThan(8);
-    expect(measured.priceRight).toBeLessThan(8);
-  }
-  expect(measured.nameDelta).toBeLessThan(4);
+  expect(Math.abs(measured.brandRight)).toBeLessThan(2);
+  expect(Math.abs(measured.codeLeft)).toBeLessThan(2);
+  expect(Math.abs(measured.nameLeft ?? Infinity)).toBeLessThan(2);
+  if (measured.priceRight !== null) expect(Math.abs(measured.priceRight)).toBeLessThan(2);
+  expect(measured.headerAboveBars).toBe(true);
+  expect(measured.footerBelowBars).toBe(true);
   expect(Math.abs(measured.topGap)).toBeLessThan(3);
   expect(Math.abs(measured.bottomGap)).toBeLessThan(3);
   expect(measured.labelWidth - measured.barsWidth).toBeGreaterThan(16);
   expect(measured.barHeightMm).toBeGreaterThanOrEqual(9.7);
+  expect(measured.barHeightMm).toBeLessThanOrEqual(12);
   expect(measured.codeMm).toBeGreaterThan((13 * 25.4) / 203);
   expect(measured.nameMm).toBeGreaterThan((12 * 25.4) / 203);
   expect(measured.moduleDots).toBe(dots);
@@ -495,7 +489,7 @@ test("XP-236B 38x25 preview is centered at wide and narrow widths without a stoc
   await expectPreviewFrameHeight(page, 25);
   expectCenteredCompact(await measureLabel(preview(page).locator(".label")), "1");
   expect(await decodeRenderedBarcode(preview(page).locator(".bars svg"))).toBe(data.product.code);
-  await expect(preview(page).locator(".brand")).toHaveText("Bravos");
+  await expect(preview(page).locator(".label-header svg.brand")).toHaveAttribute("aria-label", "Bravos");
   await expect(preview(page).locator(".code")).toHaveText(data.product.code);
   await expect(preview(page).locator(".price")).toHaveText("120 EGP");
   await expect(preview(page).locator(".name")).toHaveText(data.product.nameAr);
@@ -622,13 +616,14 @@ test("a saved custom label size stays independent of the one-time XP-236B choice
   expect(await stock(page, data.product.code, data.variant.id)).toBe(2);
 });
 
-test("compact 38x25 renders a full mixed-script name and rejects an honest overflow", async ({ page }) => {
+test("compact 38x25 keeps a long mixed-script name inside the footer and rejects vertical overflow", async ({ page }) => {
   test.skip(process.env.BRAVOS_HW_PRODUCTION === "1", "Direct source-module document checks run on the dev server; the offline flow also runs against the built PWA.");
   await login(page);
   const fit = {
     id: "compact-label-fit",
     code: "BRV-SAMPLE-001",
-    nameAr: "Tapered Twill Pants بنطال تويل",
+    nameAr: "Tapered Twill Pants بنطال تويل طويل مع تفاصيل إضافية",
+    defaultSellingPricePiasters: 45000,
   };
   await page.evaluate(async (product) => {
     const labels = await import("/src/labels/index.ts");
@@ -647,6 +642,9 @@ test("compact 38x25 renders a full mixed-script name and rejects an honest overf
   const frame = page.frameLocator("#compact-label-fit iframe");
   await expect(frame.locator(".code")).toHaveText(fit.code);
   await expect(frame.locator(".name")).toHaveText(fit.nameAr);
+  await expect(frame.locator(".price")).toHaveText("450 EGP");
+  expect(await frame.locator(".name").evaluate((name) =>
+    name.scrollWidth > name.clientWidth && getComputedStyle(name).textOverflow === "ellipsis")).toBe(true);
   await expect(frame.locator("script, img, nav, a")).toHaveCount(0);
   await expectLabelBounds(frame.locator(".label"), 38, 25);
   const wide = await measureLabel(frame.locator(".label"));
@@ -686,36 +684,4 @@ test("compact 38x25 renders a full mixed-script name and rejects an honest overf
   expect(overflow.message).toMatch(/بارتفاع .* مم على الأقل/);
   expect(overflow.name).toBe(fit.nameAr);
 
-  const rejected = await page.evaluate(async () => {
-    const labels = await import("/src/labels/index.ts");
-    const nameAr = `${"بنطال تويل المفصل ".repeat(24)}Extra English twill that must stay intact`;
-    const host = document.createElement("div");
-    host.id = "compact-label-reject";
-    document.body.appendChild(host);
-    try {
-      await labels.mountProductLabelPreview(host, {
-        id: "compact-label-reject",
-        code: "BRV-SAMPLE-001",
-        nameAr,
-      }, {
-        widthMm: 38,
-        heightMm: 25,
-        copies: 1,
-        dpi: 203,
-        profile: "xp236b-38x25",
-      });
-      return { ok: true, message: "", frames: host.querySelectorAll("iframe").length, nameAr };
-    } catch (error) {
-      return {
-        ok: false,
-        message: error instanceof Error ? error.message : String(error),
-        frames: host.querySelectorAll("iframe").length,
-        nameAr,
-      };
-    }
-  });
-  expect(rejected.ok).toBe(false);
-  expect(rejected.frames).toBe(0);
-  expect(rejected.message).toMatch(/بارتفاع .* مم على الأقل|بعرض .* مم على الأقل/);
-  expect(rejected.nameAr.endsWith("Extra English twill that must stay intact")).toBe(true);
 });

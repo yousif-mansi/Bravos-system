@@ -30,12 +30,17 @@ export function focusManualSizeChoice(sizeSelect: HTMLSelectElement | null): voi
   });
 }
 
-export function useProductCodeScanner() {
+export function useProductCodeScanner(onScan: (code: string) => void) {
   const scanInputRef = useRef<HTMLInputElement>(null);
 
   function onScanKeyDown(event: KeyboardEvent<HTMLInputElement>): void {
     if (event.key === "Enter") {
       event.stopPropagation();
+      if (event.nativeEvent.isComposing) return;
+      event.preventDefault();
+      if (event.repeat) return;
+      const code = event.currentTarget.value.trim();
+      if (code) onScan(code);
     }
   }
 

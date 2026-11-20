@@ -34,6 +34,16 @@ test("production listen and staff origin stay on the loopback allowlist", () => 
   assert.equal(readStaffOrigin(undefined), STAFF_ORIGIN);
   assert.equal(readStaffOrigin(""), STAFF_ORIGIN);
   assert.equal(readStaffOrigin("http://127.0.0.1:5178"), "http://127.0.0.1:5178");
+  assert.equal(readStaffOrigin("https://staff.bravoswear.store"), "https://staff.bravoswear.store");
+  for (const origin of [
+    "http://staff.bravoswear.store",
+    "https://shop.bravoswear.store",
+    "https://staff.bravoswear.store.evil.example",
+    "https://staff.bravoswear.store:443",
+    "https://staff.bravoswear.store/",
+  ]) {
+    assert.throws(() => readStaffOrigin(origin), /invalid_staff_origin/);
+  }
   assert.throws(() => readStaffOrigin("https://127.0.0.1:5177"), /invalid_staff_origin/);
   assert.throws(() => readStaffOrigin("http://localhost:5177"), /invalid_staff_origin/);
   assert.throws(() => readStaffOrigin("http://127.0.0.1:17831"), /invalid_staff_origin/);

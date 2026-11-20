@@ -99,6 +99,7 @@ async function lookupCode(page: Page, code: string) {
   const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
   await lookup.getByLabel("رمز المنتج").fill(code);
   await lookup.getByLabel("رمز المنتج").press("Enter");
+  await expect(lookup).toHaveAttribute("aria-busy", "false");
 }
 
 function installPrintHarness({ throwInstead }: { throwInstead: boolean }) {
@@ -112,35 +113,65 @@ function installPrintHarness({ throwInstead }: { throwInstead: boolean }) {
     };
 }
 
-test("lowercase product-code Enter finds the cached product online and offline without selling", async ({ page, context }) => {
+test("consecutive scans add and increment online and offline within stock limits", async ({ page, context }) => {
   const data = await seed(page);
   await openLookup(page);
   const before = await salesForVariant(page, data.variant.id);
   await expect(page.getByTestId("pos-product-tile").filter({ hasText: data.product.code })).toBeVisible();
 
-  await lookupCode(page, data.product.code.toLowerCase());
-  await expect(page.getByRole("form", { name: "البحث برمز المنتج" }).getByLabel("رمز المنتج")).toHaveValue("");
+  const lookup = page.getByRole("form", { name: "البحث برمز المنتج" });
+  const field = lookup.getByLabel("رمز المنتج");
+  const checkout = page.getByRole("form", { name: "إتمام البيع" });
+  const cart = checkout.getByTestId("sale-cart");
+  const quantity = cart.getByLabel("الكمية", { exact: true });
+  const beforeStock = await available(page, data.product.code, data.variant.id);
+  await field.fill(data.product.code);
+  await lookup.getByRole("button", { name: "بحث", exact: true }).click();
   await expect(page.getByTestId("lookup-result")).toContainText(data.nameAr);
-  await expect(page.locator("#lookupSize")).toHaveCount(0);
-  await expect(page.locator("#lookupColor")).toHaveCount(0);
-  await expect(page.getByRole("form", { name: "إتمام البيع" })).not.toContainText(data.nameAr);
-  expect(await salesForVariant(page, data.variant.id)).toHaveLength(before.length);
+  await expect(cart).toHaveCount(0);
+
+  let releaseFirst!: () => void;
+  const holdFirst = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  await page.route("**/api/internal/catalog/lookup?code=*", async (route) => {
+    await holdFirst;
+    await route.continue();
+  }, { times: 1 });
+  try {
+    await field.fill(`  ${data.product.code.toLowerCase()}  `);
+    await field.press("Enter");
+    await expect(lookup).toHaveAttribute("aria-busy", "true");
+    await expect(field).toHaveValue("");
+    await expect(field).toBeFocused();
+    await field.fill(data.product.code);
+    await field.press("Enter");
+    await expect(field).toHaveValue("");
+  } finally {
+    releaseFirst();
+  }
+  await expect(quantity).toHaveValue("2");
+  await expect(cart.locator("tbody tr")).toHaveCount(1);
+  await expect(checkout.locator(".pos-cart-total strong")).toContainText("240");
+  await expect(field).toBeFocused();
 
   await context.setOffline(true);
-  await lookupCode(page, data.product.code.toLowerCase());
-  await expect(page.getByRole("form", { name: "البحث برمز المنتج" }).getByLabel("رمز المنتج")).toHaveValue("");
-  await expect(page.getByTestId("lookup-result")).toContainText(data.nameAr);
-  await expect(page.locator("#lookupSize")).toHaveCount(0);
-  await expect(page.locator("#lookupColor")).toHaveCount(0);
-
-  await lookupCode(page, `missing-${data.tag}`);
-  const alert = page.getByRole("alert");
-  await expect(alert).toBeVisible();
-  await expect(alert).not.toContainText(data.nameAr);
-  await expect(page.getByTestId("lookup-result")).toHaveCount(0);
-  await expect(page.getByRole("form", { name: "إتمام البيع" })).not.toContainText(data.nameAr);
-  await context.setOffline(false);
+  try {
+    await cart.getByRole("button", { name: /تقليل كمية/ }).click();
+    await expect(quantity).toHaveValue("1");
+    await lookupCode(page, data.product.code.toLowerCase());
+    await expect(quantity).toHaveValue("2");
+    await expect(field).toBeFocused();
+    await lookupCode(page, data.product.code);
+    await expect(lookup.getByRole("alert")).toContainText("الكمية المتاحة غير كافية");
+    await lookupCode(page, `missing-${data.tag}`);
+    await expect(lookup.getByRole("alert")).toContainText("المنتج غير موجود");
+    await expect(page.getByTestId("lookup-result")).toHaveCount(0);
+    await expect(quantity).toHaveValue("2");
+    await expect(field).toBeFocused();
+  } finally {
+    await context.setOffline(false);
+  }
   expect(await salesForVariant(page, data.variant.id)).toHaveLength(before.length);
+  expect(await available(page, data.product.code, data.variant.id)).toBe(beforeStock);
 });
 
 test("complete without printing persists one sale and leaves reprint available", async ({ page }) => {
@@ -152,7 +183,6 @@ test("complete without printing persists one sale and leaves reprint available",
   const beforeStock = await branchStock();
 
   await lookupCode(page, data.product.code);
-  await page.getByTestId("add-operational").click();
   await page.getByTestId("complete-sale").click();
 
   await expect(page.getByRole("status").filter({ hasText: "تم حفظ البيع" })).toBeVisible();
@@ -169,13 +199,12 @@ test("complete without printing persists one sale and leaves reprint available",
   await expect.poll(branchStock).toBe(beforeStock - 1);
 });
 
-test("receipt preview renders the completed sale at 58mm portrait", async ({ page }) => {
+test("receipt preview renders the completed sale in boxed tables at 75mm portrait", async ({ page }) => {
   const data = await seed(page);
   const customerName = `زبون <img src=x onerror="alert(1)"><script>steal()</script> ${data.tag}`;
   const customerPhone = "01099887766";
   await openLookup(page);
   await lookupCode(page, data.product.code);
-  await page.getByTestId("add-operational").click();
   const checkout = page.getByRole("form", { name: "إتمام البيع" });
   await openPosOptionalDetails(checkout);
   await checkout.getByLabel("اسم الزبون (اختياري)").fill(customerName);
@@ -190,7 +219,7 @@ test("receipt preview renders the completed sale at 58mm portrait", async ({ pag
   expect(sale.lines[0]?.variant.product.code).toBe(data.product.code);
   expect(sale.soldByDisplayName.length).toBeGreaterThan(0);
 
-  for (const paperWidthMm of [58, 80] as const) {
+  for (const paperWidthMm of [58, 75, 80] as const) {
     await page.evaluate(async ({ sale, paperWidthMm, contactPhone }) => {
       const hostId = "receipt-preview-host";
       let host = document.getElementById(hostId);
@@ -245,24 +274,32 @@ test("receipt preview renders the completed sale at 58mm portrait", async ({ pag
     await expect(frame.locator("body")).not.toContainText(sale.soldByStaffId);
     await expect(frame.locator("body")).not.toContainText("ج.م.");
     await expect(frame.locator("body")).not.toContainText("EGP");
-    await expect(frame.getByRole("table")).toHaveCount(1);
+    await expect(frame.getByRole("table")).toHaveCount(2);
+    const metadata = frame.getByRole("table", { name: "بيانات الفاتورة" });
+    await expect(metadata.getByRole("row")).toHaveCount(3);
+    await expect(metadata.getByRole("cell")).toHaveCount(6);
+    await expect(metadata.getByRole("row").first().getByRole("cell").first()).toContainText("رقم الفاتورة:");
+    await expect(metadata.getByRole("row").first().getByRole("cell").last()).toContainText("الكاشير:");
+    await expect(metadata.getByRole("cell").first()).toHaveCSS("border-top-style", "solid");
     const items = frame.getByRole("table", { name: "الأصناف" });
     await expect(items.getByRole("columnheader")).toHaveText(["م", "الصنف", "الكمية", "السعر", "الإجمالي"]);
     await expect(items.locator("tbody tr").first().getByRole("cell")).toHaveCount(5);
     const figures = items.locator("tbody .figures");
     await expect(figures).toHaveText(["1", "120", "120"]);
     await expect(figures.first()).toHaveAttribute("dir", "ltr");
-    await expect(figures.first()).toHaveCSS("border-inline-start-style", "none");
+    await expect(figures.first()).toHaveCSS("border-inline-start-style", "solid");
+    await expect(figures.first()).toHaveCSS("text-align", "center");
+    await expect(items.getByRole("columnheader").nth(1)).toHaveCSS("text-align", "center");
     await expect(frame.locator(".total")).toHaveCount(0);
     await expect(frame.locator(".subtotal")).toContainText("إجمالي الأصناف");
     await expect(frame.locator("body")).not.toContainText("الخصم");
-    await expect(frame.locator("html")).toHaveAttribute("data-receipt-page-width-mm", "58");
+    await expect(frame.locator("html")).toHaveAttribute("data-receipt-page-width-mm", "75");
     const pageHeightMm = Number(await frame.locator("html").getAttribute("data-receipt-page-height-mm"));
-    expect(pageHeightMm).toBeGreaterThanOrEqual(58);
+    expect(pageHeightMm).toBeGreaterThanOrEqual(75);
     expect(pageHeightMm).toBeLessThanOrEqual(300);
     expect(pageHeightMm).toBeLessThan(297);
     const pageCss = await frame.locator("#receipt-page-size").textContent();
-    expect(pageCss).toMatch(new RegExp(`size:\\s*58mm\\s+${pageHeightMm}mm`));
+    expect(pageCss).toMatch(new RegExp(`size:\\s*75mm\\s+${pageHeightMm}mm`));
     expect(pageCss).not.toContain("auto");
     await frame.locator("body").evaluate(async (node) => { await node.ownerDocument.fonts.ready; });
     expect(await frame.locator(".receipt").evaluate((node) => node.scrollWidth <= node.clientWidth + 1)).toBe(true);
@@ -331,7 +368,6 @@ test("stubbed offline receipt print runs once per request and does not sell agai
   const beforeStock = await available(page, data.product.code, data.variant.id);
 
   await lookupCode(page, data.product.code);
-  await page.getByTestId("add-operational").click();
   await expect(page.getByTestId("pos-product-tile").filter({ hasText: data.product.code })).toBeVisible();
   await page.screenshot({ path: `${shots}/pos-completion-options.png`, fullPage: true });
   if (process.env.BRAVOS_HW_PRODUCTION === "1") {
@@ -342,6 +378,12 @@ test("stubbed offline receipt print runs once per request and does not sell agai
           navigator.serviceWorker.addEventListener("controllerchange", () => resolve(), { once: true });
         });
       }
+    });
+  } else {
+    // Vite development has no service worker. Warm the same local Cairo assets before disconnecting.
+    await page.evaluate(async () => {
+      const { installOwnedCairoFonts } = await import("/src/printing/owned-cairo-fonts.ts");
+      await installOwnedCairoFonts(document.implementation.createHTMLDocument(), ["600", "700"]);
     });
   }
   await context.setOffline(true);
@@ -384,7 +426,6 @@ test("complete and print shows a local save error and does not sell when sales s
   const beforeStock = await branchStock();
 
   await lookupCode(page, data.product.code);
-  await page.getByTestId("add-operational").click();
 
   await page.evaluate(() => {
     const proto = IDBObjectStore.prototype;
@@ -460,7 +501,6 @@ test("reprint cancelled by the same staff account during font preparation does n
   const beforeStock = await available(page, data.product.code, data.variant.id);
 
   await lookupCode(page, data.product.code);
-  await page.getByTestId("add-operational").click();
   await page.getByTestId("complete-sale").click();
   await expect(page.getByTestId("sale-details")).toBeVisible();
   await expect.poll(async () => (await salesForVariant(page, data.variant.id)).length).toBe(beforeSales.length + 1);

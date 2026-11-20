@@ -224,9 +224,9 @@ test("exchange credit is separate from cash actually collected", () => {
   assert.equal(plain.cashCollected, null);
 });
 
-test("58mm and a shipped 80mm setting both use 48 mm content on 58 mm paper", () => {
-  assert.equal(contentWidthMm(58), 48);
-  assert.equal(contentWidthMm(80), 48);
+test("legacy paper settings use the same 69 mm content on 75 mm paper", () => {
+  assert.equal(contentWidthMm(58), 69);
+  assert.equal(contentWidthMm(80), 69);
   const narrow = buildReceiptView(structuredClone(saleFixture()), {
     paperWidthMm: 58,
     contactPhone: "1",
@@ -235,9 +235,9 @@ test("58mm and a shipped 80mm setting both use 48 mm content on 58 mm paper", ()
     paperWidthMm: 80,
     contactPhone: "1",
   });
-  assert.equal(narrow.contentWidthMm, 48);
-  assert.equal(wide.contentWidthMm, 48);
-  assert.equal(RECEIPT_PAPER_WIDTH_MM, 58);
+  assert.equal(narrow.contentWidthMm, 69);
+  assert.equal(wide.contentWidthMm, 69);
+  assert.equal(RECEIPT_PAPER_WIDTH_MM, 75);
 });
 
 test("printed reference prefers the server reference and keeps the full operation id", () => {
@@ -434,7 +434,7 @@ test("long mixed and local-reference text stay complete without invented shorten
   assert.equal(view.printedReference.includes(localId), false);
   assert.equal(view.localOperationReference, localOperationReference(localId));
   assert.equal(view.cashierDisplayName, `كاشير ${longEnglish}`);
-  assert.equal(view.contentWidthMm, 48);
+  assert.equal(view.contentWidthMm, 69);
 });
 
 test("Cairo date and time split to 12-hour labels and keep an unparsed fallback", () => {
@@ -478,22 +478,22 @@ test("receipt amounts stay numeric without currency symbols including zero and f
 });
 
 test("thermal page size uses two millimetre lengths and never auto", () => {
-  assert.equal(contentWidthMm(80), 48);
-  assert.equal(contentWidthMm(58), 48);
+  assert.equal(contentWidthMm(80), 69);
+  assert.equal(contentWidthMm(58), 69);
   const short = receiptPageSizeMm(72, 80);
-  assert.equal(short.widthMm, 58);
-  assert.equal(short.heightMm, 58);
+  assert.equal(short.widthMm, 75);
+  assert.equal(short.heightMm, 75);
   assert.equal(short.heightMm < 297, true);
   const css = receiptPageSizeCss(short.widthMm, short.heightMm);
-  assert.match(css, /^@page \{ size: 58mm \d+mm; margin: 0; \}$/);
+  assert.match(css, /^@page \{ size: 75mm \d+mm; margin: 0; \}$/);
   assert.equal(css.includes("auto"), false);
   const narrow = receiptPageSizeMm(48, 200);
-  assert.equal(narrow.widthMm, 58);
-  assert.match(receiptPageSizeCss(narrow.widthMm, narrow.heightMm), /^@page \{ size: 58mm \d+mm; margin: 0; \}$/);
+  assert.equal(narrow.widthMm, 75);
+  assert.match(receiptPageSizeCss(narrow.widthMm, narrow.heightMm), /^@page \{ size: 75mm \d+mm; margin: 0; \}$/);
   const long = receiptPageSizeMm(72, 4000);
-  assert.equal(long.widthMm, 58);
+  assert.equal(long.widthMm, 75);
   assert.equal(long.heightMm, RECEIPT_MAX_PAGE_HEIGHT_MM);
-  assert.equal(receiptPageSizeCss(58, long.heightMm).includes("auto"), false);
+  assert.equal(receiptPageSizeCss(75, long.heightMm).includes("auto"), false);
 });
 
 test("prepared server POS reference is kept for immediate local printing", () => {
@@ -593,7 +593,7 @@ test("authorized sale keeps a matching local receipt number only", () => {
 
 test("receipt paper names the customer number رقم الفاتورة", () => {
   const source = readFileSync(new URL("../../apps/internal/src/receipts/receipt-document.ts", import.meta.url), "utf8");
-  const referenceCall = 'metaLine(doc, invoice, "رقم الفاتورة", view.printedReference)';
+  const referenceCall = '["رقم الفاتورة", view.printedReference, "الكاشير",';
   assert.ok(source.includes(referenceCall));
   const itemTable = 'const table = create(doc, "table", "items")';
   assert.ok(source.indexOf(referenceCall) < source.indexOf(itemTable));

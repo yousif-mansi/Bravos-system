@@ -6,6 +6,7 @@ import { sha256Hex } from "../../apps/print-connector/src/token-hash.ts";
 import {
   PAIRING_LOCK_MS,
   PAIRING_TTL_MS,
+  PRODUCTION_STAFF_ORIGIN,
 } from "../../packages/print-contracts/src/index.ts";
 import {
   clock,
@@ -23,6 +24,7 @@ async function open(t, options = {}) {
   const connector = await startConnector({
     printPort: options.printPort ?? injectedPort(async () => ({ outcome: "submitted" })),
     ...(options.now ? { now: options.now } : {}),
+    ...(options.staffOrigin ? { staffOrigin: options.staffOrigin } : {}),
     ...(options.tokenStore ? { tokenStore: options.tokenStore } : {}),
   });
   t.after(() => connector.close());
@@ -281,4 +283,25 @@ test("query strings and label payloads with purchase cost are refused before pri
   assert.equal(response.status, 400);
   assert.equal(response.json.error, "invalid_job");
   assert.equal(calls.length, 0);
+});
+
+test("production origin can pair and submit, while storefront and local origins are denied", async (t) => {
+  const connector = await open(t, { staffOrigin: PRODUCTION_STAFF_ORIGIN });
+  const code = connector.notices.at(-1).code;
+  for (const origin of ["https://shop.bravoswear.store", STAFF_ORIGIN]) {
+    const denied = await request(connector, { method: "POST", path: "/pair", origin, body: { code } });
+    assert.equal(denied.status, 403);
+    assert.equal(denied.headers["access-control-allow-origin"], undefined);
+  }
+  const paired = await pairConnector(connector, code);
+  assert.equal(paired.status, 200);
+  assert.equal(paired.headers["access-control-allow-origin"], PRODUCTION_STAFF_ORIGIN);
+  const submitted = await request(connector, {
+    method: "POST",
+    path: "/jobs",
+    token: paired.json.token,
+    body: labelJob(jobId(1)),
+  });
+  assert.equal(submitted.status, 202);
+  await connector.waitUntilIdle();
 });

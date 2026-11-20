@@ -1,14 +1,7 @@
 import type { SaleDto } from "@bravos/contracts";
-import {
-  RECEIPT_CONTENT_WIDTH_MM,
-  RECEIPT_COPIES,
-  isReceiptContentWidth,
-  parseReceiptJob,
-  type ReceiptJob,
-} from "@bravos/print-contracts";
-import { accountGeneration, subscribeAccount } from "../account-session.ts";
-import { ConnectorClientError, hasPairingToken, submitConnectorJob } from "../printing/connector-client.ts";
+import { accountGeneration } from "../account-session.ts";
 import { claimBrowserPrint, releaseBrowserPrint } from "../printing/browser-print-lock.ts";
+import { installOwnedCairoFonts } from "../printing/owned-cairo-fonts.ts";
 import { withSelectedReceiptNumber } from "../receipt-number.ts";
 import { resolveReceiptOptions } from "./receipt-options.ts";
 import {
@@ -39,7 +32,7 @@ const DIALOG_WATCH_MS = 120_000;
 const FRAME_GRACE_MS = 500;
 const BLOCKING_PRINT_MS = 300;
 
-const FONT_PROBE = "400 16px Cairo";
+const FONT_PROBE = "600 16px Cairo";
 const FONT_PROBE_BOLD = "700 16px Cairo";
 const ARABIC_SAMPLE = "إيصال";
 const LATIN_SAMPLE = "BRAVOS";
@@ -51,80 +44,6 @@ export class ReceiptPrintError extends Error {
   }
 }
 
-/** Browser dialog and connector spooler handoff are different results. Neither means paper came out. */
-export type ReceiptPrintResult =
-  | { channel: "browser"; dialogRequested: true; dialogReturned: boolean }
-  | { channel: "connector"; submitted: true };
-
-const RECEIPT_WIDTH_UNSUPPORTED = "عرض الإيصال المحفوظ غير مدعوم على طابعة الإيصالات المربوطة. لن تُستخدم طابعة المتصفح. البيع مكتمل.";
-const RECEIPT_LAYOUT_REJECTED = "رُفض تخطيط طباعة الإيصال.";
-const RECEIPT_LAYOUT_UPDATE = "حدّث برنامج الطباعة على هذا الجهاز ثم أعد الطباعة.";
-const RECEIPT_LAYOUT_HOLD = "لن تُستخدم طابعة المتصفح حتى لا تتكرر الورقة. البيع مكتمل.";
-
-/**
- * Layout rejection stays on the connector. An update is mentioned only when the
- * running program rejected the current 48 mm column as `invalid_job`, which is
- * what an older connector does. Other layout failures are not called an old program.
- */
-export function receiptConnectorLayoutMessage(oldConnector: boolean): string {
-  const update = oldConnector ? `${RECEIPT_LAYOUT_UPDATE} ` : "";
-  return `${RECEIPT_LAYOUT_REJECTED} ${update}${RECEIPT_LAYOUT_HOLD}`;
-}
-
-function pairingOrThrow(): boolean {
-  try {
-    return hasPairingToken();
-  } catch {
-    throw unavailable("تعذر قراءة ربط الطباعة على هذا الجهاز. لن تُستخدم طابعة المتصفح. البيع مكتمل.");
-  }
-}
-
-/**
- * Copies the saved receipt view into the connector DTO.
- * Internal trace ids stay off the payload. Amounts and names are not recalculated.
- */
-export function connectorReceiptJob(view: ReceiptView, id: string): ReceiptJob {
-  if (!isReceiptContentWidth(view.contentWidthMm)) {
-    throw unavailable(RECEIPT_WIDTH_UNSUPPORTED);
-  }
-  const receiptView = {
-    brand: view.brand,
-    branchName: view.branchName,
-    contactPhone: view.contactPhone,
-    printedReference: view.printedReference,
-    occurredAtLabel: view.occurredAtLabel,
-    cashierDisplayName: view.cashierDisplayName,
-    customerName: view.customerName,
-    customerPhone: view.customerPhone,
-    lines: view.lines.map((line) => ({
-      productName: line.productName,
-      productCode: line.productCode,
-      sizeName: line.sizeName,
-      colorName: line.colorName,
-      quantityAndUnitPrice: line.quantityAndUnitPrice,
-      lineOriginal: line.lineOriginal,
-      linePaid: line.linePaid,
-    })),
-    adjustments: view.adjustments.map((row) => ({ label: row.label, amount: row.amount })),
-    finalTotal: view.finalTotal,
-    exchangeCredit: view.exchangeCredit,
-    cashCollected: view.cashCollected,
-    paymentMethodLabel: view.paymentMethodLabel,
-    paymentAllocations: view.paymentAllocations.map((row) => ({ label: row.label, amount: row.amount })),
-    contentWidthMm: view.contentWidthMm,
-  };
-  const parsed = parseReceiptJob({
-    kind: "receipt",
-    id,
-    copies: RECEIPT_COPIES,
-    receiptView,
-  });
-  if (!parsed || parsed.receiptView.printedReference !== view.printedReference) {
-    throw unavailable("بيانات الإيصال المحفوظة لا تطابق طابعة الإيصالات المربوطة. لم يُغيّر البيع. البيع مكتمل.");
-  }
-  return parsed;
-}
-
 type PrintJob = {
   iframe: HTMLIFrameElement;
 };
@@ -132,7 +51,6 @@ type PrintJob = {
 let active: PrintJob | null = null;
 let printing = false;
 let cancelPreparation = false;
-let connectorCancel: AbortController | null = null;
 
 function unavailable(message: string): ReceiptPrintError {
   return new ReceiptPrintError(message);
@@ -167,6 +85,7 @@ async function waitForFonts(doc: Document): Promise<void> {
     throw unavailable("تعذر تجهيز خط الإيصال. البيع مكتمل. أعد طباعة الإيصال.");
   }
   const ready = (async () => {
+    await installOwnedCairoFonts(doc, ["600", "700"]);
     await fonts.ready;
     await fonts.load(FONT_PROBE, ARABIC_SAMPLE);
     await fonts.load(FONT_PROBE, LATIN_SAMPLE);
@@ -300,8 +219,7 @@ async function awaitDialog(printWindow: Window): Promise<boolean> {
 export async function printSaleReceipt(
   sale: SaleDto,
   overrides?: Partial<ReceiptOptions>,
-  onProgress?: (message: string) => void,
-): Promise<ReceiptPrintResult> {
+): Promise<void> {
   if (printing) {
     throw unavailable("نافذة طباعة الإيصال مفتوحة. أغلقها ثم أعد المحاولة.");
   }
@@ -309,9 +227,6 @@ export async function printSaleReceipt(
     throw unavailable("لا يمكن طباعة إيصال قبل اكتمال البيع.");
   }
   const generation = accountGeneration();
-  if (pairingOrThrow()) {
-    return printReceiptThroughConnector(sale, overrides, generation, onProgress);
-  }
   if (typeof window === "undefined" || typeof document === "undefined") {
     throw unavailable("الطباعة متاحة من شاشة الكاشير في المتصفح فقط.");
   }
@@ -329,18 +244,17 @@ export async function printSaleReceipt(
     if (active) removeJob(active);
     job = await openFrame("إيصال الطباعة", document.body, "print");
     active = job;
-    if (cancelPreparation) {
+    if (cancelPreparation || accountGeneration() !== generation) {
       throw unavailable("أُلغيت طباعة الإيصال قبل فتح النافذة. البيع مكتمل.");
     }
     const prepared = fill(job, sale, overrides);
     await waitForFonts(prepared.printWindow.document);
-    if (cancelPreparation) {
+    if (cancelPreparation || accountGeneration() !== generation) {
       throw unavailable("أُلغيت طباعة الإيصال قبل فتح النافذة. البيع مكتمل.");
     }
     finalizeReceiptDocumentSize(prepared.printWindow.document, prepared.contentWidthMm);
-    const dialogReturned = await awaitDialog(prepared.printWindow);
+    await awaitDialog(prepared.printWindow);
     await delay(FRAME_GRACE_MS);
-    return { channel: "browser", dialogRequested: true, dialogReturned };
   } catch (error) {
     if (error instanceof ReceiptPrintError) throw error;
     throw unavailable("تعذرت طباعة الإيصال. البيع مكتمل. إلغاء نافذة الطباعة لا يلغي البيع.");
@@ -358,60 +272,7 @@ export async function printSaleReceipt(
  */
 export function releaseReceiptPrintResources(): void {
   cancelPreparation = true;
-  connectorCancel?.abort();
   if (!printing && active) removeJob(active);
-}
-
-async function printReceiptThroughConnector(
-  sale: SaleDto,
-  overrides: Partial<ReceiptOptions> | undefined,
-  generation: number,
-  onProgress: ((message: string) => void) | undefined,
-): Promise<ReceiptPrintResult> {
-  const view = buildReceiptView(withSelectedReceiptNumber(sale), resolveReceiptOptions(overrides));
-  const id = crypto.randomUUID();
-  const job = connectorReceiptJob(view, id);
-  let printToken: symbol;
-  try {
-    printToken = claimBrowserPrint();
-  } catch {
-    throw unavailable("نافذة طباعة الإيصال مفتوحة. أغلقها ثم أعد المحاولة.");
-  }
-  printing = true;
-  cancelPreparation = false;
-  const controller = new AbortController();
-  connectorCancel = controller;
-  const stopAccount = subscribeAccount(() => {
-    if (accountGeneration() !== generation) controller.abort();
-  });
-  try {
-    if (cancelPreparation || controller.signal.aborted || accountGeneration() !== generation) {
-      throw unavailable("أُلغيت طباعة الإيصال قبل الإرسال. البيع مكتمل.");
-    }
-    await submitConnectorJob(job, onProgress
-      ? { signal: controller.signal, onProgress }
-      : { signal: controller.signal });
-    return { channel: "connector", submitted: true };
-  } catch (error) {
-    if (error instanceof ReceiptPrintError) throw error;
-    if (error instanceof ConnectorClientError) {
-      if (error.code === "aborted") {
-        throw unavailable("أُلغيت طباعة الإيصال قبل الإرسال. البيع مكتمل.");
-      }
-      if (error.code === "layout") {
-        const oldConnector = error.connectorError === "invalid_job"
-          && job.receiptView.contentWidthMm === RECEIPT_CONTENT_WIDTH_MM;
-        throw unavailable(receiptConnectorLayoutMessage(oldConnector));
-      }
-      throw unavailable(`${error.message} البيع مكتمل.`);
-    }
-    throw unavailable("تعذرت طباعة الإيصال. البيع مكتمل. إلغاء نافذة الطباعة لا يلغي البيع.");
-  } finally {
-    stopAccount();
-    if (connectorCancel === controller) connectorCancel = null;
-    printing = false;
-    releaseBrowserPrint(printToken);
-  }
 }
 
 /** Same receipt document, without opening the print dialog. */

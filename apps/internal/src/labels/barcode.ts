@@ -26,19 +26,20 @@ const GENERIC_CODE_FONT_MM = 3.2;
 const GENERIC_NAME_FONT_MM = 3.6;
 const GENERIC_BRAND_FONT_MM = 3.2;
 const GENERIC_LINE_HEIGHT = 1.35;
-/** Larger than the 13-dot / 12-dot diagnostic proof, still inside 25 mm. */
-const COMPACT_CODE_FONT_MM = 2;
-const COMPACT_NAME_FONT_MM = 1.6;
-const COMPACT_BRAND_FONT_MM = 2;
-const COMPACT_LINE_HEIGHT = 1.15;
+const COMPACT_CODE_FONT_MM = 2.65;
+const COMPACT_NAME_FONT_MM = 3.1;
+const COMPACT_LINE_HEIGHT = 1.12;
+export const COMPACT_VERTICAL_PADDING_MM = 1.5;
+export const COMPACT_LOGO_HEIGHT_MM = 5.7;
+export const COMPACT_BAR_HEIGHT_MM = 11.5;
+export const COMPACT_PRICE_FONT_MM = 3.7;
+export const COMPACT_ROW_GAP_MM = 0.5;
 export const TEXT_GAP_MM = 0.5;
 export const NAME_GAP_MM = 0.3;
 export const BRAND_GAP_MM = 0.25;
 /** Latin product codes are narrower than Arabic display names. */
 const CODE_CHAR_EM = 0.62;
 const NAME_CHAR_EM = 1.05;
-/** Compact acceptance only. The loaded font, not this estimate, is the fit check. */
-const COMPACT_NAME_CHAR_EM = 0.5;
 
 export type LabelProfileId = typeof GENERIC_LABEL_PROFILE | typeof XP236B_38X25_PROFILE;
 
@@ -131,10 +132,10 @@ function typeSpec(profile: LabelProfileId): TypeSpec {
     return {
       codeFontMm: COMPACT_CODE_FONT_MM,
       nameFontMm: COMPACT_NAME_FONT_MM,
-      brandFontMm: COMPACT_BRAND_FONT_MM,
+      brandFontMm: COMPACT_LOGO_HEIGHT_MM,
       lineHeight: COMPACT_LINE_HEIGHT,
       codeCharEm: CODE_CHAR_EM,
-      nameCharEm: COMPACT_NAME_CHAR_EM,
+      nameCharEm: NAME_CHAR_EM,
     };
   }
   return {
@@ -268,10 +269,14 @@ export function planLabelLayout(product: LabelProduct, settings: ProductLabelSet
   const type = typeSpec(profile);
   const contentWidthMm = settings.widthMm - PAGE_PADDING_MM * 2;
   const priceText = formatLabelPriceText(product.defaultSellingPricePiasters);
-  const stack = textStackMm(product.code, product.nameAr, contentWidthMm, type, priceText);
-  const rawMinimumHeight = PAGE_PADDING_MM * 2 + BAR_MIN_MM + TEXT_GAP_MM + stack;
+  const compact = profile === XP236B_38X25_PROFILE;
+  const occupiedHeight = compact
+    ? 2 * COMPACT_VERTICAL_PADDING_MM + COMPACT_LOGO_HEIGHT_MM + COMPACT_PRICE_FONT_MM * type.lineHeight + 2 * COMPACT_ROW_GAP_MM
+    : PAGE_PADDING_MM * 2 + TEXT_GAP_MM + textStackMm(product.code, product.nameAr, contentWidthMm, type, priceText);
+  const rawMinimumHeight = occupiedHeight + BAR_MIN_MM;
   const minimumHeightMm = Math.ceil(rawMinimumHeight * 10) / 10;
-  const barHeightMm = settings.heightMm - PAGE_PADDING_MM * 2 - TEXT_GAP_MM - stack;
+  const remainingHeight = settings.heightMm - occupiedHeight;
+  const barHeightMm = compact ? Math.min(COMPACT_BAR_HEIGHT_MM, remainingHeight) : remainingHeight;
   if (barHeightMm + 1e-9 < BAR_MIN_MM || settings.heightMm + 1e-9 < minimumHeightMm) {
     fail(`رمز المنتج يحتاج ملصقاً بارتفاع ${formatLabelMm(minimumHeightMm)} مم على الأقل`);
   }

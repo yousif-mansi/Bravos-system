@@ -11,12 +11,6 @@ type JobBody = {
   kind?: string;
   copies?: number;
   product?: { code?: string; name?: string };
-  receiptView?: {
-    printedReference?: string;
-    finalTotal?: string;
-    serverReference?: string;
-    localOperationReference?: string;
-  };
 };
 
 function statusBody() {
@@ -31,7 +25,7 @@ function statusBody() {
   };
 }
 
-async function installConnector(page: Page, jobs: JobBody[], options?: { fail?: boolean }) {
+async function installConnector(page: Page, jobs: JobBody[]) {
   await page.route("http://127.0.0.1:17831/**", async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
@@ -54,12 +48,6 @@ async function installConnector(page: Page, jobs: JobBody[], options?: { fail?: 
     if (request.method() === "POST" && path === "/jobs") {
       const body = request.postDataJSON() as JobBody;
       jobs.push(body);
-      if (options?.fail) {
-        await route.fulfill({ status: 202, contentType: "application/json", body: JSON.stringify({
-          job: { id: body.id, kind: body.kind, phase: "unknown", failureCode: "submission_uncertain", createdAt: "2026-10-27T00:00:00.000Z", updatedAt: "2026-10-27T00:00:00.000Z" },
-        }) });
-        return;
-      }
       await route.fulfill({ status: 202, contentType: "application/json", body: JSON.stringify({
         job: { id: body.id, kind: body.kind, phase: "submitted", failureCode: null, createdAt: "2026-10-27T00:00:00.000Z", updatedAt: "2026-10-27T00:00:00.000Z" },
       }) });
@@ -89,15 +77,27 @@ async function login(page: Page) {
   await expect(page.getByTestId("active-branch")).toContainText("أبشواي");
 }
 
-test("pairing is once per browser, keeps the generic label size, and routes documents apart", async ({ page, context }) => {
+test("a paired browser sends labels to the connector and prints receipts from the Chrome template", async ({ page, context }) => {
   const jobs: JobBody[] = [];
   await page.addInitScript(() => {
-    const root = window.top as Window & { __printCalls?: number };
-    root.__printCalls = 0;
+    const root = window.top as Window & { __printCalls?: Array<{
+      width: string | undefined;
+      reference: string | null | undefined;
+      items: string | undefined;
+      subtotal: string | null | undefined;
+    }> };
+    root.__printCalls ??= [];
     window.print = () => {
-      root.__printCalls = (root.__printCalls ?? 0) + 1;
+      root.__printCalls!.push({
+        width: document.documentElement.dataset.receiptPageWidthMm,
+        reference: document.querySelector(".meta bdi")?.textContent,
+        items: document.querySelector(".items")?.innerHTML,
+        subtotal: document.querySelector(".subtotal bdi")?.textContent,
+      });
+      window.dispatchEvent(new Event("afterprint"));
     };
   });
+  const printCalls = () => page.evaluate(() => (window as Window & { __printCalls?: unknown[] }).__printCalls ?? []);
   await installConnector(page, jobs);
   await page.goto(`${internal}/login`);
   await page.evaluate(() => {
@@ -173,7 +173,7 @@ test("pairing is once per browser, keeps the generic label size, and routes docu
     paper: { widthMm: 38, heightMm: 25 },
     profile: "compact",
   });
-  expect(await page.evaluate(() => (window.top as Window & { __printCalls?: number }).__printCalls ?? 0)).toBe(0);
+  expect(await printCalls()).toHaveLength(0);
   const matchingSales = async () => {
     const sales = await api(page, "GET", "/api/internal/sales") as Array<{ finalTotalPiasters?: number; lines: Array<{ variantId: string }> }>;
     return sales.filter((sale) => sale.lines.some((line) => line.variantId === variant.id));
@@ -191,59 +191,52 @@ test("pairing is once per browser, keeps the generic label size, and routes docu
   await form.getByLabel("رمز المنتج").fill(product.code);
   await form.getByLabel("رمز المنتج").press("Enter");
   await expect(page.getByTestId("lookup-result")).toContainText(product.code);
-  await page.getByTestId("add-operational").click();
-  await context.setOffline(true);
+  await expect(page.getByTestId("sale-cart")).toContainText(product.code);
+  const offline = process.env.BRAVOS_HW_PRODUCTION === "1";
+  if (offline) {
+    await page.evaluate(async () => {
+      await navigator.serviceWorker.ready;
+      if (!navigator.serviceWorker.controller) {
+        await new Promise<void>((resolve) => {
+          navigator.serviceWorker.addEventListener("controllerchange", () => resolve(), { once: true });
+        });
+      }
+    });
+    await context.setOffline(true);
+  }
   let printed = "";
   try {
     await page.getByTestId("complete-sale-print").click();
-    await expect(page.getByTestId("sale-details")).toContainText(/رقم الإيصال: BRV-/);
+    await expect(page.getByTestId("pos-receipt-status")).toContainText("تم طلب طباعة الإيصال");
+    await expect(page.getByTestId("sale-details")).toContainText(offline ? /رقم الإيصال: BRV-/ : /رقم الإيصال: (?:BRV-|POS-)/);
     const receiptText = await page.getByTestId("sale-details").innerText();
-    printed = receiptText.match(/BRV-\d+-\d+/)?.[0] ?? "";
+    printed = receiptText.match(/رقم الإيصال: (BRV-\d+-\d+|POS-\d+)/)?.[1] ?? "";
     expect(printed).toBeTruthy();
-    await expect.poll(() => jobs.filter((job) => job.kind === "receipt").length).toBe(1);
-    const receiptJob = jobs.find((job) => job.kind === "receipt");
-    expect(receiptJob?.receiptView?.printedReference).toBe(printed);
-    expect(receiptJob?.receiptView?.finalTotal).toBe("120");
-    expect(receiptText).toContain("120");
-    expect(receiptJob?.receiptView?.serverReference).toBeUndefined();
-    expect(receiptJob?.receiptView?.localOperationReference).toBeUndefined();
-    expect(JSON.stringify(receiptJob)).not.toContain("unitCost");
-    expect(await page.evaluate(() => (window.top as Window & { __printCalls?: number }).__printCalls ?? 0)).toBe(0);
-    expect(await matchingSales()).toHaveLength(0);
-    expect(await available()).toBe(2);
+    await expect.poll(printCalls).toEqual([{
+      width: "75", reference: printed, items: expect.stringContaining(product.nameAr), subtotal: "120",
+    }]);
+    expect(jobs.map((job) => job.kind)).toEqual(["label"]);
+    if (offline) {
+      expect(await matchingSales()).toHaveLength(0);
+      expect(await available()).toBe(2);
+    }
 
     await page.getByTestId("reprint-receipt").click();
-    await expect(page.getByTestId("receipt-print-status")).toContainText("برنامج الطباعة");
-    expect(jobs.filter((job) => job.kind === "receipt")).toHaveLength(2);
-    const reprintJob = jobs.filter((job) => job.kind === "receipt")[1];
-    expect(reprintJob?.receiptView?.printedReference).toBe(printed);
-    expect(reprintJob?.receiptView?.finalTotal).toBe("120");
-    expect(reprintJob?.receiptView?.serverReference).toBeUndefined();
-    expect(reprintJob?.receiptView?.localOperationReference).toBeUndefined();
-    expect(JSON.stringify(reprintJob)).not.toContain("unitCost");
-    expect(await matchingSales()).toHaveLength(0);
-    expect(await available()).toBe(2);
-    expect(await page.evaluate(() => (window.top as Window & { __printCalls?: number }).__printCalls ?? 0)).toBe(0);
+    await expect(page.getByTestId("receipt-print-status")).toContainText("تم طلب طباعة الإيصال");
+    const [firstPrint, reprint] = await printCalls();
+    expect(reprint).toEqual(firstPrint);
+    expect(jobs.map((job) => job.kind)).toEqual(["label"]);
+    if (offline) {
+      expect(await matchingSales()).toHaveLength(0);
+      expect(await available()).toBe(2);
+    }
   } finally {
-    await context.setOffline(false);
+    if (offline) await context.setOffline(false);
   }
 
   await expect.poll(async () => (await matchingSales()).length).toBe(1);
   await expect.poll(available).toBe(1);
   expect((await matchingSales())[0]?.finalTotalPiasters).toBe(12000);
 
-  jobs.length = 0;
-  await page.unroute("http://127.0.0.1:17831/**");
-  await installConnector(page, jobs, { fail: true });
-  await page.getByTestId("reprint-receipt").click();
-  await expect(page.getByTestId("receipt-print-error")).toBeVisible();
-  expect(jobs.filter((job) => job.kind === "receipt")).toHaveLength(1);
-  const uncertain = jobs.find((job) => job.kind === "receipt");
-  expect(uncertain?.receiptView?.printedReference).toBe(printed);
-  expect(uncertain?.receiptView?.serverReference).toBeUndefined();
-  expect(uncertain?.receiptView?.localOperationReference).toBeUndefined();
-  expect(JSON.stringify(uncertain)).not.toContain("unitCost");
-  expect(await matchingSales()).toHaveLength(1);
-  expect(await available()).toBe(1);
-  expect(await page.evaluate(() => (window.top as Window & { __printCalls?: number }).__printCalls ?? 0)).toBe(0);
+  expect(await printCalls()).toHaveLength(2);
 });

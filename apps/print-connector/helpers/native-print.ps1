@@ -37,6 +37,36 @@ Add-Type -Path $source -ReferencedAssemblies @(
   "System.Web.Extensions"
 )
 
+function Read-VerifiedLabelDevice([string]$printerName, [string]$port, [object[]]$printers, [object[]]$devices) {
+  # A local operator sets these only after observing a Windows test page from this queue.
+  $deviceId = $env:BRAVOS_PRINT_LABEL_USB_DEVICE
+  if ($port -cnotmatch '^USB[0-9]{3}$' -or $port -cne $env:BRAVOS_PRINT_LABEL_USB_PORT) { return "" }
+  if ($deviceId -notmatch '^USBPRINT\\XPRINTERXP-236B\\[A-Z0-9&_-]{1,120}$') { return "" }
+
+  $active = @($devices | Where-Object Present -eq $true)
+  $labels = @($active | Where-Object PNPDeviceID -like 'USBPRINT\XPRINTERXP-236B\*')
+  if ($labels.Count -ne 1 -or $labels[0].PNPDeviceID -ne $deviceId -or $labels[0].Status -ne 'OK') { return "" }
+  if ($null -eq $labels[0].ConfigManagerErrorCode -or $labels[0].ConfigManagerErrorCode -ne 0) { return "" }
+
+  foreach ($printer in $printers) {
+    if ($printer.Name -ne $printerName -and ($printer.PortName -split '\s*,\s*') -contains $port) { return "" }
+  }
+  foreach ($device in $active) {
+    $otherId = [string]$device.PNPDeviceID
+    if ($otherId -eq $deviceId) { continue }
+    if ($otherId.EndsWith("\$port", [StringComparison]::OrdinalIgnoreCase) -or $otherId.EndsWith("&$port", [StringComparison]::OrdinalIgnoreCase)) { return "" }
+  }
+
+  try {
+    $queue = Get-Printer -Name $printerName -ErrorAction Stop
+    $ready = 'Normal','Busy','Printing','IoActive','Processing','Waiting','WarmingUp','Initializing','PowerSave'
+    if ($queue.PortName -cne $port -or $queue.DriverName -cne 'Xprinter XP-236B' -or [string]$queue.PrinterStatus -notin $ready) { return "" }
+  } catch {
+    return ""
+  }
+  return $deviceId
+}
+
 function Read-Queue([string]$role, [string]$printerName) {
   $found = $false
   $driver = ""
@@ -66,7 +96,12 @@ function Read-Queue([string]$role, [string]$printerName) {
     $ids[$i] = [string]$devices[$i].PNPDeviceID
     $statuses[$i] = [string]$devices[$i].Status
   }
-  return [Bravos.NativePrint.Host]::ProbeQueue($role, $found, $driver, $offline, $port, $status, $truncated, $ids, $statuses)
+  $labelBindingConfigured = $role -eq "label" -and ($env:BRAVOS_PRINT_LABEL_USB_PORT -or $env:BRAVOS_PRINT_LABEL_USB_DEVICE)
+  $verifiedLabelDeviceId = ""
+  if ($labelBindingConfigured -and $found -and -not $offline -and -not $truncated) {
+    $verifiedLabelDeviceId = Read-VerifiedLabelDevice $printerName $port $printers $devices
+  }
+  return [Bravos.NativePrint.Host]::ProbeQueue($role, $found, $driver, $offline, $port, $status, $truncated, $ids, $statuses, $labelBindingConfigured, $verifiedLabelDeviceId)
 }
 
 try {
